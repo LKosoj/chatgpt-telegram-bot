@@ -20,8 +20,10 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import OpenAIHelper, localized_text
+from openai_helper import OpenAIHelper, localized_text, O1_MODELS
 from usage_tracker import UsageTracker
+
+#logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class ChatGPTTelegramBot:
@@ -35,8 +37,14 @@ class ChatGPTTelegramBot:
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
+        # Добавляем словарь для буферизации сообщений
+        self.message_buffer = {}
+        # Добавляем время ожидания для буфера (в секундах)
+        self.buffer_timeout = 1.0
+
         self.config = config
         self.openai = openai
+
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
@@ -46,7 +54,8 @@ class ChatGPTTelegramBot:
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
-            self.commands.append(BotCommand(command='image', description=localized_text('image_description', bot_language)))
+            self.commands.append(
+                BotCommand(command='image', description=localized_text('image_description', bot_language)))
 
         if self.config.get('enable_tts_generation', False):
             self.commands.append(BotCommand(command='tts', description=localized_text('tts_description', bot_language)))
@@ -107,14 +116,14 @@ class ChatGPTTelegramBot:
         chat_messages, chat_token_length = self.openai.get_conversation_stats(chat_id)
         remaining_budget = get_remaining_budget(self.config, self.usage, update)
         bot_language = self.config['bot_language']
-        
+
         text_current_conversation = (
             f"*{localized_text('stats_conversation', bot_language)[0]}*:\n"
             f"{chat_messages} {localized_text('stats_conversation', bot_language)[1]}\n"
             f"{chat_token_length} {localized_text('stats_conversation', bot_language)[2]}\n"
             "----------------------------\n"
         )
-        
+
         # Check if image generation is enabled and, if so, generate the image statistics for today
         text_today_images = ""
         if self.config.get('enable_image_generation', False):
@@ -127,7 +136,7 @@ class ChatGPTTelegramBot:
         text_today_tts = ""
         if self.config.get('enable_tts_generation', False):
             text_today_tts = f"{characters_today} {localized_text('stats_tts', bot_language)}\n"
-        
+
         text_today = (
             f"*{localized_text('usage_today', bot_language)}:*\n"
             f"{tokens_today} {localized_text('stats_tokens', bot_language)}\n"
@@ -139,7 +148,7 @@ class ChatGPTTelegramBot:
             f"{localized_text('stats_total', bot_language)}{current_cost['cost_today']:.2f}\n"
             "----------------------------\n"
         )
-        
+
         text_month_images = ""
         if self.config.get('enable_image_generation', False):
             text_month_images = f"{images_month} {localized_text('stats_images', bot_language)}\n"
@@ -151,7 +160,7 @@ class ChatGPTTelegramBot:
         text_month_tts = ""
         if self.config.get('enable_tts_generation', False):
             text_month_tts = f"{characters_month} {localized_text('stats_tts', bot_language)}\n"
-        
+
         # Check if image generation is enabled and, if so, generate the image statistics for the month
         text_month = (
             f"*{localized_text('usage_month', bot_language)}:*\n"
@@ -266,7 +275,8 @@ class ChatGPTTelegramBot:
                         document=image_url
                     )
                 else:
-                    raise Exception(f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
+                    raise Exception(
+                        f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
                 # add image request to users usage tracker
                 user_id = update.message.from_user.id
                 self.usage[user_id].add_image_request(image_size, self.config['image_prices'])
@@ -318,7 +328,8 @@ class ChatGPTTelegramBot:
                 self.usage[user_id].add_tts_request(text_length, self.config['tts_model'], self.config['tts_prices'])
                 # add guest chat request to guest usage tracker
                 if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
-                    self.usage["guests"].add_tts_request(text_length, self.config['tts_model'], self.config['tts_prices'])
+                    self.usage["guests"].add_tts_request(text_length, self.config['tts_model'],
+                                                         self.config['tts_prices'])
 
             except Exception as e:
                 logging.exception(e)
@@ -468,12 +479,11 @@ class ChatGPTTelegramBot:
             else:
                 trigger_keyword = self.config['group_trigger_keyword']
                 if (prompt is None and trigger_keyword != '') or \
-                   (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
+                        (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
                     logging.info('Vision coming from group chat with wrong keyword, ignoring...')
                     return
-        
+
         image = update.message.effective_attachment[-1]
-        
 
         async def _execute():
             bot_language = self.config['bot_language']
@@ -492,14 +502,14 @@ class ChatGPTTelegramBot:
                     parse_mode=constants.ParseMode.MARKDOWN
                 )
                 return
-            
+
             # convert jpg from telegram to png as understood by openai
 
             temp_file_png = io.BytesIO()
 
             try:
                 original_image = Image.open(temp_file)
-                
+
                 original_image.save(temp_file_png, format='PNG')
                 logging.info(f'New vision request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
@@ -511,8 +521,6 @@ class ChatGPTTelegramBot:
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
                     text=localized_text('media_type_fail', bot_language)
                 )
-            
-            
 
             user_id = update.message.from_user.id
             if user_id not in self.usage:
@@ -520,7 +528,8 @@ class ChatGPTTelegramBot:
 
             if self.config['stream']:
 
-                stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png, prompt=prompt)
+                stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png,
+                                                                     prompt=prompt)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -597,12 +606,12 @@ class ChatGPTTelegramBot:
                     if tokens != 'not_finished':
                         total_tokens = int(tokens)
 
-                
+
             else:
 
                 try:
-                    interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png, prompt=prompt)
-
+                    interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png,
+                                                                                     prompt=prompt)
 
                     try:
                         await update.effective_message.reply_text(
@@ -653,12 +662,93 @@ class ChatGPTTelegramBot:
         if not await self.check_allowed_and_within_budget(update, context):
             return
 
-        logging.info(
-            f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
+        chat_id = update.effective_chat.id
+        prompt = message_text(update.message)
+        message_id = update.message.message_id
+
+        try:
+            # Проверяем, есть ли уже сообщение в буфере
+            if chat_id in self.message_buffer:
+                # Если разница между message_id меньше 2, считаем, что это части одного сообщения
+                if abs(message_id - self.message_buffer[chat_id]["last_message_id"]) <= 2:
+                    # Добавляем текст к существующему сообщению
+                    self.message_buffer[chat_id]["text"] += prompt
+                    self.message_buffer[chat_id]["last_message_id"] = message_id
+
+                    # Обновляем таймер
+                    if self.message_buffer[chat_id]["timer"]:
+                        self.message_buffer[chat_id]["timer"].cancel()
+
+                    # Создаем новый таймер
+                    self.message_buffer[chat_id]["timer"] = asyncio.create_task(
+                        self.process_buffered_message(chat_id, update, context)
+                    )
+                    return
+                else:
+                    # Если message_id сильно отличается, обрабатываем предыдущее сообщение
+                    if self.message_buffer[chat_id]["timer"]:
+                        self.message_buffer[chat_id]["timer"].cancel()
+                    await self.process_message(
+                        self.message_buffer[chat_id]["text"],
+                        update,
+                        context
+                    )
+
+            # Создаем новую запись в буфере с инициализацией таймера
+            self.message_buffer[chat_id] = {
+                "text": prompt,
+                "last_message_id": message_id,
+                "timer": None,  # Таймер инициализируется как None
+                "processed": False  # Флаг, указывающий, что сообщение ещё не обработано
+            }
+
+            # Устанавливаем таймер для обработки сообщения
+            self.message_buffer[chat_id]["timer"] = asyncio.create_task(
+                self.process_buffered_message(chat_id, update, context)
+            )
+
+        except Exception as e:
+            logging.exception(f"Error handling message buffer: {e}")
+            # В случае ошибки обрабатываем сообщение напрямую
+            await self.process_message(prompt, update, context)
+
+    async def process_buffered_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        def callback():
+            asyncio.create_task(self._process_delayed_message(chat_id, update, context))
+
+        # Планируем выполнение через определенное время
+        loop = asyncio.get_event_loop()
+        timer = loop.call_later(self.buffer_timeout, callback)
+
+        # Сохраняем ссылку на таймер
+        self.message_buffer[chat_id]["timer"] = timer
+
+    async def _process_delayed_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            # Проверяем, что сообщение еще не обработано
+            if chat_id in self.message_buffer:
+                await self.process_message(
+                    self.message_buffer[chat_id]["text"],
+                    update,
+                    context
+                )
+        except Exception as e:
+            logging.error(f"Error processing delayed message: {e}")
+        finally:
+            # Очищаем буфер
+            if chat_id in self.message_buffer:
+                del self.message_buffer[chat_id]
+                
+    async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Обрабатывает полное сообщение
+        """
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
-        prompt = message_text(update.message)
         self.last_message[chat_id] = prompt
+
+        logging.info(
+            f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
 
         if is_group_chat(update):
             trigger_keyword = self.config['group_trigger_keyword']
@@ -681,7 +771,8 @@ class ChatGPTTelegramBot:
         try:
             total_tokens = 0
 
-            if self.config['stream']:
+            if self.config['stream'] and self.openai.config['model'] not in O1_MODELS:
+
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
                     message_thread_id=get_thread_id(update)
@@ -800,6 +891,7 @@ class ChatGPTTelegramBot:
             add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
 
         except Exception as e:
+            logging.info(f'2  chat_id={chat_id}, query={prompt}')
             logging.exception(e)
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
@@ -1044,41 +1136,65 @@ class ChatGPTTelegramBot:
         await application.bot.set_my_commands(self.group_commands, scope=BotCommandScopeAllGroupChats())
         await application.bot.set_my_commands(self.commands)
 
+    async def cleanup(self):
+        """
+        Очищает буфер сообщений при завершении работы бота.
+        """
+        for chat_id in self.message_buffer:
+            if self.message_buffer[chat_id]["timer"] is not None:
+                self.message_buffer[chat_id]["timer"].cancel()
+        self.message_buffer.clear()
+
+        # Отменяем все активные задачи
+        tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     def run(self):
         """
-        Runs the bot indefinitely until the user presses Ctrl+C
+        Runs the bot indefinitely until the user presses Ctrl+C.
         """
-        application = ApplicationBuilder() \
-            .token(self.config['token']) \
-            .proxy_url(self.config['proxy']) \
-            .get_updates_proxy_url(self.config['proxy']) \
-            .post_init(self.post_init) \
-            .concurrent_updates(True) \
-            .build()
+        try:
+            application = ApplicationBuilder() \
+                .token(self.config['token']) \
+                .proxy_url(self.config['proxy']) \
+                .get_updates_proxy_url(self.config['proxy']) \
+                .post_init(self.post_init) \
+                .concurrent_updates(True) \
+                .build()
 
-        application.add_handler(CommandHandler('reset', self.reset))
-        application.add_handler(CommandHandler('help', self.help))
-        application.add_handler(CommandHandler('image', self.image))
-        application.add_handler(CommandHandler('tts', self.tts))
-        application.add_handler(CommandHandler('start', self.help))
-        application.add_handler(CommandHandler('stats', self.stats))
-        application.add_handler(CommandHandler('resend', self.resend))
-        application.add_handler(CommandHandler(
-            'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
-        )
-        application.add_handler(MessageHandler(
-            filters.PHOTO | filters.Document.IMAGE,
-            self.vision))
-        application.add_handler(MessageHandler(
-            filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
-            filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
-            self.transcribe))
-        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
-        application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
-            constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
-        ]))
-        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
+            application.add_handler(CommandHandler('reset', self.reset))
+            application.add_handler(CommandHandler('help', self.help))
+            application.add_handler(CommandHandler('image', self.image))
+            application.add_handler(CommandHandler('tts', self.tts))
+            application.add_handler(CommandHandler('start', self.help))
+            application.add_handler(CommandHandler('stats', self.stats))
+            application.add_handler(CommandHandler('resend', self.resend))
+            application.add_handler(CommandHandler(
+                'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+            )
+            application.add_handler(MessageHandler(
+                filters.PHOTO | filters.Document.IMAGE,
+                self.vision))
+            application.add_handler(MessageHandler(
+                filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
+                filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
+                self.transcribe))
+            application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+            application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
+                constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
+            ]))
+            application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
-        application.add_error_handler(error_handler)
+            application.add_error_handler(error_handler)
 
-        application.run_polling()
+            application.run_polling()
+        finally:
+            # Завершаем выполнение задач в текущем событийном цикле
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.run_until_complete(self.cleanup())

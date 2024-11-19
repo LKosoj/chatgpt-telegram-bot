@@ -1,5 +1,9 @@
 import json
 
+
+from plugins.reaction import ReactionPlugin
+from plugins.website_content import WebsiteContentPlugin
+from plugins.youtube_transcript import YoutubeTranscriptPlugin
 from plugins.gtts_text_to_speech import GTTSTextToSpeech
 from plugins.auto_tts import AutoTextToSpeech
 from plugins.dice import DicePlugin
@@ -16,7 +20,8 @@ from plugins.worldtimeapi import WorldTimeApiPlugin
 from plugins.whois_ import WhoisPlugin
 from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
-
+from plugins.github_analysis import GitHubCodeAnalysisPlugin
+from plugins.stable_diffusion import StableDiffusionPlugin
 
 class PluginManager:
     """
@@ -26,6 +31,11 @@ class PluginManager:
     def __init__(self, config):
         enabled_plugins = config.get('plugins', [])
         plugin_mapping = {
+            'stable_diffusion': StableDiffusionPlugin,
+            'reaction': ReactionPlugin,
+            'worldtimeapi': WorldTimeApiPlugin,
+            'website_content': WebsiteContentPlugin,
+            'youtube_transcript': YoutubeTranscriptPlugin,
             'wolfram': WolframAlphaPlugin,
             'weather': WeatherPlugin,
             'crypto': CryptoPlugin,
@@ -42,6 +52,7 @@ class PluginManager:
             'whois': WhoisPlugin,
             'webshot': WebshotPlugin,
             'iplocation': IpLocationPlugin,
+            'github_analysis': GitHubCodeAnalysisPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
