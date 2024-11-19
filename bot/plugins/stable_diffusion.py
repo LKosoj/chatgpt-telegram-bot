@@ -21,67 +21,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class ImageGenerationQueue:
-    def __init__(self):
-        self.queue = asyncio.Queue()
-        self.processing_task = None
-        self.results = {}  # Для хранения результатов
-
-    async def add_to_queue(self, prompt: str, plugin, context: Any = None,
-                           callback: Callable = None) -> str:
-        # Генерируем уникальный идентификатор задачи
-        task_id = self.generate_task_id()
-
-        await self.queue.put({
-            'task_id': task_id,
-            'prompt': prompt,
-            'plugin': plugin,
-            'context': context,
-            'callback': callback
-        })
-
-        # Запускаем обработку очереди, если она не запущена
-        if not self.processing_task or self.processing_task.done():
-            self.processing_task = asyncio.create_task(self.process_queue())
-
-        return task_id
-
-    async def process_queue(self):
-        while not self.queue.empty():
-            task = await self.queue.get()
-            try:
-                # Генерируем изображение
-                result = await task['plugin']._generate_image_with_retry(task['prompt'])
-
-                # Сохраняем результат
-                self.results[task['task_id']] = result
-
-                # Если передан контекст, сохраняем в bot_data
-                if task['context']:
-                    task['context'].bot_data[f'image_task_{task["task_id"]}'] = result
-
-                # Вызываем callback, если он предоставлен
-                if task['callback']:
-                    await task['callback'](result)
-
-            except Exception as e:
-                logging.error(f"Error generating image: {e}")
-                # Сохраняем информацию об ошибке
-                self.results[task['task_id']] = {"error": str(e)}
-            finally:
-                self.queue.task_done()
-
-    @staticmethod
-    def generate_task_id(length: int = 16) -> str:
-        """
-        Генерирует уникальный идентификатор задачи
-        """
-        characters = string.ascii_letters + string.digits
-        return ''.join(random.choice(characters) for _ in range(length))
-
-# Глобальный экземпляр очереди
-image_generation_queue = ImageGenerationQueue()
-
 class StableDiffusionPlugin(Plugin):
     """
     A plugin to generate images using Stable Diffusion
