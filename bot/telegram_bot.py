@@ -20,7 +20,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import OpenAIHelper, localized_text, O1_MODELS
+from openai_helper import OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS
 from usage_tracker import UsageTracker
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -50,7 +50,8 @@ class ChatGPTTelegramBot:
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
-            BotCommand(command='resend', description=localized_text('resend_description', bot_language))
+            BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
+            BotCommand(command='model', description=localized_text('change_model', bot_language))
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -220,6 +221,33 @@ class ChatGPTTelegramBot:
             message.text = self.last_message.pop(chat_id)
 
         await self.prompt(update=update, context=context)
+
+    async def model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Change model.
+        """
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                            'is not allowed to change model')
+            await self.send_disallowed_message(update, context)
+            return
+
+        logging.info(f'Change model for request by user {update.message.from_user.name} '
+                     f'(id: {update.message.from_user.id})...')
+
+        chat_id = update.effective_chat.id
+        
+        text = ''
+        if message_text(update.message) in GPT_ALL_MODELS:
+            self.openai.config['model'] = message_text(update.message)
+            text = f"{localized_text('model_changed', self.config['bot_language'])} {message_text(update.message)}"
+        else :
+            text = f"{message_text(update.message)} localized_text('model_not_in_list') {GPT_ALL_MODELS}"
+
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text = text
+        )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1174,6 +1202,7 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('start', self.help))
             application.add_handler(CommandHandler('stats', self.stats))
             application.add_handler(CommandHandler('resend', self.resend))
+            application.add_handler(CommandHandler('model', self.model))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )

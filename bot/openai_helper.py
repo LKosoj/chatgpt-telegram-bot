@@ -28,8 +28,8 @@ GPT_4_MODELS = ("gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-turbo-preview")
 GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
-GPT_4O_MODELS = ("gpt-4o",)
-O1_MODELS = ("o1-preview", "o1-mini")
+GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
+O1_MODELS = ("o1-preview")
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS
 
 def default_max_tokens(model: str) -> int:
@@ -114,6 +114,9 @@ class OpenAIHelper:
         :param plugin_manager: The plugin manager
         """
         http_client = httpx.AsyncClient(proxies=config['proxy']) if 'proxy' in config else None
+        
+        if config['openai_base'] != '' :
+            openai.api_base = config['openai_base']
         self.client = openai.AsyncOpenAI(api_key=config['api_key'], http_client=http_client)
         self.config = config
         self.plugin_manager = plugin_manager
@@ -190,6 +193,7 @@ class OpenAIHelper:
                 return
 
         answer = ''
+
         async for chunk in response:
             if len(chunk.choices) == 0:
                 continue
@@ -251,6 +255,7 @@ class OpenAIHelper:
                     logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
+            logging.info(f"Model: {self.config['model']}")
             common_args = {
                 'model': self.config['model'] if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],

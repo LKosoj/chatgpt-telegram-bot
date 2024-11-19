@@ -16,6 +16,9 @@ lexer = None
 class GitHubCodeAnalysisPlugin(Plugin):
 
     def __init__(self):
+        openai_base = os.environ.get('OPENAI_BASE_URL', '')
+        if openai_base != '' :
+            OpenAI.api_base = openai_base
         openai_api_key = os.environ['OPENAI_API_KEY']
         self.client = OpenAI(api_key=openai_api_key)
         self.model = os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo')
