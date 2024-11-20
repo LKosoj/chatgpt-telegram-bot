@@ -17,7 +17,7 @@ MAX_RETRIES = 5  # Максимальное количество попыток
 RETRY_DELAY = 3  # Задержка между попытками в секундах
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+#logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 

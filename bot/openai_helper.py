@@ -275,12 +275,16 @@ class OpenAIHelper:
                     'stream': stream,
                 })
             
-                if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                    functions = self.plugin_manager.get_functions_specs()
-                    if functions:
-                        common_args['functions'] = functions
-                        common_args['function_call'] = 'auto'
-
+            if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
+                tools = self.plugin_manager.get_functions_specs()
+                if tools:
+                    # Ensure each tool has a proper name
+                    for tool in tools:
+                        if 'name' not in tool:
+                            tool['name'] = tool.get('function', {}).get('name')
+                    
+                    common_args['tools'] = tools
+                    common_args['tool_choice'] = 'auto'
             return await self.client.chat.completions.create(**common_args)
 
         except openai.RateLimitError as e:
@@ -292,58 +296,57 @@ class OpenAIHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
-    async def __handle_function_call(self, chat_id, response, stream=False, times=0, plugins_used=()):
-        function_name = ''
+    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=()):
+        tool_name = ''
         arguments = ''
         if stream:
             async for item in response:
                 if len(item.choices) > 0:
                     first_choice = item.choices[0]
-                    if first_choice.delta and first_choice.delta.function_call:
-                        if first_choice.delta.function_call.name:
-                            function_name += first_choice.delta.function_call.name
-                        if first_choice.delta.function_call.arguments:
-                            arguments += first_choice.delta.function_call.arguments
-                    elif first_choice.finish_reason and first_choice.finish_reason == 'function_call':
+                    if first_choice.delta and first_choice.delta.tool_calls:
+                        if first_choice.delta.tool_calls[0].function.name:
+                            tool_name += first_choice.delta.tool_calls[0].function.name
+                        if first_choice.delta.tool_calls[0].function.arguments:
+                            arguments += first_choice.delta.tool_calls[0].function.arguments
+                    elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':
                         break
                     else:
-                        return response, plugins_used
+                        return response, tools_used
                 else:
-                    return response, plugins_used
+                    return response, tools_used
         else:
             if len(response.choices) > 0:
                 first_choice = response.choices[0]
-                if first_choice.message.function_call:
-                    if first_choice.message.function_call.name:
-                        function_name += first_choice.message.function_call.name
-                    if first_choice.message.function_call.arguments:
-                        arguments += first_choice.message.function_call.arguments
+                if first_choice.message.tool_calls:
+                    if first_choice.message.tool_calls[0].function.name:
+                        tool_name += first_choice.message.tool_calls[0].function.name
+                    if first_choice.message.tool_calls[0].function.arguments:
+                        arguments += first_choice.message.tool_calls[0].function.arguments
                 else:
-                    return response, plugins_used
+                    return response, tools_used
             else:
-                return response, plugins_used
+                return response, tools_used
+        logging.info(f'Calling tool {tool_name} with arguments {arguments}')
+        tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
 
-        logging.info(f'Calling function {function_name} with arguments {arguments}')
-        function_response = await self.plugin_manager.call_function(function_name, self, arguments)
+        if tool_name not in tools_used:
+            tools_used += (tool_name,)
 
-        if function_name not in plugins_used:
-            plugins_used += (function_name,)
-
-        if is_direct_result(function_response):
-            self.__add_function_call_to_history(chat_id=chat_id, function_name=function_name,
+        if is_direct_result(tool_response):
+            self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name,
                                                 content=json.dumps({'result': 'Done, the content has been sent'
-                                                                              'to the user.'}))
-            return function_response, plugins_used
+                                                                'to the user.'}))
+            return tool_response, tools_used
 
-        self.__add_function_call_to_history(chat_id=chat_id, function_name=function_name, content=function_response)
+        self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
         response = await self.client.chat.completions.create(
             model=self.config['model'],
             messages=self.conversations[chat_id],
-            functions=self.plugin_manager.get_functions_specs(),
-            function_call='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
+            tools=self.plugin_manager.get_functions_specs(),
+            tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
             stream=stream
         )
-        return await self.__handle_function_call(chat_id, response, stream, times + 1, plugins_used)
+        return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used)
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """
