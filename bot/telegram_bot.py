@@ -242,7 +242,7 @@ class ChatGPTTelegramBot:
             self.openai.config['model'] = message_text(update.message)
             text = f"{localized_text('model_changed', self.config['bot_language'])} {message_text(update.message)}"
         else :
-            text = f"{message_text(update.message)} localized_text('model_not_in_list', self.config['bot_language']) {GPT_ALL_MODELS}"
+            text = f"{message_text(update.message)} {localized_text('model_not_in_list', self.config['bot_language'])} {GPT_ALL_MODELS}"
 
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
