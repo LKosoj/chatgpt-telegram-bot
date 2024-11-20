@@ -7,7 +7,7 @@ import tiktoken
 
 import openai
 
-import requests
+from functools import lru_cache
 import json
 import httpx
 import io
@@ -32,6 +32,7 @@ GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
 O1_MODELS = ("o1-preview",)
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS
 
+@lru_cache(maxsize=128)
 def default_max_tokens(model: str) -> int:
     """
     Gets the default number of max tokens for the given model.

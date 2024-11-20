@@ -1,6 +1,5 @@
 import json
 
-
 from plugins.reaction import ReactionPlugin
 from plugins.website_content import WebsiteContentPlugin
 from plugins.youtube_transcript import YoutubeTranscriptPlugin

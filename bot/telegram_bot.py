@@ -4,6 +4,8 @@ import asyncio
 import logging
 import os
 import io
+import requests
+import json
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -183,16 +185,33 @@ class ChatGPTTelegramBot:
                 f"{localized_text(budget_period, bot_language)}: "
                 f"${remaining_budget:.2f}.\n"
             )
-        # No longer works as of July 21st 2023, as OpenAI has removed the billing API
-        # add OpenAI account information for admin request
-        # if is_admin(self.config, user_id):
-        #     text_budget += (
-        #         f"{localized_text('stats_openai', bot_language)}"
-        #         f"{self.openai.get_billing_current_month():.2f}"
-        #     )
+        # If use vsegpt, return money rest
+        if is_admin(self.config, user_id) and 'vsegpt' in self.config['openai_base']:
+             text_budget += (
+                 " VSEGPT "
+                 f"{self.get_credits()}"
+             )
 
         usage_text = text_current_conversation + text_today + text_month + text_budget
         await update.message.reply_text(usage_text, parse_mode=constants.ParseMode.MARKDOWN)
+    
+    def get_credits(self):
+        api_key = self.config['api_key']
+        response = requests.get(
+            url="https://api.vsegpt.ru/v1/balance",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+        )
+        if response.status_code == 200:
+            response_big = json.loads(response.text)
+            if response_big.get("status") == "ok":
+                return float(response_big.get("data").get("credits"))
+            else:
+                return response_big.get("reason") # reason of error
+        else:
+            return ValueError(str(response.status_code) + ": " + response.text)        
 
     async def resend(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """

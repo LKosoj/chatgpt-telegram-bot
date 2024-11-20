@@ -75,6 +75,8 @@ def main():
                         'Please use GUEST_BUDGET with BUDGET_PERIOD instead.')
 
     telegram_config = {
+        'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
+        'api_key': os.environ['OPENAI_API_KEY'],
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
