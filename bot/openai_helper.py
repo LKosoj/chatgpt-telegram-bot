@@ -30,7 +30,8 @@ GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
 O1_MODELS = ("o1-preview",)
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS
+ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
+GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str) -> int:
@@ -58,6 +59,8 @@ def default_max_tokens(model: str) -> int:
         return 4096
     elif model in O1_MODELS:
         return 32768
+    elif model in ANTHROPIC:
+        return 200000
 
 
 def are_functions_available(model: str) -> bool:
@@ -124,6 +127,27 @@ class OpenAIHelper:
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
+        self.user_models_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_configs.json')
+        os.makedirs(os.path.dirname(self.user_models_file), exist_ok=True)            
+        # Загрузка сохраненных моделей пользователей
+        self.user_models = self.load_user_models()
+
+    def load_user_models(self):
+        try:
+            if os.path.exists(self.user_models_file):
+                with open(self.user_models_file, 'r') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logging.error(f"Error loading user models: {e}")
+            return {}
+
+    def save_user_models(self):
+        try:
+            with open(self.user_models_file, 'w') as f:
+                json.dump(self.user_models, f)
+        except Exception as e:
+            logging.error(f"Error saving user models: {e}")
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
@@ -194,7 +218,7 @@ class OpenAIHelper:
                 return
 
         answer = ''
-
+            
         async for chunk in response:
             if len(chunk.choices) == 0:
                 continue
@@ -256,9 +280,13 @@ class OpenAIHelper:
                     logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
-            logging.info(f"Model: {self.config['model']}")
+            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+            model_to_use = self.user_models.get(str(user_id), self.config['model'])
+
+            logging.info(f"Model: {model_to_use}")
+
             common_args = {
-                'model': self.config['model'] if not self.conversations_vision[chat_id] else self.config['vision_model'],
+                'model': model_to_use if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
             }
 
@@ -667,6 +695,8 @@ class OpenAIHelper:
             return base * 31
         if self.config['model'] in O1_MODELS:
             return base * 31
+        if self.config['model'] in ANTHROPIC:
+            return base * 31
         raise NotImplementedError(
             f"Max tokens for model {self.config['model']} is not implemented yet."
         )
@@ -687,7 +717,7 @@ class OpenAIHelper:
         if model in GPT_3_MODELS + GPT_3_16K_MODELS:
             tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
             tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS:
+        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC:
             tokens_per_message = 3
             tokens_per_name = 1
         else:

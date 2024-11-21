@@ -50,6 +50,7 @@ class UsageTracker:
         """
         self.user_id = user_id
         self.logs_dir = logs_dir
+        #self.logs_dir = os.path.join("../../",os.path.join(os.path.dirname(os.path.abspath(__file__)), 'usage_logs'))
         # path to usage file of given user
         self.user_file = f"{logs_dir}/{user_id}.json"
 

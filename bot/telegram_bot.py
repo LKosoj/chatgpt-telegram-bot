@@ -257,11 +257,19 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         
         text = ''
-        if message_text(update.message) in GPT_ALL_MODELS:
-            self.openai.config['model'] = message_text(update.message)
-            text = f"{localized_text('model_changed', self.config['bot_language'])} {message_text(update.message)}"
-        else :
-            text = f"{message_text(update.message)} {localized_text('model_not_in_list', self.config['bot_language'])} {GPT_ALL_MODELS}"
+
+        user_id = update.message.from_user.id
+        model_name = message_text(update.message)
+        if model_name == "" :
+            text = f"Used model: {self.openai.user_models.get(str(user_id), self.openai.config['model'])}"
+        elif model_name in GPT_ALL_MODELS:            
+            # Сохраняем выбранную модель для конкретного пользователя
+            self.openai.user_models[str(user_id)] = model_name
+            # Сохраняем модели в файл
+            self.openai.save_user_models()            
+            text = f"{localized_text('model_changed', self.config['bot_language'])} {model_name}"
+        else:
+            text = f"{model_name} {localized_text('model_not_in_list', self.config['bot_language'])} {GPT_ALL_MODELS}"
 
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
