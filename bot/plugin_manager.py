@@ -42,7 +42,6 @@ class PluginManager:
             'ddg_translate': DDGTranslatePlugin,
             'ddg_image_search': DDGImageSearchPlugin,
             'spotify': SpotifyPlugin,
-            'worldtimeapi': WorldTimeApiPlugin,
             'youtube_audio_extractor': YouTubeAudioExtractorPlugin,
             'dice': DicePlugin,
             'deepl_translate': DeeplTranslatePlugin,

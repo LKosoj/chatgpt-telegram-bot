@@ -262,6 +262,8 @@ class ChatGPTTelegramBot:
         model_name = message_text(update.message)
         if model_name == "" :
             text = f"Used model: {self.openai.user_models.get(str(user_id), self.openai.config['model'])}"
+        elif model_name == "?" :
+            text = f"{GPT_ALL_MODELS}"
         elif model_name in GPT_ALL_MODELS:            
             # Сохраняем выбранную модель для конкретного пользователя
             self.openai.user_models[str(user_id)] = model_name
