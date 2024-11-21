@@ -288,6 +288,7 @@ class OpenAIHelper:
             common_args = {
                 'model': model_to_use if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
+                'extra_headers': { "X-Title": "tgBot" },
             }
 
             if self.config['model'] in O1_MODELS:
@@ -368,12 +369,17 @@ class OpenAIHelper:
             return tool_response, tools_used
 
         self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
+
+        user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+        model_to_use = self.user_models.get(str(user_id), self.config['model'])
+
         response = await self.client.chat.completions.create(
-            model=self.config['model'],
+            model=model_to_use,
             messages=self.conversations[chat_id],
             tools=self.plugin_manager.get_functions_specs(),
             tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-            stream=stream
+            stream=stream,
+            extra_headers={ "X-Title": "tgBot" },
         )
         return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used)
 
@@ -670,10 +676,14 @@ class OpenAIHelper:
             {"role": "assistant", "content": "Summarize this conversation in 700 characters or less"},
             {"role": "user", "content": str(conversation)}
         ]
+        user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+        model_to_use = self.user_models.get(str(user_id), self.config['model'])
+
         response = await self.client.chat.completions.create(
-            model=self.config['model'],
+            model=model_to_use,
             messages=messages,
-            temperature=0.4
+            temperature=0.4,
+            extra_headers={ "X-Title": "tgBot" },
         )
         return response.choices[0].message.content
 
