@@ -388,10 +388,6 @@ class OpenAIHelper:
                             if first_choice.delta and first_choice.delta.tool_calls:
                                 #Additional logging
                                 logger.info("found tool calls")
-                                tcchunklist = first_choice.delta.tool_calls
-                                for tcchunk in tcchunklist:
-                                    # Additional logging to see the entire tool call
-                                    logger.info(f"Tool call chunk: {tcchunk}")
 
                                 if first_choice.delta.tool_calls[0].function.name:
                                     tool_name += first_choice.delta.tool_calls[0].function.name
