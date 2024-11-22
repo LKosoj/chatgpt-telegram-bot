@@ -22,7 +22,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE
+from openai_helper import OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
 from usage_tracker import UsageTracker
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -828,7 +828,8 @@ class ChatGPTTelegramBot:
         try:
             total_tokens = 0
 
-            if self.config['stream'] and self.openai.config['model'] not in (O1_MODELS, ANTHROPIC, GOOGLE):
+            model_to_use = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+            if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
 
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
@@ -945,10 +946,11 @@ class ChatGPTTelegramBot:
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
 
-            add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+            result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+            if not result:
+                await self.reset(update, context)
 
         except Exception as e:
-            logging.info(f'9999  chat_id={chat_id}, query={prompt}')
             logging.exception(e)
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
@@ -1035,7 +1037,8 @@ class ChatGPTTelegramBot:
                     return
 
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                if self.config['stream'] and self.openai.config['model'] not in (O1_MODELS, ANTHROPIC, GOOGLE):
+                model_to_use = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+                if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                     stream_response = self.openai.get_chat_response_stream(chat_id=user_id, query=query)
                     i = 0
                     prev = ''
@@ -1126,7 +1129,9 @@ class ChatGPTTelegramBot:
                     await wrap_with_indicator(update, context, _send_inline_query_response,
                                               constants.ChatAction.TYPING, is_inline=True)
 
-                add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+                result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+                if not result:
+                    await self.reset(update, context)
 
         except Exception as e:
             logging.error(f'Failed to respond to an inline query via button callback: {e}')
