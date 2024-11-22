@@ -297,10 +297,10 @@ def add_chat_request_to_usage_tracker(usage, config, user_id, used_tokens):
         allowed_user_ids = config['allowed_user_ids'].split(',')
         if str(user_id) not in allowed_user_ids and 'guests' in usage:
             usage["guests"].add_chat_tokens(used_tokens, config['token_price'])
+        return True
     except Exception as e:
         logging.warning(f'Failed to add tokens to usage_logs: {str(e)}')
-        pass
-
+        return False
 
 def get_reply_to_message_id(config, update: Update):
     """
