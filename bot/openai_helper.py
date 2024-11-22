@@ -71,6 +71,7 @@ def default_max_tokens(model: str) -> int:
         return 600000
 
 
+@lru_cache(maxsize=128)
 def are_functions_available(model: str) -> bool:
     """
     Whether the given model supports functions
@@ -174,7 +175,6 @@ class OpenAIHelper:
         :param query: The query to send to the model
         :return: The answer from the model and the number of tokens used
         """
-        logging.info('________________________NO_STREAM__________________')
         try:
             plugins_used = ()
             response = await self.__common_get_chat_response(chat_id, query)
@@ -223,7 +223,6 @@ class OpenAIHelper:
         :param query: The query to send to the model
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
-        logging.info('________________________STREAM__________________')
         plugins_used = ()
         try:
             response = await self.__common_get_chat_response(chat_id, query, stream=True)
@@ -265,12 +264,12 @@ class OpenAIHelper:
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
             
-    @retry(
-        reraise=True,
-        retry=retry_if_exception_type(openai.RateLimitError),
-        wait=wait_fixed(20),
-        stop=stop_after_attempt(4)
-    )
+#    @retry(
+#        reraise=True,
+#        retry=retry_if_exception_type(openai.RateLimitError),
+#        wait=wait_fixed(20),
+#        stop=stop_after_attempt(4)
+#    )
     async def __common_get_chat_response(self, chat_id: int, query: str, stream=False):
         """
         Request a response from the GPT model.
@@ -317,7 +316,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if self.config['model'] in (O1_MODELS, ANTHROPIC, GOOGLE, MISTRALAI):
+            if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                 stream = False
             
             if self.config['model'] in O1_MODELS:
@@ -336,6 +335,15 @@ class OpenAIHelper:
             
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs()
+
+                if model_to_use in (GOOGLE):
+                    if isinstance(tools, list):
+                        for tool in tools:
+                            tool['function_declarations'] = tool.pop('function')
+                    elif isinstance(tools, str):
+                        # Handle string case or log an error
+                        logging.error(f"Unexpected tools type for Google model: {type(tools)}")
+
                 if tools:
                     # Ensure each tool has a proper name
                     for tool in tools:
@@ -429,6 +437,9 @@ class OpenAIHelper:
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             model_to_use = self.user_models.get(str(user_id), self.config['model'])
+
+            
+            logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
 
             response = await self.client.chat.completions.create(
                 model=model_to_use,
@@ -715,7 +726,15 @@ class OpenAIHelper:
         """
         Adds a function call to the conversation history
         """
-        self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
+        # For models that don't support function role, add as a user message
+        user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+        model_to_use = self.user_models.get(str(user_id), self.config['model'])        
+        if model_to_use in (ANTHROPIC + MISTRALAI):
+            function_result = f"Function {function_name} returned: {content}"
+            self.conversations[chat_id].append({"role": "user", "content": function_result})
+        else:
+            # For OpenAI-style models, use the function role
+            self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
 
     def __add_to_history(self, chat_id, role, content):
         """
