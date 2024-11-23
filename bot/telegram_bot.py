@@ -724,18 +724,21 @@ class ChatGPTTelegramBot:
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
-        async with self.buffer_lock:  # Используем блокировку для потокобезопасности
+        async with self.buffer_lock:
+            # Инициализируем буфер для чата, если его нет
             if chat_id not in self.message_buffer:
                 self.message_buffer[chat_id] = {
                     'queue': [],
-                    'processing': False
+                    'processing': False,
+                    'last_message_id': None,
+                    'timer': None
                 }
 
-            message_buffer = self.message_buffer[chat_id]
+            buffer_data = self.message_buffer[chat_id]
 
             # Если идет обработка, добавляем сообщение в очередь
-            if message_buffer['processing']:
-                message_buffer['queue'].append({
+            if buffer_data['processing']:
+                buffer_data['queue'].append({
                     'text': prompt,
                     'update': update,
                     'message_id': message_id
@@ -743,24 +746,25 @@ class ChatGPTTelegramBot:
                 return
 
             # Помечаем, что начинаем обработку
-            message_buffer['processing'] = True
+            buffer_data['processing'] = True
+            buffer_data['last_message_id'] = message_id
 
         try:
             await self.process_message(prompt, update, context)
         finally:
             # После завершения обработки проверяем очередь
             async with self.buffer_lock:
-                message_buffer = self.message_buffer[chat_id]
-                message_buffer['processing'] = False
+                buffer_data = self.message_buffer[chat_id]
+                buffer_data['processing'] = False
 
-                # Если есть сообщения в очереди, обрабатываем следующее
-                if message_buffer['queue']:
-                    next_message = message_buffer['queue'].pop(0)
-                    asyncio.create_task(self.process_message(
+                # Обрабатываем все сообщения в очереди
+                while buffer_data['queue']:
+                    next_message = buffer_data['queue'].pop(0)
+                    await self.process_message(
                         next_message['text'], 
                         next_message['update'], 
                         context
-                    ))
+                    )
 
     async def process_buffered_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(self.buffer_timeout)  # Используем async sleep
@@ -1194,6 +1198,9 @@ class ChatGPTTelegramBot:
             buffer_data = self.message_buffer[chat_id]
             if buffer_data.get('timer') is not None:
                 buffer_data['timer'].cancel()
+            
+            # Очищаем оставшиеся сообщения в очереди
+            buffer_data['queue'].clear()
         
         self.message_buffer.clear()
 
