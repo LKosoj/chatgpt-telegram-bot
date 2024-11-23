@@ -48,6 +48,7 @@ Principal difference from forked project:
 - [x] (NEW!) ali-vilab/In-Context-LoRA model for image generation using huggingface
 - [x] (NEW!) youtube video transcription
 - [x] (NEW!) deepl translate using free or payment key
+- [x] (NEW!) web support
 
 
 ## Additional features - help needed!
