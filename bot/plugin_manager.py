@@ -21,6 +21,7 @@ from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
 from plugins.github_analysis import GitHubCodeAnalysisPlugin
 from plugins.stable_diffusion import StableDiffusionPlugin
+from plugins.prompt_perfect import PromptPerfectPlugin
 
 class PluginManager:
     """
@@ -51,6 +52,7 @@ class PluginManager:
             'webshot': WebshotPlugin,
             'iplocation': IpLocationPlugin,
             'github_analysis': GitHubCodeAnalysisPlugin,
+            'prompt_perfect': PromptPerfectPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
