@@ -39,7 +39,7 @@ class PromptPerfectPlugin(Plugin):
             context = kwargs.get('context', '')
 
             # Advanced prompt optimization logic
-            optimized_prompt = await self._optimize_prompt(original_prompt, context)
+            optimized_prompt = await self._optimize_prompt(original_prompt, context, helper)
 
             return {
                 "original_prompt": original_prompt,
@@ -51,11 +51,15 @@ class PromptPerfectPlugin(Plugin):
             return {
                 "error": str(e)
             }
-
-    async def _optimize_prompt(self, original_prompt: str, context: str = '') -> str:
+        
+    async def _optimize_prompt(self, original_prompt: str, context: str = '', helper=None) -> str:
         """
         Core method to optimize prompts using GPT's capabilities
         """
+        if helper is None:
+            logging.error("No helper provided for prompt optimization")
+            return original_prompt
+
         optimization_instruction = (
             "Вы - эксперт по подсказкам. Ваша задача - взять необработанную подсказку пользователя "
             "и превратить ее в высокоточную, ясную и эффективную инструкцию"
