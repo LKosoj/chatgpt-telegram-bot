@@ -267,8 +267,6 @@ class ChatGPTTelegramBot:
         logging.info(f'Change model for request by user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})...')
 
-        chat_id = update.effective_chat.id
-        
         text = ''
 
         user_id = update.message.from_user.id
