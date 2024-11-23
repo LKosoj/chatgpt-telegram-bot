@@ -23,7 +23,6 @@ from plugins.github_analysis import GitHubCodeAnalysisPlugin
 from plugins.stable_diffusion import StableDiffusionPlugin
 from plugins.prompt_perfect import PromptPerfectPlugin
 from plugins.show_me_diagrams import ShowMeDiagramsPlugin
-from plugins.ask_your_pdf.py import AskYourPDFPlugin
 
 class PluginManager:
     """
@@ -56,7 +55,6 @@ class PluginManager:
             'prompt_perfect': PromptPerfectPlugin,
             'stable_diffusion': StableDiffusionPlugin,
             'website_content': WebsiteContentPlugin,
-            'analyze_pdf': AskYourPDFPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
