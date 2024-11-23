@@ -7,3 +7,4 @@ venv
 /.cache
 .vscode/lua.booster.lint.json
 private.txt
+bot/test.py
