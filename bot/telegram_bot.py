@@ -71,6 +71,7 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
+        self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -723,76 +724,63 @@ class ChatGPTTelegramBot:
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
+        async with self.buffer_lock:  # Используем блокировку для потокобезопасности
+            if chat_id not in self.message_buffer:
+                self.message_buffer[chat_id] = {
+                    'queue': [],
+                    'processing': False
+                }
+
+            message_buffer = self.message_buffer[chat_id]
+
+            # Если идет обработка, добавляем сообщение в очередь
+            if message_buffer['processing']:
+                message_buffer['queue'].append({
+                    'text': prompt,
+                    'update': update,
+                    'message_id': message_id
+                })
+                return
+
+            # Помечаем, что начинаем обработку
+            message_buffer['processing'] = True
+
         try:
-            # Проверяем, есть ли уже сообщение в буфере
-            if chat_id in self.message_buffer:
-                # Если разница между message_id меньше 2, считаем, что это части одного сообщения
-                if abs(message_id - self.message_buffer[chat_id]["last_message_id"]) <= 2:
-                    # Добавляем текст к существующему сообщению
-                    self.message_buffer[chat_id]["text"] += prompt
-                    self.message_buffer[chat_id]["last_message_id"] = message_id
-
-                    # Обновляем таймер
-                    if self.message_buffer[chat_id]["timer"]:
-                        self.message_buffer[chat_id]["timer"].cancel()
-
-                    # Создаем новый таймер
-                    self.message_buffer[chat_id]["timer"] = asyncio.create_task(
-                        self.process_buffered_message(chat_id, update, context)
-                    )
-                    return
-                else:
-                    # Если message_id сильно отличается, обрабатываем предыдущее сообщение
-                    if self.message_buffer[chat_id]["timer"]:
-                        self.message_buffer[chat_id]["timer"].cancel()
-                    await self.process_message(
-                        self.message_buffer[chat_id]["text"],
-                        update,
-                        context
-                    )
-
-            # Создаем новую запись в буфере с инициализацией таймера
-            self.message_buffer[chat_id] = {
-                "text": prompt,
-                "last_message_id": message_id,
-                "timer": None,  # Таймер инициализируется как None
-                "processed": False  # Флаг, указывающий, что сообщение ещё не обработано
-            }
-
-            # Устанавливаем таймер для обработки сообщения
-            self.message_buffer[chat_id]["timer"] = asyncio.create_task(
-                self.process_buffered_message(chat_id, update, context)
-            )
-
-        except Exception as e:
-            logging.exception(f"Error handling message buffer: {e}")
-            # В случае ошибки обрабатываем сообщение напрямую
             await self.process_message(prompt, update, context)
+        finally:
+            # После завершения обработки проверяем очередь
+            async with self.buffer_lock:
+                message_buffer = self.message_buffer[chat_id]
+                message_buffer['processing'] = False
+
+                # Если есть сообщения в очереди, обрабатываем следующее
+                if message_buffer['queue']:
+                    next_message = message_buffer['queue'].pop(0)
+                    asyncio.create_task(self.process_message(
+                        next_message['text'], 
+                        next_message['update'], 
+                        context
+                    ))
 
     async def process_buffered_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        def callback():
-            asyncio.create_task(self._process_delayed_message(chat_id, update, context))
+        await asyncio.sleep(self.buffer_timeout)  # Используем async sleep
 
-        # Планируем выполнение через определенное время
-        loop = asyncio.get_event_loop()
-        timer = loop.call_later(self.buffer_timeout, callback)
-
-        # Сохраняем ссылку на таймер
-        self.message_buffer[chat_id]["timer"] = timer
-
-    async def _process_delayed_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            # Проверяем, что сообщение еще не обработано
             if chat_id in self.message_buffer:
+                buffer_data = self.message_buffer[chat_id]
+                
+                # Помечаем, что начинаем обработку
+                buffer_data['processing'] = True
+                
                 await self.process_message(
-                    self.message_buffer[chat_id]["text"],
+                    buffer_data["text"],
                     update,
                     context
                 )
         except Exception as e:
             logging.error(f"Error processing delayed message: {e}")
         finally:
-            # Очищаем буфер
+            # Очищаем буфер после обработки
             if chat_id in self.message_buffer:
                 del self.message_buffer[chat_id]
                 
@@ -1202,9 +1190,11 @@ class ChatGPTTelegramBot:
         """
         Очищает буфер сообщений при завершении работы бота.
         """
-        for chat_id in self.message_buffer:
-            if self.message_buffer[chat_id]["timer"] is not None:
-                self.message_buffer[chat_id]["timer"].cancel()
+        for chat_id in list(self.message_buffer.keys()):
+            buffer_data = self.message_buffer[chat_id]
+            if buffer_data.get('timer') is not None:
+                buffer_data['timer'].cancel()
+        
         self.message_buffer.clear()
 
         # Отменяем все активные задачи
