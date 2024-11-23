@@ -42,6 +42,14 @@ A [Telegram bot](https://core.telegram.org/bots/api) that integrates with OpenAI
 - [x] (NEW!) Vision support [announced on November 6, 2023](https://platform.openai.com/docs/guides/vision) - by [@gilcu3](https://github.com/gilcu3)
 - [x] (NEW!) GPT-4o model support [announced on May 12, 2024](https://openai.com/index/hello-gpt-4o/) - by [@err09r](https://github.com/err09r)
 
+Principal difference from forked project:
+- [x] (NEW!) o-1 model support
+- [x] (NEW!) youtube video transcription
+- [x] (NEW!) ali-vilab/In-Context-LoRA model for image generation using huggingface
+- [x] (NEW!) youtube video transcription
+- [x] (NEW!) deepl translate using free or payment key
+
+
 ## Additional features - help needed!
 If you'd like to help, check out the [issues](https://github.com/n3d1117/chatgpt-telegram-bot/issues) section and contribute!  
 If you want to help with translations, check out the [Translations Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/219)
