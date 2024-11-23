@@ -43,10 +43,10 @@ A [Telegram bot](https://core.telegram.org/bots/api) that integrates with OpenAI
 - [x] (NEW!) GPT-4o model support [announced on May 12, 2024](https://openai.com/index/hello-gpt-4o/) - by [@err09r](https://github.com/err09r)
 
 Principal difference from forked project:
+- [x] (NEW!) Message queue. If a message is large, Telegram will split it into several parts, the bot will process it as one message. If the bot is thinking, all messages are added to the queue and processed sequentially.
 - [x] (NEW!) o-1 model support
 - [x] (NEW!) youtube video transcription
 - [x] (NEW!) ali-vilab/In-Context-LoRA model for image generation using huggingface
-- [x] (NEW!) youtube video transcription
 - [x] (NEW!) deepl translate using free or payment key
 - [x] (NEW!) web support
 
