@@ -49,7 +49,7 @@ class ShowMeDiagramsPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "generate_diagram",
-            "description": "Generate different types of visual diagrams and charts from textual descriptions",
+            "description": "Generate visual diagrams and charts (gantt, flowchart, infographic, mind map, project timeline, process diagram, org chart) from textual descriptions",
             "parameters": {
                 "type": "object",
                 "properties": {

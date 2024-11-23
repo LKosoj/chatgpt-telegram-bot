@@ -1,5 +1,5 @@
 from abc import abstractmethod, ABC
-from typing import Dict
+from typing import Any, Dict, Optional
 
 
 class Plugin(ABC):
@@ -23,8 +23,14 @@ class Plugin(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, function_name, helper, **kwargs) -> Dict:
+    async def execute(self, function_name: str, helper: Any, **kwargs: Optional[Dict[str, Any]]) -> Dict:
         """
-        Execute the plugin and return a JSON serializable response
+        Execute the plugin and return a JSON serializable response.
+        
+        :param function_name: Name of the function to execute
+        :param helper: Helper object to assist with function execution
+        :param kwargs: Optional keyword arguments, can be partial
+        :return: JSON serializable response
         """
         pass
+    

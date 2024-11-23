@@ -23,6 +23,7 @@ from plugins.github_analysis import GitHubCodeAnalysisPlugin
 from plugins.stable_diffusion import StableDiffusionPlugin
 from plugins.prompt_perfect import PromptPerfectPlugin
 from plugins.show_me_diagrams import ShowMeDiagramsPlugin
+from plugins.ask_your_pdf.py import AskYourPDFPlugin
 
 class PluginManager:
     """
@@ -32,10 +33,9 @@ class PluginManager:
     def __init__(self, config):
         enabled_plugins = config.get('plugins', [])
         plugin_mapping = {
-            'stable_diffusion': StableDiffusionPlugin,
+            'show_me_diagrams': ShowMeDiagramsPlugin,
             'reaction': ReactionPlugin,
             'worldtimeapi': WorldTimeApiPlugin,
-            'website_content': WebsiteContentPlugin,
             'youtube_transcript': YoutubeTranscriptPlugin,
             'wolfram': WolframAlphaPlugin,
             'weather': WeatherPlugin,
@@ -54,7 +54,9 @@ class PluginManager:
             'iplocation': IpLocationPlugin,
             'github_analysis': GitHubCodeAnalysisPlugin,
             'prompt_perfect': PromptPerfectPlugin,
-            'show_me_diagrams': ShowMeDiagramsPlugin,
+            'stable_diffusion': StableDiffusionPlugin,
+            'website_content': WebsiteContentPlugin,
+            'analyze_pdf': AskYourPDFPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
