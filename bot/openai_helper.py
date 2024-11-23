@@ -340,6 +340,8 @@ class OpenAIHelper:
                     if isinstance(tools, list):
                         for tool in tools:
                             tool['function_declarations'] = tool.pop('function')
+                            tool['name'] = tool['function_declarations'].get('name')
+                            tool['type'] = 'function'
                     elif isinstance(tools, str):
                         # Handle string case or log an error
                         logging.error(f"Unexpected tools type for Google model: {type(tools)}")
