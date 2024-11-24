@@ -19,7 +19,7 @@ class RemindersPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "set_reminder",
-            "description": "Установить напоминание на определенное время",
+            "description": f'Установить напоминание на определенное время, сейчас {datetime.now().strftime("%Y%m%d%H%M%S")}',
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -30,10 +30,6 @@ class RemindersPlugin(Plugin):
                     "message": {
                         "type": "string",
                         "description": "Текст напоминания"
-                    },
-                    "current_time": {
-                        "type": "string",
-                        "description": f'{datetime.now().strftime("%Y%m%d%H%M%S")}'
                     },
                     "integration": {
                         "type": "string", 
@@ -119,7 +115,7 @@ class RemindersPlugin(Plugin):
         """
         if function_name == "set_reminder":
             user_id = str(helper.user_id)
-            reminder_id = datetime.now().strftime("%Y%m%d%H%M%S")
+            reminder_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{user_id}'
             # Convert datetime to ISO format string
             reminder_time = datetime.strptime(kwargs["time"], "%Y-%m-%d %H:%M")
             

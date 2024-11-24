@@ -760,6 +760,7 @@ class ChatGPTTelegramBot:
             buffer_data['last_message_id'] = message_id
 
         try:
+            self.openai.message_id = message_id
             await self.process_message(prompt, update, context)
         finally:
             # После завершения обработки проверяем очередь
@@ -770,6 +771,7 @@ class ChatGPTTelegramBot:
                 # Обрабатываем все сообщения в очереди
                 while buffer_data['queue']:
                     next_message = buffer_data['queue'].pop(0)
+                    self.openai.message_id = next_message["message_id"]
                     await self.process_message(
                         next_message['text'], 
                         next_message['update'], 
@@ -786,6 +788,7 @@ class ChatGPTTelegramBot:
                 # Помечаем, что начинаем обработку
                 buffer_data['processing'] = True
                 
+                self.openai.message_id = buffer_data["message_id"]
                 await self.process_message(
                     buffer_data["text"],
                     update,
