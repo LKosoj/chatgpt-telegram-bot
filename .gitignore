@@ -8,3 +8,4 @@ venv
 .vscode/lua.booster.lint.json
 private.txt
 bot/test.py
+bot/file.json
