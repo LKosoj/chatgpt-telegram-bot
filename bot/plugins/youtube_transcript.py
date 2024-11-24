@@ -18,7 +18,7 @@ class YoutubeTranscriptPlugin(Plugin):
         return [
             {
                 'name': 'youtube_video_transcript',
-                'description': 'Get the transcript of a YouTube video for a given YouTube video ID',
+                'description': 'Get the transcript of a YouTube video for a given YouTube address',
                 'parameters': {
                     'type': 'object',
                     'properties': {
