@@ -1,4 +1,5 @@
 import json
+import logging
 
 from plugins.reaction import ReactionPlugin
 from plugins.website_content import WebsiteContentPlugin
@@ -62,7 +63,16 @@ class PluginManager:
         """
         Return the list of function specs that can be called by the model
         """
-        return [{"type": "function", "function": spec} for specs in map(lambda plugin: plugin.get_spec(), self.plugins) for spec in specs]
+        seen_functions = set()
+        all_specs = []
+        for plugin in self.plugins:
+            specs = plugin.get_spec()
+            #logging.info(f"Plugin {plugin.__class__.__name__} specs: {specs}")
+            for spec in specs:
+                if spec and spec.get('name') not in seen_functions:
+                    seen_functions.add(spec.get('name'))
+                    all_specs.append(spec)
+        return [{"type": "function", "function": spec} for spec in all_specs]
 
     async def call_function(self, function_name, helper, arguments):
         """
