@@ -714,7 +714,7 @@ class OpenAIHelper:
         # For models that don't support function role, add as a user message
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
         model_to_use = self.user_models.get(str(user_id), self.config['model'])        
-        if model_to_use in (ANTHROPIC + MISTRALAI):
+        if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
             self.conversations[chat_id].append({"role": "user", "content": function_result})
         else:
