@@ -41,16 +41,24 @@ class PromptPerfectPlugin(Plugin):
             # Advanced prompt optimization logic
             optimized_prompt = await self._optimize_prompt(original_prompt, context, helper)
 
-            # Получаем ответ модели на оптимизированный промпт
+            # Логируем оригинальный и оптимизированный промпты
+            #logging.info(f"Original Prompt: {original_prompt}")
+            #logging.info(f"Optimized Prompt: {optimized_prompt}")
+
+            # Получаем ответ на оптимизированный промпт
             response, tokens = await helper.get_chat_response(
                 chat_id=hash(original_prompt),  # Используем хеш оригинального промпта как уникальный chat_id
                 query=optimized_prompt
             )
 
             return {
-                "original_prompt": original_prompt,
-                "optimized_prompt": optimized_prompt,
                 "model_response": response
+            }
+
+        except Exception as e:
+            logging.error(f"Error in Prompt Perfect plugin: {e}")
+            return {
+                "error": str(e)
             }
 
         except Exception as e:
