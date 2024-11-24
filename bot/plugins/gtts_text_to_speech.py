@@ -27,12 +27,12 @@ class GTTSTextToSpeech(Plugin):
                                                          "Infer this from the language of the text.",
                     },
                 },
-                "required": ["text", "lang"],
+                "required": ["text","lang"],
             },
         }]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        tts = gTTS(kwargs['text'], lang=kwargs.get('lang', 'en'))
+        tts = gTTS(kwargs['text'], lang=kwargs.get('lang', 'ru'))
         output = f'gtts_{datetime.datetime.now().timestamp()}.mp3'
         tts.save(output)
         return {
