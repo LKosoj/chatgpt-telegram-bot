@@ -336,24 +336,11 @@ class OpenAIHelper:
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs()
 
-                if model_to_use in (GOOGLE):
-                    if isinstance(tools, list):
-                        for tool in tools:
-                            tool['function_declarations'] = tool.pop('function')
-                            tool['name'] = tool['function_declarations'].get('name')
-                            tool['type'] = 'function'
-                    elif isinstance(tools, str):
-                        # Handle string case or log an error
-                        logging.error(f"Unexpected tools type for Google model: {type(tools)}")
-
                 if tools:
-                    # Ensure each tool has a proper name
-                    for tool in tools:
-                        if 'name' not in tool:
-                            tool['name'] = tool.get('function', {}).get('name')
-                    
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
+
+            logging.info(f"{common_args}")
             response = await self.client.chat.completions.create(**common_args)
             
             if stream:
