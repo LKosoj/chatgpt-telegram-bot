@@ -1223,11 +1223,27 @@ class ChatGPTTelegramBot:
             except asyncio.CancelledError:
                 pass
 
+    async def start_reminder_checker(self, plugin_manager):
+        reminders_plugin = plugin_manager.get_plugin('reminders')
+        if reminders_plugin:
+            # Continuously check reminders
+            while True:
+                try:
+                    await reminders_plugin.check_reminders(self.application.bot)
+                except Exception as e:
+                    logging.error(f"Error in reminder checker: {e}")
+                
+                # Sleep for a minute between checks to avoid excessive processing
+                await asyncio.sleep(60)
+
     def run(self):
         """
         Runs the bot indefinitely until the user presses Ctrl+C.
         """
         try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
             application = ApplicationBuilder() \
                 .token(self.config['token']) \
                 .proxy_url(self.config['proxy']) \
@@ -1236,6 +1252,8 @@ class ChatGPTTelegramBot:
                 .concurrent_updates(True) \
                 .build()
 
+            self.application = application
+            loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
             application.add_handler(CommandHandler('reset', self.reset))
             application.add_handler(CommandHandler('help', self.help))
             application.add_handler(CommandHandler('image', self.image))

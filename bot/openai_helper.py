@@ -140,6 +140,8 @@ class OpenAIHelper:
         os.makedirs(os.path.dirname(self.user_models_file), exist_ok=True)            
         # Загрузка сохраненных моделей пользователей
         self.user_models = self.load_user_models()
+        self.user_id = ''
+        self.message_id = ''
 
     def load_user_models(self):
         try:
@@ -406,6 +408,9 @@ class OpenAIHelper:
                 else:
                     return response, tools_used
             logging.info(f'Calling tool {tool_name} with arguments {arguments}')
+            
+            self.user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+            self.message_id = None
             tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
             logging.info(f'Function {tool_name} response: {tool_response}')
 

@@ -24,6 +24,7 @@ from plugins.github_analysis import GitHubCodeAnalysisPlugin
 from plugins.stable_diffusion import StableDiffusionPlugin
 from plugins.prompt_perfect import PromptPerfectPlugin
 from plugins.show_me_diagrams import ShowMeDiagramsPlugin
+from plugins.reminders import RemindersPlugin
 
 class PluginManager:
     """
@@ -56,6 +57,7 @@ class PluginManager:
             'prompt_perfect': PromptPerfectPlugin,
             'stable_diffusion': StableDiffusionPlugin,
             'website_content': WebsiteContentPlugin,
+            'reminders': RemindersPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
@@ -81,6 +83,7 @@ class PluginManager:
         plugin = self.__get_plugin_by_function_name(function_name)
         if not plugin:
             return json.dumps({'error': f'Function {function_name} not found'})
+
         return json.dumps(await plugin.execute(function_name, helper, **json.loads(arguments)), default=str)
 
     def get_plugin_source_name(self, function_name) -> str:
@@ -95,3 +98,15 @@ class PluginManager:
     def __get_plugin_by_function_name(self, function_name):
         return next((plugin for plugin in self.plugins
                     if function_name in map(lambda spec: spec.get('name'), plugin.get_spec())), None)
+
+    def get_plugin(self, plugin_name):
+        """
+        Returns the plugin with the given source name
+        
+        :param plugin_name: The source name of the plugin
+        :return: The plugin instance or None if not found
+        """
+        for plugin in self.plugins:
+            if plugin.get_source_name().lower() == plugin_name.lower():
+                return plugin
+        return None
