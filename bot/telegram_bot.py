@@ -784,16 +784,13 @@ class ChatGPTTelegramBot:
                     return
                     
                 buffer_data['processing'] = True
-
-                # No messages to process
-                if not buffer_data['messages']:
-                    return
-
-                # Get all messages currently in the buffer
                 messages = buffer_data['messages']
                 buffer_data['messages'] = []
 
-            # Group messages by user_id
+            if not messages:
+                return
+
+            # Group messages by user_id and process them
             user_messages = {}
             for msg in messages:
                 user_id = msg['update'].message.from_user.id
@@ -801,72 +798,53 @@ class ChatGPTTelegramBot:
                     user_messages[user_id] = []
                 user_messages[user_id].append(msg)
 
-            # Process messages for each user
-            for user_id, user_msg_list in user_messages.items():
+            for user_msg_list in user_messages.values():
                 if not user_msg_list:
                     continue
 
-                # Sort messages by timestamp
+                # Sort and combine messages within timeout period
                 user_msg_list.sort(key=lambda x: x['message_timestamp'])
-                
-                # Combine messages that are within timeout period
                 combined_messages = []
                 current_group = [user_msg_list[0]]
                 
-                for i in range(1, len(user_msg_list)):
-                    current_msg = user_msg_list[i]
-                    prev_msg = current_group[-1]
-                    
-                    # If messages are within timeout period, combine them
-                    if current_msg['message_timestamp'] - prev_msg['message_timestamp'] <= self.buffer_timeout:
-                        current_group.append(current_msg)
+                for msg in user_msg_list[1:]:
+                    if msg['message_timestamp'] - current_group[-1]['message_timestamp'] <= self.buffer_timeout:
+                        current_group.append(msg)
                     else:
-                        # Process the current group and start a new one
                         combined_messages.append(current_group)
-                        current_group = [current_msg]
+                        current_group = [msg]
                 
-                # Add the last group
                 if current_group:
                     combined_messages.append(current_group)
 
-                # Process each group of combined messages
+                # Process each group
                 for msg_group in combined_messages:
-                    # Combine text from all messages in the group
                     combined_text = " ".join(msg['text'] for msg in msg_group)
-                    
-                    # Use the first message's metadata for processing
                     first_msg = msg_group[0]
                     
                     try:
-                        # Set message_id for openai helper
                         self.openai.message_id = first_msg['message_id']
                         self.last_message[chat_id] = combined_text
-                        
-                        # Process the combined message
-                        await self.process_message(
-                            combined_text,
-                            first_msg['update'],
-                            first_msg['context']
-                        )
+                        await self.process_message(combined_text, first_msg['update'], first_msg['context'])
                     except Exception as e:
                         logging.error(f"Error processing message: {e}")
+                        continue
 
-                    # Small pause between processing different groups
                     await asyncio.sleep(0.1)
 
+        except Exception as e:
+            logging.error(f"Error in process_buffer: {e}")
         finally:
-            # Reset processing flag
+            # Reset processing flag and handle new messages
             async with self.buffer_lock:
                 if chat_id in self.message_buffer:
-                    self.message_buffer[chat_id]['processing'] = False
-                    # If new messages appeared during processing,
-                    # start a new processing cycle
-                    if self.message_buffer[chat_id]['messages']:
-                        if self.message_buffer[chat_id]['timer'] is not None:
-                            self.message_buffer[chat_id]['timer'].cancel()
-                        self.message_buffer[chat_id]['timer'] = asyncio.create_task(
-                            self.process_buffer(chat_id)
-                        )
+                    buffer_data = self.message_buffer[chat_id]
+                    buffer_data['processing'] = False
+                    
+                    if buffer_data['messages']:
+                        if buffer_data.get('timer'):
+                            buffer_data['timer'].cancel()
+                        buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
 
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
