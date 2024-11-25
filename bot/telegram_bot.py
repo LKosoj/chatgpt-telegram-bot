@@ -17,6 +17,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
 
 from pydub import AudioSegment
 from PIL import Image
+from collections import defaultdict
 
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
@@ -39,10 +40,6 @@ class ChatGPTTelegramBot:
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
-        # Добавляем словарь для буферизации сообщений
-        self.message_buffer = {}
-        # Добавляем время ожидания для буфера (в секундах)
-        self.buffer_timeout = 1.0
 
         self.config = config
         self.openai = openai
@@ -71,7 +68,16 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
-        self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
+        self.message_buffers = defaultdict(lambda: {
+            'messages': [],
+            'processing': False,
+            'timer': None
+        })
+        self.buffer_timeout = 1.0
+        self.max_concurrent_requests = 5  # Maximum number of concurrent requests
+        self.request_semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        self.buffer_locks = defaultdict(asyncio.Lock)  # Per-user buffer locks
+        self.active_requests = 0  # Track number of active requests
         self.application = None
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -724,6 +730,7 @@ class ChatGPTTelegramBot:
     async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         React to incoming messages and respond accordingly.
+        Now handles multiple users in parallel.
         """
         if update.edited_message or not update.message or update.message.via_bot:
             return
@@ -732,21 +739,16 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
+        user_id = update.message.from_user.id
+        buffer_key = f"{chat_id}_{user_id}"  # Unique key per user per chat
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
-        async with self.buffer_lock:
-            # Инициализируем буфер для чата, если его нет
-            if chat_id not in self.message_buffer:
-                self.message_buffer[chat_id] = {
-                    'messages': [],  # Очередь сообщений
-                    'processing': False,  # Флаг обработки
-                    'timer': None  # Таймер для обработки буфера
-                }
-
-            buffer_data = self.message_buffer[chat_id]
+        async with self.buffer_locks[buffer_key]:
+            # Initialize or get user's message buffer
+            buffer_data = self.message_buffers[buffer_key]
             
-            # Добавляем сообщение в буфер
+            # Add message to user's buffer
             buffer_data['messages'].append({
                 'text': prompt,
                 'update': update,
@@ -755,31 +757,28 @@ class ChatGPTTelegramBot:
                 'message_timestamp': update.message.date.timestamp()
             })
 
-            # Если уже идет обработка, просто выходим
+            # If already processing this user's messages, just return
             if buffer_data['processing']:
                 return
 
-            # Запускаем обработку буфера
+            # Cancel existing timer if any
             if buffer_data['timer'] is not None:
                 buffer_data['timer'].cancel()
             
+            # Start new timer for this user's buffer
             buffer_data['timer'] = asyncio.create_task(
-                self.process_buffer(chat_id)
+                self.process_user_buffer(buffer_key)
             )
 
-    async def process_buffer(self, chat_id: int):
+    async def process_user_buffer(self, buffer_key: str):
         """
-        Process all messages in the buffer sequentially, combining messages from the same user
-        within the buffer timeout period
+        Process messages from a specific user's buffer.
         """
         try:
             await asyncio.sleep(self.buffer_timeout)
 
-            async with self.buffer_lock:
-                if chat_id not in self.message_buffer:
-                    return
-                    
-                buffer_data = self.message_buffer[chat_id]
+            async with self.buffer_locks[buffer_key]:
+                buffer_data = self.message_buffers[buffer_key]
                 if buffer_data['processing']:
                     return
                     
@@ -790,24 +789,14 @@ class ChatGPTTelegramBot:
             if not messages:
                 return
 
-            # Group messages by user_id and process them
-            user_messages = {}
-            for msg in messages:
-                user_id = msg['update'].message.from_user.id
-                if user_id not in user_messages:
-                    user_messages[user_id] = []
-                user_messages[user_id].append(msg)
-
-            for user_msg_list in user_messages.values():
-                if not user_msg_list:
-                    continue
-
-                # Sort and combine messages within timeout period
-                user_msg_list.sort(key=lambda x: x['message_timestamp'])
+            # Acquire semaphore for concurrent request limiting
+            async with self.request_semaphore:
+                # Sort messages by timestamp and combine those within timeout period
+                messages.sort(key=lambda x: x['message_timestamp'])
                 combined_messages = []
-                current_group = [user_msg_list[0]]
+                current_group = [messages[0]]
                 
-                for msg in user_msg_list[1:]:
+                for msg in messages[1:]:
                     if msg['message_timestamp'] - current_group[-1]['message_timestamp'] <= self.buffer_timeout:
                         current_group.append(msg)
                     else:
@@ -817,7 +806,7 @@ class ChatGPTTelegramBot:
                 if current_group:
                     combined_messages.append(current_group)
 
-                # Process each group
+                # Process each group of messages
                 for msg_group in combined_messages:
                     combined_text = " ".join(msg['text'] for msg in msg_group)
                     first_msg = msg_group[0]
@@ -831,18 +820,19 @@ class ChatGPTTelegramBot:
                     await asyncio.sleep(0.1)
 
         except Exception as e:
-            logging.error(f"Error in process_buffer: {e}")
+            logging.error(f"Error in process_user_buffer: {e}")
         finally:
-            # Reset processing flag and handle new messages
-            async with self.buffer_lock:
-                if chat_id in self.message_buffer:
-                    buffer_data = self.message_buffer[chat_id]
-                    buffer_data['processing'] = False
-                    
-                    if buffer_data['messages']:
-                        if buffer_data.get('timer'):
-                            buffer_data['timer'].cancel()
-                        buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
+            # Reset processing flag and handle any new messages
+            async with self.buffer_locks[buffer_key]:
+                buffer_data = self.message_buffers[buffer_key]
+                buffer_data['processing'] = False
+                
+                if buffer_data['messages']:
+                    if buffer_data.get('timer'):
+                        buffer_data['timer'].cancel()
+                    buffer_data['timer'] = asyncio.create_task(
+                        self.process_user_buffer(buffer_key)
+                    )
 
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1271,34 +1261,27 @@ class ChatGPTTelegramBot:
         
     async def cleanup(self):
         """
-        Add more comprehensive cleanup:
-        - Cancel all timers
-        - Clear message buffers
-        - Close any open connections/resources
+        Enhanced cleanup to handle per-user buffers and semaphores
         """
         try:
-            async with self.buffer_lock:
-                for chat_id, buffer_data in self.message_buffer.items():
-                    if buffer_data.get('timer'):
-                        try:
-                            buffer_data['timer'].cancel()
-                            await buffer_data['timer']
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as e:
-                            logging.error(f"Error cancelling timer for chat {chat_id}: {e}")
-                    buffer_data['messages'] = []
-                self.message_buffer.clear()
+            # Cancel all buffer timers
+            for buffer_key, buffer_data in self.message_buffers.items():
+                if buffer_data.get('timer'):
+                    try:
+                        buffer_data['timer'].cancel()
+                        await buffer_data['timer']
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        logging.error(f"Error cancelling timer for buffer {buffer_key}: {e}")
+                buffer_data['messages'] = []
+            
+            self.message_buffers.clear()
+            self.buffer_locks.clear()
 
-            # Cancel all running tasks except current
-            tasks = [t for t in asyncio.all_tasks() 
-                    if t is not asyncio.current_task()]
-            for task in tasks:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            # Call parent cleanup
+            await super().cleanup()
+            
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
 
