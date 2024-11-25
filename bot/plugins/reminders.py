@@ -19,7 +19,7 @@ class RemindersPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "set_reminder",
-            "description": f'Установить напоминание на определенное время, сейчас {datetime.now().strftime("%Y%m%d%H%M%S")}',
+            "description": f'Установить напоминание на определенное время, используя текущее время для начала отсчета: {datetime.now().strftime("%Y-%m-%d %H:%M")}',
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -31,13 +31,17 @@ class RemindersPlugin(Plugin):
                         "type": "string",
                         "description": "Текст напоминания"
                     },
+                    "current_time": {
+                        "type": "string",
+                        "description": f'Текущее время {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+                    },
                     "integration": {
                         "type": "string", 
                         "description": "Интеграция для отправки (telegram)",
                         "enum": ["telegram",]
                     }
                 },
-                "required": ["time", "message", "integration"]
+                "required": ["time", "message", "integration","current_time"]
             }
         },
         {
