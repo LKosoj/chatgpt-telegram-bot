@@ -324,16 +324,22 @@ class OpenAIHelper:
 
             if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                 stream = False
-            
-            if self.config['model'] in O1_MODELS:
-                common_args['max_completion_tokens'] = self.config['max_tokens'] # o1 series only supports max_completion_tokens
+
+            max_tokens =  self.config['max_tokens']
+            if model_to_use in O1_MODELS:
+                if self.config['max_tokens'] > 32000:
+                    max_tokens = 32000
+                common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
+                common_args['max_completion_tokens'] = max_tokens # o1 series only supports max_completion_tokens
+                common_args['max_tokens'] = max_tokens
+         
                 # 'temperature', 'top_p', 'n', 'presence_penalty', 'frequency_penalty' are currently fixed and cannot be changed
             else:
                 # Parameters for other models
                 common_args.update({
                     'temperature': self.config['temperature'],
                     'n': self.config['n_choices'],
-                    'max_tokens': self.config['max_tokens'],
+                    'max_tokens': max_tokens,
                     'presence_penalty': self.config['presence_penalty'],
                     'frequency_penalty': self.config['frequency_penalty'],
                     'stream': stream,
@@ -342,8 +348,7 @@ class OpenAIHelper:
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use)
 
-                if tools:
-
+                if tools and model_to_use not in O1_MODELS:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
@@ -695,11 +700,7 @@ class OpenAIHelper:
         if content == '':
             content = self.config['assistant_prompt']
 
-        if self.config['model'] not in O1_MODELS:
-            # If not using 'o1' models, add a system message
-            self.conversations[chat_id] = [{"role": "system", "content": content}]
-        else:
-            self.conversations[chat_id] = []
+        self.conversations[chat_id] = [{"role": "system", "content": content}]
 
         self.conversations_vision[chat_id] = False
 
