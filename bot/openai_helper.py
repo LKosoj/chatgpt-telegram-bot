@@ -170,7 +170,7 @@ class OpenAIHelper:
             self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
-    async def get_chat_response(self, chat_id: int, query: str) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None) -> tuple[str, str]:
         """
         Gets a full response from the GPT model.
         :param chat_id: The chat ID
@@ -179,6 +179,8 @@ class OpenAIHelper:
         """
         try:
             plugins_used = ()
+            if request_id and hasattr(self, 'message_ids'):
+                self.message_id = self.message_ids.get(request_id)
             response = await self.__common_get_chat_response(chat_id, query)
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 response, plugins_used = await self.__handle_function_call(chat_id, response)
@@ -218,7 +220,7 @@ class OpenAIHelper:
             logging.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
             raise
 
-    async def get_chat_response_stream(self, chat_id: int, query: str):
+    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None):
         """
         Stream response from the GPT model.
         :param chat_id: The chat ID
@@ -227,6 +229,8 @@ class OpenAIHelper:
         """
         plugins_used = ()
         try:
+            if request_id and hasattr(self, 'message_ids'):
+                self.message_id = self.message_ids.get(request_id)
             response = await self.__common_get_chat_response(chat_id, query, stream=True)
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
