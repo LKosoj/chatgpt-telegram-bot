@@ -26,6 +26,8 @@ from plugins.prompt_perfect import PromptPerfectPlugin
 from plugins.show_me_diagrams import ShowMeDiagramsPlugin
 from plugins.reminders import RemindersPlugin
 
+GOOGLE = ("google/gemini-flash-1.5-8b",)
+
 class PluginManager:
     """
     A class to manage the plugins and call the correct functions
@@ -61,7 +63,7 @@ class PluginManager:
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
-    def get_functions_specs(self):
+    def get_functions_specs(self, helper, model_to_use):
         """
         Return the list of function specs that can be called by the model
         """
@@ -74,6 +76,9 @@ class PluginManager:
                 if spec and spec.get('name') not in seen_functions:
                     seen_functions.add(spec.get('name'))
                     all_specs.append(spec)
+
+        if model_to_use in (GOOGLE):
+            return {"function_declarations": all_specs}
         return [{"type": "function", "function": spec} for spec in all_specs]
 
     async def call_function(self, function_name, helper, arguments):
