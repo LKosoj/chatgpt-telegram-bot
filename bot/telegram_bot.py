@@ -853,15 +853,6 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
         self.last_message[chat_id] = prompt
-
-        analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
-        if analytics_plugin:
-            message_data = {
-                'text': prompt,
-                'tokens': total_tokens,
-                'user_id': user_id
-            }
-            analytics_plugin.update_stats(str(chat_id), message_data)
             
         logging.info(
             f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
@@ -1004,6 +995,15 @@ class ChatGPTTelegramBot:
                                 raise exception
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
+
+            analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
+            if analytics_plugin:
+                message_data = {
+                    'text': prompt,
+                    'tokens': total_tokens,
+                    'user_id': user_id
+                }
+                analytics_plugin.update_stats(str(chat_id), message_data)
 
             result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
             if not result:
