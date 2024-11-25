@@ -336,9 +336,10 @@ class OpenAIHelper:
                 })
             
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                tools = self.plugin_manager.get_functions_specs()
+                tools = self.plugin_manager.get_functions_specs(self, model_to_use)
 
                 if tools:
+
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
@@ -433,7 +434,7 @@ class OpenAIHelper:
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=self.conversations[chat_id],
-                tools=self.plugin_manager.get_functions_specs(),
+                tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
@@ -572,9 +573,9 @@ class OpenAIHelper:
             # vision model does not yet support functions
 
             # if self.config['enable_functions']:
-            #     functions = self.plugin_manager.get_functions_specs()
+            #     functions = self.plugin_manager.get_functions_specs(self, model_to_use)
             #     if len(functions) > 0:
-            #         common_args['functions'] = self.plugin_manager.get_functions_specs()
+            #         common_args['functions'] = self.plugin_manager.get_functions_specs(self, model_to_use)
             #         common_args['function_call'] = 'auto'
             
             return await self.client.chat.completions.create(**common_args)
