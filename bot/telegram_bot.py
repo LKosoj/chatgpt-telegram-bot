@@ -823,8 +823,6 @@ class ChatGPTTelegramBot:
                     first_msg = msg_group[0]
                     
                     try:
-                        self.openai.message_id = first_msg['message_id']
-                        self.last_message[chat_id] = combined_text
                         await self.process_message(combined_text, first_msg['update'], first_msg['context'])
                     except Exception as e:
                         logging.error(f"Error processing message: {e}")
@@ -852,7 +850,10 @@ class ChatGPTTelegramBot:
         """
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
+        message_id = update.message.message_id  # Get message ID
         self.last_message[chat_id] = prompt
+        # Create a unique identifier for this chat request
+        request_id = f"{chat_id}_{message_id}"
             
         logging.info(
             f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
@@ -886,7 +887,11 @@ class ChatGPTTelegramBot:
                     message_thread_id=get_thread_id(update)
                 )
 
-                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt)
+                # Store message_id in openai object for this request
+                self.openai.message_ids = getattr(self.openai, 'message_ids', {})
+                self.openai.message_ids[request_id] = message_id
+
+                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt, request_id=request_id)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -966,7 +971,11 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
-                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt)
+                    # Store message_id in openai object for this request
+                    self.openai.message_ids = getattr(self.openai, 'message_ids', {})
+                    self.openai.message_ids[request_id] = message_id
+
+                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id)
 
                     if is_direct_result(response):
                         return await handle_direct_result(self.config, update, response)
@@ -995,6 +1004,10 @@ class ChatGPTTelegramBot:
                                 raise exception
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
+            # Cleanup the stored message_id after processing is complete
+            if hasattr(self.openai, 'message_ids'):
+                request_id = f"{chat_id}_{message_id}"
+                self.openai.message_ids.pop(request_id, None)
 
             analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
             if analytics_plugin:
