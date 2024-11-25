@@ -73,10 +73,10 @@ class ConversationAnalyticsPlugin(Plugin):
     def load_stats(self) -> Dict:
         """Load analytics data from file"""
         def create_default_stats():
-            # Initialize stats with all hours set to 0
+            # Initialize stats with all hours set to 0 and token_usage as defaultdict
             return {
                 'messages': [],
-                'token_usage': defaultdict(int),
+                'token_usage': defaultdict(int),  # Changed from regular dict to defaultdict
                 'topics': defaultdict(int),
                 'sentiment_scores': [],
                 'active_hours': {str(hour): 0 for hour in range(24)}  # Initialize all 24 hours
@@ -86,8 +86,17 @@ class ConversationAnalyticsPlugin(Plugin):
             try:
                 with open(self.analytics_file, 'r', encoding='utf-8') as f:
                     stats = json.load(f)
-                    # Convert to defaultdict and ensure all hours exist
+                    # Convert to defaultdict and ensure all required structures exist
                     for chat_id in stats:
+                        # Convert token_usage to defaultdict
+                        stats[chat_id]['token_usage'] = defaultdict(
+                            int, stats[chat_id].get('token_usage', {})
+                        )
+                        # Ensure topics is a defaultdict
+                        stats[chat_id]['topics'] = defaultdict(
+                            int, stats[chat_id].get('topics', {})
+                        )
+                        # Ensure active_hours exists with all hours
                         if 'active_hours' not in stats[chat_id]:
                             stats[chat_id]['active_hours'] = {str(hour): 0 for hour in range(24)}
                         else:
@@ -95,6 +104,11 @@ class ConversationAnalyticsPlugin(Plugin):
                             for hour in range(24):
                                 if str(hour) not in stats[chat_id]['active_hours']:
                                     stats[chat_id]['active_hours'][str(hour)] = 0
+                        # Ensure other required fields exist
+                        if 'messages' not in stats[chat_id]:
+                            stats[chat_id]['messages'] = []
+                        if 'sentiment_scores' not in stats[chat_id]:
+                            stats[chat_id]['sentiment_scores'] = []
                     return stats
             except Exception as e:
                 logging.error(f"Failed to load conversation stats: {e}")
