@@ -72,6 +72,7 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
+        self.application = None
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -768,7 +769,8 @@ class ChatGPTTelegramBot:
 
     async def process_buffer(self, chat_id: int):
         """
-        Process all messages in the buffer sequentially
+        Process all messages in the buffer sequentially, combining messages from the same user
+        within the buffer timeout period
         """
         try:
             await asyncio.sleep(self.buffer_timeout)
@@ -783,45 +785,89 @@ class ChatGPTTelegramBot:
                     
                 buffer_data['processing'] = True
 
-            while True:
-                # Получаем следующее сообщение из буфера
-                next_message = None
-                async with self.buffer_lock:
-                    if chat_id in self.message_buffer and self.message_buffer[chat_id]['messages']:
-                        next_message = self.message_buffer[chat_id]['messages'].pop(0)
+                # No messages to process
+                if not buffer_data['messages']:
+                    return
+
+                # Get all messages currently in the buffer
+                messages = buffer_data['messages']
+                buffer_data['messages'] = []
+
+            # Group messages by user_id
+            user_messages = {}
+            for msg in messages:
+                user_id = msg['update'].message.from_user.id
+                if user_id not in user_messages:
+                    user_messages[user_id] = []
+                user_messages[user_id].append(msg)
+
+            # Process messages for each user
+            for user_id, user_msg_list in user_messages.items():
+                if not user_msg_list:
+                    continue
+
+                # Sort messages by timestamp
+                user_msg_list.sort(key=lambda x: x['message_timestamp'])
+                
+                # Combine messages that are within timeout period
+                combined_messages = []
+                current_group = [user_msg_list[0]]
+                
+                for i in range(1, len(user_msg_list)):
+                    current_msg = user_msg_list[i]
+                    prev_msg = current_group[-1]
                     
-                if next_message is None:
-                    break
+                    # If messages are within timeout period, combine them
+                    if current_msg['message_timestamp'] - prev_msg['message_timestamp'] <= self.buffer_timeout:
+                        current_group.append(current_msg)
+                    else:
+                        # Process the current group and start a new one
+                        combined_messages.append(current_group)
+                        current_group = [current_msg]
+                
+                # Add the last group
+                if current_group:
+                    combined_messages.append(current_group)
 
-                try:
-                    # Обрабатываем сообщение
-                    self.openai.message_id = next_message['message_id']
-                    self.last_message[chat_id] = next_message['text']
-                    await self.process_message(
-                        next_message['text'],
-                        next_message['update'],
-                        next_message['context']
-                    )
-                except Exception as e:
-                    logging.error(f"Error processing message: {e}")
+                # Process each group of combined messages
+                for msg_group in combined_messages:
+                    # Combine text from all messages in the group
+                    combined_text = " ".join(msg['text'] for msg in msg_group)
+                    
+                    # Use the first message's metadata for processing
+                    first_msg = msg_group[0]
+                    
+                    try:
+                        # Set message_id for openai helper
+                        self.openai.message_id = first_msg['message_id']
+                        self.last_message[chat_id] = combined_text
+                        
+                        # Process the combined message
+                        await self.process_message(
+                            combined_text,
+                            first_msg['update'],
+                            first_msg['context']
+                        )
+                    except Exception as e:
+                        logging.error(f"Error processing message: {e}")
 
-                # Небольшая пауза между обработкой сообщений
-                await asyncio.sleep(0.1)
+                    # Small pause between processing different groups
+                    await asyncio.sleep(0.1)
 
         finally:
-            # Сбрасываем флаг обработки
+            # Reset processing flag
             async with self.buffer_lock:
                 if chat_id in self.message_buffer:
                     self.message_buffer[chat_id]['processing'] = False
-                    # Если появились новые сообщения во время обработки,
-                    # запускаем новый цикл обработки
+                    # If new messages appeared during processing,
+                    # start a new processing cycle
                     if self.message_buffer[chat_id]['messages']:
                         if self.message_buffer[chat_id]['timer'] is not None:
                             self.message_buffer[chat_id]['timer'].cancel()
                         self.message_buffer[chat_id]['timer'] = asyncio.create_task(
                             self.process_buffer(chat_id)
                         )
-                
+
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Обрабатывает полное сообщение
@@ -1226,26 +1272,27 @@ class ChatGPTTelegramBot:
         
     async def cleanup(self):
         """
-        Очищает буфер сообщений при завершении работы бота.
+        Cleanup resources when bot is shutting down
         """
-        for chat_id in list(self.message_buffer.keys()):
-            buffer_data = self.message_buffer[chat_id]
-            if buffer_data.get('timer') is not None:
-                buffer_data['timer'].cancel()
-            
-            # Очищаем оставшиеся сообщения в очереди
-            buffer_data['queue'].clear()
-        
-        self.message_buffer.clear()
+        try:
+            async with self.buffer_lock:
+                for chat_id, buffer_data in self.message_buffer.items():
+                    if buffer_data.get('timer'):
+                        buffer_data['timer'].cancel()
+                    buffer_data['messages'] = []
+                self.message_buffer.clear()
 
-        # Отменяем все активные задачи
-        tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-        for task in tasks:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            # Cancel all running tasks except current
+            tasks = [t for t in asyncio.all_tasks() 
+                    if t is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        except Exception as e:
+            logging.error(f"Error during cleanup: {e}")
 
     async def start_reminder_checker(self, plugin_manager):
         reminders_plugin = plugin_manager.get_plugin('reminders')
