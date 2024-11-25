@@ -42,7 +42,7 @@ class YoutubeTranscriptPlugin(Plugin):
             json_transcript = JSONFormatter().format_transcript(transcript)
 
             return {
-                'transcript': json_transcript,
+            "model_response": json_transcript
             }
         except Exception as e:
             return {'error': 'An unexpected error occurred: ' + str(e)}
