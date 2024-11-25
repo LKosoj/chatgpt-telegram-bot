@@ -25,6 +25,8 @@ from plugins.stable_diffusion import StableDiffusionPlugin
 from plugins.prompt_perfect import PromptPerfectPlugin
 from plugins.show_me_diagrams import ShowMeDiagramsPlugin
 from plugins.reminders import RemindersPlugin
+from plugins.language_learning import LanguageLearningPlugin
+from plugins.task_management import TaskManagementPlugin
 
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 
@@ -60,6 +62,8 @@ class PluginManager:
             'stable_diffusion': StableDiffusionPlugin,
             'website_content': WebsiteContentPlugin,
             'reminders': RemindersPlugin,
+            'language_learning': LanguageLearningPlugin,
+            'task_management': TaskManagementPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
