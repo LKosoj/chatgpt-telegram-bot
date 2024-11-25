@@ -750,7 +750,8 @@ class ChatGPTTelegramBot:
                 'text': prompt,
                 'update': update,
                 'context': context,
-                'message_id': message_id
+                'message_id': message_id,
+                'message_timestamp': update.message.date.timestamp()
             })
 
             # Если уже идет обработка, просто выходим
