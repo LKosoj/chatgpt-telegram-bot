@@ -1271,13 +1271,22 @@ class ChatGPTTelegramBot:
         
     async def cleanup(self):
         """
-        Cleanup resources when bot is shutting down
+        Add more comprehensive cleanup:
+        - Cancel all timers
+        - Clear message buffers
+        - Close any open connections/resources
         """
         try:
             async with self.buffer_lock:
                 for chat_id, buffer_data in self.message_buffer.items():
                     if buffer_data.get('timer'):
-                        buffer_data['timer'].cancel()
+                        try:
+                            buffer_data['timer'].cancel()
+                            await buffer_data['timer']
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logging.error(f"Error cancelling timer for chat {chat_id}: {e}")
                     buffer_data['messages'] = []
                 self.message_buffer.clear()
 
