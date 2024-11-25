@@ -52,6 +52,7 @@ class PromptPerfectPlugin(Plugin):
             )
 
             return {
+                "optimized_prompt" : optimized_prompt,
                 "model_response": response
             }
 
