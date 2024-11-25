@@ -1053,8 +1053,7 @@ class ChatGPTTelegramBot:
                 title=localized_text("ask_chatgpt", bot_language),
                 input_message_content=InputTextMessageContent(message_content),
                 description=message_content,
-                thumbnail_url='https://user-images.githubusercontent.com/11541888/223106202-7576ff11-2c8e-408d-94ea'
-                          '-b02a7a32149a.png',
+                thumbnail_url='https://github.com/LKosoj/chatgpt-telegram-bot/blob/main/IMG_3980.jpg?raw=true',
                 reply_markup=reply_markup
             )
 
