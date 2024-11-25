@@ -44,6 +44,30 @@ class ConversationAnalyticsPlugin(Plugin):
                 },
                 "required": ["chat_id", "time_period", "analysis_type"]
             }
+        },
+        {
+            "name": "get_personalized_recommendations",
+            "description": "Generate personalized recommendations based on user interaction history",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chat_id": {
+                        "type": "string",
+                        "description": "ID of chat to analyze"
+                    },
+                    "recommendation_type": {
+                        "type": "string",
+                        "description": "Type of recommendations to generate",
+                        "enum": ["topics", "learning", "content_format", "interaction_style"]
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of recommendations to generate",
+                        "default": 3
+                    }
+                },
+                "required": ["chat_id", "recommendation_type"]
+            }
         }]
 
     def load_stats(self) -> Dict:
@@ -61,8 +85,11 @@ class ConversationAnalyticsPlugin(Plugin):
 
     def save_stats(self):
         """Save analytics data to file"""
-        with open(self.analytics_file, 'w', encoding='utf-8') as f:
-            json.dump(self.conversation_stats, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.analytics_file, 'w', encoding='utf-8') as f:
+                json.dump(self.conversation_stats, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save conversation stats: {e}")
 
     def update_stats(self, chat_id: str, message_data: Dict):
         """Update conversation statistics with new message data"""
@@ -91,7 +118,107 @@ class ConversationAnalyticsPlugin(Plugin):
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """Execute plugin functions"""
-        if function_name == "analyze_conversation":
+        if function_name == "get_personalized_recommendations":
+            chat_id = kwargs['chat_id']
+            recommendation_type = kwargs['recommendation_type']
+            count = kwargs.get('count', 3)
+
+            if chat_id not in self.conversation_stats:
+                return {
+                    "error": "No conversation data found for this chat"
+                }
+
+            stats = self.conversation_stats[chat_id]
+            
+            # Get recent messages for analysis
+            recent_messages = stats['messages'][-100:]  # Анализируем последние 100 сообщений
+            
+            recommendations = []
+            
+            if recommendation_type == "topics":
+                # Анализ частых тем и предложение связанных тем
+                topics_counter = defaultdict(int)
+                for msg in recent_messages:
+                    if 'topics' in msg:
+                        for topic in msg['topics']:
+                            topics_counter[topic] += 1
+                
+                prompt = f"""Based on the following frequently discussed topics:
+                {dict(sorted(topics_counter.items(), key=lambda x: x[1], reverse=True)[:5])}
+                
+                Suggest {count} new related topics that might interest the user. For each topic:
+                1. Provide a brief explanation why it's relevant
+                2. Suggest a starting question for this topic
+                3. List potential learning opportunities"""
+                
+                response, _ = await helper.get_chat_response(
+                    chat_id=hash(f"{chat_id}_topics"),
+                    query=prompt
+                )
+                recommendations.append(("Related Topics", response))
+
+            elif recommendation_type == "learning":
+                # Анализ сложности взаимодействий и предложение путей обучения
+                avg_msg_length = sum(len(msg.get('text', '')) for msg in recent_messages) / len(recent_messages)
+                technical_terms = self._extract_technical_terms(recent_messages)
+                
+                prompt = f"""Based on user's conversation history:
+                - Average message length: {avg_msg_length:.0f} characters
+                - Technical terms used: {', '.join(technical_terms[:5])}
+                
+                Suggest {count} personalized learning paths. For each:
+                1. Identify current knowledge level
+                2. Suggest next learning steps
+                3. Recommend specific resources or exercises"""
+                
+                response, _ = await helper.get_chat_response(
+                    chat_id=hash(f"{chat_id}_learning"),
+                    query=prompt
+                )
+                recommendations.append(("Learning Paths", response))
+
+            elif recommendation_type == "content_format":
+                # Анализ предпочтительных форматов контента
+                format_preferences = self._analyze_format_preferences(recent_messages)
+                
+                prompt = f"""Based on user's format preferences:
+                {format_preferences}
+                
+                Suggest {count} ways to optimize content delivery. Include:
+                1. Preferred content formats
+                2. Optimal content length
+                3. Presentation style suggestions"""
+                
+                response, _ = await helper.get_chat_response(
+                    chat_id=hash(f"{chat_id}_format"),
+                    query=prompt
+                )
+                recommendations.append(("Content Format", response))
+
+            elif recommendation_type == "interaction_style":
+                # Анализ стиля взаимодействия
+                interaction_patterns = self._analyze_interaction_patterns(recent_messages)
+                
+                prompt = f"""Based on user's interaction patterns:
+                {interaction_patterns}
+                
+                Suggest {count} ways to improve interaction. Include:
+                1. Communication style preferences
+                2. Response format recommendations
+                3. Engagement optimization tips"""
+                
+                response, _ = await helper.get_chat_response(
+                    chat_id=hash(f"{chat_id}_style"),
+                    query=prompt
+                )
+                recommendations.append(("Interaction Style", response))
+
+            return {
+                "recommendations": recommendations,
+                "based_on_messages": len(recent_messages),
+                "recommendation_type": recommendation_type
+            }
+        elif function_name == "analyze_conversation":
             chat_id = kwargs['chat_id']
             time_period = kwargs['time_period']
             analysis_type = kwargs.get('analysis_type', 'all')
@@ -198,3 +325,53 @@ class ConversationAnalyticsPlugin(Plugin):
             }
 
         return {"error": "Unknown function"}
+    def _extract_technical_terms(self, messages: List[Dict]) -> List[str]:
+        """Извлекает технические термины из сообщений"""
+        # Простая реализация - можно улучшить с помощью NLP
+        technical_terms = set()
+        for msg in messages:
+            text = msg.get('text', '').lower()
+            # Добавьте здесь логику определения технических терминов
+            # Например, поиск слов из предопределенного списка
+            if 'api' in text: technical_terms.add('api')
+            if 'token' in text: technical_terms.add('token')
+            # и т.д.
+        return list(technical_terms)
+
+    def _analyze_format_preferences(self, messages: List[Dict]) -> Dict:
+        """Анализирует предпочтения по формату контента"""
+        formats = {
+            'text': 0,
+            'code': 0,
+            'images': 0,
+            'voice': 0
+        }
+        
+        for msg in messages:
+            if 'text' in msg: formats['text'] += 1
+            if 'code' in str(msg.get('text', '')): formats['code'] += 1
+            if msg.get('has_image'): formats['images'] += 1
+            if msg.get('has_voice'): formats['voice'] += 1
+            
+        return formats
+
+    def _analyze_interaction_patterns(self, messages: List[Dict]) -> Dict:
+        """Анализирует паттерны взаимодействия"""
+        patterns = {
+            'avg_response_time': 0,
+            'message_length': [],
+            'question_frequency': 0,
+            'command_usage': 0
+        }
+        
+        for i, msg in enumerate(messages):
+            patterns['message_length'].append(len(msg.get('text', '')))
+            if '?' in msg.get('text', ''): 
+                patterns['question_frequency'] += 1
+            if msg.get('is_command'): 
+                patterns['command_usage'] += 1
+            
+        if patterns['message_length']:
+            patterns['avg_message_length'] = sum(patterns['message_length']) / len(patterns['message_length'])
+            
+        return patterns
