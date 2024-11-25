@@ -72,16 +72,34 @@ class ConversationAnalyticsPlugin(Plugin):
 
     def load_stats(self) -> Dict:
         """Load analytics data from file"""
+        def create_default_stats():
+            # Initialize stats with all hours set to 0
+            return {
+                'messages': [],
+                'token_usage': defaultdict(int),
+                'topics': defaultdict(int),
+                'sentiment_scores': [],
+                'active_hours': {str(hour): 0 for hour in range(24)}  # Initialize all 24 hours
+            }
+
         if os.path.exists(self.analytics_file):
-            with open(self.analytics_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return defaultdict(lambda: {
-            'messages': [],
-            'token_usage': defaultdict(int),
-            'topics': defaultdict(int),
-            'sentiment_scores': [],
-            'active_hours': defaultdict(int)
-        })
+            try:
+                with open(self.analytics_file, 'r', encoding='utf-8') as f:
+                    stats = json.load(f)
+                    # Convert to defaultdict and ensure all hours exist
+                    for chat_id in stats:
+                        if 'active_hours' not in stats[chat_id]:
+                            stats[chat_id]['active_hours'] = {str(hour): 0 for hour in range(24)}
+                        else:
+                            # Ensure all hours exist in existing stats
+                            for hour in range(24):
+                                if str(hour) not in stats[chat_id]['active_hours']:
+                                    stats[chat_id]['active_hours'][str(hour)] = 0
+                    return stats
+            except Exception as e:
+                logging.error(f"Failed to load conversation stats: {e}")
+                return defaultdict(create_default_stats)
+        return defaultdict(create_default_stats)
 
     def save_stats(self):
         """Save analytics data to file"""
@@ -93,6 +111,16 @@ class ConversationAnalyticsPlugin(Plugin):
 
     def update_stats(self, chat_id: str, message_data: Dict):
         """Update conversation statistics with new message data"""
+        # Initialize stats for new chat_id if it doesn't exist
+        if chat_id not in self.conversation_stats:
+            self.conversation_stats[chat_id] = {
+                'messages': [],
+                'token_usage': defaultdict(int),
+                'topics': defaultdict(int),
+                'sentiment_scores': [],
+                'active_hours': {str(hour): 0 for hour in range(24)}
+            }
+        
         stats = self.conversation_stats[chat_id]
         
         # Add message to history
