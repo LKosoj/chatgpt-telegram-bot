@@ -738,68 +738,88 @@ class ChatGPTTelegramBot:
             # Инициализируем буфер для чата, если его нет
             if chat_id not in self.message_buffer:
                 self.message_buffer[chat_id] = {
-                    'queue': [],
-                    'processing': False,
-                    'last_message_id': None,
-                    'timer': None
+                    'messages': [],  # Очередь сообщений
+                    'processing': False,  # Флаг обработки
+                    'timer': None  # Таймер для обработки буфера
                 }
 
             buffer_data = self.message_buffer[chat_id]
+            
+            # Добавляем сообщение в буфер
+            buffer_data['messages'].append({
+                'text': prompt,
+                'update': update,
+                'context': context,
+                'message_id': message_id
+            })
 
-            # Если идет обработка, добавляем сообщение в очередь
+            # Если уже идет обработка, просто выходим
             if buffer_data['processing']:
-                buffer_data['queue'].append({
-                    'text': prompt,
-                    'update': update,
-                    'message_id': message_id
-                })
                 return
 
-            # Помечаем, что начинаем обработку
-            buffer_data['processing'] = True
-            buffer_data['last_message_id'] = message_id
+            # Запускаем обработку буфера
+            if buffer_data['timer'] is not None:
+                buffer_data['timer'].cancel()
+            
+            buffer_data['timer'] = asyncio.create_task(
+                self.process_buffer(chat_id)
+            )
 
+    async def process_buffer(self, chat_id: int):
+        """
+        Process all messages in the buffer sequentially
+        """
         try:
-            self.openai.message_id = message_id
-            await self.process_message(prompt, update, context)
-        finally:
-            # После завершения обработки проверяем очередь
+            await asyncio.sleep(self.buffer_timeout)
+
             async with self.buffer_lock:
+                if chat_id not in self.message_buffer:
+                    return
+                    
                 buffer_data = self.message_buffer[chat_id]
-                buffer_data['processing'] = False
-
-                # Обрабатываем все сообщения в очереди
-                while buffer_data['queue']:
-                    next_message = buffer_data['queue'].pop(0)
-                    self.openai.message_id = next_message["message_id"]
-                    await self.process_message(
-                        next_message['text'], 
-                        next_message['update'], 
-                        context
-                    )
-
-    async def process_buffered_message(self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await asyncio.sleep(self.buffer_timeout)  # Используем async sleep
-
-        try:
-            if chat_id in self.message_buffer:
-                buffer_data = self.message_buffer[chat_id]
-                
-                # Помечаем, что начинаем обработку
+                if buffer_data['processing']:
+                    return
+                    
                 buffer_data['processing'] = True
-                
-                self.openai.message_id = buffer_data["message_id"]
-                await self.process_message(
-                    buffer_data["text"],
-                    update,
-                    context
-                )
-        except Exception as e:
-            logging.error(f"Error processing delayed message: {e}")
+
+            while True:
+                # Получаем следующее сообщение из буфера
+                next_message = None
+                async with self.buffer_lock:
+                    if chat_id in self.message_buffer and self.message_buffer[chat_id]['messages']:
+                        next_message = self.message_buffer[chat_id]['messages'].pop(0)
+                    
+                if next_message is None:
+                    break
+
+                try:
+                    # Обрабатываем сообщение
+                    self.openai.message_id = next_message['message_id']
+                    self.last_message[chat_id] = next_message['text']
+                    await self.process_message(
+                        next_message['text'],
+                        next_message['update'],
+                        next_message['context']
+                    )
+                except Exception as e:
+                    logging.error(f"Error processing message: {e}")
+
+                # Небольшая пауза между обработкой сообщений
+                await asyncio.sleep(0.1)
+
         finally:
-            # Очищаем буфер после обработки
-            if chat_id in self.message_buffer:
-                del self.message_buffer[chat_id]
+            # Сбрасываем флаг обработки
+            async with self.buffer_lock:
+                if chat_id in self.message_buffer:
+                    self.message_buffer[chat_id]['processing'] = False
+                    # Если появились новые сообщения во время обработки,
+                    # запускаем новый цикл обработки
+                    if self.message_buffer[chat_id]['messages']:
+                        if self.message_buffer[chat_id]['timer'] is not None:
+                            self.message_buffer[chat_id]['timer'].cancel()
+                        self.message_buffer[chat_id]['timer'] = asyncio.create_task(
+                            self.process_buffer(chat_id)
+                        )
                 
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
