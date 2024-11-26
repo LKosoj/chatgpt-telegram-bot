@@ -28,6 +28,7 @@ from plugins.reminders import RemindersPlugin
 from plugins.language_learning import LanguageLearningPlugin
 from plugins.task_management import TaskManagementPlugin
 from plugins.conversation_analytics import ConversationAnalyticsPlugin
+from plugins.natal_chart import NatalCardPlugin
 
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 
@@ -66,6 +67,7 @@ class PluginManager:
             'language_learning': LanguageLearningPlugin,
             'task_management': TaskManagementPlugin,
             'conversation_analytics': ConversationAnalyticsPlugin,
+            'natal_chart': NatalCardPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
