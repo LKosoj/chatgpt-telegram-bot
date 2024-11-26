@@ -1,9 +1,11 @@
 import os
 import aiohttp
+import logging
 from typing import Dict
 
 from .plugin import Plugin
 
+logger = logging.getLogger(__name__)
 
 class DeeplTranslatePlugin(Plugin):
     """
@@ -50,13 +52,13 @@ class DeeplTranslatePlugin(Plugin):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, data=data).json()["translations"][0]["text"] as response:
-                logger.info(f"API response status code: {response.status}")
-
+            async with session.post(url, headers=headers, data=data) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"API request failed: {error_text}")
                     raise Exception(f"API request failed with status code {response.status}: {error_text}")
 
-                translated_text = response.read()
+                response_json = await response.json()
+                translated_text = response_json["translations"][0]["text"]
                 return translated_text.encode('unicode-escape').decode('unicode-escape')
+        
