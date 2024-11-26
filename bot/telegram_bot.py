@@ -958,6 +958,14 @@ class ChatGPTTelegramBot:
                     response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id)
 
                     if is_direct_result(response):
+                        analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
+                        if analytics_plugin:
+                            message_data = {
+                                'text': prompt,
+                                'tokens': total_tokens,
+                                'user_id': user_id
+                            }
+                            analytics_plugin.update_stats(str(chat_id), message_data)
                         return await handle_direct_result(self.config, update, response)
 
                     # Split into chunks of 4096 characters (Telegram's message limit)
@@ -1339,7 +1347,7 @@ class ChatGPTTelegramBot:
 
     def run(self):
         """
-        Runs the bot indefinitely until the user presses Ctrl+C.
+        Runs the bot indefinitely.
         """
         try:
             loop = asyncio.new_event_loop()
@@ -1388,4 +1396,3 @@ class ChatGPTTelegramBot:
             loop = asyncio.get_event_loop()
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
-                                
