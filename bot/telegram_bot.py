@@ -760,7 +760,6 @@ class ChatGPTTelegramBot:
         within the buffer timeout period
         """
         try:
-
             async with self.buffer_lock:
                 if chat_id not in self.message_buffer:
                     return
@@ -776,7 +775,7 @@ class ChatGPTTelegramBot:
             if not messages:
                 return
 
-            # Group messages by user_id and process them
+            # Group messages by user_id and sort by timestamp
             user_messages = {}
             for msg in messages:
                 user_id = msg['update'].message.from_user.id
@@ -788,13 +787,14 @@ class ChatGPTTelegramBot:
                 if not user_msg_list:
                     continue
 
-                # Sort and combine messages within timeout period
+                # Sort messages by timestamp
                 user_msg_list.sort(key=lambda x: x['message_timestamp'])
                 combined_messages = []
                 current_group = [user_msg_list[0]]
                 
                 for msg in user_msg_list[1:]:
-                    if msg['message_timestamp'] - current_group[-1]['message_timestamp'] <= self.buffer_timeout:
+                    time_diff = msg['message_timestamp'] - current_group[-1]['message_timestamp']
+                    if time_diff <= self.buffer_timeout:
                         current_group.append(msg)
                     else:
                         combined_messages.append(current_group)
@@ -814,16 +814,15 @@ class ChatGPTTelegramBot:
                         logging.error(f"Error processing message: {e}")
                         continue
 
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)  # Prevent flooding
 
         except Exception as e:
             logging.error(f"Error in process_buffer: {e}")
         finally:
-            # Reset processing flag and handle new messages
+            # Reset processing flag
             async with self.buffer_lock:
                 if chat_id in self.message_buffer:
-                    buffer_data = self.message_buffer[chat_id]
-                    buffer_data['processing'] = False
+                    self.message_buffer[chat_id]['processing'] = False
                     
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1259,62 +1258,70 @@ class ChatGPTTelegramBot:
         - Close any open connections/resources
         """
         try:
-            # Stop the background tasks first
+            # Stop all background tasks first
+            tasks = []
             if hasattr(self, '_background_tasks'):
-                for task in self._background_tasks:
-                    if not task.done():
-                        task.cancel()
-                        try:
-                            await task
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as e:
-                            logging.error(f"Error cancelling background task: {e}")
-
-            # Clean up message buffers
+                tasks.extend(self._background_tasks)
+            
+            # Get all buffer timers
             async with self.buffer_lock:
-                for chat_id, buffer_data in self.message_buffer.items():
+                for buffer_data in self.message_buffer.values():
                     if buffer_data.get('timer'):
-                        try:
-                            buffer_data['timer'].cancel()
-                            await buffer_data['timer']
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as e:
-                            logging.error(f"Error cancelling timer for chat {chat_id}: {e}")
-                    buffer_data['messages'] = []
+                        tasks.append(buffer_data['timer'])
+                
+                # Clear message buffers
                 self.message_buffer.clear()
+
+            # Cancel all tasks
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=5.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                    except Exception as e:
+                        logging.error(f"Error cancelling task: {e}")
 
             # Cancel all running tasks except current
             current_task = asyncio.current_task()
-            tasks = [t for t in asyncio.all_tasks() 
-                    if t is not current_task and not t.done()]
+            running_tasks = [t for t in asyncio.all_tasks() 
+                           if t is not current_task and not t.done()]
             
-            if tasks:
-                logging.info(f"Cancelling {len(tasks)} remaining tasks...")
-                for task in tasks:
+            if running_tasks:
+                logging.info(f"Cancelling {len(running_tasks)} remaining tasks...")
+                for task in running_tasks:
                     task.cancel()
                 
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*running_tasks, return_exceptions=True)
+
+            # Close any open resources
+            if hasattr(self, 'openai'):
+                await self.openai.close()
 
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
+            raise
 
     async def buffer_data_checker(self):
+        """
+        Periodically checks and processes buffered messages
+        """
         while True:
             try:
                 async with self.buffer_lock:
-                    for chat_id, buffer_data in self.message_buffer.items():
-                        buffer_data = self.message_buffer[chat_id]                
-                        if buffer_data['processing'] == False:
-                            if buffer_data['messages']:
-                                if buffer_data.get('timer'):
-                                    buffer_data['timer'].cancel()
-                                buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
+                    for chat_id, buffer_data in list(self.message_buffer.items()):  # Create copy for iteration                
+                        if not buffer_data['processing'] and buffer_data['messages']:
+                            if buffer_data.get('timer'):
+                                buffer_data['timer'].cancel()
+                            buffer_data['timer'] = asyncio.create_task(
+                                self.process_buffer(chat_id)
+                            )
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logging.error(f"Error in reminder checker: {e}")
+                logging.error(f"Error in buffer data checker: {e}")
             
-            # Sleep for a secund between checks to avoid excessive processing
             await asyncio.sleep(1)
 
     async def start_reminder_checker(self, plugin_manager):
@@ -1331,6 +1338,83 @@ class ChatGPTTelegramBot:
                 await asyncio.sleep(60)
 
     def run(self):
+        """
+        Runs the bot indefinitely until the user presses Ctrl+C.
+        """
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            application = ApplicationBuilder() \
+                .token(self.config['token']) \
+                .proxy_url(self.config['proxy']) \
+                .get_updates_proxy_url(self.config['proxy']) \
+                .post_init(self.post_init) \
+                .concurrent_updates(True) \
+                .build()
+
+            self.application = application
+
+            # Store background tasks for cleanup
+            self._background_tasks = [
+                loop.create_task(self.buffer_data_checker()),
+                loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
+            ]
+
+            # Add handlers
+            handlers = [
+                CommandHandler('reset', self.reset),
+                CommandHandler('help', self.help),
+                CommandHandler('image', self.image),
+                CommandHandler('tts', self.tts),
+                CommandHandler('start', self.help),
+                CommandHandler('stats', self.stats),
+                CommandHandler('resend', self.resend),
+                CommandHandler('model', self.model),
+                CommandHandler(
+                    'chat', self.prompt, 
+                    filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
+                ),
+                MessageHandler(
+                    filters.PHOTO | filters.Document.IMAGE,
+                    self.vision
+                ),
+                MessageHandler(
+                    filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
+                    filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
+                    self.transcribe
+                ),
+                MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt),
+                InlineQueryHandler(
+                    self.inline_query,
+                    chat_types=[
+                        constants.ChatType.GROUP,
+                        constants.ChatType.SUPERGROUP,
+                        constants.ChatType.PRIVATE
+                    ]
+                ),
+                CallbackQueryHandler(self.handle_callback_inline_query)
+            ]
+
+            for handler in handlers:
+                application.add_handler(handler)
+
+            application.add_error_handler(error_handler)
+            
+            # Run the bot
+            application.run_polling()
+
+        except KeyboardInterrupt:
+            logging.info("Bot stopped by user")
+        except Exception as e:
+            logging.error(f"Error running bot: {e}")
+            raise
+        finally:
+            # Ensure proper cleanup
+            if loop.is_running():
+                loop.run_until_complete(self.cleanup())
+            loop.close()    
+    
         """
         Runs the bot indefinitely until the user presses Ctrl+C.
         """
