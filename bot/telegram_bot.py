@@ -675,7 +675,6 @@ class ChatGPTTelegramBot:
                     if tokens != 'not_finished':
                         total_tokens = int(tokens)
 
-
             else:
 
                 try:
@@ -755,30 +754,17 @@ class ChatGPTTelegramBot:
                 'message_timestamp': update.message.date.timestamp()
             })
 
-            # Если уже идет обработка, просто выходим
-            if buffer_data['processing']:
-                return
-
-            # Запускаем обработку буфера
-            if buffer_data['timer'] is not None:
-                buffer_data['timer'].cancel()
-            
-            buffer_data['timer'] = asyncio.create_task(
-                self.process_buffer(chat_id)
-            )
-
     async def process_buffer(self, chat_id: int):
         """
         Process all messages in the buffer sequentially, combining messages from the same user
         within the buffer timeout period
         """
         try:
-            await asyncio.sleep(self.buffer_timeout)
 
             async with self.buffer_lock:
                 if chat_id not in self.message_buffer:
                     return
-                    
+                
                 buffer_data = self.message_buffer[chat_id]
                 if buffer_data['processing']:
                     return
@@ -839,11 +825,6 @@ class ChatGPTTelegramBot:
                     buffer_data = self.message_buffer[chat_id]
                     buffer_data['processing'] = False
                     
-                    if buffer_data['messages']:
-                        if buffer_data.get('timer'):
-                            buffer_data['timer'].cancel()
-                        buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
-
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Обрабатывает полное сообщение
@@ -1302,6 +1283,23 @@ class ChatGPTTelegramBot:
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
 
+    async def buffer_data_checker(self):
+        while True:
+            try:
+                async with self.buffer_lock:
+                    for chat_id, buffer_data in self.message_buffer.items():
+                        buffer_data = self.message_buffer[chat_id]                
+                        if buffer_data['processing'] == False:
+                            if buffer_data['messages']:
+                                if buffer_data.get('timer'):
+                                    buffer_data['timer'].cancel()
+                                buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
+            except Exception as e:
+                logging.error(f"Error in reminder checker: {e}")
+            
+            # Sleep for a secund between checks to avoid excessive processing
+            await asyncio.sleep(1)
+
     async def start_reminder_checker(self, plugin_manager):
         reminders_plugin = plugin_manager.get_plugin('reminders')
         if reminders_plugin:
@@ -1332,6 +1330,7 @@ class ChatGPTTelegramBot:
                 .build()
 
             self.application = application
+            loop.create_task(self.buffer_data_checker())
             loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
             application.add_handler(CommandHandler('reset', self.reset))
             application.add_handler(CommandHandler('help', self.help))
