@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, Any
 from .plugin import Plugin
 from datetime import datetime
@@ -68,16 +69,23 @@ class RemindersPlugin(Plugin):
         }]
 
     def load_reminders(self):
-        """Загрузка напоминаний из файла"""
-        if os.path.exists(self.reminders_file):
-            with open(self.reminders_file, 'r') as f:
-                self.reminders = json.load(f)
+        """Load reminders from storage"""
+        try:
+            if os.path.exists(self.storage_path):
+                with open(self.storage_path, 'r') as f:
+                    self.reminders = json.load(f)
+        except Exception as e:
+            logging.error(f"Error loading reminders: {e}")
+            self.reminders = []
 
     def save_reminders(self):
-        """Сохранение напоминаний в файл"""
-        with open(self.reminders_file, 'w') as f:
-            json.dump(self.reminders, f)
-
+        """Save reminders to storage"""
+        try:
+            with open(self.storage_path, 'w') as f:
+                json.dump(self.reminders, f)
+        except Exception as e:
+            logging.error(f"Error saving reminders: {e}")
+            
     async def check_reminders(self, helper):
         """
         Проверка и отправка напоминаний
