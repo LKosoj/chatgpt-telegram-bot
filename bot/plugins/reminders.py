@@ -20,7 +20,7 @@ class RemindersPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "set_reminder",
-            "description": f'Установить напоминание на определенное время, используя текущее время для начала отсчета: {datetime.now().strftime("%Y-%m-%d %H:%M")}',
+            "description": f'Установить напоминание на определенное время, сейчас {datetime.now().strftime("%Y%m%d%H%M%S")}',
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -87,7 +87,7 @@ class RemindersPlugin(Plugin):
                 json.dump(self.reminders, f)
         except Exception as e:
             logging.error(f"Error saving reminders: {e}")
-                        
+
     async def check_reminders(self, helper):
         """
         Проверка и отправка напоминаний
