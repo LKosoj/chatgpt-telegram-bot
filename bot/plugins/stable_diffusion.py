@@ -8,6 +8,7 @@ import logging
 import asyncio
 import tempfile
 import json
+import aiohttp
 from typing import Dict, Any, Callable
 from .plugin import Plugin
 
@@ -49,21 +50,24 @@ class StableDiffusionPlugin(Plugin):
             },
         }]
 
-    def diffusion(self, payload: Dict) -> bytes:
+    async def diffusion(self, payload: Dict) -> bytes:
         """
         Отправляет запрос к Stable Diffusion API и возвращает байты изображения.
         """
         logger.info("Sending request to Stable Diffusion API...")
-        response = requests.post(API_URL, headers=self.headers, json=payload)
-        logger.info(f"API response status code: {response.status_code}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(API_URL, headers=self.headers, json=payload) as response:
+                logger.info(f"API response status code: {response.status}")
 
-        if response.status_code != 200:
-            logger.error(f"API request failed: {response.text}")
-            raise Exception(f"API request failed with status code {response.status_code}: {response.text}")
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"API request failed: {error_text}")
+                    raise Exception(f"API request failed with status code {response.status}: {error_text}")
 
-        logger.info("Image successfully received from API.")
-        return response.content
-
+                logger.info("Image successfully received from API.")
+                return await response.read()
+            
     @staticmethod
     def generate_random_string(length: int = 15) -> str:
         """
@@ -94,7 +98,7 @@ class StableDiffusionPlugin(Plugin):
                     }
                 }
                 logger.info(f"Attempt {attempt + 1}: Sending payload to Stable Diffusion API...")
-                image_bytes = self.diffusion(payload)
+                image_bytes = await self.diffusion(payload)
 
                 # Декодирование изображения для проверки
                 logger.info("Decoding image bytes...")
