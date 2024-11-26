@@ -1252,12 +1252,26 @@ class ChatGPTTelegramBot:
         
     async def cleanup(self):
         """
-        Add more comprehensive cleanup:
+        Comprehensive cleanup:
         - Cancel all timers
         - Clear message buffers
+        - Stop background tasks
         - Close any open connections/resources
         """
         try:
+            # Stop the background tasks first
+            if hasattr(self, '_background_tasks'):
+                for task in self._background_tasks:
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logging.error(f"Error cancelling background task: {e}")
+
+            # Clean up message buffers
             async with self.buffer_lock:
                 for chat_id, buffer_data in self.message_buffer.items():
                     if buffer_data.get('timer'):
@@ -1272,14 +1286,17 @@ class ChatGPTTelegramBot:
                 self.message_buffer.clear()
 
             # Cancel all running tasks except current
+            current_task = asyncio.current_task()
             tasks = [t for t in asyncio.all_tasks() 
-                    if t is not asyncio.current_task()]
-            for task in tasks:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                    if t is not current_task and not t.done()]
+            
+            if tasks:
+                logging.info(f"Cancelling {len(tasks)} remaining tasks...")
+                for task in tasks:
+                    task.cancel()
+                
+                await asyncio.gather(*tasks, return_exceptions=True)
+
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
 
