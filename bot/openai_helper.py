@@ -750,8 +750,8 @@ class OpenAIHelper:
             {"role": "assistant", "content": "Summarize this conversation in 700 characters or less"},
             {"role": "user", "content": str(conversation)}
         ]
-        user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.user_models.get(str(user_id), self.config['model'])
+        #user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+        model_to_use = self.config['model']
 
         response = await self.client.chat.completions.create(
             model=model_to_use,
