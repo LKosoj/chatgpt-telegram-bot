@@ -71,21 +71,23 @@ class RemindersPlugin(Plugin):
     def load_reminders(self):
         """Load reminders from storage"""
         try:
-            if os.path.exists(self.storage_path):
-                with open(self.storage_path, 'r') as f:
-                    self.reminders = json.load(f)
+            if os.path.exists(self.reminders_file):  # Fixed: using reminders_file instead of storage_path
+                with open(self.reminders_file, 'r') as f:  # Fixed: using reminders_file
+                    self.reminders = json.load(f) 
+                    if not isinstance(self.reminders, dict):  # Ensure it's a dictionary
+                        self.reminders = {}
         except Exception as e:
             logging.error(f"Error loading reminders: {e}")
-            self.reminders = []
+            self.reminders = {}  # Initialize as empty dict, not list
 
     def save_reminders(self):
         """Save reminders to storage"""
         try:
-            with open(self.storage_path, 'w') as f:
+            with open(self.reminders_file, 'w') as f:  # Fixed: using reminders_file
                 json.dump(self.reminders, f)
         except Exception as e:
             logging.error(f"Error saving reminders: {e}")
-            
+                        
     async def check_reminders(self, helper):
         """
         Проверка и отправка напоминаний
