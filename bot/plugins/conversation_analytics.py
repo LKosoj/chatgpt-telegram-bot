@@ -368,18 +368,36 @@ class ConversationAnalyticsPlugin(Plugin):
 
         return {"error": "Unknown function"}
     def _extract_technical_terms(self, messages: List[Dict]) -> List[str]:
-        """Извлекает технические термины из сообщений"""
-        # Простая реализация - можно улучшить с помощью NLP
-        technical_terms = set()
-        for msg in messages:
-            text = msg.get('text', '').lower()
-            # Добавьте здесь логику определения технических терминов
-            # Например, поиск слов из предопределенного списка
-            if 'api' in text: technical_terms.add('api')
-            if 'token' in text: technical_terms.add('token')
-            # и т.д.
-        return list(technical_terms)
-
+            """Извлекает технические термины из сообщений"""
+            technical_terms = set()
+            
+            # Предопределенный список технических терминов
+            TECHNICAL_TERMS = {
+                'api', 'token', 'database', 'server', 'client',
+                'http', 'https', 'rest', 'json', 'xml',
+                'sql', 'nosql', 'cache', 'async', 'sync',
+                'frontend', 'backend', 'api key', 'endpoint',
+                'request', 'response', 'webhook', 'cors',
+                # Добавьте другие технические термины по необходимости
+            }
+            
+            for msg in messages:
+                if not msg.get('text'):
+                    continue
+                    
+                text = msg['text'].lower()
+                words = set(text.split())
+                
+                # Поиск одиночных слов
+                technical_terms.update(words & TECHNICAL_TERMS)
+                
+                # Поиск составных терминов
+                for term in TECHNICAL_TERMS:
+                    if ' ' in term and term in text:
+                        technical_terms.add(term)
+            
+            return sorted(list(technical_terms))
+    
     def _analyze_format_preferences(self, messages: List[Dict]) -> Dict:
         """Анализирует предпочтения по формату контента"""
         formats = {
