@@ -81,6 +81,7 @@ class ChatGPTTelegramBot:
         commands = self.group_commands if is_group_chat(update) else self.commands
         commands_description = [f'/{command.command} - {command.description}' for command in commands]
         bot_language = self.config['bot_language']
+        #tool_list = "\n".join([f"- {tool['name']}" for tool in TOOLS])
         help_text = (
                 localized_text('help_text', bot_language)[0] +
                 '\n\n' +
@@ -290,7 +291,7 @@ class ChatGPTTelegramBot:
             text = text
         )
 
-    async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error = False):
         """
         Resets the conversation.
         """
@@ -303,12 +304,17 @@ class ChatGPTTelegramBot:
         logging.info(f'Resetting the conversation for user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})...')
 
+        if error:
+            text = "Произошла ошибка при обработке запроса. Попробуйте перефразировать запрос."
+        else:
+            text = localized_text('reset_done', self.config['bot_language'])
+
         chat_id = update.effective_chat.id
         reset_content = message_text(update.message)
         self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
-            text=localized_text('reset_done', self.config['bot_language'])
+            text=text
         )
 
     async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1008,7 +1014,7 @@ class ChatGPTTelegramBot:
 
             result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
             if not result:
-                await self.reset(update, context)
+                await self.reset(update, context, True)
 
         except Exception as e:
             logging.exception(e)
@@ -1190,7 +1196,7 @@ class ChatGPTTelegramBot:
 
                 result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
                 if not result:
-                    await self.reset(update, context)
+                    await self.reset(update, context, True)
 
         except Exception as e:
             logging.error(f'Failed to respond to an inline query via button callback: {e}')
