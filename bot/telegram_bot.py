@@ -17,7 +17,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
 
 from pydub import AudioSegment
 from PIL import Image
-from collections import defaultdict
 
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
@@ -40,6 +39,10 @@ class ChatGPTTelegramBot:
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
+        # Добавляем словарь для буферизации сообщений
+        self.message_buffer = {}
+        # Добавляем время ожидания для буфера (в секундах)
+        self.buffer_timeout = 1.0
 
         self.config = config
         self.openai = openai
@@ -68,30 +71,8 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
-        self.message_buffers = defaultdict(lambda: {
-            'messages': [],
-            'processing': False,
-            'timer': None
-        })
-        self.buffer_timeout = 1.0
-        self.max_concurrent_requests = 5  # Maximum number of concurrent requests
-        self.request_semaphore = asyncio.Semaphore(self.max_concurrent_requests)
-        self.buffer_locks = defaultdict(asyncio.Lock)  # Per-user buffer locks
-        self.active_requests = 0  # Track number of active requests
+        self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
-        self.processing_locks = defaultdict(asyncio.Lock)  # Per-model processing locks
-        
-        # Add model concurrency limits
-        self.model_concurrency = {
-            'gpt-3.5-turbo': 3,  # Allow 3 concurrent requests for gpt-3.5-turbo
-            'gpt-4': 2,          # Allow 2 concurrent requests for gpt-4
-            'default': 5         # Default limit for other models
-        }
-        self.model_semaphores = {
-            model: asyncio.Semaphore(limit) 
-            for model, limit in self.model_concurrency.items()
-        }
-        self.user_semaphores = defaultdict(lambda: asyncio.Semaphore(2))  # Allow 2 concurrent requests per user
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -743,7 +724,6 @@ class ChatGPTTelegramBot:
     async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         React to incoming messages and respond accordingly.
-        Now handles multiple users in parallel.
         """
         if update.edited_message or not update.message or update.message.via_bot:
             return
@@ -752,16 +732,21 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        user_id = update.message.from_user.id
-        buffer_key = f"{chat_id}_{user_id}"  # Unique key per user per chat
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
-        async with self.buffer_locks[buffer_key]:
-            # Initialize or get user's message buffer
-            buffer_data = self.message_buffers[buffer_key]
+        async with self.buffer_lock:
+            # Инициализируем буфер для чата, если его нет
+            if chat_id not in self.message_buffer:
+                self.message_buffer[chat_id] = {
+                    'messages': [],  # Очередь сообщений
+                    'processing': False,  # Флаг обработки
+                    'timer': None  # Таймер для обработки буфера
+                }
+
+            buffer_data = self.message_buffer[chat_id]
             
-            # Add message to user's buffer
+            # Добавляем сообщение в буфер
             buffer_data['messages'].append({
                 'text': prompt,
                 'update': update,
@@ -770,28 +755,31 @@ class ChatGPTTelegramBot:
                 'message_timestamp': update.message.date.timestamp()
             })
 
-            # If already processing this user's messages, just return
+            # Если уже идет обработка, просто выходим
             if buffer_data['processing']:
                 return
 
-            # Cancel existing timer if any
+            # Запускаем обработку буфера
             if buffer_data['timer'] is not None:
                 buffer_data['timer'].cancel()
             
-            # Start new timer for this user's buffer
             buffer_data['timer'] = asyncio.create_task(
-                self.process_user_buffer(buffer_key)
+                self.process_buffer(chat_id)
             )
 
-    async def process_user_buffer(self, buffer_key: str):
+    async def process_buffer(self, chat_id: int):
         """
-        Process messages from a specific user's buffer.
+        Process all messages in the buffer sequentially, combining messages from the same user
+        within the buffer timeout period
         """
         try:
             await asyncio.sleep(self.buffer_timeout)
 
-            async with self.buffer_locks[buffer_key]:
-                buffer_data = self.message_buffers[buffer_key]
+            async with self.buffer_lock:
+                if chat_id not in self.message_buffer:
+                    return
+                    
+                buffer_data = self.message_buffer[chat_id]
                 if buffer_data['processing']:
                     return
                     
@@ -802,14 +790,24 @@ class ChatGPTTelegramBot:
             if not messages:
                 return
 
-            # Acquire semaphore for concurrent request limiting
-            async with self.request_semaphore:
-                # Sort messages by timestamp and combine those within timeout period
-                messages.sort(key=lambda x: x['message_timestamp'])
+            # Group messages by user_id and process them
+            user_messages = {}
+            for msg in messages:
+                user_id = msg['update'].message.from_user.id
+                if user_id not in user_messages:
+                    user_messages[user_id] = []
+                user_messages[user_id].append(msg)
+
+            for user_msg_list in user_messages.values():
+                if not user_msg_list:
+                    continue
+
+                # Sort and combine messages within timeout period
+                user_msg_list.sort(key=lambda x: x['message_timestamp'])
                 combined_messages = []
-                current_group = [messages[0]]
+                current_group = [user_msg_list[0]]
                 
-                for msg in messages[1:]:
+                for msg in user_msg_list[1:]:
                     if msg['message_timestamp'] - current_group[-1]['message_timestamp'] <= self.buffer_timeout:
                         current_group.append(msg)
                     else:
@@ -819,7 +817,7 @@ class ChatGPTTelegramBot:
                 if current_group:
                     combined_messages.append(current_group)
 
-                # Process each group of messages
+                # Process each group
                 for msg_group in combined_messages:
                     combined_text = " ".join(msg['text'] for msg in msg_group)
                     first_msg = msg_group[0]
@@ -833,341 +831,205 @@ class ChatGPTTelegramBot:
                     await asyncio.sleep(0.1)
 
         except Exception as e:
-            logging.error(f"Error in process_user_buffer: {e}")
+            logging.error(f"Error in process_buffer: {e}")
         finally:
-            # Reset processing flag and handle any new messages
-            async with self.buffer_locks[buffer_key]:
-                buffer_data = self.message_buffers[buffer_key]
-                buffer_data['processing'] = False
-                
-                if buffer_data['messages']:
-                    if buffer_data.get('timer'):
-                        buffer_data['timer'].cancel()
-                    buffer_data['timer'] = asyncio.create_task(
-                        self.process_user_buffer(buffer_key)
-                    )
+            # Reset processing flag and handle new messages
+            async with self.buffer_lock:
+                if chat_id in self.message_buffer:
+                    buffer_data = self.message_buffer[chat_id]
+                    buffer_data['processing'] = False
+                    
+                    if buffer_data['messages']:
+                        if buffer_data.get('timer'):
+                            buffer_data['timer'].cancel()
+                        buffer_data['timer'] = asyncio.create_task(self.process_buffer(chat_id))
 
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Processes the complete message with parallel processing support
+        Обрабатывает полное сообщение
         """
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
-        message_id = update.message.message_id
+        message_id = update.message.message_id  # Get message ID
         self.last_message[chat_id] = prompt
+        # Create a unique identifier for this chat request
         request_id = f"{chat_id}_{message_id}"
-        
+            
         logging.info(
-            f'New message received from user {update.message.from_user.name} (id: {user_id})')
+            f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
 
-        # Get the model for this user
-        model_to_use = self.openai.user_models.get(str(user_id), self.openai.config['model'])
-        
-        # Get appropriate semaphore for the model
-        model_semaphore = self.model_semaphores.get(
-            model_to_use, 
-            self.model_semaphores.get('default')
-        )
+        if is_group_chat(update):
+            trigger_keyword = self.config['group_trigger_keyword']
+
+            if prompt.lower().startswith(trigger_keyword.lower()) or update.message.text.lower().startswith('/chat'):
+                if prompt.lower().startswith(trigger_keyword.lower()):
+                    prompt = prompt[len(trigger_keyword):].strip()
+
+                if update.message.reply_to_message and \
+                        update.message.reply_to_message.text and \
+                        update.message.reply_to_message.from_user.id != context.bot.id:
+                    prompt = f'"{update.message.reply_to_message.text}" {prompt}'
+            else:
+                if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
+                    logging.info('Message is a reply to the bot, allowing...')
+                else:
+                    logging.warning('Message does not start with trigger keyword, ignoring...')
+                    return
 
         try:
-            # Use both semaphores with async context managers
-            async with model_semaphore:
-                async with self.user_semaphores[user_id]:
-                    try:
-                        # Process group chat logic
-                        if is_group_chat(update):
-                            trigger_keyword = self.config['group_trigger_keyword']
+            total_tokens = 0
 
-                            if prompt.lower().startswith(trigger_keyword.lower()) or update.message.text.lower().startswith('/chat'):
-                                if prompt.lower().startswith(trigger_keyword.lower()):
-                                    prompt = prompt[len(trigger_keyword):].strip()
+            model_to_use = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+            if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
 
-                                if update.message.reply_to_message and \
-                                        update.message.reply_to_message.text and \
-                                        update.message.reply_to_message.from_user.id != context.bot.id:
-                                    prompt = f'"{update.message.reply_to_message.text}" {prompt}'
-                            else:
-                                if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
-                                    logging.info('Message is a reply to the bot, allowing...')
-                                else:
-                                    logging.warning('Message does not start with trigger keyword, ignoring...')
-                                    return
+                await update.effective_message.reply_chat_action(
+                    action=constants.ChatAction.TYPING,
+                    message_thread_id=get_thread_id(update)
+                )
 
-                        total_tokens = 0
+                # Store message_id in openai object for this request
+                self.openai.message_ids = getattr(self.openai, 'message_ids', {})
+                self.openai.message_ids[request_id] = message_id
+
+                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt, request_id=request_id)
+                i = 0
+                prev = ''
+                sent_message = None
+                backoff = 0
+                stream_chunk = 0
+
+                async for content, tokens in stream_response:
+                    if is_direct_result(content):
+                        return await handle_direct_result(self.config, update, content)
+
+                    if len(content.strip()) == 0:
+                        continue
+
+                    stream_chunks = split_into_chunks(content)
+                    if len(stream_chunks) > 1:
+                        content = stream_chunks[-1]
+                        if stream_chunk != len(stream_chunks) - 1:
+                            stream_chunk += 1
+                            try:
+                                await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
+                                                              stream_chunks[-2])
+                            except:
+                                pass
+                            try:
+                                sent_message = await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    text=content if len(content) > 0 else "..."
+                                )
+                            except:
+                                pass
+                            continue
+
+                    cutoff = get_stream_cutoff_values(update, content)
+                    cutoff += backoff
+
+                    if i == 0:
+                        try:
+                            if sent_message is not None:
+                                await context.bot.delete_message(chat_id=sent_message.chat_id,
+                                                                 message_id=sent_message.message_id)
+                            sent_message = await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                text=content,
+                            )
+                        except:
+                            continue
+
+                    elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
+                        prev = content
 
                         try:
-                            # Use wait_for instead of timeout context manager
-                            async def process_response():
-                                # Handle streaming responses
-                                if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
-                                    return await self.handle_streaming_response(update, context, chat_id, prompt, request_id)
-                                else:
-                                    return await self.handle_non_streaming_response(update, context, chat_id, prompt, request_id)
+                            use_markdown = tokens != 'not_finished'
+                            await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
+                                                          text=content, markdown=use_markdown)
 
-                            total_tokens = await asyncio.wait_for(process_response(), timeout=600)  # 10-minute timeout
-                            
-                            # Update analytics and usage tracking
-                            await self.update_tracking(chat_id, user_id, prompt, total_tokens)
-                            return total_tokens
+                        except RetryAfter as e:
+                            backoff += 5
+                            await asyncio.sleep(e.retry_after)
+                            continue
 
-                        except asyncio.TimeoutError:
-                            logging.error(f"Request timed out for user {user_id}")
-                            await self.handle_error_response(
-                                update, 
-                                context,
-                                "Request timed out. Please try again."
-                            )   
-                    except Exception as e:
-                        logging.error(f"Error processing message: {e}")
-                        await self.handle_error_response(update, context, e)
-                        raise e
+                        except TimedOut:
+                            backoff += 5
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        except Exception:
+                            backoff += 5
+                            continue
+
+                        await asyncio.sleep(0.01)
+
+                    i += 1
+                    if tokens != 'not_finished':
+                        total_tokens = int(tokens)
+
+            else:
+                async def _reply():
+                    nonlocal total_tokens
+                    # Store message_id in openai object for this request
+                    self.openai.message_ids = getattr(self.openai, 'message_ids', {})
+                    self.openai.message_ids[request_id] = message_id
+
+                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id)
+
+                    if is_direct_result(response):
+                        return await handle_direct_result(self.config, update, response)
+
+                    # Split into chunks of 4096 characters (Telegram's message limit)
+                    chunks = split_into_chunks(response)
+
+                    for index, chunk in enumerate(chunks):
+                        try:
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=get_reply_to_message_id(self.config,
+                                                                            update) if index == 0 else None,
+                                text=chunk,
+                                parse_mode=constants.ParseMode.MARKDOWN
+                            )
+                        except Exception:
+                            try:
+                                await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config,
+                                                                                update) if index == 0 else None,
+                                    text=chunk
+                                )
+                            except Exception as exception:
+                                raise exception
+
+                await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
+            # Cleanup the stored message_id after processing is complete
+            if hasattr(self.openai, 'message_ids'):
+                request_id = f"{chat_id}_{message_id}"
+                self.openai.message_ids.pop(request_id, None)
+
+            analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
+            if analytics_plugin:
+                message_data = {
+                    'text': prompt,
+                    'tokens': total_tokens,
+                    'user_id': user_id
+                }
+                analytics_plugin.update_stats(str(chat_id), message_data)
+
+            result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+            if not result:
+                await self.reset(update, context)
 
         except Exception as e:
             logging.exception(e)
-            await self.handle_error_response(update, context, e)   
-        
-    async def handle_streaming_response(self, update, context, chat_id, prompt, request_id):
-        """Handle streaming response from the model"""
-        await update.effective_message.reply_chat_action(
-            action=constants.ChatAction.TYPING,
-            message_thread_id=get_thread_id(update)
-        )
-
-        self.openai.message_ids = getattr(self.openai, 'message_ids', {})
-        self.openai.message_ids[request_id] = update.message.message_id
-
-        try:
-            # Instead of creating a task, directly await the process_stream_response
-            return await self.process_stream_response(
-                update, context, chat_id, prompt, request_id
-            )
-                
-        finally:
-            if hasattr(self.openai, 'message_ids'):
-                self.openai.message_ids.pop(request_id, None)
-
-    async def process_stream_response(self, update, context, chat_id, prompt, request_id):
-        """
-        Process streaming response from the model
-        
-        Args:
-            update (Update): The Telegram update
-            context (ContextTypes.DEFAULT_TYPE): The context object
-            chat_id (int): The chat ID
-            prompt (str): The user's prompt
-            request_id (str): Unique request identifier
-            
-        Returns:
-            The processed response and token count
-        """
-        i = 0
-        prev = ''
-        sent_message = None
-        backoff = 0
-        stream_chunk = 0
-        
-        try:
-            # Get the stream response but don't await it
-            stream_response = self.openai.get_chat_response_stream(
-                chat_id=chat_id,
-                query=prompt,
-                request_id=request_id
-            )
-            
-            # Iterate through the stream using async for
-            async for content, tokens in stream_response:
-                # Handle direct results from plugins
-                if is_direct_result(content):
-                    return await handle_direct_result(self.config, update, content)
-
-                if len(content.strip()) == 0:
-                    continue
-
-                # Handle message chunking
-                stream_chunks = split_into_chunks(content)
-                if len(stream_chunks) > 1:
-                    content = stream_chunks[-1]
-                    if stream_chunk != len(stream_chunks) - 1:
-                        stream_chunk += 1
-                        try:
-                            await edit_message_with_retry(
-                                context, 
-                                chat_id, 
-                                str(sent_message.message_id),
-                                stream_chunks[-2]
-                            )
-                        except:
-                            pass
-                        try:
-                            sent_message = await update.effective_message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                text=content if len(content) > 0 else "..."
-                            )
-                        except:
-                            pass
-                        continue
-
-                # Get cutoff values for streaming
-                cutoff = get_stream_cutoff_values(update, content)
-                cutoff += backoff
-
-                # Handle first message
-                if i == 0:
-                    try:
-                        if sent_message is not None:
-                            await context.bot.delete_message(
-                                chat_id=sent_message.chat_id,
-                                message_id=sent_message.message_id
-                            )
-                        sent_message = await update.effective_message.reply_text(
-                            message_thread_id=get_thread_id(update),
-                            reply_to_message_id=get_reply_to_message_id(self.config, update),
-                            text=content
-                        )
-                    except:
-                        continue
-
-                # Handle subsequent messages
-                elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
-                    prev = content
-                    try:
-                        use_markdown = tokens != 'not_finished'
-                        await edit_message_with_retry(
-                            context, 
-                            chat_id, 
-                            str(sent_message.message_id),
-                            text=content,
-                            markdown=use_markdown
-                        )
-
-                    except telegram.error.RetryAfter as e:
-                        backoff += 5
-                        await asyncio.sleep(e.retry_after)
-                        continue
-
-                    except telegram.error.TimedOut:
-                        backoff += 5
-                        await asyncio.sleep(0.5)
-                        continue
-
-                    except Exception:
-                        backoff += 5
-                        continue
-
-                    await asyncio.sleep(0.01)
-
-                i += 1
-                if tokens != 'not_finished':
-                    # Return final tokens count
-                    return tokens
-
-        except Exception as e:
-            logging.error(f"Error in stream response processing: {e}")
-            if sent_message:
-                try:
-                    await edit_message_with_retry(
-                        context,
-                        chat_id,
-                        str(sent_message.message_id),
-                        f"Error processing response: {str(e)}"
-                    )
-                except:
-                    pass
-            raise e
-    
-    async def handle_non_streaming_response(self, update, context, chat_id, prompt, request_id):
-        """Handle non-streaming response from the model"""
-        async def _reply():
-            self.openai.message_ids = getattr(self.openai, 'message_ids', {})
-            self.openai.message_ids[request_id] = update.message.message_id
-
-            try:
-                response, total_tokens = await self.openai.get_chat_response(
-                    chat_id=chat_id, 
-                    query=prompt, 
-                    request_id=request_id
-                )
-
-                if is_direct_result(response):
-                    return await handle_direct_result(self.config, update, response)
-
-                await self.send_chunked_response(update, context, response)
-                return total_tokens
-
-            finally:
-                if hasattr(self.openai, 'message_ids'):
-                    self.openai.message_ids.pop(request_id, None)
-
-        await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
-
-    async def update_tracking(self, chat_id: str, user_id: int, prompt: str, total_tokens: int):
-        """
-        Updates analytics and usage tracking after processing a message.
-        
-        Args:
-            chat_id: The chat ID where the message was sent
-            user_id: The user ID who sent the message 
-            prompt: The message prompt
-            total_tokens: Number of tokens used
-        """
-        try:
-            # Initialize usage tracker for user if not exists
-            if user_id not in self.usage:
-                self.usage[user_id] = UsageTracker(user_id, "")
-
-            # Add the chat statistics
-            if total_tokens > 0:
-                result = add_chat_request_to_usage_tracker(
-                    self.usage,
-                    self.config,
-                    user_id, 
-                    total_tokens
-                )
-                
-                if not result:
-                    logging.warning(f"Failed to update usage tracker for user {user_id}")
-                    return
-
-            # Clear the buffer after a direct response
-            buffer_key = f"{chat_id}_{user_id}"
-            if buffer_key in self.message_buffers:
-                self.message_buffers[buffer_key]['messages'] = []
-
-        except Exception as e:
-            logging.error(f"Error updating tracking: {e}")
-            # Don't re-raise the exception to avoid disrupting the message flow
- 
-    async def send_chunked_response(self, update, context, response):
-        """Send response in chunks to handle Telegram message size limits"""
-        chunks = split_into_chunks(response)
-        for index, chunk in enumerate(chunks):
-            try:
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
-                    text=chunk,
-                    parse_mode=constants.ParseMode.MARKDOWN
-                )
-            except Exception:
-                # Fallback without markdown
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
-                    text=chunk
-                )
-
-    async def handle_error_response(self, update, context, error):
-        """Handle errors in message processing"""
-        bot_language = self.config['bot_language']
-        try:
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 reply_to_message_id=get_reply_to_message_id(self.config, update),
-                text=f"{localized_text('chat_fail', bot_language)}: {str(error)}",
+                text=f"{localized_text('chat_fail', self.config['bot_language'])} {str(e)}",
                 parse_mode=constants.ParseMode.MARKDOWN
             )
-        except Exception as e:
-            logging.error(f"Failed to send error message: {str(e)}")
 
     async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -1409,27 +1271,34 @@ class ChatGPTTelegramBot:
         
     async def cleanup(self):
         """
-        Enhanced cleanup to handle per-user buffers and semaphores
+        Add more comprehensive cleanup:
+        - Cancel all timers
+        - Clear message buffers
+        - Close any open connections/resources
         """
         try:
-            # Cancel all buffer timers
-            for buffer_key, buffer_data in self.message_buffers.items():
-                if buffer_data.get('timer'):
-                    try:
-                        buffer_data['timer'].cancel()
-                        await buffer_data['timer']
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:
-                        logging.error(f"Error cancelling timer for buffer {buffer_key}: {e}")
-                buffer_data['messages'] = []
-            
-            self.message_buffers.clear()
-            self.buffer_locks.clear()
+            async with self.buffer_lock:
+                for chat_id, buffer_data in self.message_buffer.items():
+                    if buffer_data.get('timer'):
+                        try:
+                            buffer_data['timer'].cancel()
+                            await buffer_data['timer']
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logging.error(f"Error cancelling timer for chat {chat_id}: {e}")
+                    buffer_data['messages'] = []
+                self.message_buffer.clear()
 
-            # Call parent cleanup
-            await super().cleanup()
-            
+            # Cancel all running tasks except current
+            tasks = [t for t in asyncio.all_tasks() 
+                    if t is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
 
