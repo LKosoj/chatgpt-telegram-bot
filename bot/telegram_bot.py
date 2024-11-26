@@ -1354,83 +1354,6 @@ class ChatGPTTelegramBot:
                 .build()
 
             self.application = application
-
-            # Store background tasks for cleanup
-            self._background_tasks = [
-                loop.create_task(self.buffer_data_checker()),
-                loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
-            ]
-
-            # Add handlers
-            handlers = [
-                CommandHandler('reset', self.reset),
-                CommandHandler('help', self.help),
-                CommandHandler('image', self.image),
-                CommandHandler('tts', self.tts),
-                CommandHandler('start', self.help),
-                CommandHandler('stats', self.stats),
-                CommandHandler('resend', self.resend),
-                CommandHandler('model', self.model),
-                CommandHandler(
-                    'chat', self.prompt, 
-                    filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
-                ),
-                MessageHandler(
-                    filters.PHOTO | filters.Document.IMAGE,
-                    self.vision
-                ),
-                MessageHandler(
-                    filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
-                    filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
-                    self.transcribe
-                ),
-                MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt),
-                InlineQueryHandler(
-                    self.inline_query,
-                    chat_types=[
-                        constants.ChatType.GROUP,
-                        constants.ChatType.SUPERGROUP,
-                        constants.ChatType.PRIVATE
-                    ]
-                ),
-                CallbackQueryHandler(self.handle_callback_inline_query)
-            ]
-
-            for handler in handlers:
-                application.add_handler(handler)
-
-            application.add_error_handler(error_handler)
-            
-            # Run the bot
-            application.run_polling()
-
-        except KeyboardInterrupt:
-            logging.info("Bot stopped by user")
-        except Exception as e:
-            logging.error(f"Error running bot: {e}")
-            raise
-        finally:
-            # Ensure proper cleanup
-            if loop.is_running():
-                loop.run_until_complete(self.cleanup())
-            loop.close()    
-    
-        """
-        Runs the bot indefinitely until the user presses Ctrl+C.
-        """
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            application = ApplicationBuilder() \
-                .token(self.config['token']) \
-                .proxy_url(self.config['proxy']) \
-                .get_updates_proxy_url(self.config['proxy']) \
-                .post_init(self.post_init) \
-                .concurrent_updates(True) \
-                .build()
-
-            self.application = application
             loop.create_task(self.buffer_data_checker())
             loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
             application.add_handler(CommandHandler('reset', self.reset))
@@ -1465,3 +1388,4 @@ class ChatGPTTelegramBot:
             loop = asyncio.get_event_loop()
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
+                                
