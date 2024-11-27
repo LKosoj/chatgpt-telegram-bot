@@ -142,6 +142,7 @@ class OpenAIHelper:
         self.user_models = self.load_user_models()
         self.user_id = ''
         self.message_id = ''
+        self.message_ids = dict[int: list] = {}
 
     def load_user_models(self):
         try:
