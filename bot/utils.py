@@ -13,7 +13,6 @@ from telegram.ext import CallbackContext, ContextTypes
 
 from usage_tracker import UsageTracker
 
-
 def message_text(message: Message) -> str:
     """
     Returns the text of a message, excluding any bot commands.
@@ -27,7 +26,6 @@ def message_text(message: Message) -> str:
         message_txt = message_txt.replace(text, '').strip()
 
     return message_txt if len(message_txt) > 0 else ''
-
 
 async def is_user_in_group(update: Update, context: CallbackContext, user_id: int) -> bool:
     """
@@ -44,7 +42,6 @@ async def is_user_in_group(update: Update, context: CallbackContext, user_id: in
     except Exception as e:
         raise e
 
-
 def get_thread_id(update: Update) -> int | None:
     """
     Gets the message thread id for the update, if any
@@ -52,7 +49,6 @@ def get_thread_id(update: Update) -> int | None:
     if update.effective_message and update.effective_message.is_topic_message:
         return update.effective_message.message_thread_id
     return None
-
 
 def get_stream_cutoff_values(update: Update, content: str) -> int:
     """
@@ -65,7 +61,6 @@ def get_stream_cutoff_values(update: Update, content: str) -> int:
     return 90 if len(content) > 1000 else 45 if len(content) > 200 \
         else 25 if len(content) > 50 else 15
 
-
 def is_group_chat(update: Update) -> bool:
     """
     Checks if the message was sent from a group chat
@@ -77,13 +72,11 @@ def is_group_chat(update: Update) -> bool:
         constants.ChatType.SUPERGROUP
     ]
 
-
 def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     """
     Splits a string into chunks of a given size.
     """
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
 
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
                               chat_action: constants.ChatAction = "", is_inline=False):
@@ -100,7 +93,6 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
             await asyncio.wait_for(asyncio.shield(task), 4.5)
         except asyncio.TimeoutError:
             pass
-
 
 async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: int | None,
                                   message_id: str, text: str, markdown: bool = True, is_inline: bool = False):
@@ -140,13 +132,11 @@ async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: i
         logging.warning(str(e))
         raise e
 
-
 async def error_handler(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles errors in the telegram-python-bot library.
     """
     logging.error(f'Exception while handling an update: {context.error}')
-
 
 async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False) -> bool:
     """
@@ -176,7 +166,6 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
                      f'(id: {user_id}) are not allowed')
     return False
 
-
 def is_admin(config, user_id: int, log_no_admin=False) -> bool:
     """
     Checks if the user is the admin of the bot.
@@ -194,7 +183,6 @@ def is_admin(config, user_id: int, log_no_admin=False) -> bool:
         return True
 
     return False
-
 
 def get_user_budget(config, user_id) -> float | None:
     """
@@ -224,7 +212,6 @@ def get_user_budget(config, user_id) -> float | None:
             return 0.0
         return float(user_budgets[user_index])
     return None
-
 
 def get_remaining_budget(config, usage, update: Update, is_inline=False) -> float:
     """
@@ -260,7 +247,6 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
     cost = usage['guests'].get_current_cost()[budget_cost_map[budget_period]]
     return config['guest_budget'] - cost
 
-
 def is_within_budget(config, usage, update: Update, is_inline=False) -> bool:
     """
     Checks if the user reached their usage limit.
@@ -277,7 +263,6 @@ def is_within_budget(config, usage, update: Update, is_inline=False) -> bool:
         usage[user_id] = UsageTracker(user_id, name)
     remaining_budget = get_remaining_budget(config, usage, update, is_inline=is_inline)
     return remaining_budget > 0
-
 
 def add_chat_request_to_usage_tracker(usage, config, user_id, used_tokens):
     """
@@ -313,7 +298,6 @@ def get_reply_to_message_id(config, update: Update):
         return update.message.message_id
     return None
 
-
 def is_direct_result(response: any) -> bool:
     """
     Checks if the dict contains a direct result that can be sent directly to the user
@@ -328,7 +312,6 @@ def is_direct_result(response: any) -> bool:
             return False
     else:
         return response.get('direct_result', False)
-
 
 async def handle_direct_result(config, update: Update, response: any):
     """
@@ -363,7 +346,6 @@ async def handle_direct_result(config, update: Update, response: any):
     if format == 'path':
         cleanup_intermediate_files(response)
 
-
 def cleanup_intermediate_files(response: any):
     """
     Deletes intermediate files created by plugins
@@ -378,7 +360,6 @@ def cleanup_intermediate_files(response: any):
     if format == 'path':
         if os.path.exists(value):
             os.remove(value)
-
 
 # Function to encode the image
 def encode_image(fileobj):
