@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Dict, Optional
-from venv import logger
 import openai
 import numpy as np
 import pandas as pd
@@ -48,7 +47,7 @@ def handle_exceptions(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            logger.exception(f"Ошибка в {func.__name__}: {str(e)}")
+            logging.exception(f"Ошибка в {func.__name__}: {str(e)}")
             return None
     return wrapper
 
@@ -105,7 +104,7 @@ class CodeInterpreter:
             )
             return response["choices"][0]["message"]["content"]
         except openai.error.OpenAIError as e:
-            logger.error(f"Ошибка OpenAI API: {e}")
+            logging.error(f"Ошибка OpenAI API: {e}")
             return None
 
     @handle_exceptions
@@ -184,14 +183,14 @@ class CodeInterpreter:
                 return exec_locals
                 
         except TimeoutException as e:
-            logger.error(str(e))
+            logging.error(str(e))
         except ModuleNotFoundError as e:
             missing_package = str(e).split("'")[1]
-            logger.info(f"Устанавливаем отсутствующую библиотеку: {missing_package}")
+            logging.info(f"Устанавливаем отсутствующую библиотеку: {missing_package}")
             if self.install_package(missing_package):
                 return self._execute_code(code)  # Повторная попытка после установки
         except Exception as e:
-            logger.exception(f"Ошибка выполнения кода: {e}")
+            logging.exception(f"Ошибка выполнения кода: {e}")
         return None
 
     @handle_exceptions
@@ -214,7 +213,7 @@ class CodeInterpreter:
                         for i, fig_num in enumerate(figure_numbers, start=1):
                             plt.figure(fig_num)
                             output_path = f"generated_plot_{i}.png"
-                            self.save_plot(lambda: None, output_path)
+                            self.save_plot(plt.savefig, output_path)  # Исправление
                             logging.info(f"График {i} сохранён в {output_path}")
                     
                     return result
@@ -240,9 +239,10 @@ class CodeInterpreter:
                 logging.error("Неподдерживаемый формат файла.")
                 return None
             logging.info("Данные успешно загружены.")
+            return self.data
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {e}")
-        return self.data
+            return None
 
     @handle_exceptions
     def validate_data(self):
@@ -264,16 +264,15 @@ class CodeInterpreter:
             logging.info(f"Результаты сохранены в {output_path}")
         except Exception as e:
             logging.error(f"Ошибка при сохранении результатов: {e}")
+            return None
 
-    @handle_exceptions
-    def save_plot(self, plot_func, output_path="plot.png"):
-        """Сохраняет график, сгенерированный функцией."""
+    def save_plot(self, plot_func, *args, **kwargs):
+        """Сохраняет график, полученный через переданную функцию."""
         try:
-            plot_func()
-            plt.savefig(output_path)
-            logging.info(f"График сохранён в {output_path}")
+            plot_func(*args, **kwargs)
+            logging.info(f"График сохранён успешно.")
         except Exception as e:
-            logging.error(f"Ошибка при сохранении графика: {e}")
+            logging.error(f"Ошибка сохранения графика: {e}")
 
     @handle_exceptions
     def advanced_visualization(self, output_path="interactive_plots.html"):
