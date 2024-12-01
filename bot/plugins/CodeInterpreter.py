@@ -215,7 +215,8 @@ class CodeInterpreter:
                             output_path = f"generated_plot_{i}.png"
                             self.save_plot(plt.savefig, output_path)  # Исправление
                             logging.info(f"График {i} сохранён в {output_path}")
-                    
+                        plt.close("all")
+
                     return result
                 else:
                     logging.info("Пытаемся сгенерировать исправленный код...")
@@ -369,6 +370,10 @@ class CodeInterpreter:
         self.load_data(data_path)
 
         if not self.validate_data():
+            return
+
+        if not code_prompt:
+            logging.error("Не задан код для выполнения")
             return
 
         # Генерируем код
