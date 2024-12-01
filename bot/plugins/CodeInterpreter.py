@@ -1,8 +1,11 @@
 from contextlib import contextmanager
+import datetime
 from functools import wraps
+import os
 from typing import Any, Dict, Optional
-import openai
+from openai
 import numpy as np
+import openai
 import pandas as pd
 import subprocess
 import sys
@@ -11,6 +14,7 @@ import signal
 import matplotlib.pyplot as plt
 import ast
 import plotly.express as px
+from dotenv import load_dotenv
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -60,7 +64,11 @@ class CodeInterpreter:
             api_key (str): API ключ OpenAI
             timeout_seconds (int): Тайм-аут выполнения кода в секундах
         """
-        openai.api_key = 'your_openai_api_key'  # Укажите ваш API ключ OpenAI
+        load_dotenv()
+        self.api_key = 'your_openai_api_key'  # Укажите ваш API ключ OpenAI
+        openai.api_base = 'https://api.vsegpt.ru/v1'
+        self.client = openai.AsyncOpenAI(api_key=self.api_key, http_client=http_client, timeout=300.0, max_retries=3)
+
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 10
         self.supported_formats = {
@@ -93,8 +101,8 @@ class CodeInterpreter:
         """
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "Ты - опытный Python разработчик."},
                     {"role": "user", "content": enhanced_prompt}
@@ -102,8 +110,8 @@ class CodeInterpreter:
                 temperature=0.7,
                 max_tokens=1500
             )
-            return response["choices"][0]["message"]["content"]
-        except openai.error.OpenAIError as e:
+            return response.choices[0].message.content
+        except Exception as e:
             logging.error(f"Ошибка OpenAI API: {e}")
             return None
 
@@ -354,11 +362,11 @@ class CodeInterpreter:
     def explain_code(self, code):
         """Генерирует объяснение для заданного кода."""
         try:
-            explanation = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}]
             )
-            explanation_text = explanation["choices"][0]["message"]["content"]
+            explanation_text = response.choices[0].message.content
             logging.info("Объяснение сгенерировано.")
             return explanation_text
         except Exception as e:
@@ -398,3 +406,65 @@ class CodeInterpreter:
             self.advanced_visualization()
         else:
             logging.error("Все попытки выполнения кода завершились неудачей.")
+
+
+
+
+
+if __name__ == "__main__":
+    # Инициализация интерпретатора 
+    interpreter = CodeInterpreter()
+
+    # Создать случайные данные о продажах
+    np.random.seed(42)
+
+    # Генерируем даты за последний год
+    start_date = datetime.datetime(2023, 1, 1)
+    dates = [start_date + datetime.timedelta(days=x) for x in range(365)]
+
+    # Создаем список продуктов
+    products = ['Laptop', 'Smartphone', 'Tablet', 'Headphones', 'Smartwatch']
+    regions = ['North', 'South', 'East', 'West', 'Central']
+
+    # Генерируем случайные данные
+    data = {
+        'Date': np.repeat(dates, 5),
+        'Product': np.tile(np.repeat(products, 1), 365),
+        'Region': np.tile(regions, 365),
+        'Quantity': np.random.randint(1, 50, 365 * 5),
+        'Price': np.random.uniform(100, 2000, 365 * 5).round(2),
+    }
+
+    # Создаем DataFrame и добавляем вычисляемые поля
+    df = pd.DataFrame(data)
+    df['Revenue'] = df['Quantity'] * df['Price']
+    df['Month'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m')
+
+    # Сохраняем в CSV
+    df.to_csv('data/sales_data.csv', index=False)
+
+    print("Пример структуры созданных данных:")
+    print(df.head())
+    print("\nОписание данных:")
+    print(df.describe())
+
+    # Путь к файлу с данными
+    data_path = "data/sales_data.csv"
+    
+    # Текстовый запрос для генерации кода
+    code_prompt = """
+    Проанализировать данные о продажах:
+    1. Построить график продаж по месяцам
+    2. Рассчитать общую выручку
+    3. Найти топ-3 продукта по количеству продаж
+    4. Вывести статистику по регионам
+    """
+
+    # Запуск анализа
+    interpreter.execute(data_path, code_prompt)
+
+    # Результаты будут сохранены в:
+    # - results.txt (текстовые результаты)
+    # - generated_plot_*.png (сгенерированные графики)
+    # - interactive_plots.html (интерактивные графики)
+    # - report.txt (полный отчет)
