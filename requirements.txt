@@ -19,3 +19,7 @@ youtube-transcript-api==0.6.2
 asyncpg==0.29.0
 google-api-python-client==2.140.0
 pyswisseph
+plotly
+numpy
+pandas
+matplotlib
