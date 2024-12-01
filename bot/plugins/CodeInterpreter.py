@@ -378,6 +378,9 @@ class CodeInterpreter:
 
         # Генерируем код
         generated_code = self.generate_code(code_prompt)
+        if not generated_code:
+            logging.error("Ошибка генерации кода")
+            return
 
         # Объясняем код
         explanation = self.explain_code(generated_code)
