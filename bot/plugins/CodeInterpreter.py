@@ -98,10 +98,11 @@ class CodeInterpreter:
         - Эффективным
         - Хорошо документированным
         - С обработкой ошибок
-        - Имена колонок необходимо получить из переданного файла, опираясь на тип файла, названия колонок case sensitive, это важно!
         - Код должен содержать if __name__ == "__main__": для получения результата
         - В ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!
+        - Если передан файл на вход, необходимо сгенерировать функцию для получения имен колонок из файла, названия колонок case sensitive. Во всех дальнейших расчетах использовать только имена этих колонок, других колонок не придумывать, это важно!
         - Если в коде используется построение графиков - сделай их сохранение в каталог 'plots'
+
         Задача:
         {prompt}
         """
@@ -225,52 +226,13 @@ class CodeInterpreter:
                     "__captured_values__": {}
                 }
                 exec_locals = {}
-                
-                modified_code = code + """
-    try:
-        # Сохраняем все локальные переменные, кроме служебных
-        for var_name, var_value in locals().items():
-            if not var_name.startswith('_'):
-                __captured_values__[var_name] = var_value
-    except Exception as e:
-        print(f"Ошибка при сохранении переменных: {str(e)}")
-    """
-                
+                                
                 if "rm -rf" in code or "os.system" in code:
                     raise SecurityError("Обнаружен потенциально опасный код")
                     
-                try:
-                    sys.stdout = output_buffer
-                    
-                    # Оборачиваем выполнение кода в try-except
-                    try:
-                        logging.info(f"{modified_code}")
-                        exec(modified_code, exec_globals, exec_locals)
-                    except Exception as code_error:
-                        # Записываем ошибку в output
-                        print(f"\nОшибка выполнения кода: {str(code_error)}")
-                        logging.error(f"Ошибка выполнения кода: {str(code_error)}")
-                        # Добавляем информацию об ошибке в результаты
-                        return {
-                            'output': output_buffer.getvalue(),
-                            'error': str(code_error),
-                            'variables': exec_globals['__captured_values__'],
-                            'locals': {k: v for k, v in exec_locals.items() 
-                                    if not k.startswith('_') and not callable(v)}
-                        }
-                    
-                    # Если ошибок нет, возвращаем обычный результат
-                    return {
-                        'output': output_buffer.getvalue(),
-                        'variables': exec_globals['__captured_values__'],
-                        'locals': {k: v for k, v in exec_locals.items() 
-                                if not k.startswith('_') and not callable(v)}
-                    }
-                    
-                finally:
-                    sys.stdout = original_stdout
-                    output_buffer.close()
-
+                logging.info(f"{code}")
+                exec(code, exec_globals, exec_locals)
+                return exec_locals
         except TimeoutException as e:
             logging.error(str(e))
             return {'error': str(e), 'output': 'Превышен лимит времени выполнения'}
@@ -494,14 +456,14 @@ class CodeInterpreter:
             logging.error("Ошибка генерации кода")
             return
 
+        # Выполняем код
+        result = await self.execute_code(generated_code)
+
         # Объясняем код
         explanation = await self.explain_code(generated_code)
         #if explanation:
         #    print("Объяснение сгенерированного кода:")
         #    print(explanation)
-
-        # Выполняем код
-        result = await self.execute_code(generated_code)
 
         if result is not None:
             logging.info("Код успешно выполнен.")
@@ -510,7 +472,6 @@ class CodeInterpreter:
             self.advanced_visualization()
         else:
             logging.error("Все попытки выполнения кода завершились неудачей.")
-
 
 
 
