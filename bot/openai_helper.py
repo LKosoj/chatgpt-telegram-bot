@@ -2,6 +2,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+from typing import Dict, List
 
 import tiktoken
 
@@ -130,6 +131,7 @@ class OpenAIHelper:
         
         if config['openai_base'] != '' :
             openai.api_base = config['openai_base']
+        self.api_key = config['api_key']
         self.client = openai.AsyncOpenAI(api_key=config['api_key'], http_client=http_client, timeout=300.0, max_retries=3)
         self.config = config
         self.plugin_manager = plugin_manager
@@ -142,7 +144,9 @@ class OpenAIHelper:
         self.user_models = self.load_user_models()
         self.user_id = ''
         self.message_id = ''
-        self.message_ids = dict[int: list] = {}
+        self.message_ids: Dict[int, List] = {}
+        self.last_image_file_ids = {}
+        self.bot = None
 
     def load_user_models(self):
         try:
@@ -179,6 +183,10 @@ class OpenAIHelper:
         :return: The answer from the model and the number of tokens used
         """
         try:
+            # Add the last image file ID to the context if available
+            if chat_id in self.last_image_file_ids:
+                # The model can now access this through the function calls
+                self.last_image_file_id = self.last_image_file_ids[chat_id]
             plugins_used = ()
             if request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
@@ -220,6 +228,10 @@ class OpenAIHelper:
         except Exception as e:
             logging.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
             raise
+        finally:
+            # Clean up after response is generated
+            if hasattr(self, 'last_image_file_id'):
+                delattr(self, 'last_image_file_id')
 
     async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None):
         """
@@ -318,7 +330,7 @@ class OpenAIHelper:
             logging.info(f"Model: {model_to_use}")
 
             common_args = {
-                'model': model_to_use if not self.conversations_vision[chat_id] else self.config['vision_model'],
+                'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
                 'extra_headers': { "X-Title": "tgBot" },
             }
@@ -864,25 +876,27 @@ class OpenAIHelper:
         else:
             raise NotImplementedError(f"""unknown parameter detail={detail} for model {model}.""")
 
-    # No longer works as of July 21st 2023, as OpenAI has removed the billing API
-    # def get_billing_current_month(self):
-    #     """Gets billed usage for current month from OpenAI API.
-    #
-    #     :return: dollar amount of usage this month
-    #     """
-    #     headers = {
-    #         "Authorization": f"Bearer {openai.api_key}"
-    #     }
-    #     # calculate first and last day of current month
-    #     today = date.today()
-    #     first_day = date(today.year, today.month, 1)
-    #     _, last_day_of_month = monthrange(today.year, today.month)
-    #     last_day = date(today.year, today.month, last_day_of_month)
-    #     params = {
-    #         "start_date": first_day,
-    #         "end_date": last_day
-    #     }
-    #     response = requests.get("https://api.openai.com/dashboard/billing/usage", headers=headers, params=params)
-    #     billing_data = json.loads(response.text)
-    #     usage_month = billing_data["total_usage"] / 100  # convert cent amount to dollars
-    #     return usage_month
+    async def get_file_data(self, file_id: str) -> bytes:
+        """
+        Получает данные файла из Telegram по file_id
+        """
+        if not hasattr(self, 'bot'):
+            raise ValueError("Bot instance not available")
+        
+        try:
+            file = await self.bot.get_file(file_id)
+            return await file.download_as_bytearray()
+        except Exception as e:
+            logging.error(f"Error downloading file: {e}")
+            raise
+
+    def set_last_image_file_id(self, chat_id: int, file_id: str):
+        """Store the last image file ID for the chat"""
+        self.last_image_file_ids = getattr(self, 'last_image_file_ids', {})
+        self.last_image_file_ids[chat_id] = file_id
+
+    def get_last_image_file_id(self, chat_id: int) -> str | None:
+        """
+        Gets the last image file ID for a specific chat
+        """
+        return self.last_image_file_ids.get(chat_id)

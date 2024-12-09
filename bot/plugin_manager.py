@@ -1,6 +1,7 @@
 import json
 import logging
 
+from plugins.haiper_image_to_video import HaiperImageToVideoPlugin
 from plugins.reaction import ReactionPlugin
 from plugins.website_content import WebsiteContentPlugin
 from plugins.youtube_transcript import YoutubeTranscriptPlugin
@@ -28,7 +29,6 @@ from plugins.reminders import RemindersPlugin
 from plugins.language_learning import LanguageLearningPlugin
 from plugins.task_management import TaskManagementPlugin
 from plugins.conversation_analytics import ConversationAnalyticsPlugin
-from plugins.natal_chart import NatalCardPlugin
 
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 
@@ -67,7 +67,7 @@ class PluginManager:
             'language_learning': LanguageLearningPlugin,
             'task_management': TaskManagementPlugin,
             'conversation_analytics': ConversationAnalyticsPlugin,
-            'natal_chart': NatalCardPlugin,
+            'haiper_image_to_video': HaiperImageToVideoPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 

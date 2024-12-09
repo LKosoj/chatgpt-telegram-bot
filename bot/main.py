@@ -7,7 +7,6 @@ from plugin_manager import PluginManager
 from openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
 
-
 def main():
     # Read .env file
     load_dotenv()

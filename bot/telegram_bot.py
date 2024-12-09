@@ -46,14 +46,15 @@ class ChatGPTTelegramBot:
 
         self.config = config
         self.openai = openai
-
+        self.openai.bot = None
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
-            BotCommand(command='model', description=localized_text('change_model', bot_language))
+            BotCommand(command='model', description=localized_text('change_model', bot_language)),
+            BotCommand(command='animate', description='Convert last uploaded image to video animation')
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -73,6 +74,8 @@ class ChatGPTTelegramBot:
         self.inline_queries_cache = {}
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
+        # Add new tracking for last image
+        self.last_image = {}  # {chat_id: file_id}
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -435,7 +438,7 @@ class ChatGPTTelegramBot:
             filename_mp3 = f'{filename}.mp3'
             bot_language = self.config['bot_language']
             try:
-                media_file = await context.bot.get_file(update.message.effective_attachment.file_id)
+                media_file = await self.application.bot.get_file(update.message.effective_attachment.file_id)
                 await media_file.download_to_drive(filename)
             except Exception as e:
                 logging.exception(e)
@@ -546,185 +549,209 @@ class ChatGPTTelegramBot:
 
         chat_id = update.effective_chat.id
         prompt = update.message.caption
+        
+        logging.info(f"Vision handler called for chat_id: {chat_id}")
 
-        if is_group_chat(update):
-            if self.config['ignore_group_vision']:
-                logging.info('Vision coming from group chat, ignoring...')
-                return
-            else:
-                trigger_keyword = self.config['group_trigger_keyword']
-                if (prompt is None and trigger_keyword != '') or \
-                        (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
-                    logging.info('Vision coming from group chat with wrong keyword, ignoring...')
+        # Store the last image file_id for potential tool use
+        if len(update.message.photo) > 0:
+            file_id = update.message.photo[-1].file_id
+            logging.info(f"Storing photo file_id: {file_id}")
+            self.last_image[chat_id] = file_id
+            self.openai.set_last_image_file_id(chat_id, file_id)
+        elif update.message.document and update.message.document.mime_type.startswith('image/'):
+            file_id = update.message.document.file_id
+            logging.info(f"Storing document file_id: {file_id}")
+            self.last_image[chat_id] = file_id
+            self.openai.set_last_image_file_id(chat_id, file_id)
+
+        logging.info(f"Stored last_image: {self.last_image}")
+        logging.info(f"Stored in OpenAI helper: {self.openai.last_image_file_ids}")
+        # Only proceed with vision if there's a caption or it's a valid vision request
+        if prompt or (is_group_chat(update) and not self.config['ignore_group_vision']):
+            if is_group_chat(update):
+                if self.config['ignore_group_vision']:
+                    logging.info('Vision coming from group chat, ignoring...')
                     return
+                else:
+                    trigger_keyword = self.config['group_trigger_keyword']
+                    if (prompt is None and trigger_keyword != '') or \
+                            (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
+                        logging.info('Vision coming from group chat with wrong keyword, ignoring...')
+                        return
 
-        image = update.message.effective_attachment[-1]
+            image = update.message.effective_attachment[-1]
 
-        async def _execute():
-            bot_language = self.config['bot_language']
-            try:
-                media_file = await context.bot.get_file(image.file_id)
-                temp_file = io.BytesIO(await media_file.download_as_bytearray())
-            except Exception as e:
-                logging.exception(e)
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                    text=(
-                        f"{localized_text('media_download_fail', bot_language)[0]}: "
-                        f"{str(e)}. {localized_text('media_download_fail', bot_language)[1]}"
-                    ),
-                    parse_mode=constants.ParseMode.MARKDOWN
-                )
-                return
-
-            # convert jpg from telegram to png as understood by openai
-
-            temp_file_png = io.BytesIO()
-
-            try:
-                original_image = Image.open(temp_file)
-
-                original_image.save(temp_file_png, format='PNG')
-                logging.info(f'New vision request received from user {update.message.from_user.name} '
-                             f'(id: {update.message.from_user.id})')
-
-            except Exception as e:
-                logging.exception(e)
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                    text=localized_text('media_type_fail', bot_language)
-                )
-
-            user_id = update.message.from_user.id
-            if user_id not in self.usage:
-                self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
-
-            if self.config['stream']:
-
-                stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png,
-                                                                     prompt=prompt)
-                i = 0
-                prev = ''
-                sent_message = None
-                backoff = 0
-                stream_chunk = 0
-
-                async for content, tokens in stream_response:
-                    if is_direct_result(content):
-                        return await handle_direct_result(self.config, update, content)
-
-                    if len(content.strip()) == 0:
-                        continue
-
-                    stream_chunks = split_into_chunks(content)
-                    if len(stream_chunks) > 1:
-                        content = stream_chunks[-1]
-                        if stream_chunk != len(stream_chunks) - 1:
-                            stream_chunk += 1
-                            try:
-                                await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                              stream_chunks[-2])
-                            except:
-                                pass
-                            try:
-                                sent_message = await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    text=content if len(content) > 0 else "..."
-                                )
-                            except:
-                                pass
-                            continue
-
-                    cutoff = get_stream_cutoff_values(update, content)
-                    cutoff += backoff
-
-                    if i == 0:
-                        try:
-                            if sent_message is not None:
-                                await context.bot.delete_message(chat_id=sent_message.chat_id,
-                                                                 message_id=sent_message.message_id)
-                            sent_message = await update.effective_message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                text=content,
-                            )
-                        except:
-                            continue
-
-                    elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
-                        prev = content
-
-                        try:
-                            use_markdown = tokens != 'not_finished'
-                            await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                          text=content, markdown=use_markdown)
-
-                        except RetryAfter as e:
-                            backoff += 5
-                            await asyncio.sleep(e.retry_after)
-                            continue
-
-                        except TimedOut:
-                            backoff += 5
-                            await asyncio.sleep(0.5)
-                            continue
-
-                        except Exception:
-                            backoff += 5
-                            continue
-
-                        await asyncio.sleep(0.01)
-
-                    i += 1
-                    if tokens != 'not_finished':
-                        total_tokens = int(tokens)
-
-            else:
-
+            async def _execute():
+                bot_language = self.config['bot_language']
                 try:
-                    interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png,
-                                                                                     prompt=prompt)
-
-                    try:
-                        await update.effective_message.reply_text(
-                            message_thread_id=get_thread_id(update),
-                            reply_to_message_id=get_reply_to_message_id(self.config, update),
-                            text=interpretation,
-                            parse_mode=constants.ParseMode.MARKDOWN
-                        )
-                    except BadRequest:
-                        try:
-                            await update.effective_message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                text=interpretation
-                            )
-                        except Exception as e:
-                            logging.exception(e)
-                            await update.effective_message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
-                                parse_mode=constants.ParseMode.MARKDOWN
-                            )
+                    media_file = await self.application.bot.get_file(image.file_id)
+                    temp_file = io.BytesIO(await media_file.download_as_bytearray())
                 except Exception as e:
                     logging.exception(e)
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
-                        text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
+                        text=(
+                            f"{localized_text('media_download_fail', bot_language)[0]}: "
+                            f"{str(e)}. {localized_text('media_download_fail', bot_language)[1]}"
+                        ),
                         parse_mode=constants.ParseMode.MARKDOWN
                     )
-            vision_token_price = self.config['vision_token_price']
-            self.usage[user_id].add_vision_tokens(total_tokens, vision_token_price)
+                    return
 
-            allowed_user_ids = self.config['allowed_user_ids'].split(',')
-            if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
-                self.usage["guests"].add_vision_tokens(total_tokens, vision_token_price)
+                # convert jpg from telegram to png as understood by openai
 
-        await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+                temp_file_png = io.BytesIO()
+
+                try:
+                    original_image = Image.open(temp_file)
+
+                    original_image.save(temp_file_png, format='PNG')
+                    logging.info(f'New vision request received from user {update.message.from_user.name} '
+                                f'(id: {update.message.from_user.id})')
+
+                except Exception as e:
+                    logging.exception(e)
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        reply_to_message_id=get_reply_to_message_id(self.config, update),
+                        text=localized_text('media_type_fail', bot_language)
+                    )
+
+                user_id = update.message.from_user.id
+                if user_id not in self.usage:
+                    self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+
+                if self.config['stream']:
+
+                    stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png,
+                                                                        prompt=prompt)
+                    i = 0
+                    prev = ''
+                    sent_message = None
+                    backoff = 0
+                    stream_chunk = 0
+
+                    async for content, tokens in stream_response:
+                        if is_direct_result(content):
+                            return await handle_direct_result(self.config, update, content)
+
+                        if len(content.strip()) == 0:
+                            continue
+
+                        stream_chunks = split_into_chunks(content)
+                        if len(stream_chunks) > 1:
+                            content = stream_chunks[-1]
+                            if stream_chunk != len(stream_chunks) - 1:
+                                stream_chunk += 1
+                                try:
+                                    await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
+                                                                stream_chunks[-2])
+                                except:
+                                    pass
+                                try:
+                                    sent_message = await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        text=content if len(content) > 0 else "..."
+                                    )
+                                except:
+                                    pass
+                                continue
+
+                        cutoff = get_stream_cutoff_values(update, content)
+                        cutoff += backoff
+
+                        if i == 0:
+                            try:
+                                if sent_message is not None:
+                                    await context.bot.delete_message(chat_id=sent_message.chat_id,
+                                                                    message_id=sent_message.message_id)
+                                sent_message = await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                    text=content,
+                                )
+                            except:
+                                continue
+
+                        elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
+                            prev = content
+
+                            try:
+                                use_markdown = tokens != 'not_finished'
+                                await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
+                                                            text=content, markdown=use_markdown)
+
+                            except RetryAfter as e:
+                                backoff += 5
+                                await asyncio.sleep(e.retry_after)
+                                continue
+
+                            except TimedOut:
+                                backoff += 5
+                                await asyncio.sleep(0.5)
+                                continue
+
+                            except Exception:
+                                backoff += 5
+                                continue
+
+                            await asyncio.sleep(0.01)
+
+                        i += 1
+                        if tokens != 'not_finished':
+                            total_tokens = int(tokens)
+
+                else:
+
+                    try:
+                        interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png,
+                                                                                        prompt=prompt)
+
+                        try:
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                text=interpretation,
+                                parse_mode=constants.ParseMode.MARKDOWN
+                            )
+                        except BadRequest:
+                            try:
+                                await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                    text=interpretation
+                                )
+                            except Exception as e:
+                                logging.exception(e)
+                                await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                    text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
+                                    parse_mode=constants.ParseMode.MARKDOWN
+                                )
+                    except Exception as e:
+                        logging.exception(e)
+                        await update.effective_message.reply_text(
+                            message_thread_id=get_thread_id(update),
+                            reply_to_message_id=get_reply_to_message_id(self.config, update),
+                            text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
+                            parse_mode=constants.ParseMode.MARKDOWN
+                        )
+                vision_token_price = self.config['vision_token_price']
+                self.usage[user_id].add_vision_tokens(total_tokens, vision_token_price)
+
+                allowed_user_ids = self.config['allowed_user_ids'].split(',')
+                if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
+                    self.usage["guests"].add_vision_tokens(total_tokens, vision_token_price)
+
+            await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+        else:
+            # If no caption, just acknowledge receipt of image
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="I've received your image. You can now ask me to process it or animate it."
+            )        
 
     async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -739,6 +766,25 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         prompt = message_text(update.message)
         message_id = update.message.message_id
+
+        logging.info(f"Prompt handler called for chat_id: {chat_id}")
+        logging.info(f"Last image in bot: {self.last_image.get(chat_id)}")
+        logging.info(f"Last image in OpenAI helper: {self.openai.get_last_image_file_id(chat_id)}")
+
+        # Add the last image file_id to the context if available
+        if chat_id in self.last_image:
+            self.openai.set_last_image_file_id(chat_id, self.last_image[chat_id])
+            # Add image context to the conversation
+            #if not hasattr(self.openai, 'conversations'):
+            #    self.openai.conversations = {}
+            #if chat_id not in self.openai.conversations:
+            #    self.openai.conversations[chat_id] = []
+            # Add image context as system message
+            #self.openai.conversations[chat_id].append({
+            #    "role": "user",
+            #    "content": f"User has uploaded an image with file_id: {self.last_image[chat_id]}"
+            #})
+
 
         async with self.buffer_lock:
             # Инициализируем буфер для чата, если его нет
@@ -1368,6 +1414,7 @@ class ChatGPTTelegramBot:
                 .build()
 
             self.application = application
+            self.openai.bot = application.bot
             loop.create_task(self.buffer_data_checker())
             loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
             application.add_handler(CommandHandler('reset', self.reset))
@@ -1378,6 +1425,7 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('stats', self.stats))
             application.add_handler(CommandHandler('resend', self.resend))
             application.add_handler(CommandHandler('model', self.model))
+            application.add_handler(CommandHandler('animate', self.animate))  # Add new handler
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
@@ -1402,3 +1450,82 @@ class ChatGPTTelegramBot:
             loop = asyncio.get_event_loop()
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
+
+    async def animate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Convert the last uploaded image to video animation.
+        """
+        if not await self.check_allowed_and_within_budget(update, context):
+            return
+
+        chat_id = update.effective_chat.id
+        user_id = update.message.from_user.id
+        animation_prompt = message_text(update.message)
+
+        if chat_id not in self.last_image:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Please upload an image first, then use the /animate command."
+            )
+            return
+
+        logging.info(f'New animation request received from user {update.message.from_user.name} '
+                    f'(id: {update.message.from_user.id})')
+
+        async def _execute():
+            try:
+                # Get the plugin instance
+                plugin = self.openai.plugin_manager.get_plugin('HaiperImageToVideo')
+                if not plugin:
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        text="Image to video conversion is not available. The plugin is not enabled."
+                    )
+                    return
+
+                # Execute the plugin function directly
+                response = await plugin.execute(
+                    'convert_image_to_video',
+                    self.openai,
+                    last_image_file_id=self.last_image[chat_id],
+                    prompt=animation_prompt
+                )
+
+                if isinstance(response, str):
+                    response = json.loads(response)
+
+                if isinstance(response, dict) and 'error' in response:
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        text=f"Error creating animation: {response['error']}"
+                    )
+                    return
+
+                # Handle the response based on its format
+                if isinstance(response, dict) and 'direct_result' in response:
+                    result = response['direct_result']
+                    if result['kind'] == 'video' and result['format'] == 'path':
+                        # Send the video file
+                        with open(result['value'], 'rb') as video_file:
+                            await update.effective_message.reply_video(
+                                video=video_file,
+                                message_thread_id=get_thread_id(update),
+                                caption="Here's your animated video!"
+                            )
+                        # Clean up the temporary file
+                        os.remove(result['value'])
+                else:
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        text="Unexpected response format from the animation service."
+                    )
+
+            except Exception as e:
+                logging.error(f"Error in animation process: {e}")
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text=f"Error creating animation: {str(e)}"
+                )
+
+        await wrap_with_indicator(update, context, _execute, constants.ChatAction.UPLOAD_VIDEO)
+        
