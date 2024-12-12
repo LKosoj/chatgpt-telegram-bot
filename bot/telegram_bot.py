@@ -39,10 +39,6 @@ class ChatGPTTelegramBot:
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
-        # Добавляем словарь для буферизации сообщений
-        self.message_buffer = {}
-        # Добавляем время ожидания для буфера (в секундах)
-        self.buffer_timeout = 1.0
 
         self.config = config
         self.openai = openai
@@ -72,7 +68,6 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
-        self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
         # Add new tracking for last image
         self.last_image = {}  # {chat_id: file_id}
@@ -785,105 +780,7 @@ class ChatGPTTelegramBot:
             #    "content": f"User has uploaded an image with file_id: {self.last_image[chat_id]}"
             #})
 
-
-        async with self.buffer_lock:
-            # Инициализируем буфер для чата, если его нет
-            if chat_id not in self.message_buffer:
-                self.message_buffer[chat_id] = {
-                    'messages': [],  # Очередь сообщений
-                    'processing': False,  # Флаг обработки
-                    'timer': None  # Таймер для обработки буфера
-                }
-
-            buffer_data = self.message_buffer[chat_id]
-            
-            # Добавляем сообщение в буфер
-            buffer_data['messages'].append({
-                'text': prompt,
-                'update': update,
-                'context': context,
-                'message_id': message_id,
-                'message_timestamp': update.message.date.timestamp()
-            })
-
-    async def process_buffer(self, chat_id: int):
-        """
-        Process all messages in the buffer sequentially, combining messages from the same user
-        within the buffer timeout period
-        """
-        try:
-            async with self.buffer_lock:
-                if chat_id not in self.message_buffer:
-                    return
-                
-                buffer_data = self.message_buffer[chat_id]
-                if buffer_data['processing']:
-                    return
-                    
-                buffer_data['processing'] = True
-                messages = buffer_data['messages']
-                buffer_data['messages'] = []
-
-            if not messages:
-                return
-
-            # Group messages by user_id and sort by timestamp
-            user_messages = {}
-            for msg in messages:
-                user_id = msg['update'].message.from_user.id
-                if user_id not in user_messages:
-                    user_messages[user_id] = []
-                user_messages[user_id].append(msg)
-
-            for user_msg_list in user_messages.values():
-                if not user_msg_list:
-                    continue
-
-                # Sort messages by timestamp
-                user_msg_list.sort(key=lambda x: x['message_timestamp'])
-                combined_messages = []
-                current_group = [user_msg_list[0]]
-                
-                for msg in user_msg_list[1:]:
-                    time_diff = msg['message_timestamp'] - current_group[-1]['message_timestamp']
-                    if time_diff <= self.buffer_timeout:
-                        current_group.append(msg)
-                    else:
-                        combined_messages.append(current_group)
-                        current_group = [msg]
-                
-                if current_group:
-                    combined_messages.append(current_group)
-
-                # Process each group
-                for msg_group in combined_messages:
-                    combined_text = " ".join(msg['text'] for msg in msg_group)
-                    first_msg = msg_group[0]
-                    
-                    try:
-                        await self.process_message(combined_text, first_msg['update'], first_msg['context'])
-                    except Exception as e:
-                        logging.error(f"Error processing message: {e}")
-                        continue
-
-                    await asyncio.sleep(0.1)  # Prevent flooding
-
-        except Exception as e:
-            logging.error(f"Error in process_buffer: {e}")
-        finally:
-            # Reset processing flag
-            async with self.buffer_lock:
-                if chat_id in self.message_buffer:
-                    self.message_buffer[chat_id]['processing'] = False
-                    
-    async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обрабатывает полное сообщение
-        """
-        chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
-        message_id = update.message.message_id  # Get message ID
-        self.last_message[chat_id] = prompt
         # Create a unique identifier for this chat request
         request_id = f"{chat_id}_{message_id}"
             
@@ -1313,7 +1210,6 @@ class ChatGPTTelegramBot:
         """
         Comprehensive cleanup:
         - Cancel all timers
-        - Clear message buffers
         - Stop background tasks
         - Close any open connections/resources
         """
@@ -1323,15 +1219,6 @@ class ChatGPTTelegramBot:
             if hasattr(self, '_background_tasks'):
                 tasks.extend(self._background_tasks)
             
-            # Get all buffer timers
-            async with self.buffer_lock:
-                for buffer_data in self.message_buffer.values():
-                    if buffer_data.get('timer'):
-                        tasks.append(buffer_data['timer'])
-                
-                # Clear message buffers
-                self.message_buffer.clear()
-
             # Cancel all tasks
             for task in tasks:
                 if not task.done():
@@ -1362,27 +1249,6 @@ class ChatGPTTelegramBot:
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
             raise
-
-    async def buffer_data_checker(self):
-        """
-        Periodically checks and processes buffered messages
-        """
-        while True:
-            try:
-                async with self.buffer_lock:
-                    for chat_id, buffer_data in list(self.message_buffer.items()):  # Create copy for iteration                
-                        if not buffer_data['processing'] and buffer_data['messages']:
-                            if buffer_data.get('timer'):
-                                buffer_data['timer'].cancel()
-                            buffer_data['timer'] = asyncio.create_task(
-                                self.process_buffer(chat_id)
-                            )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logging.error(f"Error in buffer data checker: {e}")
-            
-            await asyncio.sleep(1)
 
     async def start_reminder_checker(self, plugin_manager):
         reminders_plugin = plugin_manager.get_plugin('reminders')
@@ -1415,7 +1281,6 @@ class ChatGPTTelegramBot:
 
             self.application = application
             self.openai.bot = application.bot
-            loop.create_task(self.buffer_data_checker())
             loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
             application.add_handler(CommandHandler('reset', self.reset))
             application.add_handler(CommandHandler('help', self.help))
