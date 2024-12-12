@@ -79,21 +79,39 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
-                              chat_action: constants.ChatAction = "", is_inline=False):
+                            chat_action: constants.ChatAction = "", is_inline=False):
     """
     Wraps a coroutine while repeatedly sending a chat action to the user.
     """
     task = context.application.create_task(coroutine(), update=update)
-    while not task.done():
-        if not is_inline:
-            context.application.create_task(
-                update.effective_chat.send_action(chat_action, message_thread_id=get_thread_id(update))
-            )
-        try:
-            await asyncio.wait_for(asyncio.shield(task), 4.5)
-        except asyncio.TimeoutError:
-            pass
-
+    try:
+        # Increase timeout to 120 seconds
+        async with asyncio.timeout(120):  
+            while not task.done():
+                if not is_inline:
+                    try:
+                        await update.effective_chat.send_action(
+                            chat_action, 
+                            message_thread_id=get_thread_id(update)
+                        )
+                    except Exception as e:
+                        logging.warning(f"Error sending chat action: {e}")
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), 4.5)
+                except asyncio.TimeoutError:
+                    pass
+                except Exception as e:
+                    logging.error(f"Error in wrap_with_indicator: {e}")
+                    break
+            
+            return await task
+    except asyncio.TimeoutError:
+        task.cancel()
+        raise telegram.error.TimedOut("Operation timed out")
+    except Exception as e:
+        task.cancel()
+        raise e
+    
 async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: int | None,
                                   message_id: str, text: str, markdown: bool = True, is_inline: bool = False):
     """
