@@ -3,7 +3,7 @@ from typing import Dict
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import JSONFormatter
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class YoutubeTranscriptPlugin(Plugin):

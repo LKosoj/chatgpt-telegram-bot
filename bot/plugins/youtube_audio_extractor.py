@@ -4,7 +4,7 @@ from typing import Dict
 
 from pytube import YouTube
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class YouTubeAudioExtractorPlugin(Plugin):

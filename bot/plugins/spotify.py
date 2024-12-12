@@ -4,7 +4,7 @@ from typing import Dict
 import spotipy
 from spotipy import SpotifyOAuth
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class SpotifyPlugin(Plugin):

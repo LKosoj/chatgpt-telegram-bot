@@ -5,7 +5,7 @@ import random
 from datetime import datetime
 from typing import Dict, List
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 class LanguageLearningPlugin(Plugin):
     """

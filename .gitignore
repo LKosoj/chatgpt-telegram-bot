@@ -10,3 +10,4 @@ private.txt
 bot/test.py
 bot/file.json
 .vscode/extensions.json
+bot/plugins/reminders.json

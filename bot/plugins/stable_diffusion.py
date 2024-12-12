@@ -10,7 +10,7 @@ import tempfile
 import json
 import aiohttp
 from typing import Dict, Any, Callable
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 # Конфигурация API
 API_URL = "https://api-inference.huggingface.co/models/ali-vilab/In-Context-LoRA"

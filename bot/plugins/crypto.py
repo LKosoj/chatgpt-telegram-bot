@@ -2,7 +2,7 @@ from typing import Dict
 
 import requests
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 # Author: https://github.com/stumpyfr

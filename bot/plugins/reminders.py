@@ -1,6 +1,6 @@
 import logging
 from typing import Dict, Any
-from .plugin import Plugin
+from plugins.plugin import Plugin
 from datetime import datetime
 import json
 import os

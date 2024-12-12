@@ -1,75 +1,111 @@
+import importlib
+import inspect
 import json
 import logging
+from pathlib import Path
+from typing import Any, Dict, List
 
-from plugins.haiper_image_to_video import HaiperImageToVideoPlugin
-from plugins.reaction import ReactionPlugin
-from plugins.website_content import WebsiteContentPlugin
-from plugins.youtube_transcript import YoutubeTranscriptPlugin
-from plugins.gtts_text_to_speech import GTTSTextToSpeech
-from plugins.auto_tts import AutoTextToSpeech
-from plugins.dice import DicePlugin
-from plugins.youtube_audio_extractor import YouTubeAudioExtractorPlugin
-from plugins.ddg_image_search import DDGImageSearchPlugin
-from plugins.ddg_translate import DDGTranslatePlugin
-from plugins.spotify import SpotifyPlugin
-from plugins.crypto import CryptoPlugin
-from plugins.weather import WeatherPlugin
-from plugins.ddg_web_search import DDGWebSearchPlugin
-from plugins.wolfram_alpha import WolframAlphaPlugin
-from plugins.deepl import DeeplTranslatePlugin
-from plugins.worldtimeapi import WorldTimeApiPlugin
-from plugins.whois_ import WhoisPlugin
-from plugins.webshot import WebshotPlugin
-from plugins.iplocation import IpLocationPlugin
-from plugins.github_analysis import GitHubCodeAnalysisPlugin
-from plugins.stable_diffusion import StableDiffusionPlugin
-from plugins.prompt_perfect import PromptPerfectPlugin
-from plugins.show_me_diagrams import ShowMeDiagramsPlugin
-from plugins.reminders import RemindersPlugin
-from plugins.language_learning import LanguageLearningPlugin
-from plugins.task_management import TaskManagementPlugin
-from plugins.conversation_analytics import ConversationAnalyticsPlugin
+from plugins.plugin import Plugin
 
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 
 class PluginManager:
-    """
-    A class to manage the plugins and call the correct functions
-    """
+    _instance = None  # Add singleton instance tracker
+    
+    def __new__(cls, config, plugins_directory="plugins"):
+        if cls._instance is None:
+            logging.info("Creating new PluginManager instance")  # Debug line
+            cls._instance = super().__new__(cls)
+            cls._instance.plugins = {}
+            cls._instance.plugins_directory = plugins_directory
+            cls._instance.enabled_plugins = config.get('plugins', [])  # Initialize enabled_plugins here
+        else:
+            logging.info("Reusing existing PluginManager instance")  # Debug line
+        return cls._instance
 
-    def __init__(self, config):
-        enabled_plugins = config.get('plugins', [])
-        plugin_mapping = {
-            'show_me_diagrams': ShowMeDiagramsPlugin,
-            'reaction': ReactionPlugin,
-            'worldtimeapi': WorldTimeApiPlugin,
-            'youtube_transcript': YoutubeTranscriptPlugin,
-            'wolfram': WolframAlphaPlugin,
-            'weather': WeatherPlugin,
-            'crypto': CryptoPlugin,
-            'ddg_web_search': DDGWebSearchPlugin,
-            'ddg_translate': DDGTranslatePlugin,
-            'ddg_image_search': DDGImageSearchPlugin,
-            'spotify': SpotifyPlugin,
-            'youtube_audio_extractor': YouTubeAudioExtractorPlugin,
-            'dice': DicePlugin,
-            'deepl_translate': DeeplTranslatePlugin,
-            'gtts_text_to_speech': GTTSTextToSpeech,
-            'auto_tts': AutoTextToSpeech,
-            'whois': WhoisPlugin,
-            'webshot': WebshotPlugin,
-            'iplocation': IpLocationPlugin,
-            'github_analysis': GitHubCodeAnalysisPlugin,
-            'prompt_perfect': PromptPerfectPlugin,
-            'stable_diffusion': StableDiffusionPlugin,
-            'website_content': WebsiteContentPlugin,
-            'reminders': RemindersPlugin,
-            'language_learning': LanguageLearningPlugin,
-            'task_management': TaskManagementPlugin,
-            'conversation_analytics': ConversationAnalyticsPlugin,
-            'haiper_image_to_video': HaiperImageToVideoPlugin,
-        }
-        self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
+    def __init__(self, config, plugins_directory="plugins"):
+        # Обновляем enabled_plugins при каждой инициализации
+        self.enabled_plugins = config.get('plugins', [])
+        if not hasattr(self, 'plugins'):
+            self.plugins = {}
+        # Получаем абсолютный путь относительно текущей директории
+        current_dir = Path(__file__).parent
+        self.plugins_directory = current_dir / plugins_directory
+
+        # Всегда вызываем load_plugins при инициализации
+        self.load_plugins()
+
+    def load_plugins(self):
+        """Загружает все плагины из указанной директории."""
+        # Удалим проверку на существующие плагины
+        self.plugins.clear()  # Очищаем существующие плагины перед загрузкой
+                
+        plugins_path = Path(self.plugins_directory)
+        excluded_files = {'__init__.py', 'plugin.py'}
+        
+        for plugin_file in plugins_path.glob("*.py"):
+            if plugin_file.name not in excluded_files:
+                plugin_name = plugin_file.stem
+                if plugin_name in self.enabled_plugins:
+                    plugin_module = self.load_plugin_module(plugin_name)
+                    if plugin_module:
+                        self.register_plugin(plugin_name, plugin_module)
+                    
+    def load_plugin_module(self, plugin_name):
+        """Загружает модуль плагина по имени."""
+        try:
+            #plugin_path = Path(self.plugins_directory) / f"{plugin_name}.py"
+            plugin_path = Path(f"./plugins/{plugin_name}.py")
+            logging.info(f"Attempting to load plugin from path: {plugin_path.absolute()}")
+            spec = importlib.util.spec_from_file_location(plugin_name, plugin_path)
+            plugin_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(plugin_module)
+            return plugin_module
+        except Exception as e:
+            logging.info(f"Ошибка при загрузке плагина {plugin_name}: {e}")
+            return None
+
+    def register_plugin(self, plugin_name: str, plugin_module: Any) -> None:
+        """Регистрирует плагин, если в нем есть метод execute."""
+        try:
+            # Add check if plugin is already registered
+            if plugin_name in self.plugins:
+                logging.info(f"Плагин {plugin_name} уже зарегистрирован.")
+                return
+                
+            for name, obj in inspect.getmembers(plugin_module):
+                if (inspect.isclass(obj) and 
+                    issubclass(obj, Plugin) and 
+                    obj != Plugin and  # Skip the base Plugin class
+                    hasattr(obj, "execute")):
+                    self.plugins[plugin_name] = obj
+                    logging.info(f"Плагин {plugin_name} успешно зарегистрирован.")
+                    return
+
+            logging.info(f"Плагин {plugin_name} не имеет метода 'execute' или не наследуется от Plugin.")
+        except Exception as e:
+            logging.info(f"Ошибка при регистрации плагина {plugin_name}: {str(e)}")
+
+    async def execute(self, plugin_name, user_id, *args):
+        """Единый интерфейс для вызова плагинов."""
+        if plugin_name not in self.plugins:
+            return f"Плагин {plugin_name} не найден."
+        
+        plugin_class = self.plugins[plugin_name](user_id)
+        
+        # Вызов метода execute плагина
+        if hasattr(plugin_class, "execute"):
+            result = await plugin_class.execute(*args)
+            return result
+        else:
+            return f"Плагин {plugin_name} не поддерживает метод execute."
+
+    def reinitialize(self):
+        """Переинициализирует плагин менеджер (перезагружает плагины)."""
+        logging.info("Переинициализация плагинов...")
+        self.plugins.clear()  # Очищаем список зарегистрированных плагинов
+        self.load_plugins()  # Перезагружаем плагины из директории
+        logging.info("Плагины переинициализированы.")
 
     def get_functions_specs(self, helper, model_to_use):
         """
@@ -77,14 +113,18 @@ class PluginManager:
         """
         seen_functions = set()
         all_specs = []
-        for plugin in self.plugins:
-            specs = plugin.get_spec()
-            #logging.info(f"Plugin {plugin.__class__.__name__} specs: {specs}")
-            for spec in specs:
-                if spec and spec.get('name') not in seen_functions:
-                    seen_functions.add(spec.get('name'))
-                    all_specs.append(spec)
-
+        for plugin_name, plugin_class in self.plugins.items():
+            try:
+                # Create an instance of the plugin class and pass the required parameters
+                plugin_instance = plugin_class() if hasattr(plugin_class, '__init__') and len(inspect.signature(plugin_class.__init__).parameters) > 1 else plugin_class()
+                specs = plugin_instance.get_spec()
+                for spec in specs:
+                    if spec and spec.get('name') not in seen_functions:
+                        seen_functions.add(spec.get('name'))
+                        all_specs.append(spec)
+            except Exception as e:
+                logging.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
+                continue
         if model_to_use in (GOOGLE):
             return {"function_declarations": all_specs}
         return [{"type": "function", "function": spec} for spec in all_specs]
@@ -97,8 +137,14 @@ class PluginManager:
         if not plugin:
             return json.dumps({'error': f'Function {function_name} not found'})
 
-        return json.dumps(await plugin.execute(function_name, helper, **json.loads(arguments)), default=str)
-
+        try:
+            parsed_args = json.loads(arguments)
+            result = await plugin.execute(function_name, helper, **parsed_args)
+            return json.dumps(result, default=str, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"Error executing function {function_name}: {str(e)}")
+            return json.dumps({'error': f'Error executing function: {str(e)}'})
+        
     def get_plugin_source_name(self, function_name) -> str:
         """
         Return the source name of the plugin
@@ -109,8 +155,8 @@ class PluginManager:
         return plugin.get_source_name()
 
     def __get_plugin_by_function_name(self, function_name):
-        return next((plugin for plugin in self.plugins
-                    if function_name in map(lambda spec: spec.get('name'), plugin.get_spec())), None)
+        return next((plugin_class() for plugin_class in self.plugins.values()
+                    if function_name in map(lambda spec: spec.get('name'), plugin_class().get_spec())), None)
 
     def get_plugin(self, plugin_name):
         """
@@ -119,7 +165,50 @@ class PluginManager:
         :param plugin_name: The source name of the plugin
         :return: The plugin instance or None if not found
         """
-        for plugin in self.plugins:
-            if plugin.get_source_name().lower() == plugin_name.lower():
-                return plugin
-        return None
+        for plugin_key, plugin_class in self.plugins.items():
+            plugin_instance = plugin_class()
+            if plugin_instance.get_source_name().lower() == plugin_name.lower():
+                return plugin_instance
+    
+    def get_all_plugin_descriptions(self) -> list[str]:
+        """Get all plugin descriptions from their get_spec methods."""
+        descriptions = []
+        
+        # Iterate through all registered plugins
+        for plugin_name, plugin_class in self.plugins.items():
+            try:
+                # Create plugin instance
+                plugin_instance = plugin_class()
+                
+                # Get specs from the plugin
+                specs = plugin_instance.get_spec()
+                
+                # Extract descriptions from each spec
+                for spec in specs:
+                    if spec and "description" in spec:
+                        descriptions.append({
+                            "plugin": plugin_name,
+                            "function": spec.get("name", "unknown"),
+                            "description": spec["description"]
+                        })
+                        
+            except Exception as e:
+                logging.error(f"Error getting description from plugin {plugin_name}: {str(e)}")
+                continue
+                
+        return descriptions
+
+    def get_plugin_spec(self, plugin_name: str) -> List[Dict]:
+        """Возвращает спецификацию плагина по имени"""
+        if not self.has_plugin(plugin_name):
+            return None
+        try:
+            plugin_instance = self.plugins[plugin_name]()
+            return plugin_instance.get_spec()
+        except:
+            return None
+
+    def has_plugin(self, plugin_name: str) -> bool:
+        """Проверяет существование плагина по имени"""
+        return plugin_name in self.plugins
+

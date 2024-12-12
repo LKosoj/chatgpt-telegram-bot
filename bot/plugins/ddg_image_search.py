@@ -5,7 +5,7 @@ from typing import Dict
 
 from duckduckgo_search import DDGS
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class DDGImageSearchPlugin(Plugin):

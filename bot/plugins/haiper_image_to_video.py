@@ -10,7 +10,7 @@ from typing import Dict, List
 from PIL import Image
 from datetime import datetime, timedelta
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
@@ -56,15 +56,7 @@ class HaiperImageToVideoPlugin(Plugin):
             "Authorization": f"Key {self.haiper_token}"
         }
         try:
-            # Add debugging logs
-            logging.info(f"Execute called with kwargs: {kwargs}")
-            logging.info(f"Helper has message_id: {hasattr(helper, 'message_id')}")
-            if hasattr(helper, 'message_id'):
-                logging.info(f"Message ID: {helper.message_id}")
-            logging.info(f"Helper has last_image_file_ids: {hasattr(helper, 'last_image_file_ids')}")
-            if hasattr(helper, 'last_image_file_ids'):
-                logging.info(f"Last image file IDs: {helper.last_image_file_ids}")
-            
+            logging.info(f"haiper_image_to_video execute called with kwargs: {kwargs}")            
             prompt = kwargs.get('prompt')
             if not prompt:
                 prompt = "оживи картинку"
@@ -78,15 +70,12 @@ class HaiperImageToVideoPlugin(Plugin):
                 # Only attempt to split if it contains an underscore
                 if '_' in str(chat_id):
                     chat_id = chat_id.split('_')[0]
-                logging.info(f"Extracted chat_id: {chat_id}")
                 
             # Try to get file_id from different sources
             file_id = kwargs.get('last_image_file_id')
-            logging.info(f"File ID from kwargs: {file_id}")
             if not file_id and chat_id:
                 try:
                     file_id = helper.get_last_image_file_id(int(chat_id))
-                    logging.info(f"File ID from helper: {file_id}")
                 except (ValueError, TypeError) as e:
                     logger.error(f"Error converting chat_id to int: {e}")
                     return {"error": "Invalid chat ID format"}
@@ -95,11 +84,9 @@ class HaiperImageToVideoPlugin(Plugin):
                 return {"error": "Пожалуйста, сначала загрузите изображение, а затем попросите создать из него видео."}
 
             try:
-                logging.info(f"Attempting to download file with ID: {file_id}")
                 # Get and process image
                 file = await helper.bot.get_file(file_id)
                 image_bytes = await file.download_as_bytearray()
-                logging.info("Successfully downloaded image")
                 
                 img = Image.open(io.BytesIO(image_bytes))
                 if img.mode != 'RGB':
@@ -124,10 +111,6 @@ class HaiperImageToVideoPlugin(Plugin):
                 "aspect_ratio": "16:9",
                 "prompt": prompt,
                 "image_url": f"data:image/jpeg;base64,{image_base64}",
-                "input": {
-                    "image": f"data:image/jpeg;base64,{image_base64}",
-                    "aspect_ratio": "16:9"
-                }
             }
 
             start_time = datetime.now()
@@ -145,7 +128,6 @@ class HaiperImageToVideoPlugin(Plugin):
                         ) as response:
                             try:
                                 response_text = await response.text()
-                                logger.info(f"Received response (attempt {retry + 1}): {response_text}")
                                 
                                 if response.status != 200:
                                     logger.error(f"Generation request failed (attempt {retry + 1}): {response_text}")
@@ -166,16 +148,13 @@ class HaiperImageToVideoPlugin(Plugin):
                                 
                                 # If we got a request_id, consider it a success and break the retry loop
                                 if response_data and response_data.get('request_id'):
-                                    logger.info(f"Successfully received request_id: {response_data['request_id']}")
                                     break
                                 else:
-                                    logger.error(f"Missing request_id in response (attempt {retry + 1})")
                                     if retry == MAX_RETRIES - 1:
                                         return {"error": "Invalid response: missing request_id"}
                                     await asyncio.sleep(RETRY_DELAY)
                                     
                             except Exception as e:
-                                logger.error(f"Error processing response (attempt {retry + 1}): {e}")
                                 if retry == MAX_RETRIES - 1:
                                     return {"error": f"Failed to process response after {MAX_RETRIES} attempts: {str(e)}"}
                                 await asyncio.sleep(RETRY_DELAY)
@@ -189,9 +168,6 @@ class HaiperImageToVideoPlugin(Plugin):
                 if not request_id:
                     return {"error": "Failed to get request_id"}
 
-                logger.info(f"Successfully obtained request_id: {request_id}")
-
-
                 # Status checking loop
                 while datetime.now() < timeout_time:
                     async with session.get(
@@ -204,7 +180,6 @@ class HaiperImageToVideoPlugin(Plugin):
 
                         elapsed_time = datetime.now() - start_time
                         elapsed_minutes = elapsed_time.total_seconds() / 60
-                        logger.info(f"Current status: {status} (Elapsed time: {elapsed_minutes:.1f} minutes)")
 
                         if status == 'COMPLETED':
                             # Download the video

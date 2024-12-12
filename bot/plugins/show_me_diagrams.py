@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 import uuid
 import math  # Добавлен импорт math
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 class ShowMeDiagramsPlugin(Plugin):
     """

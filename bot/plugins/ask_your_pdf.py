@@ -1,4 +1,5 @@
 #ask_your_pdf.py
+import logging
 import os
 import io
 import hashlib
@@ -8,7 +9,7 @@ from typing import Dict, List
 import PyPDF2
 import textract
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 class AskYourPDFPlugin(Plugin):
     """

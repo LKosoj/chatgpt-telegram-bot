@@ -3,7 +3,7 @@ from typing import Dict
 
 from googleapiclient.discovery import build
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class GoogleWebSearchPlugin(Plugin):

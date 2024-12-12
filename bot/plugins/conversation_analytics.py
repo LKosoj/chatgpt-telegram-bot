@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from collections import defaultdict
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 class ConversationAnalyticsPlugin(Plugin):
     """

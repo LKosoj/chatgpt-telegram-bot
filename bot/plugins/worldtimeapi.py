@@ -2,7 +2,7 @@ import os, requests
 from typing import Dict
 from datetime import datetime
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class WorldTimeApiPlugin(Plugin):

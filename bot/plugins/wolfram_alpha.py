@@ -3,7 +3,7 @@ from typing import Dict
 
 import wolframalpha
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 
 class WolframAlphaPlugin(Plugin):

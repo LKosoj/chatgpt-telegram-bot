@@ -2,7 +2,7 @@
 import logging
 from typing import Dict
 
-from .plugin import Plugin
+from plugins.plugin import Plugin
 
 class PromptPerfectPlugin(Plugin):
     """
