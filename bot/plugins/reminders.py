@@ -84,7 +84,7 @@ class RemindersPlugin(Plugin):
         """Save reminders to storage"""
         try:
             with open(self.reminders_file, 'w') as f:  # Fixed: using reminders_file
-                json.dump(self.reminders, f)
+                json.dump(self.reminders, f, ensure_ascii = False)
         except Exception as e:
             logging.error(f"Error saving reminders: {e}")
 
@@ -93,6 +93,7 @@ class RemindersPlugin(Plugin):
         Проверка и отправка напоминаний
         """
         current_time = datetime.now()
+        self.load_reminders()
 
         for user_id, user_reminders in list(self.reminders.items()):
             for reminder_id, reminder in list(user_reminders.items()):
