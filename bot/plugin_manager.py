@@ -19,6 +19,7 @@ class PluginManager:
             cls._instance.plugins = {}
             cls._instance.plugins_directory = plugins_directory
             cls._instance.enabled_plugins = config.get('plugins', [])  # Initialize enabled_plugins here
+
         else:
             logging.info("Reusing existing PluginManager instance")  # Debug line
         return cls._instance
@@ -72,13 +73,15 @@ class PluginManager:
             if plugin_name in self.plugins:
                 logging.info(f"Плагин {plugin_name} уже зарегистрирован.")
                 return
-                
+                    
             for name, obj in inspect.getmembers(plugin_module):
                 if (inspect.isclass(obj) and 
                     issubclass(obj, Plugin) and 
                     obj != Plugin and  # Skip the base Plugin class
                     hasattr(obj, "execute")):
                     self.plugins[plugin_name] = obj
+                    # Create instance and cache it
+                    plugin_instance = obj()
                     logging.info(f"Плагин {plugin_name} успешно зарегистрирован.")
                     return
 
@@ -160,16 +163,17 @@ class PluginManager:
 
     def get_plugin(self, plugin_name):
         """
-        Returns the plugin with the given source name
+        Returns the plugin instance with the given name
         
-        :param plugin_name: The source name of the plugin
+        :param plugin_name: The name of the plugin
         :return: The plugin instance or None if not found
         """
-        for plugin_key, plugin_class in self.plugins.items():
-            plugin_instance = plugin_class()
-            if plugin_instance.get_source_name().lower() == plugin_name.lower():
-                return plugin_instance
-    
+        # Simply look up the plugin class by name in self.plugins
+        plugin_class = self.plugins.get(plugin_name)
+        if plugin_class:
+            return plugin_class()
+        return None
+        
     def get_all_plugin_descriptions(self) -> list[str]:
         """Get all plugin descriptions from their get_spec methods."""
         descriptions = []
