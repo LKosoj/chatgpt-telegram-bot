@@ -1256,7 +1256,7 @@ class ChatGPTTelegramBot:
             # Continuously check reminders
             while True:
                 try:
-                    await reminders_plugin.check_reminders(helper=self.application.bot)
+                    await reminders_plugin.check_reminders(self.application.bot)
                 except Exception as e:
                     logging.error(f"Error in reminder checker: {e}")
                 
