@@ -85,8 +85,8 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
     """
     task = context.application.create_task(coroutine(), update=update)
     try:
-        # Increase timeout to 120 seconds
-        async with asyncio.timeout(120):  
+        # Increase timeout to 380 seconds
+        async with asyncio.timeout(380):
             while not task.done():
                 if not is_inline:
                     try:

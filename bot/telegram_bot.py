@@ -1475,7 +1475,7 @@ class ChatGPTTelegramBot:
         async def _execute():
             try:
                 # Get the plugin instance
-                plugin = self.openai.plugin_manager.get_plugin('HaiperImageToVideo')
+                plugin = self.openai.plugin_manager.get_plugin('haiper_image_to_video')
                 if not plugin:
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
