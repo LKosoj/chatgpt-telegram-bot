@@ -161,7 +161,7 @@ class OpenAIHelper:
     def save_user_models(self):
         try:
             with open(self.user_models_file, 'w') as f:
-                json.dump(self.user_models, f)
+                json.dump(self.user_models, f, ensure_ascii=False)
         except Exception as e:
             logging.error(f"Error saving user models: {e}")
 

@@ -74,7 +74,7 @@ class AskYourPDFPlugin(Plugin):
                 json.dump({
                     'files': {},  # {file_hash: {'size': bytes, 'last_accessed': timestamp}}
                     'total_size': 0
-                }, f)
+                }, f, ensure_ascii=False)
 
     def _update_cache_metadata(self, file_hash, file_size):
         """
@@ -117,7 +117,7 @@ class AskYourPDFPlugin(Plugin):
                         del metadata['files'][oldest_hash]
                 
                 f.seek(0)
-                json.dump(metadata, f)
+                json.dump(metadata, f, ensure_ascii=False)
                 f.truncate()
         except Exception as e:
             logging.error(f"Ошибка при обновлении метаданных кэша: {e}")

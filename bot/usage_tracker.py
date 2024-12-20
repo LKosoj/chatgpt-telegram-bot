@@ -92,7 +92,7 @@ class UsageTracker:
 
         # write updated token usage to user file
         with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+            json.dump(self.usage, outfile, ensure_ascii=False)
 
     def get_current_token_usage(self):
         """Get token amounts used for today and this month
@@ -137,7 +137,7 @@ class UsageTracker:
 
         # write updated image number to user file
         with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+            json.dump(self.usage, outfile, ensure_ascii=False)
 
     def get_current_image_count(self):
         """Get number of images requested for today and this month.
@@ -178,7 +178,7 @@ class UsageTracker:
 
         # write updated token usage to user file
         with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+            json.dump(self.usage, outfile, ensure_ascii=False)
 
     def get_current_vision_tokens(self):
         """Get vision tokens for today and this month.
@@ -222,7 +222,7 @@ class UsageTracker:
 
         # write updated token usage to user file
         with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+            json.dump(self.usage, outfile, ensure_ascii=False)
 
     def get_current_tts_usage(self):
         """Get length of speech generated for today and this month.
@@ -269,7 +269,7 @@ class UsageTracker:
 
         # write updated token usage to user file
         with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+            json.dump(self.usage, outfile, ensure_ascii=False)
 
     def add_current_costs(self, request_cost):
         """

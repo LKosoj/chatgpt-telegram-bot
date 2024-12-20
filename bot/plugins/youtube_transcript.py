@@ -1,3 +1,4 @@
+import json
 from typing import Dict
 
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -38,11 +39,20 @@ class YoutubeTranscriptPlugin(Plugin):
             if not video_id:
                 return {'result': 'Video ID not provided'}
 
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'ru', 'pl'])
-            json_transcript = JSONFormatter().format_transcript(transcript)
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'ru'])
+            #decoded_transcript = []
+            decoded_transcript = ""
+            for entry in transcript:
+                decoded_entry = {
+                    'text': entry['text'],
+                    #'start': entry['start'],
+                    #'duration': entry['duration']
+                }
+                #decoded_transcript.append(decoded_entry)
+                decoded_transcript += " " + entry['text']
 
             return {
-            "model_response": json_transcript
+            "model_response": decoded_transcript
             }
         except Exception as e:
             return {'error': 'An unexpected error occurred: ' + str(e)}

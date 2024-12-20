@@ -146,7 +146,7 @@ class PluginManager:
             return json.dumps(result, default=str, ensure_ascii=False)
         except Exception as e:
             logging.error(f"Error executing function {function_name}: {str(e)}")
-            return json.dumps({'error': f'Error executing function: {str(e)}'})
+            return json.dumps({'error': f'Error executing function: {str(e)}'}, ensure_ascii=False)
         
     def get_plugin_source_name(self, function_name) -> str:
         """
