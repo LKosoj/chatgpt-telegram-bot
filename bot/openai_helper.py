@@ -32,7 +32,7 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
-O1_MODELS = ("o1-preview",)
+O1_MODELS = ("openai/o1",)
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 MISTRALAI = ("mistralai/mistral-nemo",)
@@ -69,7 +69,7 @@ def default_max_tokens(model: str) -> int:
     elif model in MISTRALAI:
         return 100000
     elif model in GOOGLE:
-        return 600000
+        return 800000
 
 
 @lru_cache(maxsize=128)
