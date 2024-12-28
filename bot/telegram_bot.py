@@ -277,12 +277,7 @@ class ChatGPTTelegramBot:
 
         # Создаем кнопки для каждой группы моделей
         keyboard = []
-        
-        # Группируем модели
         model_groups = [
-            ("GPT-3", GPT_3_MODELS + GPT_3_16K_MODELS),
-            ("GPT-4", GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_128K_MODELS),
-            ("Vision", GPT_4_VISION_MODELS),
             ("GPT-4O", GPT_4O_MODELS),
             ("O1", O1_MODELS),
             ("Anthropic", ANTHROPIC),
@@ -290,27 +285,16 @@ class ChatGPTTelegramBot:
             ("Mistral", MISTRALAI)
         ]
 
-        # Создаем кнопки для каждой модели в группе
-        for group_name, models in model_groups:
-            group_buttons = []
-            for model_name in models:
-                # Добавляем маркер к текущей модели
-                button_text = f"✓ {model_name}" if model_name == current_model else model_name
-                group_buttons.append(
-                    InlineKeyboardButton(
-                        text=button_text,
-                        callback_data=f"model:{model_name}"
-                    )
-                )
-            # Добавляем группу кнопок в клавиатуру
-            # Разбиваем на ряды по 2 кнопки
-            for i in range(0, len(group_buttons), 2):
-                keyboard.append(group_buttons[i:i + 2])
+        for group_name, _ in model_groups:
+            keyboard.append([InlineKeyboardButton(
+                text=group_name,
+                callback_data=f"modelgroup:{group_name}"
+            )])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            f"Current model: {current_model}\n\nSelect a new model:",
+            f"Current model: {current_model}\n\nSelect model group:",
             reply_markup=reply_markup
         )
 
@@ -321,24 +305,86 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
-        # Extract model name from callback data
-        model_name = query.data.split(':')[1]
-        user_id = query.from_user.id
-        logging.info(f"Model selected: {model_name}")
+        data = query.data.split(':')
+        action = data[0]
+        value = data[1]
         
-        if model_name in GPT_ALL_MODELS:
-            # Save selected model for the user
-            self.openai.user_models[str(user_id)] = model_name
-            # Save models to file
-            self.openai.save_user_models()
+        user_id = query.from_user.id
+        current_model = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+        
+        if action == "modelgroup":
+            # Показываем модели выбранной группы
+            keyboard = []
+            model_groups = [
+                ("GPT-4O", GPT_4O_MODELS),
+                ("O1", O1_MODELS),
+                ("Anthropic", ANTHROPIC),
+                ("Google", GOOGLE),
+                ("Mistral", MISTRALAI)
+            ]
             
-            # Просто обновляем текст сообщения без клавиатуры
+            selected_models = None
+            for group_name, models in model_groups:
+                if group_name == value:
+                    selected_models = models
+                    break
+            
+            if selected_models:
+                # Создаем кнопки для моделей
+                for model_name in selected_models:
+                    button_text = f"✓ {model_name}" if model_name == current_model else model_name
+                    keyboard.append([InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"model:{model_name}"
+                    )])
+                
+                # Добавляем кнопку "Назад"
+                keyboard.append([InlineKeyboardButton(
+                    text="« Back to groups",
+                    callback_data="modelback:main"
+                )])
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    f"Current model: {current_model}\n\nSelect model from {value} group:",
+                    reply_markup=reply_markup
+                )
+                
+        elif action == "model":
+            # Обработка выбора конкретной модели
+            model_name = value
+            if model_name in GPT_ALL_MODELS:
+                self.openai.user_models[str(user_id)] = model_name
+                self.openai.save_user_models()
+                await query.edit_message_text(
+                    f"Model changed to: {model_name}"
+                )
+            else:
+                await query.edit_message_text(
+                    f"Invalid model selection: {model_name}"
+                )
+                
+        elif action == "modelback":
+            # Возврат к списку групп
+            keyboard = []
+            model_groups = [
+                ("GPT-4O", GPT_4O_MODELS),
+                ("O1", O1_MODELS),
+                ("Anthropic", ANTHROPIC),
+                ("Google", GOOGLE),
+                ("Mistral", MISTRALAI)
+            ]
+            
+            for group_name, _ in model_groups:
+                keyboard.append([InlineKeyboardButton(
+                    text=group_name,
+                    callback_data=f"modelgroup:{group_name}"
+                )])
+                
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                f"Model changed to: {model_name}"
-            )
-        else:
-            await query.edit_message_text(
-                f"Invalid model selection: {model_name}"
+                f"Current model: {current_model}\n\nSelect model group:",
+                reply_markup=reply_markup
             )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error = False):
@@ -1478,7 +1524,7 @@ class ChatGPTTelegramBot:
             )
             application.add_handler(CallbackQueryHandler(
                 self.handle_model_callback,
-                pattern="^model:"
+                pattern="^(model|modelgroup|modelback):"
             ))
             application.add_handler(MessageHandler(
                 filters.PHOTO | filters.Document.IMAGE,
