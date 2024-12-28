@@ -11,3 +11,5 @@ bot/test.py
 bot/file.json
 .vscode/extensions.json
 bot/plugins/reminders.json
+bot/.vscode/lua.booster.lint.json
+bot/plugins/.cursorrules
