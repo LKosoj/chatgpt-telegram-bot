@@ -1607,64 +1607,64 @@ class ChatGPTTelegramBot:
 
     def run(self):
         """
-        Runs the bot indefinitely until the user presses Ctrl+C
+        Runs the bot indefinitely.
         """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-        application = ApplicationBuilder() \
-            .token(self.config['token']) \
-            .proxy_url(self.config.get('proxy')) \
-            .get_updates_proxy_url(self.config.get('proxy')) \
-            .post_init(self.post_init) \
-            .concurrent_updates(True) \
-            .build()
+            application = ApplicationBuilder() \
+                .token(self.config['token']) \
+                .proxy_url(self.config['proxy']) \
+                .get_updates_proxy_url(self.config['proxy']) \
+                .post_init(self.post_init) \
+                .concurrent_updates(True) \
+                .build()
 
-        loop.create_task(self.buffer_data_checker())
-        loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
-        application.add_handler(CommandHandler('start', self.help))
-        application.add_handler(CommandHandler('restart', self.restart))
-        application.add_handler(CommandHandler('reset', self.reset))
-        application.add_handler(CommandHandler('help', self.help))
-        application.add_handler(CommandHandler('stats', self.stats))
-        application.add_handler(CommandHandler('resend', self.resend))
-        application.add_handler(CommandHandler('model', self.model))
-        application.add_handler(CommandHandler('animate', self.animate))
+            self.application = application
+            self.openai.bot = application.bot
+            loop.create_task(self.buffer_data_checker())
+            loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
 
-        application.add_handler(CommandHandler(
-            'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
-        )
-
-        application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
-        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
-
-        if self.config.get('enable_image_generation', False):
+            application.add_handler(CommandHandler('restart', self.restart))
+            application.add_handler(CommandHandler('reset', self.reset))
+            application.add_handler(CommandHandler('help', self.help))
             application.add_handler(CommandHandler('image', self.image))
-
-        if self.config.get('enable_tts_generation', False):
             application.add_handler(CommandHandler('tts', self.tts))
+            application.add_handler(CommandHandler('start', self.help))
+            application.add_handler(CommandHandler('stats', self.stats))
+            application.add_handler(CommandHandler('resend', self.resend))
+            application.add_handler(CommandHandler('model', self.model))
+            application.add_handler(CommandHandler('animate', self.animate))  # Add new handler
+            application.add_handler(CommandHandler(
+                'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+            )
 
-        # Add handlers for text messages, images, and voice messages
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.prompt))
+            application.add_handler(MessageHandler(filters.Document.TEXT, self.handle_document))
+            application.add_handler(MessageHandler(
+                filters.PHOTO | filters.Document.IMAGE,
+                self.vision))
+            application.add_handler(MessageHandler(
+                filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
+                filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
+                self.transcribe))
+            application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
 
-        application.add_handler(MessageHandler(filters.Document.TEXT, self.handle_document))
+            application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
+                constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
+            ]))
 
-        application.add_handler(MessageHandler(
-            filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
-            filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
-            self.transcribe))
+            application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
+            application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
-        application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, self.vision))
+            application.add_error_handler(error_handler)
 
-        application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
-            constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
-        ]))
-        application.add_handler(InlineQueryHandler(self.inline_query))
-
-        # Start the bot
-        application.run_polling()
-        # Run the bot until the user presses Ctrl+C
-        self.application = application
+            application.run_polling()
+        finally:
+            # Завершаем выполнение задач в текущем событийном цикле
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.run_until_complete(self.cleanup())
 
     async def animate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
