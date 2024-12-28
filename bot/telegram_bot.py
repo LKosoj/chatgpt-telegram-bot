@@ -1543,64 +1543,128 @@ class ChatGPTTelegramBot:
                 # Sleep for a minute between checks to avoid excessive processing
                 await asyncio.sleep(60)
 
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Обработчик для загруженных документов
+        """
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                          'is not allowed to upload documents')
+            await self.send_disallowed_message(update, context)
+            return
+
+        try:
+            document = update.message.document
+            if not document.file_name.endswith('.txt'):
+                await update.message.reply_text("Пожалуйста, загрузите текстовый файл (.txt)")
+                return
+
+            # Скачиваем файл
+            file = await context.bot.get_file(document.file_id)
+            file_content = await file.download_as_bytearray()
+            
+            # Декодируем содержимое файла
+            try:
+                text_content = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    text_content = file_content.decode('windows-1251')
+                except UnicodeDecodeError:
+                    await update.message.reply_text("Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251")
+                    return
+
+            # Вызываем плагин для обработки документа
+            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
+            if not plugin:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text="Document processing is not available. The plugin is not enabled."
+                )
+                return
+
+            # Execute the plugin function directly
+            result = await plugin.execute(
+                'upload_document',
+                self.openai,
+                file_content=text_content,
+                file_name=document.file_name
+            )
+
+            # Обрабатываем результат
+            if isinstance(result, dict) and "error" in result:
+                await update.message.reply_text(f"Ошибка: {result['error']}")
+            else:
+                try:
+                    await handle_direct_result(self.config, update, result)
+                except Exception as e:
+                    logging.error(f"Error handling direct result: {e}")
+                    await update.message.reply_text(str(result))
+
+        except Exception as e:
+            error_text = f"Произошла ошибка при обработке документа: {str(e)}"
+            logging.error(error_text)
+            await update.message.reply_text(error_text)
+
     def run(self):
         """
-        Runs the bot indefinitely.
+        Runs the bot indefinitely until the user presses Ctrl+C
         """
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-            application = ApplicationBuilder() \
-                .token(self.config['token']) \
-                .proxy_url(self.config['proxy']) \
-                .get_updates_proxy_url(self.config['proxy']) \
-                .post_init(self.post_init) \
-                .concurrent_updates(True) \
-                .build()
+        application = ApplicationBuilder() \
+            .token(self.config['token']) \
+            .proxy_url(self.config.get('proxy')) \
+            .get_updates_proxy_url(self.config.get('proxy')) \
+            .post_init(self.post_init) \
+            .concurrent_updates(True) \
+            .build()
 
-            self.application = application
-            self.openai.bot = application.bot
-            loop.create_task(self.buffer_data_checker())
-            loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
-            application.add_handler(CommandHandler('restart', self.restart))
-            application.add_handler(CommandHandler('reset', self.reset))
-            application.add_handler(CommandHandler('help', self.help))
+        loop.create_task(self.buffer_data_checker())
+        loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
+        application.add_handler(CommandHandler('start', self.help))
+        application.add_handler(CommandHandler('restart', self.restart))
+        application.add_handler(CommandHandler('reset', self.reset))
+        application.add_handler(CommandHandler('help', self.help))
+        application.add_handler(CommandHandler('stats', self.stats))
+        application.add_handler(CommandHandler('resend', self.resend))
+        application.add_handler(CommandHandler('model', self.model))
+        application.add_handler(CommandHandler('animate', self.animate))
+
+        application.add_handler(CommandHandler(
+            'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+        )
+
+        application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
+        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
+
+        if self.config.get('enable_image_generation', False):
             application.add_handler(CommandHandler('image', self.image))
+
+        if self.config.get('enable_tts_generation', False):
             application.add_handler(CommandHandler('tts', self.tts))
-            application.add_handler(CommandHandler('start', self.help))
-            application.add_handler(CommandHandler('stats', self.stats))
-            application.add_handler(CommandHandler('resend', self.resend))
-            application.add_handler(CommandHandler('model', self.model))
-            application.add_handler(CommandHandler('animate', self.animate))  # Add new handler
-            application.add_handler(CommandHandler(
-                'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
-            )
-            application.add_handler(CallbackQueryHandler(
-                self.handle_model_callback,
-                pattern="^(model|modelgroup|modelback):"
-            ))
-            application.add_handler(MessageHandler(
-                filters.PHOTO | filters.Document.IMAGE,
-                self.vision))
-            application.add_handler(MessageHandler(
-                filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
-                filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
-                self.transcribe))
-            application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
-            application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
-                constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
-            ]))
-            application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
-            application.add_error_handler(error_handler)
+        # Add handlers for text messages, images, and voice messages
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.prompt))
 
-            application.run_polling()
-        finally:
-            # Завершаем выполнение задач в текущем событийном цикле
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                loop.run_until_complete(self.cleanup())
+        application.add_handler(MessageHandler(filters.Document.TEXT, self.handle_document))
+
+        application.add_handler(MessageHandler(
+            filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
+            filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
+            self.transcribe))
+
+        application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, self.vision))
+
+        application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
+            constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
+        ]))
+        application.add_handler(InlineQueryHandler(self.inline_query))
+
+        # Start the bot
+        application.run_polling()
+        # Run the bot until the user presses Ctrl+C
+        self.application = application
 
     async def animate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
