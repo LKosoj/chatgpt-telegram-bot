@@ -331,6 +331,42 @@ def is_direct_result(response: any) -> bool:
     else:
         return response.get('direct_result', False)
 
+def escape_markdown(text: str, exclude_code_blocks: bool = True) -> str:
+    """
+    Экранирует специальные символы Markdown.
+    :param text: Исходный текст
+    :param exclude_code_blocks: Исключать ли блоки кода из экранирования
+    :return: Экранированный текст
+    """
+    if not exclude_code_blocks:
+        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        return ''.join('\\' + char if char in escape_chars else char for char in text)
+    
+    result = []
+    is_code = False
+    current_text = ""
+    
+    for char in text:
+        if char == '`':
+            if current_text:
+                if not is_code:
+                    # Экранируем текст вне блоков кода
+                    current_text = ''.join('\\' + c if c in ['_', '*', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'] else c for c in current_text)
+                result.append(current_text)
+                current_text = ""
+            result.append(char)
+            is_code = not is_code
+        else:
+            current_text += char
+    
+    if current_text:
+        if not is_code:
+            # Экранируем оставшийся текст вне блоков кода
+            current_text = ''.join('\\' + c if c in ['_', '*', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'] else c for c in current_text)
+        result.append(current_text)
+    
+    return ''.join(result)
+
 async def handle_direct_result(config, update: Update, response: any):
     """
     Handles a direct result from a plugin
@@ -360,6 +396,17 @@ async def handle_direct_result(config, update: Update, response: any):
             await update.effective_message.reply_document(**common_args, document=open(value, 'rb'))
     elif kind == 'dice':
         await update.effective_message.reply_dice(**common_args, emoji=value)
+    elif kind == 'text':
+        try:
+            if format == 'markdown':
+                escaped_text = escape_markdown(value)
+                await update.effective_message.reply_text(**common_args, text=escaped_text, parse_mode=constants.ParseMode.MARKDOWN_V2)
+            else:
+                await update.effective_message.reply_text(**common_args, text=value)
+        except telegram.error.BadRequest as e:
+            logging.warning(f"Failed to send message with markdown formatting: {e}")
+            # Попытка отправить без форматирования в случае ошибки
+            await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
 
     if format == 'path':
         cleanup_intermediate_files(response)
