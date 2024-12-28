@@ -22,7 +22,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
+from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
 from usage_tracker import UsageTracker
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -261,7 +261,7 @@ class ChatGPTTelegramBot:
 
     async def model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Change model.
+        Change model using inline keyboard buttons.
         """
         if not await is_allowed(self.config, update, context):
             logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
@@ -269,30 +269,77 @@ class ChatGPTTelegramBot:
             await self.send_disallowed_message(update, context)
             return
 
-        logging.info(f'Change model for request by user {update.message.from_user.name} '
+        logging.info(f'Model selection request by user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})...')
 
-        text = ''
-
         user_id = update.message.from_user.id
-        model_name = message_text(update.message)
-        if model_name == "" :
-            text = f"Used model: {self.openai.user_models.get(str(user_id), self.openai.config['model'])}"
-        elif model_name == "?" :
-            text = f"{GPT_ALL_MODELS}"
-        elif model_name in GPT_ALL_MODELS:            
-            # Сохраняем выбранную модель для конкретного пользователя
-            self.openai.user_models[str(user_id)] = model_name
-            # Сохраняем модели в файл
-            self.openai.save_user_models()            
-            text = f"{localized_text('model_changed', self.config['bot_language'])} {model_name}"
-        else:
-            text = f"{model_name} {localized_text('model_not_in_list', self.config['bot_language'])} {GPT_ALL_MODELS}"
+        current_model = self.openai.user_models.get(str(user_id), self.openai.config['model'])
 
-        await update.effective_message.reply_text(
-            message_thread_id=get_thread_id(update),
-            text = text
+        # Создаем кнопки для каждой группы моделей
+        keyboard = []
+        
+        # Группируем модели
+        model_groups = [
+            ("GPT-3", GPT_3_MODELS + GPT_3_16K_MODELS),
+            ("GPT-4", GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_128K_MODELS),
+            ("Vision", GPT_4_VISION_MODELS),
+            ("GPT-4O", GPT_4O_MODELS),
+            ("O1", O1_MODELS),
+            ("Anthropic", ANTHROPIC),
+            ("Google", GOOGLE),
+            ("Mistral", MISTRALAI)
+        ]
+
+        # Создаем кнопки для каждой модели в группе
+        for group_name, models in model_groups:
+            group_buttons = []
+            for model_name in models:
+                # Добавляем маркер к текущей модели
+                button_text = f"✓ {model_name}" if model_name == current_model else model_name
+                group_buttons.append(
+                    InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"model:{model_name}"
+                    )
+                )
+            # Добавляем группу кнопок в клавиатуру
+            # Разбиваем на ряды по 2 кнопки
+            for i in range(0, len(group_buttons), 2):
+                keyboard.append(group_buttons[i:i + 2])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"Current model: {current_model}\n\nSelect a new model:",
+            reply_markup=reply_markup
         )
+
+    async def handle_model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle model selection from inline keyboard.
+        """
+        query = update.callback_query
+        await query.answer()
+        
+        # Extract model name from callback data
+        model_name = query.data.split(':')[1]
+        user_id = query.from_user.id
+        logging.info(f"Model selected: {model_name}")
+        
+        if model_name in GPT_ALL_MODELS:
+            # Save selected model for the user
+            self.openai.user_models[str(user_id)] = model_name
+            # Save models to file
+            self.openai.save_user_models()
+            
+            # Просто обновляем текст сообщения без клавиатуры
+            await query.edit_message_text(
+                f"Model changed to: {model_name}"
+            )
+        else:
+            await query.edit_message_text(
+                f"Invalid model selection: {model_name}"
+            )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error = False):
         """
@@ -963,7 +1010,7 @@ class ChatGPTTelegramBot:
                         try:
                             if sent_message is not None:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
-                                                                 message_id=sent_message.message_id)
+                                                                message_id=sent_message.message_id)
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1172,9 +1219,9 @@ class ChatGPTTelegramBot:
                         if i == 0:
                             try:
                                 await edit_message_with_retry(context, chat_id=None,
-                                                              message_id=inline_message_id,
-                                                              text=f'{query}\n\n{answer_tr}:\n{content}',
-                                                              is_inline=True)
+                                                                  message_id=inline_message_id,
+                                                                  text=f'{query}\n\n{answer_tr}:\n{content}',
+                                                                  is_inline=True)
                             except:
                                 continue
 
@@ -1429,6 +1476,10 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
+            application.add_handler(CallbackQueryHandler(
+                self.handle_model_callback,
+                pattern="^model:"
+            ))
             application.add_handler(MessageHandler(
                 filters.PHOTO | filters.Document.IMAGE,
                 self.vision))
