@@ -6,6 +6,7 @@ import os
 import io
 import requests
 import json
+import sys
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -413,6 +414,58 @@ class ChatGPTTelegramBot:
             text=text
         )
 
+    async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Перезапускает бота. Доступно только администраторам.
+        """
+        if not is_admin(self.config, update.message.from_user.id):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                          'tried to restart the bot but is not admin')
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Эта команда доступна только администраторам бота."
+            )
+            return
+
+        logging.info(f'Restarting bot by admin {update.message.from_user.name} '
+                    f'(id: {update.message.from_user.id})...')
+        
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text="Перезапуск бота..."
+        )
+
+        # Очищаем все задачи и закрываем соединения
+        #await self.cleanup()
+        
+        # Пробуем перезапустить systemd сервис
+        try:
+            import subprocess
+            service_name = os.environ.get('SYSTEMD_SERVICE_NAME', 'tg_bot')
+            
+            # Проверяем статус сервиса
+            process = await asyncio.create_subprocess_exec(
+                'systemctl', 'is-active', service_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if stdout.decode().strip() == 'active':
+                # Если сервис активен, перезапускаем его
+                restart_process = await asyncio.create_subprocess_exec(
+                    'sudo', 'systemctl', 'restart', service_name
+                )
+                await restart_process.wait()
+                await asyncio.sleep(1)  # Даем время на перезапуск сервиса
+                sys.exit(0)
+                
+        except Exception as e:
+            logging.warning(f"Failed to restart systemd service: {e}")
+        
+        # Если не получилось перезапустить сервис, перезапускаем процесс Python
+        os.execl(sys.executable, sys.executable, *sys.argv)
+
     async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Generates an image for the given prompt using DALL·E APIs
@@ -773,7 +826,7 @@ class ChatGPTTelegramBot:
                             try:
                                 use_markdown = tokens != 'not_finished'
                                 await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                            text=content, markdown=use_markdown)
+                                                              text=content, markdown=use_markdown)
 
                             except RetryAfter as e:
                                 backoff += 5
@@ -1510,6 +1563,7 @@ class ChatGPTTelegramBot:
             self.openai.bot = application.bot
             loop.create_task(self.buffer_data_checker())
             loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
+            application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
             application.add_handler(CommandHandler('help', self.help))
             application.add_handler(CommandHandler('image', self.image))
