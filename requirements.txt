@@ -23,3 +23,6 @@ plotly
 numpy
 aiohttp
 opencv-python
+faiss-cpu==1.7.4
+langchain==0.1.12
+langchain-openai==0.0.8
