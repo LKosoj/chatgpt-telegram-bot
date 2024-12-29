@@ -65,7 +65,7 @@ def default_max_tokens(model: str) -> int:
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
-        return 200000
+        return 180000
     elif model in MISTRALAI:
         return 100000
     elif model in GOOGLE:
@@ -307,9 +307,12 @@ class OpenAIHelper:
 
             self.__add_to_history(chat_id, role="user", content=query)
 
+            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+            model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
+
             # Summarize the chat history if it's too long to avoid excessive token usage
-            token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+            token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
+            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens(model_to_use)
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -323,9 +326,6 @@ class OpenAIHelper:
                 except Exception as e:
                     logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
-
-            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.user_models.get(str(user_id), self.config['model'])
 
             logging.info(f"Model: {model_to_use}")
 
@@ -448,8 +448,7 @@ class OpenAIHelper:
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.user_models.get(str(user_id), self.config['model'])
-
+            model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
             
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
 
@@ -737,7 +736,8 @@ class OpenAIHelper:
         """
         # For models that don't support function role, add as a user message
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.user_models.get(str(user_id), self.config['model'])        
+        model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
+
         if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
             self.conversations[chat_id].append({"role": "user", "content": function_result})
@@ -775,36 +775,37 @@ class OpenAIHelper:
         )
         return response.choices[0].message.content
 
-    def __max_model_tokens(self):
+    def __max_model_tokens(self, model_to_use = None):
+        model_to_use = model_to_use or self.config['model']
         base = 4096
-        if self.config['model'] in GPT_3_MODELS:
+        if model_to_use in GPT_3_MODELS:
             return base
-        if self.config['model'] in GPT_3_16K_MODELS:
+        if model_to_use in GPT_3_16K_MODELS:
             return base * 4
-        if self.config['model'] in GPT_4_MODELS:
+        if model_to_use in GPT_4_MODELS:
             return base * 2
-        if self.config['model'] in GPT_4_32K_MODELS:
+        if model_to_use in GPT_4_32K_MODELS:
             return base * 8
-        if self.config['model'] in GPT_4_VISION_MODELS:
+        if model_to_use in GPT_4_VISION_MODELS:
             return base * 31
-        if self.config['model'] in GPT_4_128K_MODELS:
+        if model_to_use in GPT_4_128K_MODELS:
             return base * 31
-        if self.config['model'] in GPT_4O_MODELS:
+        if model_to_use in GPT_4O_MODELS:
             return base * 31
-        if self.config['model'] in O1_MODELS:
+        if model_to_use in O1_MODELS:
             return base * 31
-        if self.config['model'] in ANTHROPIC:
+        if model_to_use in ANTHROPIC:
             return base * 31
-        if self.config['model'] in GOOGLE:
+        if model_to_use in GOOGLE:
             return base * 31
-        if self.config['model'] in MISTRALAI:
+        if model_to_use in MISTRALAI:
             return base * 31
         raise NotImplementedError(
-            f"Max tokens for model {self.config['model']} is not implemented yet."
+            f"Max tokens for model {model_to_use} is not implemented yet."
         )
 
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-    def __count_tokens(self, messages) -> int:
+    def __count_tokens(self, messages, model_to_use = None) -> int:
         """
         Counts the number of tokens required to send the given messages.
         :param messages: the messages to send
