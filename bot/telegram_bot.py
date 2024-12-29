@@ -111,7 +111,7 @@ class ChatGPTTelegramBot:
                 '\n\n' +
                 'Ты можешь попросить установить напоминание на любое время. Так же можешь попросить показать напоминания и удалить напоминание по ID' +
                 '\n\n' +
-                'Ты можешь загрузить текстовый документ (.txt) и задавать вопросы по его содержимому, используя команду /ask_question. ' +
+                'Ты можешь загрузить текстовый документ (.txt, .docx, .pdf, .rtf, .doc) и задавать вопросы по его содержимому, используя команду /ask_question. ' +
                 'Для удаления документа используй команду /delete_document'
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
@@ -399,55 +399,105 @@ class ChatGPTTelegramBot:
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error = False):
         """
-        Resets the conversation.
+        Reset the conversation.
         """
         if not await is_allowed(self.config, update, context):
             logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                            'is not allowed to reset the conversation')
+                          'is not allowed to reset the conversation')
             await self.send_disallowed_message(update, context)
             return
 
+        chat_id = update.effective_chat.id
         logging.info(f'Resetting the conversation for user {update.message.from_user.name} '
-                     f'(id: {update.message.from_user.id})...')
+                    f'(id: {update.message.from_user.id})...')
 
         if error:
-            text = "Произошла ошибка при обработке запроса. Попробуйте перефразировать запрос."
-            chat_id = update.effective_chat.id
-            self.openai.reset_chat_history(chat_id=chat_id, content='')
+            # Сброс из-за ошибки
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
-                text=text
+                text='Ошибка: превышен бюджет. Сбрасываю контекст...'
             )
             return
 
-        # Загружаем промпты из файла
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-        
-        with open(chat_modes_path, 'r', encoding='utf-8') as file:
-            chat_modes = yaml.safe_load(file)
+        try:
+            # Загружаем режимы из файла
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+            
+            with open(chat_modes_path, 'r', encoding='utf-8') as file:
+                chat_modes = yaml.safe_load(file)
 
-        # Создаем клавиатуру с промптами
-        keyboard = []
-        row = []
-        for mode_key, mode_data in chat_modes.items():
-            if len(row) == 2:  # Создаем ряды по 2 кнопки
-                keyboard.append(row)
-                row = []
-            row.append(InlineKeyboardButton(
-                text=mode_data['name'],
-                callback_data=f"prompt:{mode_key}"
-            ))
-        if row:  # Добавляем оставшиеся кнопки
-            keyboard.append(row)
+            # Проверяем, есть ли текст после команды reset
+            if context.args:
+                # Получаем текст после команды
+                mode_query = ' '.join(context.args).lower()
+                
+                # Ищем режим по имени (регистронезависимо)
+                found_mode = None
+                for mode_key, mode_data in chat_modes.items():
+                    if mode_data.get('name', '').lower() == mode_query or mode_key.lower() == mode_query:
+                        found_mode = (mode_key, mode_data)
+                        break
+                
+                if found_mode:
+                    mode_key, mode_data = found_mode
+                    # Сбрасываем историю чата с новым промптом
+                    reset_content = mode_data.get('prompt_start', '')
+                    self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
+                                        
+                    # Отправляем приветственное сообщение
+                    welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
+                    parse_mode = mode_data.get('parse_mode', 'HTML')
+                    
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        text=f"Режим изменен на: {mode_data['name']}\n\n{welcome_message}",
+                        parse_mode=parse_mode
+                    )
+                    return
+                else:
+                    # Если режим не найден, отправляем сообщение об ошибке
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        text=f"Режим '{mode_query}' не найден. Выберите режим из списка:",
+                    )
+                    # Продолжаем выполнение и показываем список режимов
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.effective_message.reply_text(
-            message_thread_id=get_thread_id(update),
-            text="Выберите режим работы бота:",
-            reply_markup=reply_markup
-        )
+            # Группируем режимы по group
+            mode_groups = {}
+            for mode_key, mode_data in chat_modes.items():
+                group = mode_data.get('group', 'Другое')
+                if group not in mode_groups:
+                    mode_groups[group] = []
+                mode_groups[group].append((mode_key, mode_data))
+
+            # Создаем клавиатуру с группами
+            keyboard = []
+            # Добавляем кнопку сброса контекста в начало списка
+            keyboard.append([InlineKeyboardButton(
+                text="🔄 Сбросить контекст",
+                callback_data="promptgroup:reset_context"
+            )])
+            # Добавляем остальные группы
+            for group_name in sorted(mode_groups.keys()):
+                keyboard.append([InlineKeyboardButton(
+                    text=group_name,
+                    callback_data=f"promptgroup:{group_name}"
+                )])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Выберите группу режимов:",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logging.error(f"Error in reset: {str(e)}", exc_info=True)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Произошла ошибка при сбросе контекста. Пожалуйста, попробуйте еще раз через несколько секунд."
+            )
 
     async def handle_prompt_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -456,8 +506,9 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
-        # Получаем выбранный режим из callback_data
-        mode = query.data.split(':')[1]
+        data = query.data.split(':')
+        action = data[0]
+        value = data[1]
         
         # Загружаем промпты из файла
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -465,33 +516,96 @@ class ChatGPTTelegramBot:
         
         with open(chat_modes_path, 'r', encoding='utf-8') as file:
             chat_modes = yaml.safe_load(file)
-        
-        if mode in chat_modes:
-            chat_id = update.effective_chat.id
-            mode_data = chat_modes[mode]
+
+        if action == "promptgroup":
+            if value == "reset_context":
+                # Просто сбрасываем контекст без смены роли
+                chat_id = update.effective_chat.id
+                self.openai.reset_chat_history(chat_id=chat_id)
+                                
+                await query.edit_message_text(
+                    text="Контекст диалога сброшен. Можете начать новый диалог."
+                )
+                return
+                
+            # Показываем режимы выбранной группы
+            keyboard = []
+            for mode_key, mode_data in chat_modes.items():
+                if mode_data.get('group', 'Другое') == value:
+                    keyboard.append([InlineKeyboardButton(
+                        text=mode_data.get('name', mode_key),
+                        callback_data=f"prompt:{mode_key}"
+                    )])
             
-            # Сбрасываем историю чата с новым промптом
-            reset_content = mode_data.get('prompt_start', '')
-            self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
+            # Добавляем кнопку "Назад"
+            keyboard.append([InlineKeyboardButton(
+                text="« Назад к группам",
+                callback_data="promptback:main"
+            )])
             
-            # Сохраняем новый контекст в базу данных
-            self.db.save_conversation_context(chat_id, {
-                'messages': self.openai.conversations[chat_id],
-                'parse_mode': mode_data.get('parse_mode', 'HTML')
-            })
-            
-            # Отправляем приветственное сообщение
-            welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
-            parse_mode = mode_data.get('parse_mode', 'HTML')
-            
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text=f"Режим изменен на: {mode_data['name']}\n\n{welcome_message}",
-                parse_mode=parse_mode
+                text=f"Выберите режим из группы {value}:",
+                reply_markup=reply_markup
             )
-        else:
+            
+        elif action == "promptback":
+            # Возврат к списку групп
+            mode_groups = {}
+            for mode_key, mode_data in chat_modes.items():
+                group = mode_data.get('group', 'Другое')
+                if group not in mode_groups:
+                    mode_groups[group] = []
+                mode_groups[group].append((mode_key, mode_data))
+
+            # Создаем клавиатуру с группами
+            keyboard = []
+            # Добавляем кнопку сброса контекста в начало списка
+            keyboard.append([InlineKeyboardButton(
+                text="🔄 Сбросить контекст",
+                callback_data="promptgroup:reset_context"
+            )])
+            # Добавляем остальные группы
+            for group_name in sorted(mode_groups.keys()):
+                keyboard.append([InlineKeyboardButton(
+                    text=group_name,
+                    callback_data=f"promptgroup:{group_name}"
+                )])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text="Произошла ошибка при выборе режима. Попробуйте еще раз."
+                text="Выберите группу режимов:",
+                reply_markup=reply_markup
             )
+            
+        elif action == "prompt":
+            mode = value
+            if mode in chat_modes:
+                chat_id = update.effective_chat.id
+                mode_data = chat_modes[mode]
+                
+                # Сбрасываем историю чата с новым промптом
+                reset_content = mode_data.get('prompt_start', '')
+                self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
+                
+                # Сохраняем новый контекст в базу данных
+                self.db.save_conversation_context(chat_id, {
+                    'messages': self.openai.conversations[chat_id],
+                    'parse_mode': mode_data.get('parse_mode', 'HTML')
+                })
+                
+                # Отправляем приветственное сообщение
+                welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
+                parse_mode = mode_data.get('parse_mode', 'HTML')
+                
+                await query.edit_message_text(
+                    text=f"Режим изменен на: {mode_data['name']}\n\n{welcome_message}",
+                    parse_mode=parse_mode
+                )
+            else:
+                await query.edit_message_text(
+                    text="Произошла ошибка при выборе режима. Попробуйте еще раз."
+                )
 
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1871,7 +1985,7 @@ class ChatGPTTelegramBot:
             ]))
 
             application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
-            application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt:"))
+            application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
             application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
             application.add_error_handler(error_handler)
