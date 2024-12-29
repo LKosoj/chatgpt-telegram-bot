@@ -47,6 +47,8 @@ class TextDocumentQAPlugin(Plugin):
         
         # Максимальный возраст документа (30 дней в секундах)
         self.max_document_age = 30 * 24 * 60 * 60
+        # Время за которое нужно предупредить о удалении (1 день в секундах)
+        self.warning_before_delete = 24 * 60 * 60
         
         # Флаг для отслеживания запущенной задачи очистки
         self.cleanup_task = None
@@ -75,6 +77,14 @@ class TextDocumentQAPlugin(Plugin):
                     }
                 },
                 "required": ["file_content", "file_name"]
+            }
+        }, {
+            "name": "list_documents",
+            "description": "Показать список доступных документов",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }, {
             "name": "ask_question",
@@ -170,8 +180,56 @@ class TextDocumentQAPlugin(Plugin):
             # Проверяем раз в сутки
             await asyncio.sleep(24 * 60 * 60)
 
+    async def _update_last_access(self, doc_id: str):
+        """Обновляет время последнего доступа к документу"""
+        try:
+            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                
+                metadata['last_accessed'] = time.time()
+                # Сбрасываем флаг отправки предупреждения при новом обращении
+                metadata['warning_sent'] = False
+                
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"Ошибка при обновлении времени доступа: {e}")
+
+    async def _send_deletion_warning(self, metadata: Dict, doc_id: str):
+        """Отправляет предупреждение пользователю о предстоящем удалении документа"""
+        try:
+            chat_id = metadata.get('owner_chat_id')
+            file_name = metadata.get('file_name')
+            
+            warning_message = {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": f"⚠️ *Предупреждение об удалении документа*\n\n"
+                            f"Документ '*{file_name}*' будет автоматически удален через 24 часа.\n"
+                            f"ID документа: `{doc_id}`\n\n"
+                            f"Чтобы сохранить документ, просто обратитесь к нему с помощью команды:\n"
+                            f"`/ask_question {doc_id} ваш_вопрос`"
+                }
+            }
+            
+            # Создаем фиктивный update с chat_id для handle_direct_result
+            update = type('Update', (), {'effective_chat': type('Chat', (), {'id': chat_id})})()
+            await handle_direct_result(self.config, update, warning_message)
+            
+            # Отмечаем в метаданных, что предупреждение было отправлено
+            metadata['warning_sent'] = True
+            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False)
+                
+        except Exception as e:
+            logging.error(f"Ошибка при отправке предупреждения о удалении: {e}")
+
     async def _cleanup_old_documents(self):
-        """Удаляет документы старше max_document_age"""
+        """Удаляет документы, к которым не обращались больше max_document_age"""
         current_time = time.time()
         deleted_count = 0
 
@@ -187,8 +245,18 @@ class TextDocumentQAPlugin(Plugin):
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
 
-                # Проверяем возраст документа
-                if current_time - metadata['created_at'] > self.max_document_age:
+                # Проверяем время последнего доступа
+                last_accessed = metadata.get('last_accessed', metadata['created_at'])
+                time_since_last_access = current_time - last_accessed
+                
+                # Если до удаления остался один день и предупреждение еще не отправлено
+                if (time_since_last_access > (self.max_document_age - self.warning_before_delete) and 
+                    time_since_last_access <= self.max_document_age and 
+                    not metadata.get('warning_sent', False)):
+                    await self._send_deletion_warning(metadata, doc_id)
+                
+                # Если прошло больше max_document_age, удаляем документ
+                elif time_since_last_access > self.max_document_age:
                     # Удаляем все файлы, связанные с документом
                     await self._delete_document_files(doc_id)
                     deleted_count += 1
@@ -257,15 +325,92 @@ class TextDocumentQAPlugin(Plugin):
             except Exception as e:
                 logging.error(f"Ошибка при удалении временного файла: {e}")
 
+    async def _check_document_access(self, doc_id: str, chat_id: str) -> bool:
+        """Проверяет, имеет ли пользователь доступ к документу"""
+        try:
+            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
+            if not os.path.exists(metadata_path):
+                return False
+                
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            return metadata.get('owner_chat_id') == chat_id
+        except Exception as e:
+            logging.error(f"Ошибка при проверке доступа к документу: {e}")
+            return False
+
+    async def _get_user_documents(self, chat_id: str) -> List[Dict]:
+        """Получает список документов, доступных пользователю"""
+        documents = []
+        try:
+            for filename in os.listdir(self.metadata_dir):
+                if not filename.endswith('.json'):
+                    continue
+                    
+                metadata_path = os.path.join(self.metadata_dir, filename)
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    
+                if metadata.get('owner_chat_id') == chat_id:
+                    # Добавляем информацию о времени создания в человекочитаемом формате
+                    created_at = time.strftime('%Y-%m-%d %H:%M:%S', 
+                                             time.localtime(metadata['created_at']))
+                    documents.append({
+                        'doc_id': metadata['doc_id'],
+                        'file_name': metadata['file_name'],
+                        'created_at': created_at
+                    })
+            
+            # Сортируем по времени создания (новые первыми)
+            documents.sort(key=lambda x: x['created_at'], reverse=True)
+            return documents
+        except Exception as e:
+            logging.error(f"Ошибка при получении списка документов: {e}")
+            return []
+
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         try:
             self.openai_helper = helper
-            self.last_chat_id = kwargs.get('chat_id')  # Сохраняем chat_id для последующего использования
+            chat_id = kwargs.get('chat_id')
+            self.last_chat_id = chat_id  # Сохраняем chat_id для последующего использования
             
             # Запускаем задачу очистки при первом вызове execute
             await self.initialize()
             
-            if function_name == "upload_document":
+            if function_name == "list_documents":
+                documents = await self._get_user_documents(chat_id)
+                
+                if not documents:
+                    return {
+                        "direct_result": {
+                            "kind": "text",
+                            "format": "markdown",
+                            "value": "У вас пока нет загруженных документов."
+                        }
+                    }
+                
+                # Формируем красивый список документов
+                docs_list = ["Ваши документы:"]
+                for doc in documents:
+                    docs_list.append(f"\n📄 *{doc['file_name']}*")
+                    docs_list.append(f"  • ID: `{doc['doc_id']}`")
+                    docs_list.append(f"  • Загружен: {doc['created_at']}")
+                    docs_list.append(f"  • Команды:")
+                    docs_list.append(f"    `/ask_question {doc['doc_id']} ваш_вопрос` - задать вопрос")
+                    docs_list.append(f"    `/delete_document {doc['doc_id']}` - удалить документ")
+                
+                docs_list.append("\nДля просмотра списка документов используйте команду `/list_documents`")
+                
+                return {
+                    "direct_result": {
+                        "kind": "text",
+                        "format": "markdown",
+                        "value": "\n".join(docs_list)
+                    }
+                }
+                
+            elif function_name == "upload_document":
                 file_content = kwargs.get('file_content')
                 file_name = kwargs.get('file_name')
                 
@@ -293,6 +438,13 @@ class TextDocumentQAPlugin(Plugin):
 
                 if doc_id not in self.document_indices:
                     return {"error": "Документ не найден"}
+
+                # Проверяем права доступа
+                if not await self._check_document_access(doc_id, chat_id):
+                    return {"error": "У вас нет доступа к этому документу"}
+
+                # Обновляем время последнего доступа
+                await self._update_last_access(doc_id)
 
                 # Получаем эмбеддинг для вопроса
                 query_embedding_response = await helper.client.embeddings.create(
@@ -344,6 +496,10 @@ class TextDocumentQAPlugin(Plugin):
                 if doc_id not in self.document_indices:
                     return {"error": "Документ не найден"}
 
+                # Проверяем права доступа
+                if not await self._check_document_access(doc_id, chat_id):
+                    return {"error": "У вас нет доступа к этому документу"}
+
                 # Удаляем все файлы документа
                 await self._delete_document_files(doc_id)
 
@@ -372,10 +528,13 @@ class TextDocumentQAPlugin(Plugin):
             await self._create_document_index(text_content, doc_id)
 
             # Сохраняем метаданные документа
+            current_time = time.time()
             metadata = {
                 'file_name': file_name,
-                'created_at': time.time(),
-                'doc_id': doc_id
+                'created_at': current_time,
+                'last_accessed': current_time,
+                'doc_id': doc_id,
+                'owner_chat_id': chat_id
             }
             metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
             with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -386,12 +545,12 @@ class TextDocumentQAPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"Документ '{file_name}' успешно обработан.\n\n"
-                            f"Теперь вы можете задавать вопросы по документу, используя команду:\n"
-                            f"`/ask_question {doc_id} ваш_вопрос`.\n\n"
-                            f"Для удаления документа используйте команду:\n"
-                            f"`/delete_document {doc_id}`.\n\n"
-                            f"Обратите внимание: документ будет автоматически удален через 30 дней."
+                    "value": f"Документ '*{file_name}*' успешно обработан.\n\n"
+                            f"📝 Доступные команды:\n"
+                            f"• `/ask_question {doc_id} ваш_вопрос` - задать вопрос по документу\n"
+                            f"• `/delete_document {doc_id}` - удалить документ\n"
+                            f"• `/list_documents` - показать список всех ваших документов\n\n"
+                            f"Обратите внимание: документ будет автоматически удален через 30 дней после последнего обращения к нему."
                 }
             }
             await handle_direct_result(self.config, update, response)
