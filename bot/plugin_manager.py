@@ -141,12 +141,23 @@ class PluginManager:
             return json.dumps({'error': f'Function {function_name} not found'})
 
         try:
+            logging.debug(f"Пытаемся разобрать аргументы функции {function_name}: {arguments}")
             parsed_args = json.loads(arguments)
+            
+            logging.debug(f"Вызываем функцию {function_name} с аргументами: {parsed_args}")
             result = await plugin.execute(function_name, helper, **parsed_args)
+            
+            logging.debug(f"Результат выполнения функции {function_name}: {result}")
             return json.dumps(result, default=str, ensure_ascii=False)
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Ошибка разбора JSON аргументов функции {function_name}: {e}, Аргументы: {arguments}"
+            logging.error(error_msg)
+            return json.dumps({'error': error_msg}, ensure_ascii=False)
         except Exception as e:
-            logging.error(f"Error executing function {function_name}: {str(e)}")
-            return json.dumps({'error': f'Error executing function: {str(e)}'}, ensure_ascii=False)
+            error_msg = f"Ошибка выполнения функции {function_name}: {str(e)}"
+            logging.error(error_msg)
+            return json.dumps({'error': error_msg}, ensure_ascii=False)
         
     def get_plugin_source_name(self, function_name) -> str:
         """
