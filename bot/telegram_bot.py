@@ -25,6 +25,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     cleanup_intermediate_files
 from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
 from usage_tracker import UsageTracker
+from database import Database
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -77,6 +78,7 @@ class ChatGPTTelegramBot:
         self.application = None
         # Add new tracking for last image
         self.last_image = {}  # {chat_id: file_id}
+        self.db = Database()  # Инициализация базы данных
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -277,7 +279,8 @@ class ChatGPTTelegramBot:
                      f'(id: {update.message.from_user.id})...')
 
         user_id = update.message.from_user.id
-        current_model = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+        # Получаем модель из базы данных
+        current_model = self.db.get_user_model(user_id) or self.config['model']
 
         # Создаем кнопки для каждой группы моделей
         keyboard = []
@@ -314,7 +317,8 @@ class ChatGPTTelegramBot:
         value = data[1]
         
         user_id = query.from_user.id
-        current_model = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+        # Получаем текущую модель из базы данных
+        current_model = self.db.get_user_model(user_id) or self.config['model']
         
         if action == "modelgroup":
             # Показываем модели выбранной группы
@@ -358,8 +362,8 @@ class ChatGPTTelegramBot:
             # Обработка выбора конкретной модели
             model_name = value
             if model_name in GPT_ALL_MODELS:
-                self.openai.user_models[str(user_id)] = model_name
-                self.openai.save_user_models()
+                # Сохраняем выбранную модель в базу данных
+                self.db.save_user_model(user_id, model_name)
                 await query.edit_message_text(
                     f"Model changed to: {model_name}"
                 )
@@ -416,6 +420,9 @@ class ChatGPTTelegramBot:
             message_thread_id=get_thread_id(update),
             text=text
         )
+
+        # Очищаем контекст в базе данных
+        self.db.save_conversation_context(chat_id, {'messages': []})
 
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1059,7 +1066,8 @@ class ChatGPTTelegramBot:
         try:
             total_tokens = 0
 
-            model_to_use = self.openai.user_models.get(str(user_id), self.openai.config['model'])
+            # Получаем модель из базы данных
+            model_to_use = self.db.get_user_model(user_id) or self.config['model']
             if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
 
                 await update.effective_message.reply_chat_action(
