@@ -20,6 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_t
 
 from utils import is_direct_result, encode_image, decode_image
 from plugin_manager import PluginManager
+from database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +122,12 @@ class OpenAIHelper:
     ChatGPT helper class.
     """
 
-    def __init__(self, config: dict, plugin_manager: PluginManager):
+    def __init__(self, config: dict, plugin_manager: PluginManager, db: Database):
         """
         Initializes the OpenAI helper class with the given configuration.
         :param config: A dictionary containing the GPT configuration
         :param plugin_manager: The plugin manager
+        :param db: Database instance
         """
         http_client = httpx.AsyncClient(proxies=config['proxy']) if 'proxy' in config else None
         
@@ -135,6 +137,7 @@ class OpenAIHelper:
         self.client = openai.AsyncOpenAI(api_key=config['api_key'], http_client=http_client, timeout=300.0, max_retries=3)
         self.config = config
         self.plugin_manager = plugin_manager
+        self.db = db
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
@@ -302,13 +305,18 @@ class OpenAIHelper:
             logging.debug(f'Query: {query}')
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 self.reset_chat_history(chat_id)
+            else:
+                # Загружаем сохраненный контекст из базы данных
+                saved_context = self.db.get_conversation_context(chat_id)
+                if saved_context and 'messages' in saved_context:
+                    self.conversations[chat_id] = saved_context['messages']
 
             self.last_updated[chat_id] = datetime.datetime.now()
 
             self.__add_to_history(chat_id, role="user", content=query)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
+            model_to_use = self.db.get_user_model(user_id) or self.config['model']
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
@@ -448,7 +456,7 @@ class OpenAIHelper:
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
+            model_to_use = self.db.get_user_model(user_id) or self.config['model']
             
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
 
@@ -546,6 +554,11 @@ class OpenAIHelper:
         try:
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 self.reset_chat_history(chat_id)
+            else:
+                # Загружаем сохраненный контекст из базы данных
+                saved_context = self.db.get_conversation_context(chat_id)
+                if saved_context and 'messages' in saved_context:
+                    self.conversations[chat_id] = saved_context['messages']
 
             self.last_updated[chat_id] = datetime.datetime.now()
 
@@ -714,8 +727,10 @@ class OpenAIHelper:
             content = self.config['assistant_prompt']
 
         self.conversations[chat_id] = [{"role": "system", "content": content}]
-
         self.conversations_vision[chat_id] = False
+        
+        # Сохраняем начальный контекст в базу данных
+        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
 
     def __max_age_reached(self, chat_id) -> bool:
         """
@@ -736,7 +751,7 @@ class OpenAIHelper:
         """
         # For models that don't support function role, add as a user message
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.bot.db.get_user_model(user_id) or self.config['model']
+        model_to_use = self.db.get_user_model(user_id) or self.config['model']
 
         if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
@@ -744,6 +759,9 @@ class OpenAIHelper:
         else:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
+            
+        # Сохраняем обновленный контекст в базу данных
+        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
 
     def __add_to_history(self, chat_id, role, content):
         """
@@ -753,6 +771,9 @@ class OpenAIHelper:
         :param content: The message content
         """
         self.conversations[chat_id].append({"role": role, "content": content})
+        
+        # Сохраняем обновленный контекст в базу данных
+        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
 
     async def __summarise(self, conversation) -> str:
         """
@@ -773,7 +794,16 @@ class OpenAIHelper:
             temperature=0.4,
             extra_headers={ "X-Title": "tgBot" },
         )
-        return response.choices[0].message.content
+        
+        summary = response.choices[0].message.content
+        
+        # Находим chat_id для текущего разговора
+        chat_id = next((cid for cid, conv in self.conversations.items() if conv == conversation), None)
+        if chat_id:
+            # Сохраняем обновленный контекст после суммаризации
+            self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+            
+        return summary
 
     def __max_model_tokens(self, model_to_use = None):
         model_to_use = model_to_use or self.config['model']
