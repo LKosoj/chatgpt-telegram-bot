@@ -415,7 +415,7 @@ class ChatGPTTelegramBot:
             # Сброс из-за ошибки
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
-                text='Ошибка: превышен бюджет. Сбрасываю контекст...'
+                text='Ошибка. Сбрасываю контекст...'
             )
             return
 
