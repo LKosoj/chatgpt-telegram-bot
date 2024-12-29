@@ -260,18 +260,17 @@ class OpenAIHelper:
             if chat_id not in self.conversations:
                 logging.info(f'Initializing conversation context for chat_id={chat_id}')
                 # Пытаемся загрузить контекст из базы данных
-                saved_context = self.db.get_conversation_context(chat_id)
+                saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+                
                 if saved_context and 'messages' in saved_context:
-                    logging.info('Loading context from database')
+                    # Если есть сохраненный контекст в БД, используем его
                     self.conversations[chat_id] = saved_context['messages']
                 else:
-                    logging.info('Creating new chat history')
-                    # Если нет контекста, инициализируем новый
+                    # Если нет контекста в БД, начинаем новый чат
                     self.reset_chat_history(chat_id)
             
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
-                logging.info(f'Initializing conversations_vision for chat_id={chat_id}')
                 self.conversations_vision[chat_id] = False
 
             if request_id and hasattr(self, 'message_ids'):
@@ -353,7 +352,7 @@ class OpenAIHelper:
             logging.debug(f'Query: {query}')
             
             # Пытаемся загрузить контекст из базы данных
-            saved_context = self.db.get_conversation_context(chat_id)
+            saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
             
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 if saved_context and 'messages' in saved_context:
@@ -396,7 +395,7 @@ class OpenAIHelper:
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
-                'temperature': self.config['temperature'],
+                'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': default_max_tokens(model_to_use),
                 'presence_penalty': self.config['presence_penalty'],
@@ -622,7 +621,7 @@ class OpenAIHelper:
                 self.reset_chat_history(chat_id)
             else:
                 # Загружаем сохраненный контекст из базы данных
-                saved_context = self.db.get_conversation_context(chat_id)
+                saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
                 if saved_context and 'messages' in saved_context:
                     self.conversations[chat_id] = saved_context['messages']
 
@@ -662,7 +661,7 @@ class OpenAIHelper:
             common_args = {
                 'model': self.config['vision_model'],
                 'messages': self.conversations[chat_id][:-1] + [message],
-                'temperature': self.config['temperature'],
+                'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': self.config['vision_max_tokens'],
                 'presence_penalty': self.config['presence_penalty'],
@@ -793,26 +792,21 @@ class OpenAIHelper:
             logging.info(f'Starting reset_chat_history for chat_id={chat_id}')
             
             if not hasattr(self, 'conversations'):
-                logging.info('Initializing conversations dictionary')
                 self.conversations = {}
             if not hasattr(self, 'conversations_vision'):
-                logging.info('Initializing conversations_vision dictionary')
                 self.conversations_vision = {}
                 
             self.conversations_vision[chat_id] = False
 
             if content == '':
                 content = self.config['assistant_prompt']
-                logging.info('Using default assistant prompt')
                 
                 try:
                     # Пытаемся загрузить существующий контекст из базы данных
-                    saved_context = self.db.get_conversation_context(chat_id)
-                    logging.info(f'Loaded context from database: {saved_context is not None}')
+                    saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
                     
                     # Если есть сохраненный контекст, берем из него только системное сообщение
                     if saved_context and 'messages' in saved_context:
-                        logging.info('Found messages in saved context')
                         system_messages = [msg for msg in saved_context['messages'] if msg['role'] == 'system']
                         if system_messages:
                             logging.info('Using system message from saved context')
@@ -829,9 +823,9 @@ class OpenAIHelper:
             
             try:
                 # Сохраняем начальный контекст в базу данных
-                logging.info('Saving new context to database')
-                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
-                logging.info('Context saved successfully')
+                self.db.save_conversation_context(chat_id, {
+                    'messages': self.conversations[chat_id],
+                }, parse_mode, temperature)
             except Exception as e:
                 logging.error(f'Error saving context to database: {str(e)}')
                 
@@ -872,9 +866,6 @@ class OpenAIHelper:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
             
-        # Сохраняем обновленный контекст в базу данных
-        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
-
     def __add_to_history(self, chat_id, role, content):
         """
         Adds a message to the conversation history.
@@ -883,8 +874,9 @@ class OpenAIHelper:
         :param content: The message content
         """
         self.conversations[chat_id].append({"role": role, "content": content})
+        content, parse_mode, temperature = self.db.get_conversation_context(chat_id)
         # Сохраняем обновленный контекст в базу данных
-        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, parse_mode, temperature)
 
     async def __summarise(self, conversation, chat_id=None) -> str:
         """
@@ -928,7 +920,7 @@ class OpenAIHelper:
             
             if chat_id is not None:
                 # Сохраняем обновленный контекст после суммаризации
-                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, self.config['parse_mode'], self.config['temperature'])
                 
             return summary
         except Exception as e:
