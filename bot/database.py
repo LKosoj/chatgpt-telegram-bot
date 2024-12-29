@@ -112,6 +112,7 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 context_json = json.dumps(context, ensure_ascii=False)
+                logging.debug(f'Context to save: {context_json[:200]}...')  # Логируем только начало для безопасности
                 cursor.execute('''
                     INSERT INTO conversation_context (user_id, context)
                     VALUES (?, ?)
@@ -121,6 +122,9 @@ class Database:
                 ''', (user_id, context_json))
                 conn.commit()
                 logging.info(f'Conversation context saved successfully for user_id={user_id}')
+        except sqlite3.Error as e:
+            logging.error(f'SQLite error saving conversation context: {e}', exc_info=True)
+            raise
         except Exception as e:
             logging.error(f'Error saving conversation context: {e}', exc_info=True)
             raise
@@ -135,9 +139,17 @@ class Database:
                 result = cursor.fetchone()
                 if result:
                     logging.info(f'Conversation context found for user_id={user_id}')
-                    return json.loads(result[0])
+                    context = json.loads(result[0])
+                    logging.debug(f'Loaded context: {str(context)[:200]}...')  # Логируем только начало для безопасности
+                    return context
                 logging.info(f'No conversation context found for user_id={user_id}')
                 return None
+        except sqlite3.Error as e:
+            logging.error(f'SQLite error getting conversation context: {e}', exc_info=True)
+            raise
+        except json.JSONDecodeError as e:
+            logging.error(f'JSON decode error in conversation context: {e}', exc_info=True)
+            return None
         except Exception as e:
             logging.error(f'Error getting conversation context: {e}', exc_info=True)
             raise
