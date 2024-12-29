@@ -55,7 +55,7 @@ class ChatGPTTelegramBot:
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
             BotCommand(command='model', description=localized_text('change_model', bot_language)),
-            BotCommand(command='animate', description='Convert last uploaded image to video animation')
+            BotCommand(command='animate', description='Convert last uploaded image to video animation'),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -103,9 +103,12 @@ class ChatGPTTelegramBot:
                 '\n\n' +
                 'Ты можешь попросить нарисовать картинку по твоему запросу' +
                 '\n\n' +
-                'Ты можешь попросить саммари страницы в интернете. Если добавить - переведи ее в речь, получишь саммари в голосовом сообщении'
+                'Ты можешь попросить саммари страницы в интернете. Если добавить - переведи ее в речь, получишь саммари в голосовом сообщении' +
                 '\n\n' +
-                'Ты можешь попросить установить напоминание на любое время. Так же можешь попросить показать напоминания и удалить напоминание по ID'
+                'Ты можешь попросить установить напоминание на любое время. Так же можешь попросить показать напоминания и удалить напоминание по ID' +
+                '\n\n' +
+                'Ты можешь загрузить текстовый документ (.txt) и задавать вопросы по его содержимому, используя команду /ask_question. ' +
+                'Для удаления документа используй команду /delete_document'
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
@@ -1042,7 +1045,6 @@ class ChatGPTTelegramBot:
             if prompt.lower().startswith(trigger_keyword.lower()) or update.message.text.lower().startswith('/chat'):
                 if prompt.lower().startswith(trigger_keyword.lower()):
                     prompt = prompt[len(trigger_keyword):].strip()
-
                 if update.message.reply_to_message and \
                         update.message.reply_to_message.text and \
                         update.message.reply_to_message.from_user.id != context.bot.id:
@@ -1555,46 +1557,67 @@ class ChatGPTTelegramBot:
 
         try:
             document = update.message.document
-            if not document.file_name.endswith('.txt'):
-                await update.message.reply_text("Пожалуйста, загрузите текстовый файл (.txt)")
+            logging.info(f"Получен документ: {document.file_name}, mime_type: {document.mime_type}")
+            
+            # Список поддерживаемых MIME-типов
+            supported_mimes = [
+                'text/plain',                   # .txt
+                'application/msword',           # .doc
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',  # .docx
+                'application/pdf',              # .pdf
+                'application/rtf',              # .rtf
+                'application/vnd.oasis.opendocument.text',  # .odt
+                'text/markdown'                 # .md
+            ]
+            
+            # Список поддерживаемых расширений (как запасной вариант)
+            supported_extensions = ['.txt', '.doc', '.docx', '.pdf', '.rtf', '.odt', '.md']
+            file_extension = os.path.splitext(document.file_name)[1].lower()
+            
+            logging.info(f"Проверка типа файла: mime_type={document.mime_type}, extension={file_extension}")
+            
+            # Проверяем сначала MIME-тип, потом расширение
+            if document.mime_type not in supported_mimes and file_extension not in supported_extensions:
+                await update.message.reply_text(
+                    "Пожалуйста, загрузите текстовый документ в одном из следующих форматов:\n" +
+                    ", ".join(supported_extensions)
+                )
+                logging.warning(f"Файл отклонен: неподдерживаемый формат {document.mime_type} / {file_extension}")
                 return
 
+            logging.info("Начинаем скачивание файла...")
             # Скачиваем файл
             file = await context.bot.get_file(document.file_id)
             file_content = await file.download_as_bytearray()
+            logging.info(f"Файл успешно скачан, размер: {len(file_content)} байт")
             
-            # Декодируем содержимое файла
-            try:
-                text_content = file_content.decode('utf-8')
-            except UnicodeDecodeError:
-                try:
-                    text_content = file_content.decode('windows-1251')
-                except UnicodeDecodeError:
-                    await update.message.reply_text("Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251")
-                    return
-
             # Вызываем плагин для обработки документа
             plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
             if not plugin:
+                logging.error("Плагин text_document_qa не найден")
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     text="Document processing is not available. The plugin is not enabled."
                 )
                 return
 
+            logging.info("Передаем файл в плагин для обработки...")
             # Execute the plugin function directly
             result = await plugin.execute(
                 'upload_document',
                 self.openai,
-                file_content=text_content,
-                file_name=document.file_name
+                file_content=file_content,
+                file_name=document.file_name,
+                update=update
             )
 
             # Обрабатываем результат
             if isinstance(result, dict) and "error" in result:
+                logging.error(f"Ошибка от плагина: {result['error']}")
                 await update.message.reply_text(f"Ошибка: {result['error']}")
             else:
                 try:
+                    logging.info("Файл успешно обработан, отправляем результат")
                     await handle_direct_result(self.config, update, result)
                 except Exception as e:
                     logging.error(f"Error handling direct result: {e}")
@@ -1602,6 +1625,100 @@ class ChatGPTTelegramBot:
 
         except Exception as e:
             error_text = f"Произошла ошибка при обработке документа: {str(e)}"
+            logging.error(error_text)
+            await update.message.reply_text(error_text)
+
+    async def ask_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Обработчик команды /ask_question для задания вопросов по загруженному документу
+        """
+        if not await self.check_allowed_and_within_budget(update, context):
+            return
+
+        try:
+            # Получаем аргументы команды
+            args = context.args
+            if len(args) < 2:
+                await update.message.reply_text(
+                    "Пожалуйста, укажите ID документа и вопрос.\n"
+                    "Пример: `/ask_question document_id ваш вопрос`",
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+                return
+
+            document_id = args[0]
+            query = ' '.join(args[1:])
+
+            # Получаем плагин для работы с документами
+            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
+            if not plugin:
+                await update.message.reply_text(
+                    "Обработка документов недоступна. Плагин не активирован."
+                )
+                return
+
+            # Выполняем запрос к документу
+            result = await plugin.execute(
+                'ask_question',
+                self.openai,
+                document_id=document_id,
+                query=query
+            )
+
+            # Обрабатываем результат
+            if isinstance(result, dict) and "error" in result:
+                await update.message.reply_text(f"Ошибка: {result['error']}")
+            else:
+                await handle_direct_result(self.config, update, result)
+
+        except Exception as e:
+            error_text = f"Произошла ошибка при обработке запроса: {str(e)}"
+            logging.error(error_text)
+            await update.message.reply_text(error_text)
+
+    async def delete_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Обработчик команды /delete_document для удаления загруженного документа
+        """
+        if not await self.check_allowed_and_within_budget(update, context):
+            return
+
+        try:
+            # Получаем ID документа
+            if not context.args or len(context.args) != 1:
+                await update.message.reply_text(
+                    "Пожалуйста, укажите ID документа для удаления.\n"
+                    "Пример: `/delete_document document_id`",
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+                return
+
+            document_id = context.args[0]
+
+            # Получаем плагин для работы с документами
+            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
+            if not plugin:
+                await update.message.reply_text(
+                    "Обработка документов недоступна. Плагин не активирован."
+                )
+                return
+
+            logging.info(f"Удаление документа с ID: {document_id}")
+            # Удаляем документ
+            result = await plugin.execute(
+                'delete_document',
+                self.openai,
+                document_id=document_id
+            )
+
+            # Обрабатываем результат
+            if isinstance(result, dict) and "error" in result:
+                await update.message.reply_text(f"Ошибка: {result['error']}")
+            else:
+                await handle_direct_result(self.config, update, result)
+
+        except Exception as e:
+            error_text = f"Произошла ошибка при удалении документа: {str(e)}"
             logging.error(error_text)
             await update.message.reply_text(error_text)
 
@@ -1635,12 +1752,13 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('stats', self.stats))
             application.add_handler(CommandHandler('resend', self.resend))
             application.add_handler(CommandHandler('model', self.model))
-            application.add_handler(CommandHandler('animate', self.animate))  # Add new handler
+            application.add_handler(CommandHandler('animate', self.animate))
+            application.add_handler(CommandHandler('ask_question', self.ask_question))
+            application.add_handler(CommandHandler('delete_document', self.delete_document))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
 
-            application.add_handler(MessageHandler(filters.Document.TEXT, self.handle_document))
             application.add_handler(MessageHandler(
                 filters.PHOTO | filters.Document.IMAGE,
                 self.vision))
@@ -1649,6 +1767,15 @@ class ChatGPTTelegramBot:
                 filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
                 self.transcribe))
             application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+
+            application.add_handler(MessageHandler(
+                filters.Document.TXT |
+                filters.Document.DOC |
+                filters.Document.DOCX |
+                filters.Document.MimeType('application/pdf') |
+                filters.Document.MimeType('application/rtf') |
+                filters.Document.MimeType('text/markdown'),
+                self.handle_document))
 
             application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
                 constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
