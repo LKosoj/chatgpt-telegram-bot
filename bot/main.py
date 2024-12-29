@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from plugin_manager import PluginManager
 from openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
+from database import Database
 
 def main():
     # Read .env file
@@ -110,8 +111,9 @@ def main():
 
     # Setup and run ChatGPT and Telegram bot
     plugin_manager = PluginManager(config=plugin_config)
-    openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper)
+    db = Database()
+    openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager, db=db)
+    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper, db=db)
     telegram_bot.run()
 
 
