@@ -61,7 +61,7 @@ def default_max_tokens(model: str) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 4096
+        return base * 8
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
@@ -458,6 +458,7 @@ class OpenAIHelper:
                 messages=self.conversations[chat_id],
                 tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
+                max_tokens=default_max_tokens(model_to_use),
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
