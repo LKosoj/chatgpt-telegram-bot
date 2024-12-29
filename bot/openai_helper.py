@@ -781,6 +781,8 @@ class OpenAIHelper:
                 self.conversations[chat_id] = [system_messages[0]]
             else:
                 self.conversations[chat_id] = [{"role": "system", "content": content}]
+            logging.info(f'Reset chat history for chat_id={chat_id}')
+            logging.info(f'New chat history: {self.conversations[chat_id]}')
 
         self.conversations_vision[chat_id] = False
         
