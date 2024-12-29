@@ -7,6 +7,7 @@ import io
 import requests
 import json
 import sys
+import yaml
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -35,7 +36,7 @@ class ChatGPTTelegramBot:
     Class representing a ChatGPT Telegram Bot.
     """
 
-    def __init__(self, config: dict, openai: OpenAIHelper):
+    def __init__(self, config: dict, openai: OpenAIHelper, db: Database):
         """
         Initializes the bot with the given configuration and GPT bot object.
         :param config: A dictionary containing the bot configuration
@@ -47,6 +48,7 @@ class ChatGPTTelegramBot:
         self.buffer_timeout = 1.0
 
         self.config = config
+        self.db = db
         self.openai = openai
         self.openai.bot = None
         bot_language = self.config['bot_language']
@@ -280,7 +282,7 @@ class ChatGPTTelegramBot:
 
         user_id = update.message.from_user.id
         # Получаем модель из базы данных
-        current_model = self.db.get_user_model(user_id) or self.config['model']
+        current_model = self.db.get_user_model(user_id) or self.openai.config['model']
 
         # Создаем кнопки для каждой группы моделей
         keyboard = []
@@ -318,7 +320,7 @@ class ChatGPTTelegramBot:
         
         user_id = query.from_user.id
         # Получаем текущую модель из базы данных
-        current_model = self.db.get_user_model(user_id) or self.config['model']
+        current_model = self.db.get_user_model(user_id) or self.openai.config['model']
         
         if action == "modelgroup":
             # Показываем модели выбранной группы
@@ -410,19 +412,86 @@ class ChatGPTTelegramBot:
 
         if error:
             text = "Произошла ошибка при обработке запроса. Попробуйте перефразировать запрос."
-        else:
-            text = localized_text('reset_done', self.config['bot_language'])
+            chat_id = update.effective_chat.id
+            self.openai.reset_chat_history(chat_id=chat_id, content='')
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=text
+            )
+            return
 
-        chat_id = update.effective_chat.id
-        reset_content = message_text(update.message)
-        self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
+        # Загружаем промпты из файла
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+        
+        with open(chat_modes_path, 'r', encoding='utf-8') as file:
+            chat_modes = yaml.safe_load(file)
+
+        # Создаем клавиатуру с промптами
+        keyboard = []
+        row = []
+        for mode_key, mode_data in chat_modes.items():
+            if len(row) == 2:  # Создаем ряды по 2 кнопки
+                keyboard.append(row)
+                row = []
+            row.append(InlineKeyboardButton(
+                text=mode_data['name'],
+                callback_data=f"prompt:{mode_key}"
+            ))
+        if row:  # Добавляем оставшиеся кнопки
+            keyboard.append(row)
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
-            text=text
+            text="Выберите режим работы бота:",
+            reply_markup=reply_markup
         )
 
-        # Очищаем контекст в базе данных
-        self.db.save_conversation_context(chat_id, {'messages': []})
+    async def handle_prompt_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Обрабатывает выбор промпта пользователем
+        """
+        query = update.callback_query
+        await query.answer()
+        
+        # Получаем выбранный режим из callback_data
+        mode = query.data.split(':')[1]
+        
+        # Загружаем промпты из файла
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+        
+        with open(chat_modes_path, 'r', encoding='utf-8') as file:
+            chat_modes = yaml.safe_load(file)
+        
+        if mode in chat_modes:
+            chat_id = update.effective_chat.id
+            mode_data = chat_modes[mode]
+            
+            # Сбрасываем историю чата с новым промптом
+            reset_content = mode_data.get('prompt_start', '')
+            self.openai.reset_chat_history(chat_id=chat_id, content=reset_content)
+            
+            # Сохраняем новый контекст в базу данных
+            self.db.save_conversation_context(chat_id, {
+                'messages': self.openai.conversations[chat_id],
+                'parse_mode': mode_data.get('parse_mode', 'HTML')
+            })
+            
+            # Отправляем приветственное сообщение
+            welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
+            parse_mode = mode_data.get('parse_mode', 'HTML')
+            
+            await query.edit_message_text(
+                text=f"Режим изменен на: {mode_data['name']}\n\n{welcome_message}",
+                parse_mode=parse_mode
+            )
+        else:
+            await query.edit_message_text(
+                text="Произошла ошибка при выборе режима. Попробуйте еще раз."
+            )
 
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1067,7 +1136,8 @@ class ChatGPTTelegramBot:
             total_tokens = 0
 
             # Получаем модель из базы данных
-            model_to_use = self.db.get_user_model(user_id) or self.config['model']
+            model_to_use = self.db.get_user_model(user_id) or self.openai.config['model']
+            
             if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
 
                 await update.effective_message.reply_chat_action(
@@ -1120,10 +1190,14 @@ class ChatGPTTelegramBot:
                             if sent_message is not None:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
                                                                 message_id=sent_message.message_id)
+                            # Получаем parse_mode из контекста
+                            chat_context = self.db.get_conversation_context(chat_id) or {}
+                            parse_mode = chat_context.get('parse_mode', 'HTML')
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
                                 text=content,
+                                #parse_mode=parse_mode
                             )
                         except:
                             continue
@@ -1436,9 +1510,13 @@ class ChatGPTTelegramBot:
         Sends the disallowed message to the user.
         """
         if not is_inline:
+            chat_id = update.effective_chat.id
+            chat_context = self.db.get_conversation_context(chat_id) or {}
+            parse_mode = chat_context.get('parse_mode', 'HTML')
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 text=self.disallowed_message,
+                #parse_mode=parse_mode,
                 disable_web_page_preview=True
             )
         else:
@@ -1450,9 +1528,13 @@ class ChatGPTTelegramBot:
         Sends the budget reached message to the user.
         """
         if not is_inline:
+            chat_id = update.effective_chat.id
+            chat_context = self.db.get_conversation_context(chat_id) or {}
+            parse_mode = chat_context.get('parse_mode', 'HTML')
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
-                text=self.budget_limit_message
+                text=self.budget_limit_message,
+                #parse_mode=parse_mode
             )
         else:
             result_id = str(uuid4())
@@ -1790,6 +1872,7 @@ class ChatGPTTelegramBot:
             ]))
 
             application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
+            application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt:"))
             application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
             application.add_error_handler(error_handler)
