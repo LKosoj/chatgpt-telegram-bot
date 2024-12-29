@@ -46,6 +46,8 @@ class Database:
                     CREATE TABLE IF NOT EXISTS conversation_context (
                         user_id INTEGER,
                         context TEXT NOT NULL,
+                        parse_mode TEXT NOT NULL,
+                        temperature FLOAT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (user_id)
@@ -105,23 +107,23 @@ class Database:
             logging.error(f'Error getting user settings: {e}', exc_info=True)
             raise
     
-    def save_conversation_context(self, user_id: int, context: Dict[str, Any]) -> None:
+    def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float) -> None:
         """Сохранение контекста разговора"""
         try:
-            logging.info(f'Saving conversation context for user_id={user_id}')
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 context_json = json.dumps(context, ensure_ascii=False)
                 logging.debug(f'Context to save: {context_json[:200]}...')  # Логируем только начало для безопасности
                 cursor.execute('''
-                    INSERT INTO conversation_context (user_id, context)
-                    VALUES (?, ?)
+                    INSERT INTO conversation_context (user_id, context, parse_mode, temperature )
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET 
                     context = excluded.context,
+                    parse_mode = excluded.parse_mode,
+                    temperature = excluded.temperature,
                     updated_at = CURRENT_TIMESTAMP
-                ''', (user_id, context_json))
+                ''', (user_id, context_json, parse_mode, temperature))
                 conn.commit()
-                logging.info(f'Conversation context saved successfully for user_id={user_id}')
         except sqlite3.Error as e:
             logging.error(f'SQLite error saving conversation context: {e}', exc_info=True)
             raise
@@ -135,21 +137,22 @@ class Database:
             logging.info(f'Getting conversation context for user_id={user_id}')
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT context FROM conversation_context WHERE user_id = ?', (user_id,))
+                cursor.execute('SELECT context, parse_mode, temperature FROM conversation_context WHERE user_id = ?', (user_id,))
                 result = cursor.fetchone()
                 if result:
-                    logging.info(f'Conversation context found for user_id={user_id}')
-                    context = json.loads(result[0])
+                    context = json.loads(result[0]) if result[0] is not None else {}
+                    parse_mode = result[1] if result[1] is not None else 'HTML'
+                    temperature = result[2] if result[2] is not None else 0.8
                     logging.debug(f'Loaded context: {str(context)[:200]}...')  # Логируем только начало для безопасности
-                    return context
+                    return context, parse_mode, temperature
                 logging.info(f'No conversation context found for user_id={user_id}')
-                return None
+                return None, 'HTML', 0.8
         except sqlite3.Error as e:
             logging.error(f'SQLite error getting conversation context: {e}', exc_info=True)
             raise
         except json.JSONDecodeError as e:
             logging.error(f'JSON decode error in conversation context: {e}', exc_info=True)
-            return None
+            return None, 'HTML', 0.8
         except Exception as e:
             logging.error(f'Error getting conversation context: {e}', exc_info=True)
             raise
@@ -172,7 +175,6 @@ class Database:
     def save_user_model(self, user_id: int, model_name: str) -> None:
         """Сохранение выбранной модели пользователя"""
         try:
-            logging.info(f'Saving model {model_name} for user_id={user_id}')
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -183,7 +185,6 @@ class Database:
                     updated_at = CURRENT_TIMESTAMP
                 ''', (user_id, model_name))
                 conn.commit()
-                logging.info(f'Model saved successfully for user_id={user_id}')
         except Exception as e:
             logging.error(f'Error saving user model: {e}', exc_info=True)
             raise
@@ -191,15 +192,12 @@ class Database:
     def get_user_model(self, user_id: int) -> Optional[str]:
         """Получение выбранной модели пользователя"""
         try:
-            logging.info(f'Getting model for user_id={user_id}')
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT model_name FROM user_models WHERE user_id = ?', (user_id,))
                 result = cursor.fetchone()
                 if result:
-                    logging.info(f'Model found for user_id={user_id}: {result[0]}')
                     return result[0]
-                logging.info(f'No model found for user_id={user_id}')
                 return None
         except Exception as e:
             logging.error(f'Error getting user model: {e}', exc_info=True)
