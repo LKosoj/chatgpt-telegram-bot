@@ -1107,9 +1107,8 @@ class ChatGPTTelegramBot:
         """
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
-        message_id = update.message.message_id  # Get message ID
+        message_id = update.message.message_id
         self.last_message[chat_id] = prompt
-        # Create a unique identifier for this chat request
         request_id = f"{chat_id}_{message_id}"
             
         logging.info(
