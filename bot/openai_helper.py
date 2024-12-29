@@ -770,24 +770,60 @@ class OpenAIHelper:
         """
         Resets the conversation history.
         """
-        if content == '':
-            content = self.config['assistant_prompt']
-            # Пытаемся загрузить существующий контекст из базы данных
-            saved_context = self.db.get_conversation_context(chat_id)
+        try:
+            logging.info(f'Starting reset_chat_history for chat_id={chat_id}')
             
-            # Если есть сохраненный контекст, берем из него только системное сообщение
-            if saved_context and 'messages' in saved_context:
-                system_messages = [msg for msg in saved_context['messages'] if msg['role'] == 'system']
-                self.conversations[chat_id] = [system_messages[0]]
-            else:
-                self.conversations[chat_id] = [{"role": "system", "content": content}]
-            logging.info(f'Reset chat history for chat_id={chat_id}')
-            logging.info(f'New chat history: {self.conversations[chat_id]}')
+            if not hasattr(self, 'conversations'):
+                logging.info('Initializing conversations dictionary')
+                self.conversations = {}
+            if not hasattr(self, 'conversations_vision'):
+                logging.info('Initializing conversations_vision dictionary')
+                self.conversations_vision = {}
+                
+            self.conversations_vision[chat_id] = False
 
-        self.conversations_vision[chat_id] = False
-        
-        # Сохраняем начальный контекст в базу данных
-        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+            if content == '':
+                content = self.config['assistant_prompt']
+                logging.info('Using default assistant prompt')
+                
+                try:
+                    # Пытаемся загрузить существующий контекст из базы данных
+                    saved_context = self.db.get_conversation_context(chat_id)
+                    logging.info(f'Loaded context from database: {saved_context is not None}')
+                    
+                    # Если есть сохраненный контекст, берем из него только системное сообщение
+                    if saved_context and 'messages' in saved_context:
+                        logging.info('Found messages in saved context')
+                        system_messages = [msg for msg in saved_context['messages'] if msg['role'] == 'system']
+                        if system_messages:
+                            logging.info('Using system message from saved context')
+                            content = system_messages[0]['content']
+                        else:
+                            logging.info('No system messages found, using default prompt')
+                            content = self.config['assistant_prompt']
+                except Exception as e:
+                    logging.error(f'Error loading context from database: {str(e)}')
+            
+            # Если не нашли системное сообщение в БД или был передан новый content,
+            # создаем новую историю с новым системным сообщением
+            self.conversations[chat_id] = [{"role": "system", "content": content}]
+            
+            try:
+                # Сохраняем начальный контекст в базу данных
+                logging.info('Saving new context to database')
+                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+                logging.info('Context saved successfully')
+            except Exception as e:
+                logging.error(f'Error saving context to database: {str(e)}')
+                
+            logging.info(f'New chat history: {self.conversations[chat_id]}')
+            
+        except Exception as e:
+            logging.error(f'Critical error in reset_chat_history: {str(e)}', exc_info=True)
+            # Инициализируем с дефолтными значениями в случае критической ошибки
+            self.conversations[chat_id] = [{"role": "system", "content": self.config['assistant_prompt']}]
+            self.conversations_vision[chat_id] = False
+            logging.info(f'Initialized with default values for chat_id={chat_id}')
 
     def __max_age_reached(self, chat_id) -> bool:
         """
