@@ -151,6 +151,13 @@ class OpenAIHelper:
         self.last_image_file_ids = {}
         self.bot = None
 
+        # Set default values for optional configuration
+        self.config.setdefault('temperature', 0.7)
+        self.config.setdefault('presence_penalty', 0.0)
+        self.config.setdefault('frequency_penalty', 0.0)
+        self.config.setdefault('vision_detail', 'auto')
+        self.config.setdefault('n_choices', 1)
+
     def load_user_models(self):
         try:
             if os.path.exists(self.user_models_file):
@@ -325,12 +332,12 @@ class OpenAIHelper:
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
             
-#    @retry(
-#        reraise=True,
-#        retry=retry_if_exception_type(openai.RateLimitError),
-#        wait=wait_fixed(20),
-#        stop=stop_after_attempt(4)
-#    )
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(openai.RateLimitError),
+        wait=wait_fixed(20),
+        stop=stop_after_attempt(3)
+    )
     async def __common_get_chat_response(self, chat_id: int, query: str, stream=False):
         """
         Request a response from the GPT model.
@@ -387,6 +394,12 @@ class OpenAIHelper:
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
+                'temperature': self.config['temperature'],
+                'n': 1, # several choices is not implemented yet
+                'max_tokens': self.config['max_tokens'],
+                'presence_penalty': self.config['presence_penalty'],
+                'frequency_penalty': self.config['frequency_penalty'],
+                'stream': stream,
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
@@ -438,6 +451,10 @@ class OpenAIHelper:
         except openai.BadRequestError as e:
             logging.error(f'Bad request error: {str(e)}')
             raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+
+        except ValueError as e:
+            logging.error(f'Configuration error: {str(e)}')
+            raise Exception(f"⚠️ Configuration error: {str(e)}") from e
 
         except Exception as e:
             logging.error(f'Unexpected error in chat response generation: {str(e)}', exc_info=True)
@@ -976,29 +993,32 @@ class OpenAIHelper:
         :param image_bytes: image to interpret
         :return: the number of tokens required
         """
-        image_file = io.BytesIO(image_bytes)
-        image = Image.open(image_file)
-        model = self.config['vision_model']
-        if model not in GPT_4_VISION_MODELS:
-            raise NotImplementedError(f"""count_tokens_vision() is not implemented for model {model}.""")
-        
-        w, h = image.size
-        if w > h: w, h = h, w
-        # this computation follows https://platform.openai.com/docs/guides/vision and https://openai.com/pricing#gpt-4-turbo
-        base_tokens = 85
-        detail = self.config['vision_detail']
-        if detail == 'low':
-            return base_tokens
-        elif detail == 'high' or detail == 'auto': # assuming worst cost for auto
-            f = max(w / 768, h / 2048)
-            if f > 1:
-                w, h = int(w / f), int(h / f)
-            tw, th = (w + 511) // 512, (h + 511) // 512
-            tiles = tw * th
-            num_tokens = base_tokens + tiles * 170
-            return num_tokens
-        else:
-            raise NotImplementedError(f"""unknown parameter detail={detail} for model {model}.""")
+        try:
+            image_file = io.BytesIO(image_bytes)
+            with Image.open(image_file) as image:
+                w, h = image.size
+                if w > h: 
+                    w, h = h, w
+                
+                # this computation follows https://platform.openai.com/docs/guides/vision and https://openai.com/pricing#gpt-4-turbo
+                base_tokens = 85
+                detail = self.config.get('vision_detail', 'auto')
+                
+                if detail == 'low':
+                    return base_tokens
+                elif detail == 'high' or detail == 'auto': # assuming worst cost for auto
+                    f = max(w / 768, h / 2048)
+                    if f > 1:
+                        w, h = int(w / f), int(h / f)
+                    tw, th = (w + 511) // 512, (h + 511) // 512
+                    tiles = tw * th
+                    num_tokens = base_tokens + tiles * 170
+                    return num_tokens
+                else:
+                    raise ValueError(f"Unknown vision_detail parameter: {detail}")
+        except Exception as e:
+            logging.error(f"Error processing image for token counting: {e}")
+            raise
 
     async def get_file_data(self, file_id: str) -> bytes:
         """
