@@ -23,6 +23,10 @@ plotly
 numpy
 aiohttp
 opencv-python
-faiss-cpu==1.7.4
+faiss-gpu
 langchain==0.1.12
 langchain-openai==0.0.8
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
