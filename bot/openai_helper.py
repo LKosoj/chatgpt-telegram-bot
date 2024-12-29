@@ -245,26 +245,65 @@ class OpenAIHelper:
         """
         plugins_used = ()
         try:
+            logging.info(f'Starting chat response stream for chat_id={chat_id}')
+            
+            # Проверяем, инициализирован ли контекст разговора
+            if chat_id not in self.conversations:
+                logging.info(f'Initializing conversation context for chat_id={chat_id}')
+                # Пытаемся загрузить контекст из базы данных
+                saved_context = self.db.get_conversation_context(chat_id)
+                if saved_context and 'messages' in saved_context:
+                    logging.info('Loading context from database')
+                    self.conversations[chat_id] = saved_context['messages']
+                else:
+                    logging.info('Creating new chat history')
+                    # Если нет контекста, инициализируем новый
+                    self.reset_chat_history(chat_id)
+            
+            # Инициализируем conversations_vision для чата, если его нет
+            if chat_id not in self.conversations_vision:
+                logging.info(f'Initializing conversations_vision for chat_id={chat_id}')
+                self.conversations_vision[chat_id] = False
+
             if request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
-            response = await self.__common_get_chat_response(chat_id, query, stream=True)
+                
+            logging.info('Getting chat response from model')
+            try:
+                response = await self.__common_get_chat_response(chat_id, query, stream=True)
+            except Exception as e:
+                logging.error(f'Error getting chat response: {str(e)}')
+                yield f"Error: {str(e)}", '0'
+                return
+
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
-                response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
-                if is_direct_result(response):
-                    yield response, '0'
+                try:
+                    response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
+                    if is_direct_result(response):
+                        yield response, '0'
+                        return
+                except Exception as e:
+                    logging.error(f'Error in function call: {str(e)}')
+                    yield f"Error in function call: {str(e)}", '0'
                     return
 
             answer = ''
                 
-            async for chunk in response:
-                if not chunk.choices:
-                    continue
-                if len(chunk.choices) == 0:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    answer += delta.content
+            try:
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    if len(chunk.choices) == 0:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        answer += delta.content
+                        yield answer, 'not_finished'
+            except Exception as e:
+                logging.error(f'Error processing response stream: {str(e)}')
+                if answer:
                     yield answer, 'not_finished'
+                return
 
             answer = answer.strip()
             self.__add_to_history(chat_id, role="assistant", content=answer)
@@ -282,7 +321,7 @@ class OpenAIHelper:
             yield answer, tokens_used
 
         except Exception as e:
-            logging.error(f"Error in chat response stream: {e}")
+            logging.error(f"Error in chat response stream: {e}", exc_info=True)
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
             
@@ -303,14 +342,22 @@ class OpenAIHelper:
         try:
             logging.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
             logging.debug(f'Query: {query}')
+            
+            # Пытаемся загрузить контекст из базы данных
+            saved_context = self.db.get_conversation_context(chat_id)
+            
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
-                self.reset_chat_history(chat_id)
-            else:
-                # Загружаем сохраненный контекст из базы данных
-                saved_context = self.db.get_conversation_context(chat_id)
                 if saved_context and 'messages' in saved_context:
+                    # Если есть сохраненный контекст в БД, используем его
                     self.conversations[chat_id] = saved_context['messages']
+                else:
+                    # Если нет контекста в БД, начинаем новый чат
+                    self.reset_chat_history(chat_id)
 
+            # Инициализируем conversations_vision для чата, если его нет
+            if chat_id not in self.conversations_vision:
+                self.conversations_vision[chat_id] = False
+            
             self.last_updated[chat_id] = datetime.datetime.now()
 
             self.__add_to_history(chat_id, role="user", content=query)
@@ -725,8 +772,16 @@ class OpenAIHelper:
         """
         if content == '':
             content = self.config['assistant_prompt']
+            # Пытаемся загрузить существующий контекст из базы данных
+            saved_context = self.db.get_conversation_context(chat_id)
+            
+            # Если есть сохраненный контекст, берем из него только системное сообщение
+            if saved_context and 'messages' in saved_context:
+                system_messages = [msg for msg in saved_context['messages'] if msg['role'] == 'system']
+                self.conversations[chat_id] = [system_messages[0]]
+            else:
+                self.conversations[chat_id] = [{"role": "system", "content": content}]
 
-        self.conversations[chat_id] = [{"role": "system", "content": content}]
         self.conversations_vision[chat_id] = False
         
         # Сохраняем начальный контекст в базу данных
@@ -771,7 +826,6 @@ class OpenAIHelper:
         :param content: The message content
         """
         self.conversations[chat_id].append({"role": role, "content": content})
-        
         # Сохраняем обновленный контекст в базу данных
         self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
 
