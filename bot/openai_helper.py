@@ -40,7 +40,7 @@ MISTRALAI = ("mistralai/mistral-nemo",)
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI
 
 @lru_cache(maxsize=128)
-def default_max_tokens(model: str) -> int:
+def default_max_tokens(model: str = None) -> int:
     """
     Gets the default number of max tokens for the given model.
     :param model: The model name
@@ -62,7 +62,7 @@ def default_max_tokens(model: str) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return base * 8
+        return base * 90
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
@@ -71,6 +71,8 @@ def default_max_tokens(model: str) -> int:
         return 100000
     elif model in GOOGLE:
         return 800000
+    else:
+        return base * 2
 
 
 @lru_cache(maxsize=128)
@@ -374,13 +376,13 @@ class OpenAIHelper:
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens(model_to_use)
+            exceeded_max_tokens = token_count + self.config['max_tokens'] > default_max_tokens(model_to_use)
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
-                    summary = await self.__summarise(self.conversations[chat_id][:-1])
+                    summary = await self.__summarise(self.conversations[chat_id][:-1], user_id)
                     logging.debug(f'Summary: {summary}')
                     self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'])
                     self.__add_to_history(chat_id, role="assistant", content=summary)
@@ -396,7 +398,7 @@ class OpenAIHelper:
                 'messages': self.conversations[chat_id],
                 'temperature': self.config['temperature'],
                 'n': 1, # several choices is not implemented yet
-                'max_tokens': self.config['max_tokens'],
+                'max_tokens': default_max_tokens(model_to_use),
                 'presence_penalty': self.config['presence_penalty'],
                 'frequency_penalty': self.config['frequency_penalty'],
                 'stream': stream,
@@ -406,7 +408,7 @@ class OpenAIHelper:
             if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                 stream = False
 
-            max_tokens =  self.config['max_tokens']
+            max_tokens =  default_max_tokens(model_to_use)
             if model_to_use in O1_MODELS:
                 if self.config['max_tokens'] > 32000:
                     max_tokens = 32000
@@ -638,7 +640,7 @@ class OpenAIHelper:
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+            exceeded_max_tokens = token_count + self.config['max_tokens'] > default_max_tokens()
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -884,64 +886,55 @@ class OpenAIHelper:
         # Сохраняем обновленный контекст в базу данных
         self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
 
-    async def __summarise(self, conversation) -> str:
+    async def __summarise(self, conversation, chat_id=None) -> str:
         """
         Summarises the conversation history.
         :param conversation: The conversation history
+        :param chat_id: The chat ID of the conversation
         :return: The summary
         """
-        messages = [
-            {"role": "assistant", "content": "Summarize this conversation in 700 characters or less"},
-            {"role": "user", "content": str(conversation)}
-        ]
-        #user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.config['model']
+        try:
+            # Ограничиваем размер входных данных
+            model_to_use = self.config['model']
+            if chat_id is not None:
+                model_to_use = self.db.get_user_model(chat_id) or self.config['model']
 
-        response = await self.client.chat.completions.create(
-            model=model_to_use,
-            messages=messages,
-            temperature=0.4,
-            extra_headers={ "X-Title": "tgBot" },
-        )
-        
-        summary = response.choices[0].message.content
-        
-        # Находим chat_id для текущего разговора
-        chat_id = next((cid for cid, conv in self.conversations.items() if conv == conversation), None)
-        if chat_id:
-            # Сохраняем обновленный контекст после суммаризации
-            self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+            max_tokens = default_max_tokens(model_to_use) / 2  # Оставляем место для ответа
+            current_tokens = 0
+            truncated_conversation = []
             
-        return summary
+            # Подсчитываем токены и обрезаем историю если нужно
+            for msg in reversed(conversation):  # Идем с конца, чтобы сохранить последние сообщения
+                msg_tokens = self.__count_tokens([msg])
+                if current_tokens + msg_tokens > max_tokens:
+                    break
+                current_tokens += msg_tokens
+                truncated_conversation.insert(0, msg)  # Вставляем в начало списка
 
-    def __max_model_tokens(self, model_to_use = None):
-        model_to_use = model_to_use or self.config['model']
-        base = 4096
-        if model_to_use in GPT_3_MODELS:
-            return base
-        if model_to_use in GPT_3_16K_MODELS:
-            return base * 4
-        if model_to_use in GPT_4_MODELS:
-            return base * 2
-        if model_to_use in GPT_4_32K_MODELS:
-            return base * 8
-        if model_to_use in GPT_4_VISION_MODELS:
-            return base * 31
-        if model_to_use in GPT_4_128K_MODELS:
-            return base * 31
-        if model_to_use in GPT_4O_MODELS:
-            return base * 31
-        if model_to_use in O1_MODELS:
-            return base * 31
-        if model_to_use in ANTHROPIC:
-            return base * 31
-        if model_to_use in GOOGLE:
-            return base * 31
-        if model_to_use in MISTRALAI:
-            return base * 31
-        raise NotImplementedError(
-            f"Max tokens for model {model_to_use} is not implemented yet."
-        )
+            messages = [
+                {"role": "assistant", "content": "Summarize this conversation in 1000 characters or less"},
+                {"role": "user", "content": str(truncated_conversation)}
+            ]
+            
+            response = await self.client.chat.completions.create(
+                model=model_to_use,
+                messages=messages,
+                temperature=0.4,
+                max_tokens=max_tokens,  # Явно ограничиваем размер ответа
+                extra_headers={ "X-Title": "tgBot" },
+            )
+            
+            summary = response.choices[0].message.content
+            
+            if chat_id is not None:
+                # Сохраняем обновленный контекст после суммаризации
+                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]})
+                
+            return summary
+        except Exception as e:
+            logging.error(f'Error in summarise: {str(e)}')
+            # В случае ошибки возвращаем базовое сообщение
+            return "Previous conversation history was too long and has been truncated."
 
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
     def __count_tokens(self, messages, model_to_use = None) -> int:
