@@ -277,9 +277,6 @@ class ChatGPTTelegramBot:
             await self.send_disallowed_message(update, context)
             return
 
-        logging.info(f'Model selection request by user {update.message.from_user.name} '
-                     f'(id: {update.message.from_user.id})...')
-
         user_id = update.message.from_user.id
         # Получаем модель из базы данных
         current_model = self.db.get_user_model(user_id) or self.openai.config['model']
@@ -591,9 +588,8 @@ class ChatGPTTelegramBot:
                 # Сохраняем новый контекст в базу данных
                 self.db.save_conversation_context(chat_id, {
                     'messages': self.openai.conversations[chat_id],
-                    'parse_mode': mode_data.get('parse_mode', 'HTML')
-                })
-                
+                }, mode_data.get('parse_mode', 'HTML'), mode_data.get('temperature', self.openai.config['temperature']))
+                                        
                 # Отправляем приветственное сообщение
                 welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
                 parse_mode = mode_data.get('parse_mode', 'HTML')
@@ -1304,8 +1300,7 @@ class ChatGPTTelegramBot:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
                                                                 message_id=sent_message.message_id)
                             # Получаем parse_mode из контекста
-                            chat_context = self.db.get_conversation_context(chat_id) or {}
-                            parse_mode = chat_context.get('parse_mode', 'HTML')
+                            #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1623,9 +1618,8 @@ class ChatGPTTelegramBot:
         Sends the disallowed message to the user.
         """
         if not is_inline:
-            chat_id = update.effective_chat.id
-            chat_context = self.db.get_conversation_context(chat_id) or {}
-            parse_mode = chat_context.get('parse_mode', 'HTML')
+            #chat_id = update.effective_chat.id
+            #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 text=self.disallowed_message,
@@ -1641,9 +1635,8 @@ class ChatGPTTelegramBot:
         Sends the budget reached message to the user.
         """
         if not is_inline:
-            chat_id = update.effective_chat.id
-            chat_context = self.db.get_conversation_context(chat_id) or {}
-            parse_mode = chat_context.get('parse_mode', 'HTML')
+            #chat_id = update.effective_chat.id
+            #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 text=self.budget_limit_message,
