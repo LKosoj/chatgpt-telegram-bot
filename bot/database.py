@@ -2,6 +2,7 @@ import sqlite3
 from typing import Dict, Any, Optional
 import json
 import threading
+import os
 
 class Database:
     _instance = None
@@ -10,12 +11,17 @@ class Database:
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super(Database, cls).__new__(cls)
-                cls._instance.init_db()
+                instance = super(Database, cls).__new__(cls)
+                # Используем путь к текущему файлу для создания базы данных
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                instance.db_path = os.path.join(current_dir, 'user_data.db')
+                cls._instance = instance
+                instance.init_db()
             return cls._instance
     
     def __init__(self):
-        self.db_path = 'bot/user_data.db'
+        """Этот метод может быть вызван несколько раз, поэтому здесь не должно быть инициализации"""
+        pass
         
     def init_db(self):
         """Инициализация базы данных и создание необходимых таблиц"""
@@ -59,7 +65,7 @@ class Database:
         """Сохранение пользовательских настроек"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            settings_json = json.dumps(settings)
+            settings_json = json.dumps(settings, ensure_ascii=False)
             cursor.execute('''
                 INSERT INTO user_settings (user_id, settings)
                 VALUES (?, ?)
@@ -83,7 +89,7 @@ class Database:
         """Сохранение контекста разговора"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            context_json = json.dumps(context)
+            context_json = json.dumps(context, ensure_ascii=False)
             cursor.execute('''
                 INSERT INTO conversation_context (user_id, context)
                 VALUES (?, ?)
@@ -109,6 +115,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
             cursor.execute('DELETE FROM conversation_context WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM user_models WHERE user_id = ?', (user_id,))
             conn.commit()
     
     def save_user_model(self, user_id: int, model_name: str) -> None:
