@@ -8,6 +8,7 @@ import requests
 import json
 import sys
 import yaml
+from typing import Dict
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -1650,9 +1651,76 @@ class ChatGPTTelegramBot:
         """
         Post initialization hook for the bot.
         """
-        await application.bot.set_my_commands(self.group_commands, scope=BotCommandScopeAllGroupChats())
         await application.bot.set_my_commands(self.commands)
+        await application.bot.set_my_commands(
+            self.group_commands,
+            scope=BotCommandScopeAllGroupChats()
+        )
+
+        # Регистрируем команды от плагинов
+        plugin_commands = self.openai.plugin_manager.get_plugin_commands()
+        for cmd in plugin_commands:
+            handler = CommandHandler(
+                cmd['command'],
+                lambda update, context, cmd=cmd: self.handle_plugin_command(update, context, cmd),
+                filters=filters.COMMAND
+            )
+            application.add_handler(handler)
+            # Добавляем команду в список команд бота
+            self.commands.append(BotCommand(
+                command=cmd['command'],
+                description=cmd['description']
+            ))
         
+        # Обновляем команды бота
+        await application.bot.set_my_commands(self.commands)
+        await application.bot.set_my_commands(
+            self.group_commands + [BotCommand(cmd['command'], cmd['description']) for cmd in plugin_commands],
+            scope=BotCommandScopeAllGroupChats()
+        )
+
+    async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
+        """Обработчик команд плагинов"""
+        try:
+            # Проверяем права доступа
+            if not await is_allowed(self.config, update, context):
+                await self.send_disallowed_message(update, context)
+                return
+
+            # Получаем аргументы команды
+            args = context.args
+            kwargs = cmd['handler_kwargs'].copy()
+            
+            # Если команда требует аргументы, но они не предоставлены
+            if cmd.get('args') and not args:
+                await update.message.reply_text(
+                    f"Использование: /{cmd['command']} {cmd.get('args', '')}\n"
+                    f"Описание: {cmd['description']}"
+                )
+                return
+
+            # Добавляем chat_id и аргументы в kwargs
+            kwargs['chat_id'] = str(update.effective_chat.id)
+            if cmd.get('args'):
+                kwargs['query'] = ' '.join(args)  # Для команд, требующих текстовый запрос
+                if '<document_id>' in cmd.get('args'):
+                    kwargs['document_id'] = args[0]  # Для команд, требующих ID документа
+
+            # Вызываем обработчик команды
+            result = await cmd['handler'](cmd['handler_kwargs']['function_name'], self.openai, **kwargs)
+            
+            # Если результат содержит direct_result, обрабатываем его
+            if is_direct_result(result):
+                await handle_direct_result(self.config, update, result)
+            elif isinstance(result, dict) and 'error' in result:
+                await update.message.reply_text(f"Ошибка: {result['error']}")
+            else:
+                await update.message.reply_text(str(result))
+
+        except Exception as e:
+            logging.error(f"Ошибка при обработке команды плагина: {e}")
+            await update.message.reply_text(f"Произошла ошибка при выполнении команды: {str(e)}")
+
     async def cleanup(self):
         """
         Comprehensive cleanup:

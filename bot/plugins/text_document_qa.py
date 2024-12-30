@@ -60,6 +60,31 @@ class TextDocumentQAPlugin(Plugin):
     def get_source_name(self) -> str:
         return "TextDocumentQA"
 
+    def get_commands(self) -> List[Dict]:
+        """Возвращает список команд, которые поддерживает плагин"""
+        return [
+            {
+                "command": "list_documents",
+                "description": "Показать список всех ваших документов",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "list_documents"}
+            },
+            {
+                "command": "ask_question",
+                "description": "Задать вопрос по документу",
+                "args": "<document_id> <вопрос>",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "ask_question"}
+            },
+            {
+                "command": "delete_document",
+                "description": "Удалить документ",
+                "args": "<document_id>",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "delete_document"}
+            }
+        ]
+
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "upload_document",
@@ -359,7 +384,8 @@ class TextDocumentQAPlugin(Plugin):
                     documents.append({
                         'doc_id': metadata['doc_id'],
                         'file_name': metadata['file_name'],
-                        'created_at': created_at
+                        'created_at': created_at,
+                        'summary': metadata.get('summary', '')
                     })
             
             # Сортируем по времени создания (новые первыми)
@@ -396,6 +422,8 @@ class TextDocumentQAPlugin(Plugin):
                     docs_list.append(f"\n📄 *{doc['file_name']}*")
                     docs_list.append(f"  • ID: `{doc['doc_id']}`")
                     docs_list.append(f"  • Загружен: {doc['created_at']}")
+                    if 'summary' in doc:
+                        docs_list.append(f"  • Описание: _{doc['summary']}_")
                     docs_list.append(f"  • Команды:")
                     docs_list.append(f"    `/ask_question {doc['doc_id']} ваш_вопрос` - задать вопрос")
                     docs_list.append(f"    `/delete_document {doc['doc_id']}` - удалить документ")
@@ -527,6 +555,14 @@ class TextDocumentQAPlugin(Plugin):
             # Создаем индекс
             await self._create_document_index(text_content, doc_id)
 
+            # Генерируем саммари документа
+            summary_prompt = f"Создай краткое описание (не более 150-200 символов) для следующего текста:\n\n{text_content[:5000]}"
+            summary_response, _ = await self.openai_helper.ask(
+                prompt=summary_prompt,
+                user_id=chat_id,
+                assistant_prompt="Ты - эксперт в области обработки текстовых документов. Ты умеешь создавать краткое, но полностью описывающее содержимое документа описание."
+            )
+
             # Сохраняем метаданные документа
             current_time = time.time()
             metadata = {
@@ -534,7 +570,8 @@ class TextDocumentQAPlugin(Plugin):
                 'created_at': current_time,
                 'last_accessed': current_time,
                 'doc_id': doc_id,
-                'owner_chat_id': chat_id
+                'owner_chat_id': chat_id,
+                'summary': summary_response
             }
             metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
             with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -545,7 +582,8 @@ class TextDocumentQAPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"Документ '*{file_name}*' успешно обработан.\n\n"
+                    "value": f"Документ '*{file_name}*' успешно обработан.\n"
+                            f"📝 Краткое описание: _{summary_response}_\n\n"
                             f"📝 Доступные команды:\n"
                             f"• `/ask_question {doc_id} ваш_вопрос` - задать вопрос по документу\n"
                             f"• `/delete_document {doc_id}` - удалить документ\n"

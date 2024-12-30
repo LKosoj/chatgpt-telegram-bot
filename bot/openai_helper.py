@@ -187,6 +187,34 @@ class OpenAIHelper:
             self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
+    async def ask(self, prompt, user_id, assistant_prompt=None):
+        """
+        Send a prompt to OpenAI and get a response.
+        """
+        try:
+            add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            if assistant_prompt == None:
+                assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
+
+            messages = [
+                {"role": "system", "content": assistant_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            user_model = self.db.get_user_model(user_id) or self.config["model"]
+            response = await self.client.chat.completions.create(
+                model=user_model,
+                messages=messages,
+                max_tokens=default_max_tokens(user_model),
+                temperature=0.7,
+                stream=False,
+                extra_headers={ "X-Title": "tgBot" }
+            )
+            
+            return response.choices[0].message.content.strip(), response.usage.total_tokens
+        except Exception as e:
+            logging.error(f'Error in ask method: {str(e)}', exc_info=True)
+            raise
+
     async def get_chat_response(self, chat_id: int, query: str, request_id: str = None) -> tuple[str, str]:
         """
         Gets a full response from the GPT model.

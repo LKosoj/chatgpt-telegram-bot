@@ -227,3 +227,15 @@ class PluginManager:
         """Проверяет существование плагина по имени"""
         return plugin_name in self.plugins
 
+    def get_plugin_commands(self) -> List[Dict]:
+        """Возвращает список всех команд от всех плагинов"""
+        commands = []
+        for plugin_name, plugin_class in self.plugins.items():
+            try:
+                plugin_instance = plugin_class()
+                plugin_commands = plugin_instance.get_commands()
+                commands.extend(plugin_commands)
+            except Exception as e:
+                logging.error(f"Ошибка при получении команд плагина {plugin_name}: {e}")
+        return commands
+

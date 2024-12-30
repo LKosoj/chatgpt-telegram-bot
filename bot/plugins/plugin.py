@@ -1,5 +1,5 @@
 from abc import abstractmethod, ABC
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 
 class Plugin(ABC):
@@ -33,4 +33,16 @@ class Plugin(ABC):
         :return: JSON serializable response
         """
         pass
+
+    def get_commands(self) -> List[Dict]:
+        """
+        Возвращает список команд, которые поддерживает плагин.
+        Каждая команда должна содержать:
+        - command: str - название команды без /
+        - description: str - описание команды
+        - args: str (опционально) - описание аргументов команды
+        - handler: callable - функция-обработчик команды
+        - handler_kwargs: dict - аргументы для передачи в handler
+        """
+        return []
     
