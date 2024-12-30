@@ -1892,99 +1892,6 @@ class ChatGPTTelegramBot:
             logging.error(error_text)
             await update.message.reply_text(error_text)
 
-    async def ask_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обработчик команды /ask_question для задания вопросов по загруженному документу
-        """
-        if not await self.check_allowed_and_within_budget(update, context):
-            return
-
-        try:
-            # Получаем аргументы команды
-            args = context.args
-            if len(args) < 2:
-                await update.message.reply_text(
-                    "Пожалуйста, укажите ID документа и вопрос.\n"
-                    "Пример: `/ask_question document_id ваш вопрос`",
-                    parse_mode=constants.ParseMode.MARKDOWN
-                )
-                return
-
-            document_id = args[0]
-            query = ' '.join(args[1:])
-
-            # Получаем плагин для работы с документами
-            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
-            if not plugin:
-                await update.message.reply_text(
-                    "Обработка документов недоступна. Плагин не активирован."
-                )
-                return
-
-            # Выполняем запрос к документу
-            result = await plugin.execute(
-                'ask_question',
-                self.openai,
-                document_id=document_id,
-                query=query
-            )
-
-            # Обрабатываем результат
-            if isinstance(result, dict) and "error" in result:
-                await update.message.reply_text(f"Ошибка: {result['error']}")
-            else:
-                await handle_direct_result(self.config, update, result)
-
-        except Exception as e:
-            error_text = f"Произошла ошибка при обработке запроса: {str(e)}"
-            logging.error(error_text)
-            await update.message.reply_text(error_text)
-
-    async def delete_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обработчик команды /delete_document для удаления загруженного документа
-        """
-        if not await self.check_allowed_and_within_budget(update, context):
-            return
-
-        try:
-            # Получаем ID документа
-            if not context.args or len(context.args) != 1:
-                await update.message.reply_text(
-                    "Пожалуйста, укажите ID документа для удаления.\n"
-                    "Пример: `/delete_document document_id`",
-                    parse_mode=constants.ParseMode.MARKDOWN
-                )
-                return
-
-            document_id = context.args[0]
-
-            # Получаем плагин для работы с документами
-            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
-            if not plugin:
-                await update.message.reply_text(
-                    "Обработка документов недоступна. Плагин не активирован."
-                )
-                return
-
-            logging.info(f"Удаление документа с ID: {document_id}")
-            # Удаляем документ
-            result = await plugin.execute(
-                'delete_document',
-                self.openai,
-                document_id=document_id
-            )
-
-            # Обрабатываем результат
-            if isinstance(result, dict) and "error" in result:
-                await update.message.reply_text(f"Ошибка: {result['error']}")
-            else:
-                await handle_direct_result(self.config, update, result)
-
-        except Exception as e:
-            error_text = f"Произошла ошибка при удалении документа: {str(e)}"
-            logging.error(error_text)
-            await update.message.reply_text(error_text)
 
     def run(self):
         """
@@ -2017,8 +1924,6 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('resend', self.resend))
             application.add_handler(CommandHandler('model', self.model))
             application.add_handler(CommandHandler('animate', self.animate))
-            application.add_handler(CommandHandler('ask_question', self.ask_question))
-            application.add_handler(CommandHandler('delete_document', self.delete_document))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
