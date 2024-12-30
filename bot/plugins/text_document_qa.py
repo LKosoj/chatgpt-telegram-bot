@@ -67,21 +67,24 @@ class TextDocumentQAPlugin(Plugin):
                 "command": "list_documents",
                 "description": "Показать список всех ваших документов",
                 "handler": self.execute,
-                "handler_kwargs": {"function_name": "list_documents"}
+                "handler_kwargs": {"function_name": "list_documents"},
+                "plugin_name": "text_document_qa"
             },
             {
                 "command": "ask_question",
                 "description": "Задать вопрос по документу",
                 "args": "<document_id> <вопрос>",
                 "handler": self.execute,
-                "handler_kwargs": {"function_name": "ask_question"}
+                "handler_kwargs": {"function_name": "ask_question"},
+                "plugin_name": "text_document_qa"
             },
             {
                 "command": "delete_document",
                 "description": "Удалить документ",
                 "args": "<document_id>",
                 "handler": self.execute,
-                "handler_kwargs": {"function_name": "delete_document"}
+                "handler_kwargs": {"function_name": "delete_document"},
+                "plugin_name": "text_document_qa"
             }
         ]
 
@@ -369,14 +372,29 @@ class TextDocumentQAPlugin(Plugin):
         """Получает список документов, доступных пользователю"""
         documents = []
         try:
-            for filename in os.listdir(self.metadata_dir):
+            logging.info(f"_get_user_documents вызван для chat_id: {chat_id}")
+            logging.info(f"Путь к директории метаданных: {self.metadata_dir}")
+            
+            if not os.path.exists(self.metadata_dir):
+                logging.error(f"Директория метаданных не существует: {self.metadata_dir}")
+                return []
+                
+            files = os.listdir(self.metadata_dir)
+            logging.info(f"Найдены файлы в директории: {files}")
+            
+            for filename in files:
                 if not filename.endswith('.json'):
                     continue
                     
                 metadata_path = os.path.join(self.metadata_dir, filename)
+                logging.info(f"Обрабатываем файл: {metadata_path}")
+                
                 with open(metadata_path, 'r', encoding='utf-8') as f:
                     metadata = json.load(f)
                     
+                logging.info(f"Метаданные файла {filename}: {metadata}")
+                logging.info(f"Сравниваем owner_chat_id: {metadata.get('owner_chat_id')} с chat_id: {chat_id}")
+                
                 if metadata.get('owner_chat_id') == chat_id:
                     # Добавляем информацию о времени создания в человекочитаемом формате
                     created_at = time.strftime('%Y-%m-%d %H:%M:%S', 
@@ -397,15 +415,22 @@ class TextDocumentQAPlugin(Plugin):
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         try:
+            logging.info(f"TextDocumentQAPlugin.execute вызван с function_name={function_name}")
+            logging.info(f"kwargs: {kwargs}")
+            
             self.openai_helper = helper
             chat_id = kwargs.get('chat_id')
+            logging.info(f"chat_id: {chat_id}")
+            
             self.last_chat_id = chat_id  # Сохраняем chat_id для последующего использования
             
             # Запускаем задачу очистки при первом вызове execute
             await self.initialize()
             
             if function_name == "list_documents":
+                logging.info("Начинаем получение списка документов")
                 documents = await self._get_user_documents(chat_id)
+                logging.info(f"Получены документы: {documents}")
                 
                 if not documents:
                     return {

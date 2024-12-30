@@ -435,7 +435,7 @@ class OpenAIHelper:
             if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                 stream = False
 
-            max_tokens =  default_max_tokens(model_to_use)
+            max_tokens = default_max_tokens(model_to_use)
             if model_to_use in O1_MODELS:
                 if self.config['max_tokens'] > 32000:
                     max_tokens = 32000
@@ -457,7 +457,6 @@ class OpenAIHelper:
             
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use)
-
                 if tools and model_to_use not in O1_MODELS:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'

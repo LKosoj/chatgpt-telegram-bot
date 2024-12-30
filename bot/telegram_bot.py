@@ -52,6 +52,8 @@ class ChatGPTTelegramBot:
         self.db = db
         self.openai = openai
         self.openai.bot = None
+        # Устанавливаем openai в plugin_manager
+        self.openai.plugin_manager.set_openai(self.openai)
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
@@ -59,7 +61,6 @@ class ChatGPTTelegramBot:
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
             BotCommand(command='model', description=localized_text('change_model', bot_language)),
-            BotCommand(command='animate', description='Convert last uploaded image to video animation'),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -79,8 +80,6 @@ class ChatGPTTelegramBot:
         self.inline_queries_cache = {}
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
-        # Add new tracking for last image
-        self.last_image = {}  # {chat_id: file_id}
         self.db = Database()  # Инициализация базы данных
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -884,24 +883,24 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
+        user_id = update.message.from_user.id
         prompt = update.message.caption
         
-        logging.info(f"Vision handler called for chat_id: {chat_id}")
+        logging.info(f"Vision handler called for chat_id: {chat_id}, user_id: {user_id}")
 
-        # Store the last image file_id for potential tool use
+        # Cleanup old images first
+        self.db.cleanup_old_images()
+
+        # Store the image in database
         if len(update.message.photo) > 0:
             file_id = update.message.photo[-1].file_id
             logging.info(f"Storing photo file_id: {file_id}")
-            self.last_image[chat_id] = file_id
-            self.openai.set_last_image_file_id(chat_id, file_id)
+            self.db.save_image(user_id, chat_id, file_id)
         elif update.message.document and update.message.document.mime_type.startswith('image/'):
             file_id = update.message.document.file_id
             logging.info(f"Storing document file_id: {file_id}")
-            self.last_image[chat_id] = file_id
-            self.openai.set_last_image_file_id(chat_id, file_id)
+            self.db.save_image(user_id, chat_id, file_id)
 
-        logging.info(f"Stored last_image: {self.last_image}")
-        logging.info(f"Stored in OpenAI helper: {self.openai.last_image_file_ids}")
         # Only proceed with vision if there's a caption or it's a valid vision request
         if prompt or (is_group_chat(update) and not self.config['ignore_group_vision']):
             if is_group_chat(update):
@@ -1086,7 +1085,7 @@ class ChatGPTTelegramBot:
             # If no caption, just acknowledge receipt of image
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
-                text="I've received your image. You can now ask me to process it or animate it."
+                text="Изображение получено. Теперь вы можете попросить меня его обработать или анимировать."
             )        
 
     async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1100,27 +1099,19 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
+        user_id = update.message.from_user.id
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
-        logging.info(f"Prompt handler called for chat_id: {chat_id}")
-        logging.info(f"Last image in bot: {self.last_image.get(chat_id)}")
-        logging.info(f"Last image in OpenAI helper: {self.openai.get_last_image_file_id(chat_id)}")
+        logging.info(f"Prompt handler called for chat_id: {chat_id}, user_id: {user_id}")
 
-        # Add the last image file_id to the context if available
-        if chat_id in self.last_image:
-            self.openai.set_last_image_file_id(chat_id, self.last_image[chat_id])
-            # Add image context to the conversation
-            #if not hasattr(self.openai, 'conversations'):
-            #    self.openai.conversations = {}
-            #if chat_id not in self.openai.conversations:
-            #    self.openai.conversations[chat_id] = []
-            # Add image context as system message
-            #self.openai.conversations[chat_id].append({
-            #    "role": "user",
-            #    "content": f"User has uploaded an image with file_id: {self.last_image[chat_id]}"
-            #})
-
+        # Get last active image from database if exists
+        user_images = self.db.get_user_images(user_id, chat_id, limit=1)
+        if user_images:
+            last_image = user_images[0]
+            if last_image['status'] == 'active':
+                self.openai.set_last_image_file_id(user_id, last_image['file_id'])  # Changed to use user_id
+                logging.info(f"Found active image {last_image['file_id']} for user {user_id}")
 
         async with self.buffer_lock:
             # Инициализируем буфер для чата, если его нет
@@ -1647,7 +1638,7 @@ class ChatGPTTelegramBot:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
 
-    async def post_init(self, application: Application) -> None:
+    async def post_init(self, application: Application):
         """
         Post initialization hook for the bot.
         """
@@ -1660,6 +1651,16 @@ class ChatGPTTelegramBot:
         # Регистрируем команды от плагинов
         plugin_commands = self.openai.plugin_manager.get_plugin_commands()
         for cmd in plugin_commands:
+            # Регистрируем обработчик callback_query если он есть
+            if 'callback_query_handler' in cmd and 'callback_pattern' in cmd:
+                handler = CallbackQueryHandler(
+                    lambda update, context, cmd=cmd: cmd['callback_query_handler'](update, context),
+                    pattern=cmd['callback_pattern']
+                )
+                application.add_handler(handler)
+                continue
+                
+            # Регистрируем обычную команду
             handler = CommandHandler(
                 cmd['command'],
                 lambda update, context, cmd=cmd: self.handle_plugin_command(update, context, cmd),
@@ -1675,9 +1676,14 @@ class ChatGPTTelegramBot:
         # Обновляем команды бота
         await application.bot.set_my_commands(self.commands)
         await application.bot.set_my_commands(
-            self.group_commands + [BotCommand(cmd['command'], cmd['description']) for cmd in plugin_commands],
+            self.group_commands + [BotCommand(cmd['command'], cmd['description']) for cmd in plugin_commands if 'command' in cmd],
             scope=BotCommandScopeAllGroupChats()
         )
+
+        # Регистрируем стандартные обработчики callback_query
+        application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
+        application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
+        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
 
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
@@ -1687,7 +1693,28 @@ class ChatGPTTelegramBot:
                 await self.send_disallowed_message(update, context)
                 return
 
-            # Получаем аргументы команды
+            # Получаем существующий инстанс плагина
+            plugin_instance = self.openai.plugin_manager.get_plugin(cmd.get('plugin_name'))
+            if not plugin_instance:
+                raise ValueError(f"Plugin {cmd.get('plugin_name')} not found")
+
+            handler = getattr(plugin_instance, cmd.get('handler').__name__)
+            if not handler:
+                raise ValueError("Handler not specified in command")
+
+            # Анализируем сигнатуру обработчика
+            import inspect
+            handler_params = inspect.signature(handler).parameters
+            is_telegram_handler = 'update' in handler_params and 'context' in handler_params
+
+            if is_telegram_handler:
+                # Для обработчиков команд Telegram
+                result = await handler(update, context)
+                if result:  # Если обработчик что-то вернул
+                    await update.message.reply_text(str(result))
+                return
+
+            # Для обработчиков функций плагина
             args = context.args
             kwargs = cmd['handler_kwargs'].copy()
             
@@ -1701,21 +1728,22 @@ class ChatGPTTelegramBot:
 
             # Добавляем chat_id и аргументы в kwargs
             kwargs['chat_id'] = str(update.effective_chat.id)
-            kwargs['update'] = update  # Добавляем update в kwargs
+            kwargs['update'] = update
+            kwargs['function_name'] = cmd['handler_kwargs'].get('function_name')  # Берем из handler_kwargs
             if cmd.get('args'):
-                kwargs['query'] = ' '.join(args)  # Для команд, требующих текстовый запрос
+                kwargs['query'] = ' '.join(args)
                 if '<document_id>' in cmd.get('args'):
-                    kwargs['document_id'] = args[0]  # Для команд, требующих ID документа
+                    kwargs['document_id'] = args[0]
 
             # Вызываем обработчик команды
-            result = await cmd['handler'](kwargs['function_name'], self.openai, **{k:v for k,v in kwargs.items() if k != 'function_name'})
+            result = await handler(kwargs['function_name'], self.openai, **{k:v for k,v in kwargs.items() if k != 'function_name'})
             
-            # Если результат содержит direct_result, обрабатываем его
+            # Обрабатываем результат
             if is_direct_result(result):
                 await handle_direct_result(self.config, update, result)
             elif isinstance(result, dict) and 'error' in result:
                 await update.message.reply_text(f"Ошибка: {result['error']}")
-            else:
+            elif result:
                 await update.message.reply_text(str(result))
 
         except Exception as e:
@@ -1925,7 +1953,6 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('stats', self.stats))
             application.add_handler(CommandHandler('resend', self.resend))
             application.add_handler(CommandHandler('model', self.model))
-            application.add_handler(CommandHandler('animate', self.animate))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
@@ -1952,10 +1979,6 @@ class ChatGPTTelegramBot:
                 constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
             ]))
 
-            application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
-            application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
-            application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
-
             application.add_error_handler(error_handler)
 
             application.run_polling()
@@ -1965,81 +1988,4 @@ class ChatGPTTelegramBot:
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
 
-    async def animate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Convert the last uploaded image to video animation.
-        """
-        if not await self.check_allowed_and_within_budget(update, context):
-            return
-
-        chat_id = update.effective_chat.id
-        user_id = update.message.from_user.id
-        animation_prompt = message_text(update.message)
-
-        if chat_id not in self.last_image:
-            await update.effective_message.reply_text(
-                message_thread_id=get_thread_id(update),
-                text="Please upload an image first, then use the /animate command."
-            )
-            return
-
-        logging.info(f'New animation request received from user {update.message.from_user.name} '
-                    f'(id: {update.message.from_user.id})')
-
-        async def _execute():
-            try:
-                # Get the plugin instance
-                plugin = self.openai.plugin_manager.get_plugin('haiper_image_to_video')
-                if not plugin:
-                    await update.effective_message.reply_text(
-                        message_thread_id=get_thread_id(update),
-                        text="Image to video conversion is not available. The plugin is not enabled."
-                    )
-                    return
-
-                # Execute the plugin function directly
-                response = await plugin.execute(
-                    'convert_image_to_video',
-                    self.openai,
-                    last_image_file_id=self.last_image[chat_id],
-                    prompt=animation_prompt
-                )
-
-                if isinstance(response, str):
-                    response = json.loads(response)
-
-                if isinstance(response, dict) and 'error' in response:
-                    await update.effective_message.reply_text(
-                        message_thread_id=get_thread_id(update),
-                        text=f"Error creating animation: {response['error']}"
-                    )
-                    return
-
-                # Handle the response based on its format
-                if isinstance(response, dict) and 'direct_result' in response:
-                    result = response['direct_result']
-                    if result['kind'] == 'video' and result['format'] == 'path':
-                        # Send the video file
-                        with open(result['value'], 'rb') as video_file:
-                            await update.effective_message.reply_video(
-                                video=video_file,
-                                message_thread_id=get_thread_id(update),
-                                caption="Here's your animated video!"
-                            )
-                        # Clean up the temporary file
-                        os.remove(result['value'])
-                else:
-                    await update.effective_message.reply_text(
-                        message_thread_id=get_thread_id(update),
-                        text="Unexpected response format from the animation service."
-                    )
-
-            except Exception as e:
-                logging.error(f"Error in animation process: {e}")
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    text=f"Error creating animation: {str(e)}"
-                )
-
-        await wrap_with_indicator(update, context, _execute, constants.ChatAction.UPLOAD_VIDEO)
         

@@ -1,9 +1,10 @@
 import sqlite3
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 import threading
 import os
 import logging
+import hashlib
 
 class Database:
     _instance = None
@@ -63,7 +64,28 @@ class Database:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                
+
+                # Таблица для хранения информации об изображениях
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS images (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        file_id TEXT NOT NULL,
+                        file_id_hash TEXT NOT NULL,
+                        file_path TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES user_settings(user_id)
+                    )
+                ''')
+
+                # Добавляем индекс для быстрого поиска по хешу
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_file_id_hash ON images(file_id_hash)
+                ''')
+
                 conn.commit()
                 logging.info('Database initialized successfully')
         except Exception as e:
@@ -201,4 +223,91 @@ class Database:
                 return None
         except Exception as e:
             logging.error(f'Error getting user model: {e}', exc_info=True)
+            raise
+
+    def save_image(self, user_id: int, chat_id: int, file_id: str, file_path: Optional[str] = None) -> int:
+        """Сохранение информации об изображении"""
+        try:
+            # Генерируем хеш для file_id
+            hash_object = hashlib.md5(file_id.encode())
+            file_id_hash = hash_object.hexdigest()[:8]
+
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, chat_id, file_id, file_id_hash, file_path))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logging.error(f'Error saving image: {e}', exc_info=True)
+            raise
+
+    def get_user_images(self, user_id: int, chat_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение списка изображений пользователя"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                if chat_id is not None:
+                    cursor.execute('''
+                        SELECT id, file_id, file_id_hash, file_path, status, created_at, updated_at
+                        FROM images 
+                        WHERE user_id = ? AND chat_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    ''', (user_id, chat_id, limit))
+                else:
+                    cursor.execute('''
+                        SELECT id, file_id, file_id_hash, file_path, status, created_at, updated_at
+                        FROM images 
+                        WHERE user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    ''', (user_id, limit))
+                
+                rows = cursor.fetchall()
+                return [
+                    {
+                        'id': row[0],
+                        'file_id': row[1],
+                        'file_id_hash': row[2],
+                        'file_path': row[3],
+                        'status': row[4],
+                        'created_at': row[5],
+                        'updated_at': row[6]
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logging.error(f'Error getting user images: {e}', exc_info=True)
+            raise
+
+    def update_image_status(self, image_id: int, status: str) -> None:
+        """Обновление статуса изображения"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE images 
+                    SET status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, image_id))
+                conn.commit()
+        except Exception as e:
+            logging.error(f'Error updating image status: {e}', exc_info=True)
+            raise
+
+    def cleanup_old_images(self, days: int = 7) -> None:
+        """Очистка устаревших данных об изображениях"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM images 
+                    WHERE created_at < datetime('now', '-' || ? || ' days')
+                ''', (days,))
+                conn.commit()
+        except Exception as e:
+            logging.error(f'Error cleaning up old images: {e}', exc_info=True)
             raise 

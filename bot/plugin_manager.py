@@ -17,8 +17,10 @@ class PluginManager:
             logging.info("Creating new PluginManager instance")  # Debug line
             cls._instance = super().__new__(cls)
             cls._instance.plugins = {}
+            cls._instance.plugin_instances = {}  # Кеш инстансов плагинов
             cls._instance.plugins_directory = plugins_directory
             cls._instance.enabled_plugins = config.get('plugins', [])  # Initialize enabled_plugins here
+            cls._instance.openai = None  # Добавляем ссылку на openai
 
         else:
             logging.info("Reusing existing PluginManager instance")  # Debug line
@@ -29,6 +31,10 @@ class PluginManager:
         self.enabled_plugins = config.get('plugins', [])
         if not hasattr(self, 'plugins'):
             self.plugins = {}
+        if not hasattr(self, 'plugin_instances'):
+            self.plugin_instances = {}
+        if not hasattr(self, 'openai'):
+            self.openai = None
         # Получаем абсолютный путь относительно текущей директории
         current_dir = Path(__file__).parent
         self.plugins_directory = current_dir / plugins_directory
@@ -36,10 +42,19 @@ class PluginManager:
         # Всегда вызываем load_plugins при инициализации
         self.load_plugins()
 
+    def set_openai(self, openai):
+        """Устанавливает ссылку на openai и обновляет все существующие инстансы плагинов"""
+        self.openai = openai
+        # Обновляем openai во всех существующих инстансах
+        for instance in self.plugin_instances.values():
+            instance.openai = openai
+            instance.bot = openai.bot
+
     def load_plugins(self):
         """Загружает все плагины из указанной директории."""
-        # Удалим проверку на существующие плагины
-        self.plugins.clear()  # Очищаем существующие плагины перед загрузкой
+        # Очищаем существующие плагины и их инстансы перед загрузкой
+        self.plugins.clear()
+        self.plugin_instances.clear()
                 
         plugins_path = Path(self.plugins_directory)
         excluded_files = {'__init__.py', 'plugin.py'}
@@ -66,28 +81,23 @@ class PluginManager:
             logging.info(f"Ошибка при загрузке плагина {plugin_name}: {e}")
             return None
 
-    def register_plugin(self, plugin_name: str, plugin_module: Any) -> None:
-        """Регистрирует плагин, если в нем есть метод execute."""
+    def register_plugin(self, plugin_name, plugin_module):
+        """Регистрирует плагин в менеджере"""
         try:
-            # Add check if plugin is already registered
-            if plugin_name in self.plugins:
-                logging.info(f"Плагин {plugin_name} уже зарегистрирован.")
+            # Получаем класс плагина из модуля
+            plugin_classes = [cls for name, cls in inspect.getmembers(plugin_module, inspect.isclass)
+                            if issubclass(cls, Plugin) and cls != Plugin]
+            
+            if not plugin_classes:
+                logging.warning(f"No plugin class found in {plugin_name}")
                 return
-                    
-            for name, obj in inspect.getmembers(plugin_module):
-                if (inspect.isclass(obj) and 
-                    issubclass(obj, Plugin) and 
-                    obj != Plugin and  # Skip the base Plugin class
-                    hasattr(obj, "execute")):
-                    self.plugins[plugin_name] = obj
-                    # Create instance and cache it
-                    plugin_instance = obj()
-                    logging.info(f"Плагин {plugin_name} успешно зарегистрирован.")
-                    return
-
-            logging.info(f"Плагин {plugin_name} не имеет метода 'execute' или не наследуется от Plugin.")
+                
+            # Регистрируем первый найденный класс плагина
+            self.plugins[plugin_name] = plugin_classes[0]
+            logging.info(f"Successfully registered plugin: {plugin_name}")
+            
         except Exception as e:
-            logging.info(f"Ошибка при регистрации плагина {plugin_name}: {str(e)}")
+            logging.error(f"Error registering plugin {plugin_name}: {e}")
 
     async def execute(self, plugin_name, user_id, *args):
         """Единый интерфейс для вызова плагинов."""
@@ -179,10 +189,24 @@ class PluginManager:
         :param plugin_name: The name of the plugin
         :return: The plugin instance or None if not found
         """
-        # Simply look up the plugin class by name in self.plugins
+        # Проверяем кеш инстансов
+        if plugin_name in self.plugin_instances:
+            instance = self.plugin_instances[plugin_name]
+            # Убеждаемся, что у инстанса есть openai
+            if not hasattr(instance, 'openai') or not instance.openai:
+                instance.openai = self.openai
+                instance.bot = self.openai.bot
+            return instance
+
+        # Если инстанса нет в кеше, создаем новый
         plugin_class = self.plugins.get(plugin_name)
         if plugin_class:
-            return plugin_class()
+            instance = plugin_class()
+            if self.openai:
+                instance.openai = self.openai
+                instance.bot = self.openai.bot
+            self.plugin_instances[plugin_name] = instance
+            return instance
         return None
         
     def get_all_plugin_descriptions(self) -> list[str]:
@@ -190,10 +214,12 @@ class PluginManager:
         descriptions = []
         
         # Iterate through all registered plugins
-        for plugin_name, plugin_class in self.plugins.items():
+        for plugin_name in self.plugins.keys():
             try:
-                # Create plugin instance
-                plugin_instance = plugin_class()
+                # Используем get_plugin вместо создания нового экземпляра
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
                 
                 # Get specs from the plugin
                 specs = plugin_instance.get_spec()
@@ -218,7 +244,10 @@ class PluginManager:
         if not self.has_plugin(plugin_name):
             return None
         try:
-            plugin_instance = self.plugins[plugin_name]()
+            # Используем get_plugin вместо создания нового экземпляра
+            plugin_instance = self.get_plugin(plugin_name)
+            if not plugin_instance:
+                return None
             return plugin_instance.get_spec()
         except:
             return None
@@ -230,10 +259,16 @@ class PluginManager:
     def get_plugin_commands(self) -> List[Dict]:
         """Возвращает список всех команд от всех плагинов"""
         commands = []
-        for plugin_name, plugin_class in self.plugins.items():
+        for plugin_name in self.plugins.keys():
             try:
-                plugin_instance = plugin_class()
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                    
                 plugin_commands = plugin_instance.get_commands()
+                # Добавляем имя плагина в каждую команду
+                for cmd in plugin_commands:
+                    cmd['plugin_name'] = plugin_name
                 commands.extend(plugin_commands)
             except Exception as e:
                 logging.error(f"Ошибка при получении команд плагина {plugin_name}: {e}")
