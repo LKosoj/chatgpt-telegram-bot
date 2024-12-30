@@ -550,7 +550,7 @@ class TextDocumentQAPlugin(Plugin):
             text_content = await self._process_file(file_content, file_name)
 
             # Создаем уникальный ID для документа
-            doc_id = hashlib.md5(text_content.encode()).hexdigest()
+            doc_id = hashlib.md5(chat_id.encode() + text_content.encode()).hexdigest()
 
             # Создаем индекс
             await self._create_document_index(text_content, doc_id)
