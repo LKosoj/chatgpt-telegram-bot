@@ -1701,13 +1701,14 @@ class ChatGPTTelegramBot:
 
             # Добавляем chat_id и аргументы в kwargs
             kwargs['chat_id'] = str(update.effective_chat.id)
+            kwargs['update'] = update  # Добавляем update в kwargs
             if cmd.get('args'):
                 kwargs['query'] = ' '.join(args)  # Для команд, требующих текстовый запрос
                 if '<document_id>' in cmd.get('args'):
                     kwargs['document_id'] = args[0]  # Для команд, требующих ID документа
 
             # Вызываем обработчик команды
-            result = await cmd['handler'](cmd['handler_kwargs']['function_name'], self.openai, **kwargs)
+            result = await cmd['handler'](kwargs['function_name'], self.openai, **{k:v for k,v in kwargs.items() if k != 'function_name'})
             
             # Если результат содержит direct_result, обрабатываем его
             if is_direct_result(result):
@@ -1872,6 +1873,7 @@ class ChatGPTTelegramBot:
                 self.openai,
                 file_content=file_content,
                 file_name=document.file_name,
+                chat_id=str(update.effective_chat.id),
                 update=update
             )
 
