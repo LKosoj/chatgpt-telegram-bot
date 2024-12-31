@@ -532,6 +532,15 @@ class OpenAIHelper:
                     return response, tools_used
             logging.info(f'Calling tool {tool_name} with arguments {arguments}')
             
+            # Добавляем chat_id в аргументы
+            try:
+                args = json.loads(arguments)
+                args['chat_id'] = chat_id
+                arguments = json.dumps(args)
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse arguments JSON: {arguments}")
+                return response, tools_used
+            
             self.user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
             logging.info(f'Function {tool_name} response: {tool_response}')
