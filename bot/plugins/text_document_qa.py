@@ -68,7 +68,8 @@ class TextDocumentQAPlugin(Plugin):
                 "description": "Показать список всех ваших документов",
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "list_documents"},
-                "plugin_name": "text_document_qa"
+                "plugin_name": "text_document_qa",
+                "add_to_menu": True
             },
             {
                 "command": "ask_question",
