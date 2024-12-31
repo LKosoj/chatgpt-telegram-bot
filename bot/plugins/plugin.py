@@ -46,3 +46,14 @@ class Plugin(ABC):
         """
         return []
     
+    def get_message_handlers(self) -> List[Dict]:
+        """
+        Возвращает список обработчиков сообщений.
+        """
+        return []
+    
+    def get_inline_handlers(self) -> List[Dict]:
+        """
+        Возвращает список обработчиков inline-запросов.
+        """
+        return []
