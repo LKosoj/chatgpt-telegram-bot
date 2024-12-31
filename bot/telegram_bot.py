@@ -8,6 +8,7 @@ import requests
 import json
 import sys
 import yaml
+import re
 from typing import Dict
 
 from uuid import uuid4
@@ -25,12 +26,15 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
+from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
+    GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
+from plugins.haiper_image_to_video import WAITING_PROMPT
 from usage_tracker import UsageTracker
 from database import Database
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
+WAITING_PROMPT = 1
 
 class ChatGPTTelegramBot:
     """
@@ -1667,16 +1671,35 @@ class ChatGPTTelegramBot:
                 filters=filters.COMMAND
             )
             application.add_handler(handler)
-            # Добавляем команду в список команд бота
-            self.commands.append(BotCommand(
-                command=cmd['command'],
-                description=cmd['description']
-            ))
+            # Добавляем команду в список команд бота только если add_to_menu=True
+            if cmd.get('add_to_menu', False):
+                self.commands.append(BotCommand(
+                    command=cmd['command'],
+                    description=cmd['description']
+                ))
+
+        # Регистрируем обработчики сообщений от плагинов
+        for handler_config in self.openai.plugin_manager.get_message_handlers():
+            if 'handler' in handler_config:
+                    # Если handler уже является готовым обработчиком (например, ConversationHandler)
+                application.add_handler(handler_config['handler'])
+            elif 'filters' in handler_config:
+                # Если указаны фильтры, создаем MessageHandler
+                handler = MessageHandler(
+                    eval(handler_config['filters']),  # Преобразуем строку фильтра в объект
+                    lambda update, context, h=handler_config: self.handle_plugin_command(
+                        update, context, {"handler": h['handler'], **h['handler_kwargs']}
+                    )
+                )
+                application.add_handler(handler)
         
         # Обновляем команды бота
         await application.bot.set_my_commands(self.commands)
+        # Добавляем в групповые команды только те плагины, у которых add_to_menu=True
         await application.bot.set_my_commands(
-            self.group_commands + [BotCommand(cmd['command'], cmd['description']) for cmd in plugin_commands if 'command' in cmd],
+            self.group_commands + [BotCommand(cmd['command'], cmd['description']) 
+                                 for cmd in plugin_commands 
+                                 if 'command' in cmd and cmd.get('add_to_menu', False)],
             scope=BotCommandScopeAllGroupChats()
         )
 
@@ -1922,7 +1945,6 @@ class ChatGPTTelegramBot:
             logging.error(error_text)
             await update.message.reply_text(error_text)
 
-
     def run(self):
         """
         Runs the bot indefinitely.
@@ -1964,7 +1986,21 @@ class ChatGPTTelegramBot:
                 filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
                 filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
                 self.transcribe))
-            application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+
+            # Регистрируем обработчики сообщений от плагинов
+            for handler_config in self.openai.plugin_manager.get_message_handlers():
+                if 'handler' in handler_config:
+                    # Если handler уже является готовым обработчиком (например, ConversationHandler)
+                    application.add_handler(handler_config['handler'])
+                elif 'filters' in handler_config:
+                    # Если указаны фильтры, создаем MessageHandler
+                    handler = MessageHandler(
+                        eval(handler_config['filters']),  # Преобразуем строку фильтра в объект
+                        lambda update, context, h=handler_config: self.handle_plugin_command(
+                            update, context, {"handler": h['handler'], **h['handler_kwargs']}
+                        )
+                    )
+                    application.add_handler(handler)
 
             application.add_handler(MessageHandler(
                 filters.Document.TXT |
@@ -1978,6 +2014,12 @@ class ChatGPTTelegramBot:
             application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
                 constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
             ]))
+
+            # Регистрируем глобальный обработчик текстовых сообщений после всех остальных обработчиков
+            application.add_handler(MessageHandler(
+                filters.TEXT & ~filters.COMMAND & ~filters.REPLY,
+                self.prompt
+            ))
 
             application.add_error_handler(error_handler)
 
