@@ -5,6 +5,9 @@
 - [x] (NEW!) ali-vilab/In-Context-LoRA model for image generation using huggingface
 - [x] (NEW!) deepl translate using free or payment key
 - [x] (NEW!) web support
+- [x] (NEW!) RAG support
+- [x] (NEW!) Prompt select system
+- [x] (NEW!) Select model from inline keyboard
 # ChatGPT Telegram Bot
 
 ![python-version](https://img.shields.io/badge/python-3.9-blue.svg)
