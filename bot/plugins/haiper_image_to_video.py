@@ -19,14 +19,17 @@ from telegram import (
     InlineKeyboardButton,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    Update
+    Update,
+    ForceReply, 
+    ReplyKeyboardRemove
 )
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import hashlib
 import telegram
+from telegram import constants
 
 from plugins.plugin import Plugin
-
+from utils import escape_markdown
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
 MAX_RETRIES = 3
@@ -35,6 +38,9 @@ STATUS_CHECK_INTERVAL = 10
 TIMEOUT_MINUTES = 20
 
 logger = logging.getLogger(__name__)
+
+# Состояния диалога
+WAITING_PROMPT = 1
 
 class TempFileManager:
     """
@@ -137,7 +143,6 @@ class HaiperImageToVideoPlugin(Plugin):
         self.task_queue: Queue[VideoTask] = Queue()
         self.active_tasks: Dict[str, VideoTask] = {}
         self.worker_task: Optional[Task] = None
-        self.user_prompts: Dict[int, Dict[str, str]] = {}  # Для хранения выбранных параметров промптов
         self.user_settings: Dict[int, Dict[str, str]] = {}  # Для хранения настроек пользователей
         self.openai = None
         self.bot = None
@@ -173,24 +178,26 @@ class HaiperImageToVideoPlugin(Plugin):
                 "handler": self.handle_animate_command,
                 "help": self.handle_animate_help_command,
                 "handler_kwargs": {},
-                "plugin_name": "HaiperImageToVideoPlugin"
+                "plugin_name": "HaiperImageToVideoPlugin",
             },
             {
                 "command": "animate_prompt",
                 "description": "Открыть конструктор промптов для создания видео",
                 "handler": self.handle_prompt_constructor,
                 "plugin_name": "HaiperImageToVideoPlugin",
-                "handler_kwargs": {}
+                "handler_kwargs": {},
+                "add_to_menu": True
             },
             {
                 "command": "animate_help",
                 "description": "Показать помощь по команде animate",
                 "handler": self.handle_animate_help_command,
                 "plugin_name": "HaiperImageToVideoPlugin",
-                "handler_kwargs": {}
+                "handler_kwargs": {},
+                "add_to_menu": True
             },
             {
-                # Обработчик для всех callback_query плагина
+                # Обработчик для всех callback_query плагина, кроме apply_settings
                 "callback_query_handler": self.handle_callback_query,
                 "callback_pattern": "^haiper_",
                 "plugin_name": "HaiperImageToVideoPlugin",
@@ -211,7 +218,32 @@ class HaiperImageToVideoPlugin(Plugin):
         """Возвращает список обработчиков сообщений"""
         return [
             {
-                "filters": ["photo"],  # Фильтр для сообщений с фото
+                "handler": ConversationHandler(
+                    entry_points=[
+                        CommandHandler("animate_prompt", self.handle_prompt_constructor)
+                    ],
+                    states={
+                        None: [
+                            CallbackQueryHandler(self.apply_settings, pattern="^haiper_apply_settings$")
+                        ],
+                        WAITING_PROMPT: [
+                            MessageHandler(
+                                filters.TEXT & ~filters.COMMAND & filters.REPLY,
+                                self.handle_prompt_reply
+                            ),
+                        ]
+                    },
+                    fallbacks=[
+                        CommandHandler("cancel", self.cancel_prompt)
+                    ],
+                    name="haiper_conversation",
+                    persistent=False,
+                    map_to_parent=True
+                ),
+                "handler_kwargs": {}
+            },
+            {
+                "filters": "filters.PHOTO",
                 "handler": self.handle_photo_message,
                 "handler_kwargs": {}
             }
@@ -470,8 +502,8 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             # Если это не ответ на фото, продолжаем стандартную логику
-            # Получаем последние изображения пользователя (максимум 5)
-            user_images = self.openai.db.get_user_images(user_id, chat_id, limit=5)
+            # Получаем последние изображения пользователя (максимум 1)
+            user_images = self.openai.db.get_user_images(user_id, chat_id, limit=1)
             if not user_images:
                 await message.reply_text("Пожалуйста, сначала отправьте изображение, а затем используйте команду /animate")
                 return
@@ -509,11 +541,11 @@ class HaiperImageToVideoPlugin(Plugin):
         """Внутренний метод для обработки команды animate с конкретным изображением"""
         temp_file = None
         start_time = datetime.now()
-        status_message = await message.reply_text(
-            "🎬 анимация  готова.\n"
-            "🎯 Промпт: {prompt}"
-        )
-        return
+        #status_message = await message.reply_text(
+        #    "🎬 анимация  готова.\n"
+        #    "🎯 Промпт: {prompt}"
+        #)
+        #return
         
         try:
             # Create and queue new task
@@ -650,7 +682,7 @@ class HaiperImageToVideoPlugin(Plugin):
 Вы можете ответить на фотографию, чтобы использовать её для анимации. Ответ должен быть в формате:
 /animate [prompt]
 
-Конструктор анимации:
+*Конструктор анимации:*
 /animate_prompt
 Используется для создания анимации по заданному промпту. Выбранный промпт будет применен к последнему загруженному изображению.
 
@@ -659,7 +691,7 @@ class HaiperImageToVideoPlugin(Plugin):
 - Изображение должно быть отправлено до использования команды
 - Поддерживаются форматы: JPEG, PNG
 """
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        await update.message.reply_text(escape_markdown(help_text), parse_mode=constants.ParseMode.MARKDOWN_V2)
 
     async def handle_photo_message(self, update: Update, context) -> None:
         """Обработчик сообщений с фотографиями"""
@@ -705,19 +737,18 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             data = query.data.replace('haiper_', '')
-            logging.info(f"Получен callback_query: {data} от пользователя {user_id}")
-            logging.info(f"Текущие настройки пользователя: {self.user_settings.get(user_id, {})}")
+            #logging.info(f"Получен callback_query: {data} от пользователя {user_id}")
+            #logging.info(f"Текущие настройки пользователя: {self.user_settings.get(user_id, {})}")
             
             # Обработка закрытия меню
             if data == "close_menu":
-                logging.info("Закрытие меню конструктора")
+                #logging.info("Закрытие меню конструктора")
                 await query.answer("Меню закрыто")
                 await query.message.delete()
                 return
                 
             # Сначала обрабатываем специфичные паттерны
             if data.startswith('style_'):
-                logging.info(f"Обработка выбора стиля: {data}")
                 style_id = data.replace('style_', '')
                 if user_id not in self.user_settings:
                     self.user_settings[user_id] = {}
@@ -727,7 +758,6 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             if data.startswith('effect_'):
-                logging.info(f"Обработка выбора эффекта: {data}")
                 effect_id = data.replace('effect_', '')
                 if user_id not in self.user_settings:
                     self.user_settings[user_id] = {}
@@ -746,7 +776,6 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             if data.startswith('animate_'):
-                logging.info(f"Обработка кнопки анимации: {data}")
                 await self.handle_animate_button(query)
                 return
 
@@ -786,7 +815,6 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             if data == "apply_settings":
-                logging.info("Применение настроек")
                 await self.apply_settings(query)
                 return
 
@@ -812,7 +840,17 @@ class HaiperImageToVideoPlugin(Plugin):
                 ("cartoon", "🎨 Мультяшный", "игривая анимация"),
                 ("artistic", "🖼 Художественный", "креативные эффекты"),
                 ("cinematic", "🎥 Кино", "драматические движения"),
-                ("abstract", "🌈 Абстрактный", "необычные переходы")
+                ("abstract", "🌈 Абстрактный", "необычные переходы"),
+                ("anime", "🎌 Аниме", "в стиле японской анимации"),
+                ("pixel", "👾 Пиксельный", "ретро-игровая стилистика"),
+                ("watercolor", "🎨 Акварельный", "нежные размытия"),
+                ("neon", "💡 Неоновый", "яркие светящиеся эффекты"),
+                ("vintage", "📷 Винтаж", "старое кино"),
+                ("minimalist", "⚪️ Минималистичный", "простые чистые линии"),
+                ("cyberpunk", "🤖 Киберпанк", "футуристический стиль"),
+                ("comic", "💭 Комикс", "как в графических новеллах"),
+                ("glitch", "⚡️ Глитч", "цифровые искажения"),
+                ("surreal", "🎭 Сюрреализм", "необычные трансформации")
             ]
             
             keyboard = []
@@ -864,7 +902,27 @@ class HaiperImageToVideoPlugin(Plugin):
                 ("pan", "↔️ Панорама", "плавное движение"),
                 ("rotate", "🔄 Поворот", "вращение"),
                 ("morph", "🎭 Морфинг", "трансформация"),
-                ("wave", "🌊 Волны", "волновой эффект")
+                ("wave", "🌊 Волны", "волновой эффект"),
+                ("blur", "🌫 Размытие", "плавное размытие"),
+                ("shake", "📳 Тряска", "вибрация изображения"),
+                ("glitch", "⚡️ Глитч", "цифровые помехи"),
+                ("bounce", "🏀 Отскок", "пружинящее движение"),
+                ("spiral", "🌀 Спираль", "спиральное вращение"),
+                ("fade", "🌅 Затухание", "плавное исчезновение"),
+                ("flash", "💫 Вспышка", "яркие вспышки"),
+                ("mirror", "🪞 Зеркало", "зеркальные отражения"),
+                ("ripple", "💧 Рябь", "эффект волн на воде"),
+                ("swing", "🎭 Качание", "маятниковое движение"),
+                ("float", "🎈 Парение", "невесомое движение"),
+                ("pulse", "💓 Пульсация", "ритмичные изменения"),
+                ("scatter", "✨ Рассеивание", "разлетающиеся частицы"),
+                ("stretch", "↔️ Растяжение", "эластичная деформация"),
+                ("fold", "📄 Сворачивание", "эффект складывания"),
+                ("kaleidoscope", "🎨 Калейдоскоп", "зеркальные узоры"),
+                ("pixelate", "🔲 Пикселизация", "эффект пикселей"),
+                ("dissolve", "💨 Растворение", "постепенное исчезновение"),
+                ("shatter", "💔 Разбивание", "эффект осколков"),
+                ("neon", "💡 Неон", "светящиеся контуры")
             ]
             
             keyboard = []
@@ -909,7 +967,27 @@ class HaiperImageToVideoPlugin(Plugin):
                 ("art", "🎨 Художественный", "креативная анимация"),
                 ("realistic", "🎬 Реалистичный", "естественное движение"),
                 ("wave", "🌊 Волновой", "эффект течения"),
-                ("emotion", "🎭 Эмоциональный", "передача настроения")
+                ("emotion", "🎭 Эмоциональный", "передача настроения"),
+                ("nature", "🌿 Природный", "органическое движение"),
+                ("tech", "🤖 Технологичный", "футуристические эффекты"),
+                ("magic", "✨ Магический", "волшебные трансформации"),
+                ("retro", "📺 Ретро", "винтажная анимация"),
+                ("cosmic", "🌌 Космический", "космические эффекты"),
+                ("dream", "💫 Сновидение", "сюрреалистичные переходы"),
+                ("dynamic", "⚡️ Динамичный", "энергичное движение"),
+                ("gentle", "🍃 Нежный", "мягкие переходы"),
+                ("horror", "👻 Хоррор", "жуткие трансформации"),
+                ("party", "🎉 Праздничный", "весёлая анимация"),
+                ("romantic", "💝 Романтичный", "нежные переливы"),
+                ("sport", "🏃 Спортивный", "динамичные движения"),
+                ("fantasy", "🐉 Фэнтези", "магические превращения"),
+                ("steampunk", "⚙️ Стимпанк", "механические движения"),
+                ("underwater", "🐠 Подводный", "плавные течения"),
+                ("fire", "🔥 Огненный", "пламенные эффекты"),
+                ("winter", "❄️ Зимний", "морозные узоры"),
+                ("space", "🚀 Космический", "межзвёздные эффекты"),
+                ("rainbow", "🌈 Радужный", "яркие переливы"),
+                ("matrix", "💻 Матрица", "цифровой дождь")
             ]
             
             keyboard = []
@@ -955,16 +1033,41 @@ class HaiperImageToVideoPlugin(Plugin):
             "art": "🎨 Художественный",
             "realistic": "🎬 Реалистичный",
             "wave": "🌊 Волновой",
-            "emotion": "🎭 Эмоциональный"
+            "emotion": "🎭 Эмоциональный",
+            "nature": "🌿 Природный",
+            "tech": "🤖 Технологичный",
+            "magic": "✨ Магический",
+            "retro": "📺 Ретро",
+            "cosmic": "🌌 Космический",
+            "dream": "💫 Сновидение",
+            "dynamic": "⚡️ Динамичный",
+            "gentle": "🍃 Нежный",
+            "horror": "👻 Хоррор",
+            "party": "🎉 Праздничный",
+            "romantic": "💝 Романтичный",
+            "sport": "🏃 Спортивный",
+            "fantasy": "🐉 Фэнтези",
+            "steampunk": "⚙️ Стимпанк",
+            "underwater": "🐠 Подводный",
+            "fire": "🔥 Огненный",
+            "winter": "❄️ Зимний",
+            "space": "🚀 Космический",
+            "rainbow": "🌈 Радужный",
+            "matrix": "💻 Матрица"
         }
         return presets.get(preset_id, preset_id)
 
     async def apply_settings(self, query):
-        """Применяет выбранные настройки и запускает анимацию"""
+        """Применяет выбранные настройки и запрашивает дополнительный текст для промпта"""
         user_id = query.from_user.id
+        logger.info(f"[ConversationHandler] apply_settings начало: user_id={user_id}")
+        logger.info(f"Вызван apply_settings для пользователя {user_id}")
+        
         settings = self.user_settings.get(user_id, {})
+        logger.info(f"Текущие настройки пользователя {user_id}: {settings}")
         
         if not settings:
+            logger.warning(f"Настройки не найдены для пользователя {user_id}")
             await query.answer("⚠️ Нет выбранных настроек")
             return
             
@@ -976,12 +1079,13 @@ class HaiperImageToVideoPlugin(Plugin):
         )
         
         if not user_images:
+            logger.warning(f"Изображения не найдены для пользователя {user_id}")
             await query.message.reply_text(
                 "⚠️ Не найдено изображение для анимации. Отправьте изображение заново."
             )
             return
             
-        # Формируем промпт на основе настроек
+        # Формируем базовый промпт на основе настроек
         prompt_parts = []
         if settings.get('style'):
             prompt_parts.append(f"стиль: {settings['style']}")
@@ -990,16 +1094,29 @@ class HaiperImageToVideoPlugin(Plugin):
         if settings.get('preset'):
             prompt_parts.append(f"пресет: {settings['preset']}")
             
-        prompt = f"создай анимацию с параметрами: {', '.join(prompt_parts)}"
+        base_prompt = f"создай анимацию с параметрами: {', '.join(prompt_parts)}"
+        logger.info(f"Сформирован базовый промпт для пользователя {user_id}: {base_prompt}")
         
-        # Закрываем меню перед запуском анимации
+        # Сохраняем базовый промпт и file_id в настройках пользователя
+        settings['base_prompt'] = base_prompt
+        settings['file_id'] = user_images[0]['file_id']
+        self.user_settings[user_id] = settings
+        logger.info(f"Обновлены настройки пользователя {user_id}: {settings}")
+        
+        # Закрываем меню конструктора
         await query.message.delete()
         
-        # Запускаем анимацию
-        await self._process_animate_command(query.message, user_images[0]['file_id'], prompt)
+        # Отправляем сообщение с запросом дополнительного текста
+        sent_message = await query.message.reply_text(
+            "💭 Промпт сгенерирован\n\n"
+            f"Чтобы его применить, отправьте в ответ на фото `/animate {base_prompt}`\n"
+            "Вы можете добавить дополнительные параметры в промпт, чтобы получить более точную анимацию.\n"
+            f"Или просто отправьте `/animate {base_prompt}`, будет обработано последнее изображение в чате.",
+            parse_mode='Markdown'
+        )
         
-        # Очищаем настройки после применения
-        self.user_settings[user_id] = {}
+        logger.info(f"[ConversationHandler] apply_settings возвращает WAITING_PROMPT для user_id={user_id}")
+        return WAITING_PROMPT
 
     async def handle_animate_button(self, query):
         """Обработка кнопки создания анимации"""
@@ -1100,12 +1217,17 @@ class HaiperImageToVideoPlugin(Plugin):
         Обработчик для конструктора промптов
         """
         try:
+            user_id = update.message.from_user.id if update and update.message else None
+            logger.info(f"[ConversationHandler] handle_prompt_constructor вызван: user_id={user_id}")
+            logger.info("Вызван handle_prompt_constructor")
             if not update or not update.message:
+                logger.error("update или message отсутствуют")
                 return
                 
             message = update.message
             chat_id = str(message.chat.id)
             user_id = message.from_user.id
+            logger.info(f"Конструктор промптов запущен для пользователя {user_id} в чате {chat_id}")
             
             self.openai = openai
             self.bot = openai.bot
@@ -1113,13 +1235,16 @@ class HaiperImageToVideoPlugin(Plugin):
             # Проверяем наличие изображений
             user_images = self.openai.db.get_user_images(user_id, chat_id, limit=1)
             if not user_images:
+                logger.warning(f"Изображения не найдены для пользователя {user_id}")
                 await message.reply_text(
                     "⚠️ Сначала отправьте изображение, а затем используйте конструктор анимации"
                 )
                 return
 
+            logger.info(f"Найдены изображения для пользователя {user_id}")
             # Создаем компактное меню с эмодзи для визуального разделения
             settings = self.user_settings.get(user_id, {})
+            logger.info(f"Текущие настройки пользователя {user_id}: {settings}")
             
             # Добавляем отметки к названиям кнопок, если что-то выбрано
             style_text = "🎨 Стиль ✓" if settings.get('style') else "🎨 Стиль"
@@ -1256,7 +1381,17 @@ class HaiperImageToVideoPlugin(Plugin):
             "cartoon": "🎨 Мультяшный",
             "artistic": "🖼 Художественный",
             "cinematic": "🎥 Кино",
-            "abstract": "🌈 Абстрактный"
+            "abstract": "🌈 Абстрактный",
+            "anime": "🎌 Аниме",
+            "pixel": "👾 Пиксельный",
+            "watercolor": "🎨 Акварельный",
+            "neon": "💡 Неоновый",
+            "vintage": "📷 Винтаж",
+            "minimalist": "⚪️ Минималистичный",
+            "cyberpunk": "🤖 Киберпанк",
+            "comic": "💭 Комикс",
+            "glitch": "⚡️ Глитч",
+            "surreal": "🎭 Сюрреализм"
         }
         return styles.get(style_id, style_id)
 
@@ -1267,7 +1402,87 @@ class HaiperImageToVideoPlugin(Plugin):
             "pan": "↔️ Панорама",
             "rotate": "🔄 Поворот",
             "morph": "🎭 Морфинг",
-            "wave": "🌊 Волны"
+            "wave": "🌊 Волны",
+            "blur": "🌫 Размытие",
+            "shake": "📳 Тряска",
+            "glitch": "⚡️ Глитч",
+            "bounce": "🏀 Отскок",
+            "spiral": "🌀 Спираль",
+            "fade": "🌅 Затухание",
+            "flash": "💫 Вспышка",
+            "mirror": "🪞 Зеркало",
+            "ripple": "💧 Рябь",
+            "swing": "🎭 Качание",
+            "float": "🎈 Парение",
+            "pulse": "💓 Пульсация",
+            "scatter": "✨ Рассеивание",
+            "stretch": "↔️ Растяжение",
+            "fold": "📄 Сворачивание",
+            "kaleidoscope": "🎨 Калейдоскоп",
+            "pixelate": "🔲 Пикселизация",
+            "dissolve": "💨 Растворение",
+            "shatter": "💔 Разбивание",
+            "neon": "💡 Неон"
         }
         return effects.get(effect_id, effect_id)
+    
+    async def handle_prompt_reply(self, update: Update, context: CallbackContext) -> int:
+        """Обработчик ответа на запрос дополнительного текста промпта"""
+        user_id = update.message.from_user.id
+        logger.info(f"[ConversationHandler] handle_prompt_reply вызван: user_id={user_id}")
+        logger.info(f"[ConversationHandler] Текст сообщения: {update.message.text}")
+        
+        # Проверяем, что это ответ на сообщение от нашего бота
+        if not update.message.reply_to_message:
+            logger.warning("[ConversationHandler] Ответ не является ответом на сообщение бота")
+            return
+            
+        # Проверяем, что это ответ на правильное сообщение
+        reply_text = update.message.reply_to_message.text
+        logger.info(f"[ConversationHandler] Текст reply_to_message: {reply_text}")
+        
+        if not reply_text or "Хотите добавить что-то к промпту?" not in reply_text:
+            logger.warning("[ConversationHandler] Ответ не на правильное сообщение")
+            return
+
+        settings = self.user_settings.get(user_id, {})
+
+        if not settings or not settings.get('file_id'):
+            await update.message.reply_text("⚠️ Произошла ошибка. Попробуйте заново через /animate_prompt")
+            logger.error("Настройки пользователя не найдены или отсутствует file_id")
+            return ConversationHandler.END
+
+        # Проверяем ответ пользователя
+        if update.message.text.lower() == "нет":
+            prompt = settings.get('base_prompt', "оживи картинку")
+        else:
+            base_prompt = settings.get('base_prompt', "оживи картинку")
+            prompt = f"{base_prompt}, {update.message.text}"
+
+        # Запускаем анимацию
+        if settings.get('file_id'):
+            await self._process_animate_command(update.message, settings['file_id'], prompt)
+            logger.info(f"Анимация запущена с промптом: {prompt}")
+        else:
+            logger.error("file_id отсутствует в настройках пользователя")
+            await update.message.reply_text("⚠️ Не удалось запустить анимацию. Попробуйте заново.")
+
+        # Очищаем настройки после применения
+        if user_id in self.user_settings:
+            del self.user_settings[user_id]
+            logger.info("Настройки пользователя очищены после применения")
+
+        return ConversationHandler.END
+
+    async def cancel_prompt(self, update: Update, context: CallbackContext) -> int:
+        """Отменяет текущий диалог"""
+        user_id = update.message.from_user.id
+        logger.info(f"[ConversationHandler] cancel_prompt вызван: user_id={user_id}")
+        if user_id in self.user_settings:
+            del self.user_settings[user_id]
+            
+        await update.message.reply_text(
+            "Конструктор промптов отменен. Можете начать заново с помощью /animate_prompt"
+        )
+        return ConversationHandler.END
     
