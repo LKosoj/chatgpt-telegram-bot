@@ -9,30 +9,59 @@ import asyncio
 import tempfile
 import json
 import aiohttp
-from typing import Dict, Any, Callable
+from typing import Dict, Any, Callable, Optional
+from datetime import datetime, timedelta
+from enum import Enum
+from dataclasses import dataclass
 from plugins.plugin import Plugin
 
 # Конфигурация API
 API_URL = "https://api-inference.huggingface.co/models/ali-vilab/In-Context-LoRA"
 MAX_RETRIES = 5  # Максимальное количество попыток
 RETRY_DELAY = 3  # Задержка между попытками в секундах
+STATUS_CHECK_INTERVAL = 10  # Интервал проверки статуса в секундах
+TIMEOUT_MINUTES = 5  # Таймаут для генерации изображения
 
 # Настройка логирования
-#logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+class TaskStatus(Enum):
+    """
+    Статусы задачи генерации изображения
+    """
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+@dataclass
+class ImageTask:
+    """
+    Задача генерации изображения
+    """
+    task_id: str
+    user_id: int
+    chat_id: int
+    prompt: str
+    status: TaskStatus
+    result: Optional[Dict] = None
+    error: Optional[str] = None
 
 class StableDiffusionPlugin(Plugin):
     """
-    A plugin to generate images using Stable Diffusion
+    Плагин для генерации изображений с использованием Stable Diffusion
     """
 
     def __init__(self):
-        stable_diffusion_token = os.getenv('STABLE_DIFFUSION_TOKEN')
-        if not stable_diffusion_token:
+        self.stable_diffusion_token = os.getenv('STABLE_DIFFUSION_TOKEN')
+        if not self.stable_diffusion_token:
             raise ValueError('STABLE_DIFFUSION_TOKEN environment variable must be set to use StableDiffusionPlugin')
-        self.stable_diffusion_token = stable_diffusion_token
         self.headers = {"Authorization": f"Bearer {self.stable_diffusion_token}"}
+        self.task_queue = asyncio.Queue()
+        self.active_tasks = {}
+        self.worker_task = None
+        self.bot = None
+        self.openai = None
 
     def get_source_name(self) -> str:
         return "StableDiffusion"
@@ -50,101 +79,247 @@ class StableDiffusionPlugin(Plugin):
             },
         }]
 
-    async def diffusion(self, payload: Dict) -> bytes:
-        """
-        Отправляет запрос к Stable Diffusion API и возвращает байты изображения.
-        """
-        logger.info("Sending request to Stable Diffusion API...")
+    async def start_worker(self):
+        """Запускает обработчик очереди задач"""
+        if self.worker_task is None or self.worker_task.done():
+            self.worker_task = asyncio.create_task(self._process_queue())
+
+    async def _process_queue(self):
+        """Обработчик очереди задач"""
+        while True:
+            try:
+                task = await self.task_queue.get()
+                if task.status != TaskStatus.PENDING:
+                    continue
+
+                task.status = TaskStatus.PROCESSING
+                try:
+                    result = await self._process_image_task(task)
+                    task.status = TaskStatus.COMPLETED
+                    task.result = result
+                except Exception as e:
+                    task.status = TaskStatus.FAILED
+                    task.error = str(e)
+                    logger.error(f"Error processing task {task.task_id}: {e}")
+
+                self.task_queue.task_done()
+            except Exception as e:
+                logger.error(f"Error in queue processor: {e}")
+                await asyncio.sleep(1)
+
+    async def _process_image_task(self, task: ImageTask) -> Dict:
+        """Обработка задачи генерации изображения"""
+        start_time = datetime.now()
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(API_URL, headers=self.headers, json=payload) as response:
-                logger.info(f"API response status code: {response.status}")
-
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"API request failed: {error_text}")
-                    raise Exception(f"API request failed with status code {response.status}: {error_text}")
-
-                logger.info("Image successfully received from API.")
-                return await response.read()
-            
-    @staticmethod
-    def generate_random_string(length: int = 15) -> str:
-        """
-        Генерирует случайную строку указанной длины.
-        """
-        characters = string.ascii_letters + string.digits
-        random_string = ''.join(random.choice(characters) for _ in range(length))
-        #logger.info(f"Generated random string: {random_string}")
-        return random_string
-
-    async def execute(self, function_name: str, helper, **kwargs) -> Dict:
-        """
-        Генерирует изображение на основе текстового запроса с повторными попытками и задержкой.
-        """
-        prompt = kwargs.get("prompt")
-        if not prompt:
-            logger.error("Prompt is required but not provided.")
-            return {"result": "Error: Prompt is required."}
-
         for attempt in range(MAX_RETRIES):
             try:
                 # Генерация изображения через API
                 payload = {
-                    "inputs": prompt,
+                    "inputs": task.prompt,
                     "options": {
                         "height": 1024,
                         "width": 1024,
                     }
                 }
-                logger.info(f"Attempt {attempt + 1}: Sending payload to Stable Diffusion API...")
+                
                 image_bytes = await self.diffusion(payload)
-
-                # Декодирование изображения для проверки
-                logger.info("Decoding image bytes...")
                 img_array = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+                
                 if img_array is None:
-                    logger.warning(f"Attempt {attempt + 1}: Failed to decode the image.")
-                    # Ожидание перед следующей попыткой
-                    await asyncio.sleep(RETRY_DELAY * (attempt + 1))  # Увеличивающаяся задержка
-                    continue  # Повторить попытку
+                    raise Exception("Failed to decode the image")
 
-                # Создание пути для сохранения
+                # Сохранение изображения
                 output_dir = os.path.join(tempfile.gettempdir(), 'stable_diffusion')
                 os.makedirs(output_dir, exist_ok=True)
                 image_file_path = os.path.join(output_dir, f"{self.generate_random_string()}.png")
 
-                # Сохранение изображения
-                logger.info(f"Saving image to {image_file_path}...")
                 success, png_image = cv2.imencode(".png", img_array)
                 if not success:
-                    logger.warning(f"Attempt {attempt + 1}: Failed to encode the image.")
-                    # Ожидание перед следующей попыткой
-                    await asyncio.sleep(RETRY_DELAY * (attempt + 1))  # Увеличивающаяся задержка
-                    continue  # Повторить попытку
+                    raise Exception("Failed to encode the image")
 
                 with open(image_file_path, "wb") as f:
                     f.write(png_image.tobytes())
 
-                #logger.info("Image saved successfully.")
                 return {
-                    "direct_result": {
-                        "kind": "photo",
-                        "format": "path",
-                        "value": image_file_path,
-                    }
+                    "path": image_file_path,
+                    "prompt": task.prompt
                 }
 
             except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}: Error during image generation: {str(e)}")
-
-                # Ожидание перед следующей попыткой
-                await asyncio.sleep(RETRY_DELAY * (attempt + 1))  # Увеличивающаяся задержка
-
-                # Не пытаемся повторять на последней попытке
                 if attempt == MAX_RETRIES - 1:
-                    logger.error("Maximum retry attempts reached. Image generation failed.")
-                    return {"result": f"Error: Unable to generate image after {MAX_RETRIES} attempts."}
+                    raise Exception(f"Failed to generate image after {MAX_RETRIES} attempts: {str(e)}")
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
 
-        # Если все попытки исчерпаны
-        return {"result": f"Error: Unable to generate image after {MAX_RETRIES} attempts."}
+    async def diffusion(self, payload: Dict) -> bytes:
+        """Отправляет запрос к Stable Diffusion API"""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(API_URL, headers=self.headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"API request failed with status code {response.status}: {error_text}")
+                return await response.read()
+
+    @staticmethod
+    def generate_random_string(length: int = 15) -> str:
+        """Генерирует случайную строку"""
+        characters = string.ascii_letters + string.digits
+        return ''.join(random.choice(characters) for _ in range(length))
+
+    async def execute(self, function_name: str, helper, **kwargs) -> Dict:
+        """Выполняет генерацию изображения"""
+        try:
+            self.openai = helper
+            self.bot = helper.bot
+
+            prompt = kwargs.get("prompt")
+            if not prompt:
+                return {"result": "Error: Prompt is required."}
+
+            chat_id = kwargs.get("chat_id")
+            if not chat_id:
+                return {"result": "Error: Chat ID is required."}
+
+            user_id = kwargs.get('user_id', helper.user_id)
+            logger.info(f"Generating image for chat_id: {chat_id}, user_id: {user_id}, prompt: {prompt}")
+
+            # Проверяем существование чата
+            try:
+                chat = await self.bot.get_chat(chat_id)
+                logger.info(f"Successfully verified chat existence: {chat.id}")
+            except Exception as e:
+                logger.error(f"Error verifying chat existence: {e}")
+                return {"result": f"Error: Cannot access chat {chat_id}: {str(e)}"}
+
+            # Создание новой задачи
+            task = ImageTask(
+                task_id=f"{chat_id}_{datetime.now().timestamp()}",
+                user_id=user_id,
+                chat_id=chat_id,
+                prompt=prompt,
+                status=TaskStatus.PENDING
+            )
+
+            # Добавление задачи в очередь
+            await self.task_queue.put(task)
+            self.active_tasks[task.task_id] = task
+            logger.info(f"Added task to queue: {task.task_id}")
+
+            # Запуск обработчика
+            await self.start_worker()
+
+            # Запускаем мониторинг статуса в отдельной задаче
+            asyncio.create_task(self._monitor_task_status(task))
+
+            return {"result": "Генерация изображения добавлена в очередь"}
+            #return {"result": "Генерация изображения добавлена в очередь", "no_context": True}
+
+        except Exception as e:
+            logger.error(f"Unexpected error in execute: {e}", exc_info=True)
+            if 'task' in locals() and task.task_id in self.active_tasks:
+                self.active_tasks.pop(task.task_id, None)
+            return {"result": f"Error: {str(e)}", "traceback": str(e.__traceback__)}
+
+    async def _monitor_task_status(self, task: ImageTask):
+        """Асинхронный мониторинг статуса задачи"""
+        try:
+            # Отправка начального сообщения
+            try:
+                status_message = await self.bot.send_message(
+                    chat_id=task.chat_id,
+                    text=(
+                        "🎨 Начинаю генерацию изображения...\n\n"
+                        f"🎯 Промпт: {task.prompt}\n"
+                        "⏳ Статус: в очереди на обработку\n\n"
+                        "Это может занять некоторое время. Я сообщу, когда изображение будет готово."
+                    )
+                )
+                logger.info(f"Sent initial status message: {status_message.message_id}")
+            except Exception as e:
+                logger.error(f"Error sending initial message: {e}", exc_info=True)
+                self.active_tasks.pop(task.task_id, None)
+                return
+
+            # Мониторинг статуса задачи
+            start_time = datetime.now()
+            while True:
+                current_task = self.active_tasks.get(task.task_id)
+                if not current_task:
+                    logger.error("Task not found in active tasks")
+                    return
+
+                if current_task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                    break
+
+                await asyncio.sleep(STATUS_CHECK_INTERVAL)
+                elapsed_time = datetime.now() - start_time
+                elapsed_minutes = elapsed_time.total_seconds() / 60
+
+                if current_task.status == TaskStatus.PROCESSING:
+                    try:
+                        await status_message.edit_text(
+                            "🎨 Генерирую изображение...\n\n"
+                            f"🎯 Промпт: {current_task.prompt}\n"
+                            f"⏳ Статус: генерация\n"
+                            f"⌛️ Прошло времени: {elapsed_minutes:.1f} мин.\n\n"
+                            "Пожалуйста, подождите..."
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not update status message: {e}")
+
+                elif elapsed_minutes >= TIMEOUT_MINUTES:
+                    current_task.status = TaskStatus.FAILED
+                    current_task.error = "Превышено время ожидания"
+                    break
+
+            current_task = self.active_tasks.get(task.task_id)
+            if current_task.status == TaskStatus.COMPLETED and current_task.result:
+                image_path = current_task.result.get("path")
+                if not image_path:
+                    raise ValueError("Путь к изображению не найден в результате")
+
+                try:
+                    await status_message.edit_text(
+                        "✅ Изображение успешно создано!\n\n"
+                        f"🎯 Промпт: {current_task.prompt}\n"
+                        f"⌛️ Время создания: {elapsed_minutes:.1f} мин."
+                    )
+
+                    # Отправка изображения
+                    with open(image_path, 'rb') as image_file:
+                        await self.bot.send_photo(
+                            chat_id=task.chat_id,
+                            photo=image_file,
+                            caption=f"🎨 Изображение по промпту: {current_task.prompt}"
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending result: {e}")
+
+                finally:
+                    # Удаление временного файла
+                    try:
+                        if os.path.exists(image_path):
+                            os.unlink(image_path)
+                    except Exception as e:
+                        logger.error(f"Error deleting temporary file: {e}")
+
+            elif current_task.status == TaskStatus.FAILED:
+                error_message = current_task.error or "Неизвестная ошибка"
+                try:
+                    await status_message.edit_text(
+                        "❌ Не удалось создать изображение\n\n"
+                        f"🎯 Промпт: {current_task.prompt}\n"
+                        f"❗️ Ошибка: {error_message}\n"
+                        f"⌛️ Прошло времени: {elapsed_minutes:.1f} мин."
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not update error message: {e}")
+
+            # Удаление задачи из списка активных
+            self.active_tasks.pop(task.task_id, None)
+
+        except Exception as e:
+            logger.error(f"Error in task monitoring: {e}", exc_info=True)
+            try:
+                self.active_tasks.pop(task.task_id, None)
+            except:
+                pass
