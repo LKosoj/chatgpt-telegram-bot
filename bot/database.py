@@ -171,13 +171,13 @@ class Database:
                 return None, 'HTML', 0.8
         except sqlite3.Error as e:
             logging.error(f'SQLite error getting conversation context: {e}', exc_info=True)
-            raise
+            return None, 'HTML', 0.8
         except json.JSONDecodeError as e:
             logging.error(f'JSON decode error in conversation context: {e}', exc_info=True)
             return None, 'HTML', 0.8
         except Exception as e:
             logging.error(f'Error getting conversation context: {e}', exc_info=True)
-            raise
+            return None, 'HTML', 0.8
     
     def delete_user_data(self, user_id: int) -> None:
         """Удаление всех данных пользователя"""
