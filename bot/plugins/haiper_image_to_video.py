@@ -32,10 +32,10 @@ from plugins.plugin import Plugin
 from utils import escape_markdown
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
-MAX_RETRIES = 3
+MAX_RETRIES = 4
 RETRY_DELAY = 10
 STATUS_CHECK_INTERVAL = 10
-TIMEOUT_MINUTES = 20
+TIMEOUT_MINUTES = 45
 
 logger = logging.getLogger(__name__)
 
@@ -265,14 +265,41 @@ class HaiperImageToVideoPlugin(Plugin):
                     result = await self._process_video_task(task)
                     task.status = TaskStatus.COMPLETED
                     task.result = result
+                    
+                    # Отправляем видео пользователю
+                    if task.result and 'url' in task.result:
+                        try:
+                            await self.bot.send_message(
+                                chat_id=task.chat_id,
+                                text="✨ Ваше видео готово! Загружаю..."
+                            )
+                            await self.bot.send_video(
+                                chat_id=task.chat_id,
+                                video=task.result['url'],
+                                caption=f"🎬 Видео создано с промптом:\n{task.prompt}"
+                            )
+                        except Exception as e:
+                            logging.error(f"Error sending video to user: {e}")
+                            await self.bot.send_message(
+                                chat_id=task.chat_id,
+                                text=f"❌ Произошла ошибка при отправке видео: {str(e)}"
+                            )
                 except Exception as e:
                     task.status = TaskStatus.FAILED
                     task.error = str(e)
-                    logger.error(f"Error processing task {task.task_id}: {e}")
+                    logging.error(f"Error processing task {task.task_id}: {e}")
+                    # Отправляем сообщение об ошибке пользователю
+                    try:
+                        await self.bot.send_message(
+                            chat_id=task.chat_id,
+                            text=f"❌ Произошла ошибка при создании видео: {str(e)}"
+                        )
+                    except Exception as send_error:
+                        logging.error(f"Error sending error message to user: {send_error}")
 
                 self.task_queue.task_done()
             except Exception as e:
-                logger.error(f"Error in queue processor: {e}")
+                logging.error(f"Error in queue processor: {e}")
                 await asyncio.sleep(1)
 
     async def _process_video_task(self, task: VideoTask) -> Dict:
@@ -418,56 +445,37 @@ class HaiperImageToVideoPlugin(Plugin):
         try:
             logging.info(f"haiper_image_to_video execute called with kwargs: {kwargs}")
             prompt = kwargs.get('prompt', "оживи картинку")
+            chat_id = kwargs.get('chat_id')
             logging.info(f"animation prompt: {prompt}")
 
-            # Get user_id and chat_id from context
-            user_id = kwargs.get('user_id', helper.user_id)
-            chat_id = kwargs.get('chat_id')
-            
-            if not chat_id and hasattr(helper, 'message_id'):
-                chat_id = str(helper.message_id)
-                if '_' in chat_id:
-                    chat_id = chat_id.split('_')[0]
-
-            # Try to get file_id from different sources
-            file_id = kwargs.get('last_image_file_id')
-            if not file_id and chat_id and user_id:
-                try:
-                    # Get last image from database
-                    user_images = helper.db.get_user_images(user_id, int(chat_id), limit=1)
-                    if user_images:
-                        last_image = user_images[0]
-                        file_id = last_image['file_id']
-                        logging.info(f"Found image {file_id} for user {user_id}")
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Error getting last image file id: {e}")
-
+            # Получаем file_id из сохраненного изображения
+            file_id = kwargs.get('image_path')
             if not file_id:
-                return {"error": "Пожалуйста, сначала загрузите изображение, а затем попросите создать из него видео."}
+                raise ValueError("No image file_id provided")
 
-            # Create and queue new task
+            logging.info(f"Found image {file_id} for user {chat_id}")
+
+            # Создаем новую задачу
             task = VideoTask(
-                task_id=f"{chat_id}_{datetime.now().timestamp()}",
-                user_id=user_id,
-                chat_id=int(chat_id) if chat_id else None,
+                task_id=self.get_file_id_hash(file_id),
+                user_id=chat_id,
+                chat_id=chat_id,
                 file_id=file_id,
                 prompt=prompt,
                 status=TaskStatus.PENDING
             )
 
-            await self.task_queue.put(task)
-            self.active_tasks[task.task_id] = task
-
-            # Ensure worker is running
+            # Запускаем обработчик очереди, если он еще не запущен
             await self.start_worker()
 
-            return {
-                "message": "Ваш запрос добавлен в очередь на обработку. Это может занять несколько минут."
-            }
+            # Добавляем задачу в очередь
+            await self.task_queue.put(task)
+
+            return {"message": "Ваш запрос добавлен в очередь на обработку. Это может занять несколько минут."}
 
         except Exception as e:
-            logger.error(f"Error in HaiperImageToVideo plugin: {e}")
-            return {"error": str(e)}
+            logging.error(f"Error in execute: {e}")
+            raise
 
     async def handle_animate_command(self, update: Update, context) -> None:
         """Обработчик команды /animate"""

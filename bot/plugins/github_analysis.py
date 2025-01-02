@@ -136,7 +136,9 @@ class GitHubCodeAnalysisPlugin(Plugin):
             model=self.model,
             messages=[{"role": "system", "content": prompt}],
             max_tokens=self.max_tokens,
-            temperature=self.temperature
+            temperature=self.temperature,
+            max_tokens=55000,
+            extra_headers={ "X-Title": "tgBot" },
         )
 
         return completion.choices[0].message.content.strip()

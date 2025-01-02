@@ -49,6 +49,7 @@ class Database:
                         context TEXT NOT NULL,
                         parse_mode TEXT NOT NULL,
                         temperature FLOAT NOT NULL,
+                        max_tokens_percent INTEGER DEFAULT 100,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (user_id)
@@ -129,7 +130,7 @@ class Database:
             logging.error(f'Error getting user settings: {e}', exc_info=True)
             raise
     
-    def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float) -> None:
+    def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100) -> None:
         """Сохранение контекста разговора"""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -137,14 +138,15 @@ class Database:
                 context_json = json.dumps(context, ensure_ascii=False)
                 logging.debug(f'Context to save: {context_json[:200]}...')  # Логируем только начало для безопасности
                 cursor.execute('''
-                    INSERT INTO conversation_context (user_id, context, parse_mode, temperature )
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO conversation_context (user_id, context, parse_mode, temperature, max_tokens_percent)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET 
                     context = excluded.context,
                     parse_mode = excluded.parse_mode,
                     temperature = excluded.temperature,
+                    max_tokens_percent = excluded.max_tokens_percent,
                     updated_at = CURRENT_TIMESTAMP
-                ''', (user_id, context_json, parse_mode, temperature))
+                ''', (user_id, context_json, parse_mode, temperature, max_tokens_percent))
                 conn.commit()
         except sqlite3.Error as e:
             logging.error(f'SQLite error saving conversation context: {e}', exc_info=True)
@@ -159,25 +161,26 @@ class Database:
             logging.info(f'Getting conversation context for user_id={user_id}')
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT context, parse_mode, temperature FROM conversation_context WHERE user_id = ?', (user_id,))
+                cursor.execute('SELECT context, parse_mode, temperature, max_tokens_percent FROM conversation_context WHERE user_id = ?', (user_id,))
                 result = cursor.fetchone()
                 if result:
                     context = json.loads(result[0]) if result[0] is not None else {}
                     parse_mode = result[1] if result[1] is not None else 'HTML'
-                    temperature = result[2] if result[2] is not None else 0.8
+                    temperature = round(result[2], 2) if result[2] is not None else 0.8
+                    max_tokens_percent = result[3] if result[3] is not None else 100
                     logging.debug(f'Loaded context: {str(context)[:200]}...')  # Логируем только начало для безопасности
-                    return context, parse_mode, temperature
+                    return context, parse_mode, temperature, max_tokens_percent
                 logging.info(f'No conversation context found for user_id={user_id}')
-                return None, 'HTML', 0.8
+                return None, 'HTML', 0.8, 80
         except sqlite3.Error as e:
             logging.error(f'SQLite error getting conversation context: {e}', exc_info=True)
-            return None, 'HTML', 0.8
+            return None, 'HTML', 0.8, 80
         except json.JSONDecodeError as e:
             logging.error(f'JSON decode error in conversation context: {e}', exc_info=True)
-            return None, 'HTML', 0.8
+            return None, 'HTML', 0.8, 80
         except Exception as e:
             logging.error(f'Error getting conversation context: {e}', exc_info=True)
-            return None, 'HTML', 0.8
+            return None, 'HTML', 0.8, 80
     
     def delete_user_data(self, user_id: int) -> None:
         """Удаление всех данных пользователя"""

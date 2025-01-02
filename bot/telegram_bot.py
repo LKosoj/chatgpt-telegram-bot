@@ -592,7 +592,9 @@ class ChatGPTTelegramBot:
                 # Сохраняем новый контекст в базу данных
                 self.db.save_conversation_context(chat_id, {
                     'messages': self.openai.conversations[chat_id],
-                }, mode_data.get('parse_mode', 'HTML'), mode_data.get('temperature', self.openai.config['temperature']))
+                }, mode_data.get('parse_mode', 'HTML'), 
+                   mode_data.get('temperature', self.openai.config['temperature']),
+                   mode_data.get('max_tokens_percent', 80))
                                         
                 # Отправляем приветственное сообщение
                 welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')

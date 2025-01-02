@@ -62,15 +62,15 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return base * 90
+        return 128000
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
-        return 180000
+        return 200000
     elif model in MISTRALAI:
-        return 100000
+        return 128000
     elif model in GOOGLE:
-        return 800000
+        return 9500000
     else:
         return base * 2
 
@@ -204,7 +204,7 @@ class OpenAIHelper:
             response = await self.client.chat.completions.create(
                 model=user_model,
                 messages=messages,
-                max_tokens=default_max_tokens(user_model),
+                max_tokens=default_max_tokens(user_model) * 0.5,
                 temperature=0.7,
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
@@ -288,7 +288,7 @@ class OpenAIHelper:
             if chat_id not in self.conversations:
                 logging.info(f'Initializing conversation context for chat_id={chat_id}')
                 # Пытаемся загрузить контекст из базы данных
-                saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+                saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
                 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
@@ -380,7 +380,7 @@ class OpenAIHelper:
             logging.debug(f'Query: {query}')
             
             # Пытаемся загрузить контекст из базы данных
-            saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+            saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
             
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 if saved_context and 'messages' in saved_context:
@@ -401,9 +401,12 @@ class OpenAIHelper:
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             model_to_use = self.db.get_user_model(user_id) or self.config['model']
 
+            # Рассчитываем максимальное количество токенов с учетом процента
+            max_tokens = int(default_max_tokens(model_to_use) * max_tokens_percent / 100)
+
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > default_max_tokens(model_to_use)
+            exceeded_max_tokens = token_count + max_tokens > default_max_tokens(model_to_use)
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -425,7 +428,7 @@ class OpenAIHelper:
                 'messages': self.conversations[chat_id],
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
-                'max_tokens': default_max_tokens(model_to_use),
+                'max_tokens': max_tokens,
                 'presence_penalty': self.config['presence_penalty'],
                 'frequency_penalty': self.config['frequency_penalty'],
                 'stream': stream,
@@ -435,10 +438,9 @@ class OpenAIHelper:
             if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
                 stream = False
 
-            max_tokens = default_max_tokens(model_to_use)
             if model_to_use in O1_MODELS:
-                if self.config['max_tokens'] > 32000:
-                    max_tokens = 32000
+                if max_tokens >= 32000:
+                    max_tokens = 22000
                 common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
                 common_args['max_completion_tokens'] = max_tokens # o1 series only supports max_completion_tokens
                 common_args['max_tokens'] = max_tokens
@@ -453,6 +455,7 @@ class OpenAIHelper:
                     'presence_penalty': self.config['presence_penalty'],
                     'frequency_penalty': self.config['frequency_penalty'],
                     'stream': stream,
+                    'extra_headers': { "X-Title": "tgBot" },
                 })
             
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
@@ -558,6 +561,7 @@ class OpenAIHelper:
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             model_to_use = self.db.get_user_model(user_id) or self.config['model']
+            context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(user_id)
             
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
 
@@ -566,7 +570,7 @@ class OpenAIHelper:
                 messages=self.conversations[chat_id],
                 tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-                max_tokens=default_max_tokens(model_to_use),
+                max_tokens=default_max_tokens(model_to_use) * max_tokens_percent / 100,
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
@@ -702,7 +706,8 @@ class OpenAIHelper:
                 'max_tokens': self.config['vision_max_tokens'],
                 'presence_penalty': self.config['presence_penalty'],
                 'frequency_penalty': self.config['frequency_penalty'],
-                'stream': stream
+                'stream': stream,
+                'extra_headers': { "X-Title": "tgBot" },
             }
 
 
@@ -833,13 +838,14 @@ class OpenAIHelper:
                 self.conversations_vision = {}
                 
             self.conversations_vision[chat_id] = False
+            saved_context, parse_mode, temperature, max_tokens_percent = "", 'HTML', 0.8, 80
 
             if content == '':
                 content = self.config['assistant_prompt']
                 
                 try:
                     # Пытаемся загрузить существующий контекст из базы данных
-                    saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+                    saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
                     
                     # Если есть сохраненный контекст, берем из него только системное сообщение
                     if saved_context and 'messages' in saved_context:
@@ -859,9 +865,10 @@ class OpenAIHelper:
             
             try:
                 # Сохраняем начальный контекст в базу данных
+                logging.info(f'Saving context to database: {parse_mode}, {temperature}, {max_tokens_percent} ')
                 self.db.save_conversation_context(chat_id, {
                     'messages': self.conversations[chat_id],
-                }, parse_mode, temperature)
+                }, parse_mode, temperature, max_tokens_percent)
             except Exception as e:
                 logging.error(f'Error saving context to database: {str(e)}')
                 
@@ -910,9 +917,9 @@ class OpenAIHelper:
         :param content: The message content
         """
         self.conversations[chat_id].append({"role": role, "content": content})
-        content, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+        content, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
         # Сохраняем обновленный контекст в базу данных
-        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, parse_mode, temperature)
+        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, parse_mode, temperature, max_tokens_percent)
 
     async def __summarise(self, conversation, chat_id=None) -> str:
         """

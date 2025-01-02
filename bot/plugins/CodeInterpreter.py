@@ -115,7 +115,8 @@ class CodeInterpreter:
                     {"role": "user", "content": enhanced_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=1500
+                max_tokens=55000,
+                extra_headers={ "X-Title": "tgBot" },
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -430,7 +431,9 @@ class CodeInterpreter:
         try:
             response = await self.client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}]
+                messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}],
+                max_tokens=55000,
+                extra_headers={ "X-Title": "tgBot" },
             )
             explanation_text = response.choices[0].message.content
             logging.info("Объяснение сгенерировано.")
