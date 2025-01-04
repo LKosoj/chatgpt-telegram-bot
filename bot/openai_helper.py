@@ -33,7 +33,7 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
-O1_MODELS = ("openai/o1",)
+O1_MODELS = ("openai/o1", "openai/o1-preview",)
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 MISTRALAI = ("mistralai/mistral-nemo",)
@@ -70,7 +70,7 @@ def default_max_tokens(model: str = None) -> int:
     elif model in MISTRALAI:
         return 128000
     elif model in GOOGLE:
-        return 9500000
+        return 950000
     else:
         return base * 2
 
@@ -905,6 +905,10 @@ class OpenAIHelper:
         if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
             self.conversations[chat_id].append({"role": "user", "content": function_result})
+        elif model_to_use in (MISTRALAI):
+            #function_result = f"Function {function_name} returned: {content}"
+            #self.conversations[chat_id].append({"role": "user", "content": function_result})
+            self.conversations[chat_id].append({"role": "tool", "name": function_name, "content": content})
         else:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
