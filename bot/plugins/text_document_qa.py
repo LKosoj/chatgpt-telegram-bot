@@ -15,6 +15,9 @@ from docling.document_converter import DocumentConverter
 import tempfile
 import concurrent.futures
 from utils import handle_direct_result
+import torch
+import gc
+
 class TextDocumentQAPlugin(Plugin):
     """
     Плагин для анализа текстовых документов с использованием векторного поиска
@@ -602,6 +605,9 @@ class TextDocumentQAPlugin(Plugin):
             metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
             with open(metadata_path, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False)
+
+            gc.collect()
+            torch.cuda.empty_cache()
 
             # Отправляем сообщение о завершении обработки через chat_response
             response = {
