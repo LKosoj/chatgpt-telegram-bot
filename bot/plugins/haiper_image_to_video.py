@@ -317,7 +317,7 @@ class HaiperImageToVideoPlugin(Plugin):
             img.save(img_byte_arr, format='JPEG')
             image_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
 
-            model_id = "img2vid-kling/standart"
+            model_id = "img2vid-kling/standart16"
             
             self.haiper_token = self.openai.api_key
             self.headers = {
@@ -485,6 +485,7 @@ class HaiperImageToVideoPlugin(Plugin):
         message = update.message
         chat_id = message.chat.id
         user_id = message.from_user.id
+        logging.info(f"handle_animate_command called with chat_id: {chat_id}, user_id: {user_id}")
         
         if not self.openai:
             await message.reply_text("Ошибка: не инициализирован OpenAI helper")
