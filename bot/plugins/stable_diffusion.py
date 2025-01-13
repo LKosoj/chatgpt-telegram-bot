@@ -289,7 +289,7 @@ class StableDiffusionPlugin(Plugin):
                         await self.bot.send_photo(
                             chat_id=task.chat_id,
                             photo=image_file,
-                            caption=f"🎨 Изображение по промпту: {current_task.prompt}"
+                            caption=f"🎨 Изображение по промпту: {self._truncate_prompt(current_task.prompt)}"
                         )
                 except Exception as e:
                     logger.error(f"Error sending result: {e}")
@@ -323,3 +323,20 @@ class StableDiffusionPlugin(Plugin):
                 self.active_tasks.pop(task.task_id, None)
             except:
                 pass
+
+    @staticmethod
+    def _truncate_prompt(prompt: str, max_length: int = 100) -> str:
+        """
+        Усекает промпт до указанной максимальной длины
+        
+        Args:
+            prompt (str): Исходный промпт
+            max_length (int): Максимальная длина промпта
+        
+        Returns:
+            str: Усеченный промпт
+        """
+        if len(prompt) <= max_length:
+            return prompt
+        return prompt[:max_length] + "..."
+
