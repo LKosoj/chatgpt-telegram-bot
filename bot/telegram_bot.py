@@ -159,52 +159,54 @@ class ChatGPTTelegramBot:
 
         # Check if image generation is enabled and, if so, generate the image statistics for today
         text_today_images = ""
-        if self.config.get('enable_image_generation', False):
+        if self.config.get('enable_image_generation', False) and images_today:
             text_today_images = f"{images_today} {localized_text('stats_images', bot_language)}\n"
 
         text_today_vision = ""
-        if self.config.get('enable_vision', False):
+        if self.config.get('enable_vision', False) and vision_today:
             text_today_vision = f"{vision_today} {localized_text('stats_vision', bot_language)}\n"
 
         text_today_tts = ""
-        if self.config.get('enable_tts_generation', False):
+        if self.config.get('enable_tts_generation', False) and characters_today:
             text_today_tts = f"{characters_today} {localized_text('stats_tts', bot_language)}\n"
 
-        text_today = (
-            f"*{localized_text('usage_today', bot_language)}:*\n"
-            f"{tokens_today} {localized_text('stats_tokens', bot_language)}\n"
-            f"{text_today_images}"  # Include the image statistics for today if applicable
-            f"{text_today_vision}"
-            f"{text_today_tts}"
-            f"{transcribe_minutes_today} {localized_text('stats_transcribe', bot_language)[0]} "
-            f"{transcribe_seconds_today} {localized_text('stats_transcribe', bot_language)[1]}\n"
-            f"{localized_text('stats_total', bot_language)}{current_cost['cost_today']:.2f}\n"
-            "----------------------------\n"
-        )
+        text_today = f"*{localized_text('usage_today', bot_language)}:*\n"
+        if tokens_today:
+            text_today += f"{tokens_today} {localized_text('stats_tokens', bot_language)}\n"
+        text_today += f"{text_today_images}"  # Include the image statistics for today if applicable
+        text_today += f"{text_today_vision}"
+        text_today += f"{text_today_tts}"
+        if transcribe_minutes_today:
+            text_today += f"{transcribe_minutes_today} {localized_text('stats_transcribe', bot_language)[0]} "
+        if transcribe_seconds_today or transcribe_minutes_today:
+            text_today += f"{transcribe_seconds_today} {localized_text('stats_transcribe', bot_language)[1]}\n"
+        text_today += f"{localized_text('stats_total', bot_language)}{current_cost['cost_today']:.2f}\n"
+        text_today += "----------------------------\n"
 
         text_month_images = ""
         if self.config.get('enable_image_generation', False):
             text_month_images = f"{images_month} {localized_text('stats_images', bot_language)}\n"
 
         text_month_vision = ""
-        if self.config.get('enable_vision', False):
+        if self.config.get('enable_vision', False) and vision_month:
             text_month_vision = f"{vision_month} {localized_text('stats_vision', bot_language)}\n"
 
         text_month_tts = ""
-        if self.config.get('enable_tts_generation', False):
+        if self.config.get('enable_tts_generation', False) and characters_month:
             text_month_tts = f"{characters_month} {localized_text('stats_tts', bot_language)}\n"
 
         # Check if image generation is enabled and, if so, generate the image statistics for the month
-        text_month = (
-            f"*{localized_text('usage_month', bot_language)}:*\n"
-            f"{tokens_month} {localized_text('stats_tokens', bot_language)}\n"
-            f"{text_month_images}"  # Include the image statistics for the month if applicable
-            f"{text_month_vision}"
-            f"{text_month_tts}"
-            f"{transcribe_minutes_month} {localized_text('stats_transcribe', bot_language)[0]} "
-            f"{transcribe_seconds_month} {localized_text('stats_transcribe', bot_language)[1]}\n"
-            f"{localized_text('stats_total', bot_language)}{current_cost['cost_month']:.2f}"
-        )
+        text_month = f"*{localized_text('usage_month', bot_language)}:*\n"
+        if tokens_month:
+            text_month += f"{tokens_month} {localized_text('stats_tokens', bot_language)}\n"
+        text_month += f"{text_month_images}"  # Include the image statistics for the month if applicable
+        text_month += f"{text_month_vision}"
+        text_month += f"{text_month_tts}"
+        if transcribe_minutes_month:
+            text_month += f"{transcribe_minutes_month} {localized_text('stats_transcribe', bot_language)[0]} "
+        if transcribe_seconds_month or transcribe_minutes_month:
+            text_month += f"{transcribe_seconds_month} {localized_text('stats_transcribe', bot_language)[1]}\n"
+        text_month += f"{localized_text('stats_total', bot_language)}{current_cost['cost_month']:.2f}"
 
         # text_budget filled with conditional content
         text_budget = "\n\n"
