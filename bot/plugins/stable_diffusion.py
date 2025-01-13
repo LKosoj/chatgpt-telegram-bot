@@ -80,32 +80,71 @@ class StableDiffusionPlugin(Plugin):
         }]
 
     async def start_worker(self):
-        """Запускает обработчик очереди задач"""
+        """Запускает обработчик очереди задач с улучшенным контролем"""
         if self.worker_task is None or self.worker_task.done():
             self.worker_task = asyncio.create_task(self._process_queue())
+            self.worker_task.add_done_callback(self._handle_worker_done)
+
+    def _handle_worker_done(self, task):
+        """Обработчик завершения воркера"""
+        try:
+            task.result()  # Проверка на наличие необработанных исключений
+        except Exception as e:
+            logger.error(f"Worker task completed with error: {e}")
+            # Можно добавить логику перезапуска
+
+    async def stop_worker(self):
+        """Мягко останавливает обработчик очереди"""
+        if self.worker_task and not self.worker_task.done():
+            self.worker_task.cancel()
+            try:
+                await self.worker_task
+            except asyncio.CancelledError:
+                logger.info("Worker task was successfully cancelled")
+
+    def is_queue_empty(self) -> bool:
+        """Проверяет, пуста ли очередь задач"""
+        return self.task_queue.empty()
 
     async def _process_queue(self):
-        """Обработчик очереди задач"""
-        while True:
-            try:
-                task = await self.task_queue.get()
-                if task.status != TaskStatus.PENDING:
-                    continue
-
-                task.status = TaskStatus.PROCESSING
+        """Обработчик очереди задач с улучшенной обработкой ошибок"""
+        try:
+            while True:
                 try:
-                    result = await self._process_image_task(task)
-                    task.status = TaskStatus.COMPLETED
-                    task.result = result
-                except Exception as e:
-                    task.status = TaskStatus.FAILED
-                    task.error = str(e)
-                    logger.error(f"Error processing task {task.task_id}: {e}")
+                    # Используем get_nowait() вместо wait_for()
+                    try:
+                        task = self.task_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        # Если очередь пуста, ждем некоторое время
+                        await asyncio.sleep(10)  # Уменьшаем частоту логирования
+                        continue
 
-                self.task_queue.task_done()
-            except Exception as e:
-                logger.error(f"Error in queue processor: {e}")
-                await asyncio.sleep(1)
+                    if task.status != TaskStatus.PENDING:
+                        self.task_queue.task_done()
+                        continue
+
+                    task.status = TaskStatus.PROCESSING
+                    try:
+                        result = await self._process_image_task(task)
+                        task.status = TaskStatus.COMPLETED
+                        task.result = result
+                    except Exception as e:
+                        task.status = TaskStatus.FAILED
+                        task.error = str(e)
+                        logger.error(f"Error processing task {task.task_id}: {e}", exc_info=True)
+                    
+                    self.task_queue.task_done()
+                
+                except Exception as inner_e:
+                    logger.error(f"Unexpected error in queue processing: {inner_e}", exc_info=True)
+                    await asyncio.sleep(5)
+            
+        except asyncio.CancelledError:
+            logger.info("Queue processing was cancelled")
+        except Exception as e:
+            logger.error(f"Critical error in queue processing: {e}", exc_info=True)
+        finally:
+            logger.info("Queue processing has stopped")
 
     async def _process_image_task(self, task: ImageTask) -> Dict:
         """Обработка задачи генерации изображения"""
