@@ -62,7 +62,7 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 128000
+        return 16384
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
