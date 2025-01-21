@@ -535,7 +535,7 @@ class TextDocumentQAPlugin(Plugin):
 
                 # Получаем ответ от GPT
                 response, _ = await helper.get_chat_response(
-                    chat_id=doc_id,
+                    chat_id=chat_id,
                     query=prompt
                 )
 
