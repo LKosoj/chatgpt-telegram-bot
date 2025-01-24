@@ -38,8 +38,9 @@ class PromptPerfectPlugin(Plugin):
             original_prompt = kwargs.get('original_prompt', '')
             context = kwargs.get('context', '')
 
+            chat_id = kwargs.get('chat_id')
             # Advanced prompt optimization logic
-            optimized_prompt = await self._optimize_prompt(original_prompt, context, helper)
+            optimized_prompt = await self._optimize_prompt(chat_id, original_prompt, context, helper)
 
             # Логируем оригинальный и оптимизированный промпты
             #logging.info(f"Original Prompt: {original_prompt}")
@@ -47,7 +48,7 @@ class PromptPerfectPlugin(Plugin):
 
             # Получаем ответ на оптимизированный промпт
             response, tokens = await helper.get_chat_response(
-                chat_id=hash(original_prompt),  # Используем хеш оригинального промпта как уникальный chat_id
+                chat_id=chat_id,
                 query=optimized_prompt
             )
 
@@ -68,7 +69,7 @@ class PromptPerfectPlugin(Plugin):
                 "error": str(e)
             }
                 
-    async def _optimize_prompt(self, original_prompt: str, context: str = '', helper=None) -> str:
+    async def _optimize_prompt(self, chat_id: int, original_prompt: str, context: str = '', helper=None) -> str:
         """
         Core method to optimize prompts using GPT's capabilities
         """
@@ -93,7 +94,7 @@ class PromptPerfectPlugin(Plugin):
 
         # Use the OpenAI helper to generate an optimized prompt
         optimization_response, _ = await helper.get_chat_response(
-            chat_id=hash(original_prompt),  # Use a unique chat ID
+            chat_id=chat_id,
             query=optimization_instruction
         )
 
