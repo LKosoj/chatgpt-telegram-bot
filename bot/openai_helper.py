@@ -66,11 +66,13 @@ def default_max_tokens(model: str = None) -> int:
     elif model in O1_MODELS:
         return 32768
     elif model in ANTHROPIC:
-        return 200000
+        return 16384
     elif model in MISTRALAI:
-        return 128000
+        return 16384
     elif model in GOOGLE:
-        return 950000
+        return 16384
+    elif model in DEEPSEEK:
+        return 8192
     else:
         return base * 2
 
@@ -544,7 +546,10 @@ class OpenAIHelper:
                 logging.error(f"Failed to parse arguments JSON: {arguments}")
                 return response, tools_used
             
-            self.user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+            self.user_id = user_id
+            model_to_use = self.db.get_user_model(user_id) or self.config['model']
+
             tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
             logging.info(f'Function {tool_name} response: {tool_response}')
 
@@ -559,8 +564,6 @@ class OpenAIHelper:
 
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
-            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.db.get_user_model(user_id) or self.config['model']
             context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(user_id)
             
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
@@ -570,7 +573,7 @@ class OpenAIHelper:
                 messages=self.conversations[chat_id],
                 tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-                max_tokens=default_max_tokens(model_to_use) * max_tokens_percent / 100,
+                max_tokens=default_max_tokens(model_to_use), # * max_tokens_percent / 100,
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
@@ -983,6 +986,8 @@ class OpenAIHelper:
         :return: the number of tokens required
         """
         model = self.config['model']
+        if model_to_use is not None:
+            model = model_to_use
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
