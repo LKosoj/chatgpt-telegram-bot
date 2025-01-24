@@ -71,8 +71,6 @@ def default_max_tokens(model: str = None) -> int:
         return 16384
     elif model in GOOGLE:
         return 16384
-    elif model in DEEPSEEK:
-        return 8192
     else:
         return base * 2
 
