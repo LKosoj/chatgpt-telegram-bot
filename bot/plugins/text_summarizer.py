@@ -18,7 +18,7 @@ class TextSummarizerPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "summarize_text",
-            "description": "Суммаризация текста с использованием внешних сервисов",
+            "description": "Суммаризация текста",
             "parameters": {
                 "type": "object",
                 "properties": {
