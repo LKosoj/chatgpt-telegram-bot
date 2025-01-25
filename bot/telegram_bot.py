@@ -64,7 +64,6 @@ class ChatGPTTelegramBot:
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
-            BotCommand(command='model', description=localized_text('change_model', bot_language)),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -152,8 +151,8 @@ class ChatGPTTelegramBot:
             )
             
             # Добавляем информацию о модели сессии
-            if active_session['context'].get('model'):
-                text_current_session += f"🤖 Модель: {active_session['context']['model']}\n"
+            if active_session.get('model',''):
+                text_current_session += f"🤖 Модель: {active_session.get('model','')}\n"
             
             # Добавляем информацию о режиме
             if active_session['context'].get('messages'):
@@ -319,43 +318,6 @@ class ChatGPTTelegramBot:
 
         await self.prompt(update=update, context=context)
 
-    async def model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Change model using inline keyboard buttons.
-        """
-        if not await is_allowed(self.config, update, context):
-            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                            'is not allowed to change model')
-            await self.send_disallowed_message(update, context)
-            return
-
-        user_id = update.message.from_user.id
-        # Получаем модель из базы данных
-        current_model = self.db.get_user_model(user_id) or self.openai.config['model']
-
-        # Создаем кнопки для каждой группы моделей
-        keyboard = []
-        model_groups = [
-            ("GPT-4O", GPT_4O_MODELS),
-            ("O1", O1_MODELS),
-            ("Anthropic", ANTHROPIC),
-            ("Google", GOOGLE),
-            ("Mistral", MISTRALAI)
-        ]
-
-        for group_name, _ in model_groups:
-            keyboard.append([InlineKeyboardButton(
-                text=group_name,
-                callback_data=f"modelgroup:{group_name}"
-            )])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"Current model: {current_model}\n\nSelect model group:",
-            reply_markup=reply_markup
-        )
-
     async def handle_model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -373,10 +335,10 @@ class ChatGPTTelegramBot:
         action, value = data.split(":", 1)
         
         # Получаем текущую модель пользователя
-        current_model = self.db.get_user_model(user_id) or self.openai.config['model']
+        current_model = self.openai.get_current_model(user_id)
         
         # Получаем активную сессию пользователя
-        sessions = self.db.list_user_sessions(user_id)
+        sessions = self.db.list_user_sessions(user_id, is_active=1)
         active_session = next((s for s in sessions if s['is_active']), None)
         
         if action == "modelgroup":
@@ -397,7 +359,7 @@ class ChatGPTTelegramBot:
                 
             for model in models:
                 # Добавляем информацию о текущей модели сессии
-                is_session_model = active_session and active_session.get('context', {}).get('model') == model
+                is_session_model = active_session and active_session.get('model', '') == model
                 keyboard.append([InlineKeyboardButton(
                     text=f"{'✓ ' if model == current_model else ''}{'🔵 ' if is_session_model else ''}{model}",
                     callback_data=f"model:{model}"
@@ -419,23 +381,7 @@ class ChatGPTTelegramBot:
             model = value
             # Сохраняем выбранную модель
             self.db.save_user_model(user_id, model)
-            
-            # Если есть активная сессия, обновляем модель в её контексте
-            if active_session:
-                # Получаем текущий контекст сессии
-                context_data = active_session['context']
-                # Добавляем модель в контекст
-                context_data['model'] = model
-                # Сохраняем обновленный контекст
-                self.db.save_conversation_context(
-                    user_id,
-                    context=context_data,
-                    parse_mode=active_session['parse_mode'],
-                    temperature=active_session['temperature'],
-                    max_tokens_percent=active_session['max_tokens_percent'],
-                    session_id=active_session['session_id']
-                )
-            
+                        
             # Формируем сообщение об успешном обновлении
             success_message = f"Модель изменена на: {model}\n\n"
             if active_session:
@@ -473,10 +419,6 @@ class ChatGPTTelegramBot:
             settings_info = f"Текущая модель: {current_model}\n"
             if active_session:
                 settings_info += f"\nАктивная сессия: {active_session['session_name']}\n"
-                if active_session.get('context', {}).get('model'):
-                    settings_info += f"Модель сессии: {active_session['context']['model']}\n"
-                settings_info += f"Температура: {active_session['temperature']}\n"
-                settings_info += f"Макс. токенов: {active_session['max_tokens_percent']}%"
             else:
                 settings_info += "\nНет активной сессии"
             
@@ -568,14 +510,9 @@ class ChatGPTTelegramBot:
                     
                     # Формируем имя сессии с информацией о режиме и модели
                     if session['is_active']:
-                        session_name = f"✓ {session_name}"
-                        # Добавляем информацию о модели для активной сессии
-                        if session['context'].get('model'):
-                            session_name = f"{session_name}\n🤖 {session['context']['model']}"
+                        session_name = f"✓ {session_name}\n💫 {current_mode}"
                     if current_mode:
                         session_name = f"{session_name}\n💫 {current_mode}"
-                    elif session['temperature'] is not None:
-                        session_name = f"{session_name}\n🎲 t={session['temperature']:.1f}"
                     
                     # Добавляем кнопку для каждой сессии
                     keyboard.append([
@@ -612,7 +549,7 @@ class ChatGPTTelegramBot:
                     message_text += f"Сообщений: {active_session['message_count']}\n"
                     
                     # Добавляем информацию о модели сессии
-                    current_model = active_session['context'].get('model') or self.db.get_user_model(user_id) or self.openai.config['model']
+                    current_model = active_session.get('model', '')
                     message_text += f"Модель: {current_model}\n"
                     
                     # Добавляем информацию о режиме активной сессии
@@ -627,7 +564,7 @@ class ChatGPTTelegramBot:
                                     message_text += f"Текущий режим: {mode_data.get('name', mode_key)}\n"
                                     break
                                     
-                message_text += f"\nВсего сессий: {len(sessions)}/{self.config.get('max_sessions', 5)}"
+                message_text += f"\nВсего сессий: {len(sessions)}/{self.config.get('MAX_SESSIONS', 5)}"
             else:
                 message_text += "У вас пока нет активных сессий"
 
@@ -670,9 +607,10 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
-        data = query.data.split(':')
-        action = data[0]
-        value = data[1]
+        # Безопасное разделение данных
+        data_parts = query.data.split(':')
+        action = data_parts[0]
+        value = data_parts[1] if len(data_parts) > 1 else ''
         
         chat_id = query.message.chat_id
         user_id = query.from_user.id
@@ -684,126 +622,132 @@ class ChatGPTTelegramBot:
         with open(chat_modes_path, 'r', encoding='utf-8') as file:
             chat_modes = yaml.safe_load(file)
 
-        if action == "promptgroup":
-            if value == "reset_context":
-                # Получаем текущую активную сессию
-                sessions = self.db.list_user_sessions(user_id)
-                active_session = next((s for s in sessions if s['is_active']), None)
-                
-                if active_session:
-                    # Сбрасываем контекст текущей сессии
-                    self.openai.reset_chat_history(chat_id=chat_id, session_id=active_session['session_id'])
-                    await query.edit_message_text(
-                        text=f"Контекст сессии '{active_session['session_name']}' сброшен. Можете начать новый диалог."
-                    )
-                else:
-                    self.openai.reset_chat_history(chat_id=chat_id, session_id=None)
-                    await query.edit_message_text(
-                        text="Создана новая сессия. Можете начать диалог."
-                    )
-                return
-                
-            # Показываем режимы выбранной группы
-            keyboard = []
-            for mode_key, mode_data in chat_modes.items():
-                if mode_data.get('group', 'Другое') == value:
-                    keyboard.append([InlineKeyboardButton(
-                        text=mode_data.get('name', mode_key),
-                        callback_data=f"prompt:{mode_key}"
-                    )])
-            
-            # Добавляем кнопку "Назад"
-            keyboard.append([InlineKeyboardButton(
-                text="« Назад к группам",
-                callback_data="promptback:main"
-            )])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text=f"Выберите режим из группы {value}:",
-                reply_markup=reply_markup
-            )
-            
-        elif action == "promptback":
-            if value == "main":
-                # Возвращаемся к списку групп
-                mode_groups = {}
-                for mode_key, mode_data in chat_modes.items():
-                    group = mode_data.get('group', 'Другое')
-                    if group not in mode_groups:
-                        mode_groups[group] = []
-                    mode_groups[group].append((mode_key, mode_data))
-
-                # Создаем клавиатуру с группами
+        try:
+            if action == "promptgroup":
+                if value == "reset_context":
+                    # Получаем текущую активную сессию
+                    sessions = self.db.list_user_sessions(user_id)
+                    active_session = next((s for s in sessions if s['is_active']), None)
+                    
+                    if active_session:
+                        # Сбрасываем контекст текущей сессии
+                        self.openai.reset_chat_history(chat_id=chat_id, session_id=active_session['session_id'])
+                        await query.edit_message_text(
+                            text=f"Контекст сессии '{active_session['session_name']}' сброшен. Можете начать новый диалог."
+                        )
+                    else:
+                        self.openai.reset_chat_history(chat_id=chat_id, session_id=None)
+                        await query.edit_message_text(
+                            text="Создана новая сессия. Можете начать диалог."
+                        )
+                    return
+                    
+                # Показываем режимы выбранной группы
                 keyboard = []
-                # Добавляем кнопку сброса контекста в начало списка
-                keyboard.append([InlineKeyboardButton(
-                    text="🔄 Сбросить контекст текущей сессии",
-                    callback_data="promptgroup:reset_context"
-                )])
-                # Добавляем остальные группы
-                for group_name in sorted(mode_groups.keys()):
-                    keyboard.append([InlineKeyboardButton(
-                        text=group_name,
-                        callback_data=f"promptgroup:{group_name}"
-                    )])
+                for mode_key, mode_data in chat_modes.items():
+                    if mode_data.get('group', 'Другое') == value:
+                        keyboard.append([InlineKeyboardButton(
+                            text=mode_data.get('name', mode_key),
+                            callback_data=f"prompt:{mode_key}"
+                        )])
                 
-                # Добавляем кнопку возврата к сессиям
+                # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="« Назад к сессиям",
-                    callback_data="session:back"
+                    text="« Назад к группам",
+                    callback_data="promptback:main"
                 )])
-
+                
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    text="Выберите группу режимов:",
+                    text=f"Выберите режим из группы {value}:",
                     reply_markup=reply_markup
                 )
-            
-        elif action == "prompt":
-            mode = value
-            if mode in chat_modes:
-                # Получаем текущую активную сессию
-                sessions = self.db.list_user_sessions(user_id)
-                active_session = next((s for s in sessions if s['is_active']), None)
                 
-                if not active_session:
-                    # Если нет активной сессии, создаем новую
-                    session_id = self.db.create_session(
-                        user_id=user_id,
-                        max_sessions=self.config.get('max_sessions', 5),
-                        openai_helper=self.openai
+            elif action == "promptback":
+                if not value or value == "main":
+                    # Возвращаемся к списку групп
+                    mode_groups = {}
+                    for mode_key, mode_data in chat_modes.items():
+                        group = mode_data.get('group', 'Другое')
+                        if group not in mode_groups:
+                            mode_groups[group] = []
+                        mode_groups[group].append((mode_key, mode_data))
+
+                    # Создаем клавиатуру с группами
+                    keyboard = []
+                    # Добавляем кнопку сброса контекста в начало списка
+                    keyboard.append([InlineKeyboardButton(
+                        text="🔄 Сбросить контекст текущей сессии",
+                        callback_data="promptgroup:reset_context"
+                    )])
+                    # Добавляем остальные группы
+                    for group_name in sorted(mode_groups.keys()):
+                        keyboard.append([InlineKeyboardButton(
+                            text=group_name,
+                            callback_data=f"promptgroup:{group_name}"
+                        )])
+                    
+                    # Добавляем кнопку возврата к сессиям
+                    keyboard.append([InlineKeyboardButton(
+                        text="« Назад к сессиям",
+                        callback_data="session:back"
+                    )])
+
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(
+                        text="Выберите группу режимов:",
+                        reply_markup=reply_markup
+                    )
+                
+            elif action == "prompt":
+                mode = value
+                if mode in chat_modes:
+                    # Получаем текущую активную сессию
+                    sessions = self.db.list_user_sessions(user_id)
+                    active_session = next((s for s in sessions if s['is_active']), None)
+                    
+                    if not active_session:
+                        # Если нет активной сессии, создаем новую
+                        session_id = self.db.create_session(
+                            user_id=user_id,
+                            max_sessions=self.config.get('max_sessions', 5),
+                            openai_helper=self.openai
+                        )
+                    else:
+                        session_id = active_session['session_id']
+                    
+                    mode_data = chat_modes[mode]
+                    # Сбрасываем историю чата с новым промптом
+                    reset_content = mode_data.get('prompt_start', '')
+                    self.openai.reset_chat_history(chat_id=chat_id, content=reset_content, session_id=session_id)
+                    
+                    # Сохраняем настройки режима в базу данных
+                    self.db.save_conversation_context(
+                        chat_id, 
+                        {'messages': self.openai.conversations[chat_id]}, 
+                        mode_data.get('parse_mode', 'HTML'),
+                        mode_data.get('temperature', self.openai.config['temperature']),
+                        mode_data.get('max_tokens_percent', 80),
+                        session_id
+                    )
+                    
+                    # Отправляем приветственное сообщение
+                    welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
+                    parse_mode = mode_data.get('parse_mode', 'HTML')
+                    
+                    await query.edit_message_text(
+                        text=f"Режим сессии изменен на: {mode_data['name']}\n\n{welcome_message}",
+                        parse_mode=parse_mode
                     )
                 else:
-                    session_id = active_session['session_id']
-                
-                mode_data = chat_modes[mode]
-                # Сбрасываем историю чата с новым промптом
-                reset_content = mode_data.get('prompt_start', '')
-                self.openai.reset_chat_history(chat_id=chat_id, content=reset_content, session_id=session_id)
-                
-                # Сохраняем настройки режима в базу данных
-                self.db.save_conversation_context(
-                    chat_id, 
-                    {'messages': self.openai.conversations[chat_id]}, 
-                    mode_data.get('parse_mode', 'HTML'),
-                    mode_data.get('temperature', self.openai.config['temperature']),
-                    mode_data.get('max_tokens_percent', 80),
-                    session_id
-                )
-                
-                # Отправляем приветственное сообщение
-                welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
-                parse_mode = mode_data.get('parse_mode', 'HTML')
-                
-                await query.edit_message_text(
-                    text=f"Режим сессии изменен на: {mode_data['name']}\n\n{welcome_message}",
-                    parse_mode=parse_mode
-                )
-            else:
-                await query.edit_message_text(
-                    text="Произошла ошибка при выборе режима. Попробуйте еще раз."
-                )
+                    await query.edit_message_text(
+                        text="Произошла ошибка при выборе режима. Попробуйте еще раз."
+                    )
+        except Exception as e:
+            logging.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
+            await query.edit_message_text(
+                text=f"Произошла ошибка: {str(e)}"
+            )
 
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1439,21 +1383,7 @@ class ChatGPTTelegramBot:
         try:
             total_tokens = 0
 
-            # Получаем активную сессию и модель
-            sessions = self.db.list_user_sessions(user_id)
-            active_session = next((s for s in sessions if s['is_active']), None)
-            
-            # Определяем модель в порядке приоритета:
-            # 1. Модель из активной сессии
-            # 2. Глобальная модель пользователя
-            # 3. Модель по умолчанию из конфига
-            model_to_use = None
-            if active_session and active_session.get('context', {}).get('model'):
-                model_to_use = active_session['context']['model']
-            if not model_to_use:
-                model_to_use = self.db.get_user_model(user_id)
-            if not model_to_use:
-                model_to_use = self.openai.config['model']
+            model_to_use = self.openai.get_current_model(user_id)
                 
             if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
 
@@ -1693,21 +1623,7 @@ class ChatGPTTelegramBot:
                                                   is_inline=True)
                     return
 
-                # Получаем активную сессию и модель
-                sessions = self.db.list_user_sessions(user_id)
-                active_session = next((s for s in sessions if s['is_active']), None)
-                
-                # Определяем модель в порядке приоритета:
-                # 1. Модель из активной сессии
-                # 2. Глобальная модель пользователя
-                # 3. Модель по умолчанию из конфига
-                model_to_use = None
-                if active_session and active_session.get('context', {}).get('model'):
-                    model_to_use = active_session['context']['model']
-                if not model_to_use:
-                    model_to_use = self.db.get_user_model(user_id)
-                if not model_to_use:
-                    model_to_use = self.openai.config['model']
+                model_to_use = self.openai.get_current_model(user_id)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
@@ -2191,7 +2107,7 @@ class ChatGPTTelegramBot:
                 logging.info(f"Создание новой сессии для пользователя {user_id}")
                 session_id = self.db.create_session(
                     user_id=user_id,
-                    max_sessions=self.config.get('max_sessions', 5),
+                    max_sessions=self.config.get('MAX_SESSIONS', 5),
                     openai_helper=self.openai
                 )
                 
@@ -2227,28 +2143,7 @@ class ChatGPTTelegramBot:
                 is_active = any(s['session_id'] == session_id and s['is_active'] for s in sessions)
                 
                 self.db.delete_session(user_id, session_id)
-                
-                if is_active:
-                    # Если удалили активную сессию, создаем новую
-                    logging.info(f"Создание новой сессии после удаления активной для пользователя {user_id}")
-                    new_session_id = self.db.create_session(
-                        user_id=user_id,
-                        max_sessions=self.config.get('max_sessions', 5),
-                        openai_helper=self.openai
-                    )
-                    
-                    if not new_session_id:
-                        await query.edit_message_text(
-                            text="Не удалось создать новую сессию после удаления. Попробуйте позже."
-                        )
-                        return
-                        
-                    self.openai.reset_chat_history(
-                        chat_id=chat_id,
-                        content='',
-                        session_id=new_session_id
-                    )
-                
+                                
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "change_mode":
@@ -2370,7 +2265,6 @@ class ChatGPTTelegramBot:
             application.add_handler(CommandHandler('start', self.help))
             application.add_handler(CommandHandler('stats', self.stats))
             application.add_handler(CommandHandler('resend', self.resend))
-            application.add_handler(CommandHandler('model', self.model))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
