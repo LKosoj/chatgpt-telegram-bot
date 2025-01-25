@@ -2,11 +2,12 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import tiktoken
 
 import openai
+import requests
 
 from functools import lru_cache
 import json
@@ -215,11 +216,13 @@ class OpenAIHelper:
             logging.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
 
-    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None) -> tuple[str, str]:
         """
-        Gets a full response from the GPT model.
+        Gets a full response from the GPT model with optional session support.
         :param chat_id: The chat ID
         :param query: The query to send to the model
+        :param request_id: Optional request identifier
+        :param session_id: Optional session identifier
         :return: The answer from the model and the number of tokens used
         """
         try:
@@ -230,7 +233,14 @@ class OpenAIHelper:
             plugins_used = ()
             if request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
-            response = await self.__common_get_chat_response(chat_id, query)
+            
+            # Вызов с учетом возможного отсутствия session_id
+            response = await self.__common_get_chat_response(
+                chat_id, 
+                query, 
+                session_id=session_id
+            )
+            
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 response, plugins_used = await self.__handle_function_call(chat_id, response)
                 if is_direct_result(response):
@@ -243,13 +253,13 @@ class OpenAIHelper:
                 for index, choice in enumerate(response.choices):
                     content = choice.message.content.strip()
                     if index == 0:
-                        self.__add_to_history(chat_id, role="assistant", content=content)
+                        self.__add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
                     answer += f'{index + 1}\u20e3\n'
                     answer += content
                     answer += '\n\n'
             else:
                 answer = response.choices[0].message.content.strip()
-                self.__add_to_history(chat_id, role="assistant", content=answer)
+                self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
 
             bot_language = self.config['bot_language']
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -273,11 +283,13 @@ class OpenAIHelper:
             if hasattr(self, 'last_image_file_id'):
                 delattr(self, 'last_image_file_id')
 
-    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None):
+    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None, session_id: str = None):
         """
-        Stream response from the GPT model.
+        Stream response from the GPT model with optional session support.
         :param chat_id: The chat ID
         :param query: The query to send to the model
+        :param request_id: Optional request identifier
+        :param session_id: Optional session identifier
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
         plugins_used = ()
@@ -287,15 +299,15 @@ class OpenAIHelper:
             # Проверяем, инициализирован ли контекст разговора
             if chat_id not in self.conversations:
                 logging.info(f'Initializing conversation context for chat_id={chat_id}')
-                # Пытаемся загрузить контекст из базы данных
-                saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
+                # Пытаемся загрузить контекст из базы данных с учетом session_id
+                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
                 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
                     self.conversations[chat_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
-                    self.reset_chat_history(chat_id)
+                    self.reset_chat_history(chat_id, session_id=session_id)
             
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
@@ -306,7 +318,13 @@ class OpenAIHelper:
                 
             logging.info('Getting chat response from model')
             try:
-                response = await self.__common_get_chat_response(chat_id, query, stream=True)
+                # Вызов с учетом возможного отсутствия session_id
+                response = await self.__common_get_chat_response(
+                    chat_id, 
+                    query, 
+                    stream=True, 
+                    session_id=session_id
+                )
             except Exception as e:
                 logging.error(f'Error getting chat response: {str(e)}')
                 yield f"Error: {str(e)}", '0'
@@ -342,7 +360,7 @@ class OpenAIHelper:
                 return
 
             answer = answer.strip()
-            self.__add_to_history(chat_id, role="assistant", content=answer)
+            self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
             tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -360,14 +378,14 @@ class OpenAIHelper:
             logging.error(f"Error in chat response stream: {e}", exc_info=True)
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
-            
+
     @retry(
         reraise=True,
         retry=retry_if_exception_type(openai.RateLimitError),
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False):
+    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None):
         """
         Request a response from the GPT model.
         :param chat_id: The chat ID
@@ -380,7 +398,7 @@ class OpenAIHelper:
             logging.debug(f'Query: {query}')
             
             # Пытаемся загрузить контекст из базы данных
-            saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
             
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 if saved_context and 'messages' in saved_context:
@@ -388,7 +406,7 @@ class OpenAIHelper:
                     self.conversations[chat_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
-                    self.reset_chat_history(chat_id)
+                    self.reset_chat_history(chat_id, session_id=session_id)
 
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
@@ -396,7 +414,7 @@ class OpenAIHelper:
             
             self.last_updated[chat_id] = datetime.datetime.now()
 
-            self.__add_to_history(chat_id, role="user", content=query)
+            self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             model_to_use = self.db.get_user_model(user_id) or self.config['model']
@@ -412,11 +430,11 @@ class OpenAIHelper:
             if exceeded_max_tokens or exceeded_max_history_size:
                 logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
-                    summary = await self.__summarise(self.conversations[chat_id][:-1], user_id)
+                    summary = await self.__summarise(self.conversations[chat_id][:-1], user_id, session_id)
                     logging.debug(f'Summary: {summary}')
-                    self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'])
-                    self.__add_to_history(chat_id, role="assistant", content=summary)
-                    self.__add_to_history(chat_id, role="user", content=query)
+                    self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'], session_id)
+                    self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
+                    self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
                 except Exception as e:
                     logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
@@ -562,7 +580,7 @@ class OpenAIHelper:
 
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
-            context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(user_id)
+            context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id)
             
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
 
@@ -662,7 +680,7 @@ class OpenAIHelper:
                 self.reset_chat_history(chat_id)
             else:
                 # Загружаем сохраненный контекст из базы данных
-                saved_context, parse_mode, temperature = self.db.get_conversation_context(chat_id)
+                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
                 if saved_context and 'messages' in saved_context:
                     self.conversations[chat_id] = saved_context['messages']
 
@@ -826,12 +844,15 @@ class OpenAIHelper:
 
         yield answer, tokens_used
 
-    def reset_chat_history(self, chat_id, content=''):
+    def reset_chat_history(self, chat_id, content='', session_id=None):
         """
         Resets the conversation history.
+        :param chat_id: Chat identifier
+        :param content: Initial system message content
+        :param session_id: Optional session identifier
         """
         try:
-            logging.info(f'Starting reset_chat_history for chat_id={chat_id}')
+            logging.info(f'Starting reset_chat_history for chat_id={chat_id}, session_id={session_id}')
             
             if not hasattr(self, 'conversations'):
                 self.conversations = {}
@@ -846,7 +867,7 @@ class OpenAIHelper:
                 
                 try:
                     # Пытаемся загрузить существующий контекст из базы данных
-                    saved_context, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
+                    saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
                     
                     # Если есть сохраненный контекст, берем из него только системное сообщение
                     if saved_context and 'messages' in saved_context:
@@ -869,7 +890,7 @@ class OpenAIHelper:
                 logging.info(f'Saving context to database: {parse_mode}, {temperature}, {max_tokens_percent} ')
                 self.db.save_conversation_context(chat_id, {
                     'messages': self.conversations[chat_id],
-                }, parse_mode, temperature, max_tokens_percent)
+                }, parse_mode, temperature, max_tokens_percent, session_id)
             except Exception as e:
                 logging.error(f'Error saving context to database: {str(e)}')
                 
@@ -914,23 +935,35 @@ class OpenAIHelper:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
             
-    def __add_to_history(self, chat_id, role, content):
+    def __add_to_history(self, chat_id, role, content, session_id=None):
         """
         Adds a message to the conversation history.
         :param chat_id: The chat ID
         :param role: The role of the message sender
         :param content: The message content
+        :param session_id: Optional session identifier
         """
         self.conversations[chat_id].append({"role": role, "content": content})
-        content, parse_mode, temperature, max_tokens_percent = self.db.get_conversation_context(chat_id)
-        # Сохраняем обновленный контекст в базу данных
-        self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, parse_mode, temperature, max_tokens_percent)
+        
+        # Получаем текущий контекст для сохранения с учетом session_id
+        context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+        
+        # Сохраняем обновленный контекст в базу данных с использованием session_id
+        self.db.save_conversation_context(
+            chat_id, 
+            {'messages': self.conversations[chat_id]}, 
+            parse_mode, 
+            temperature, 
+            max_tokens_percent,
+            session_id
+        )
 
-    async def __summarise(self, conversation, chat_id=None) -> str:
+    async def __summarise(self, conversation, chat_id=None, session_id=None) -> str:
         """
         Summarises the conversation history.
         :param conversation: The conversation history
         :param chat_id: The chat ID of the conversation
+        :param session_id: Optional session identifier
         :return: The summary
         """
         try:
@@ -968,7 +1001,13 @@ class OpenAIHelper:
             
             if chat_id is not None:
                 # Сохраняем обновленный контекст после суммаризации
-                self.db.save_conversation_context(chat_id, {'messages': self.conversations[chat_id]}, self.config['parse_mode'], self.config['temperature'])
+                self.db.save_conversation_context(
+                    chat_id, 
+                    {'messages': self.conversations[chat_id]}, 
+                    self.config['parse_mode'], 
+                    self.config['temperature'],
+                    session_id=session_id
+                )
                 
             return summary
         except Exception as e:
@@ -1079,3 +1118,65 @@ class OpenAIHelper:
         Gets the last image file ID for a specific chat
         """
         return self.last_image_file_ids.get(chat_id)
+
+    def generate_session_name(
+        self, 
+        chat_id: int, 
+        first_message: str, 
+        session_id: Optional[str] = None
+    ) -> str:
+        """
+        Генерация названия сессии на основе первого запроса
+        
+        :param chat_id: ID чата
+        :param first_message: Первое сообщение пользователя
+        :param session_id: Идентификатор сессии
+        :return: Сгенерированное название сессии
+        """
+        try:
+            # Создаем промпт для генерации названия
+            prompt = f"""
+            Сгенери короткое (до 50 символов) название для беседы на основе следующего сообщения:
+            "{first_message}"
+            
+            Правила:
+            - Название должно быть лаконичным
+            - Отражать суть первого сообщения
+            - Использовать существительные или глаголы
+            - Избегать слишком общих названий
+            """
+            
+            # Получаем название сессии
+            response = self.ask_sync(prompt, chat_id, assistant_prompt="Ты лучший специалист по созданию коротких названий для сессий")
+
+            # Очищаем и обрезаем название
+            session_name = response[:50]
+            
+            # Если название пустое, используем дефолтное
+            return session_name or f"Сессия {datetime.now().strftime('%d.%m')}"
+        
+        except Exception as e:
+            logging.error(f"Ошибка генерации названия сессии: {e}")
+            return f"Сессия {datetime.now().strftime('%d.%m')}"
+
+    def ask_sync(self, prompt, user_id, assistant_prompt=None):
+        
+        user_model = self.db.get_user_model(user_id) or self.config["model"]
+        url = f"{self.config['openai_base']}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = [
+            {"role": "system", "content": assistant_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = requests.post(url, headers=headers, json={
+            "model": user_model,
+            "messages": messages,
+            "temperature": 0.7
+        })
+        data = response.json()
+        return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
