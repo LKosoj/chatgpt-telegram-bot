@@ -201,11 +201,14 @@ class OpenAIHelper:
                 {"role": "system", "content": assistant_prompt},
                 {"role": "user", "content": prompt}
             ]
-            user_model = self.db.get_user_model(user_id) or self.config["model"]
+            
+            # Получаем модель с учетом приоритетов
+            model_to_use = self.get_current_model(user_id)
+            
             response = await self.client.chat.completions.create(
-                model=user_model,
+                model=model_to_use,
                 messages=messages,
-                max_tokens=default_max_tokens(user_model) * 0.5,
+                max_tokens=default_max_tokens(model_to_use) * 0.5,
                 temperature=0.7,
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
@@ -417,7 +420,7 @@ class OpenAIHelper:
             self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.db.get_user_model(user_id) or self.config['model']
+            model_to_use = self.get_current_model(user_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = int(default_max_tokens(model_to_use) * max_tokens_percent / 100)
@@ -564,7 +567,7 @@ class OpenAIHelper:
             
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             self.user_id = user_id
-            model_to_use = self.db.get_user_model(user_id) or self.config['model']
+            model_to_use = self.get_current_model(user_id)
 
             tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
             logging.info(f'Function {tool_name} response: {tool_response}')
@@ -580,9 +583,15 @@ class OpenAIHelper:
 
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
-            context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id)
+            # Получаем активную сессию для пользователя
+            sessions = self.db.list_user_sessions(user_id)
+            active_session = next((s for s in sessions if s['is_active']), None)
+            session_id = active_session['id'] if active_session else None
+
+            # Получаем контекст с учетом сессии
+            context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)
             
-            logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} ')
+            logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
 
             response = await self.client.chat.completions.create(
                 model=model_to_use,
@@ -852,56 +861,36 @@ class OpenAIHelper:
         :param session_id: Optional session identifier
         """
         try:
-            logging.info(f'Starting reset_chat_history for chat_id={chat_id}, session_id={session_id}')
+            # Получаем или создаем сессию через базу данных
+            session_id = self.db.create_session(chat_id, openai_helper=self) if not session_id else session_id
             
-            if not hasattr(self, 'conversations'):
-                self.conversations = {}
-            if not hasattr(self, 'conversations_vision'):
-                self.conversations_vision = {}
-                
+            if not session_id:
+                raise ValueError(f"Не удалось создать/получить сессию для пользователя {chat_id}")
+            
+            # Получаем контекст сессии
+            context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(chat_id, session_id)
+            # Инициализируем историю чата
+            existing_messages = context.get('messages', []) if context else []
+            system_message = next((msg for msg in existing_messages if msg.get('role') == 'system'), None)
+            
+            self.conversations[chat_id] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
             self.conversations_vision[chat_id] = False
-            saved_context, parse_mode, temperature, max_tokens_percent = "", 'HTML', 0.8, 80
-
-            if content == '':
-                content = self.config['assistant_prompt']
-                
-                try:
-                    # Пытаемся загрузить существующий контекст из базы данных
-                    saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
-                    
-                    # Если есть сохраненный контекст, берем из него только системное сообщение
-                    if saved_context and 'messages' in saved_context:
-                        system_messages = [msg for msg in saved_context['messages'] if msg['role'] == 'system']
-                        if system_messages:
-                            logging.info('Using system message from saved context')
-                            content = system_messages[0]['content']
-                        else:
-                            logging.info('No system messages found, using default prompt')
-                            content = self.config['assistant_prompt']
-                except Exception as e:
-                    logging.error(f'Error loading context from database: {str(e)}')
             
-            # Если не нашли системное сообщение в БД или был передан новый content,
-            # создаем новую историю с новым системным сообщением
-            self.conversations[chat_id] = [{"role": "system", "content": content}]
+            # Сохраняем обновленный контекст
+            self.db.save_conversation_context(
+                chat_id,
+                {'messages': self.conversations[chat_id]},
+                parse_mode,
+                temperature,
+                max_tokens_percent,
+                session_id
+            )
             
-            try:
-                # Сохраняем начальный контекст в базу данных
-                logging.info(f'Saving context to database: {parse_mode}, {temperature}, {max_tokens_percent} ')
-                self.db.save_conversation_context(chat_id, {
-                    'messages': self.conversations[chat_id],
-                }, parse_mode, temperature, max_tokens_percent, session_id)
-            except Exception as e:
-                logging.error(f'Error saving context to database: {str(e)}')
-                
-            logging.info(f'New chat history: {self.conversations[chat_id]}')
+            logging.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
             
         except Exception as e:
-            logging.error(f'Critical error in reset_chat_history: {str(e)}', exc_info=True)
-            # Инициализируем с дефолтными значениями в случае критической ошибки
-            self.conversations[chat_id] = [{"role": "system", "content": self.config['assistant_prompt']}]
-            self.conversations_vision[chat_id] = False
-            logging.info(f'Initialized with default values for chat_id={chat_id}')
+            logging.error(f'Error in reset_chat_history: {str(e)}', exc_info=True)
+            raise
 
     def __max_age_reached(self, chat_id) -> bool:
         """
@@ -922,7 +911,7 @@ class OpenAIHelper:
         """
         # For models that don't support function role, add as a user message
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.db.get_user_model(user_id) or self.config['model']
+        model_to_use = self.get_current_model(user_id)
 
         if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
@@ -970,7 +959,7 @@ class OpenAIHelper:
             # Ограничиваем размер входных данных
             model_to_use = self.config['model']
             if chat_id is not None:
-                model_to_use = self.db.get_user_model(chat_id) or self.config['model']
+                model_to_use = self.get_current_model(chat_id)
 
             max_tokens = default_max_tokens(model_to_use) / 2  # Оставляем место для ответа
             current_tokens = 0
@@ -1000,13 +989,20 @@ class OpenAIHelper:
             summary = response.choices[0].message.content
             
             if chat_id is not None:
+                # Получаем текущие настройки из базы данных
+                saved_context, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)
+                
+                # Используем session_id из параметров, если он передан, иначе из базы
+                session_id = session_id or current_session_id
+                
                 # Сохраняем обновленный контекст после суммаризации
                 self.db.save_conversation_context(
                     chat_id, 
                     {'messages': self.conversations[chat_id]}, 
-                    self.config['parse_mode'], 
-                    self.config['temperature'],
-                    session_id=session_id
+                    parse_mode,
+                    temperature,
+                    max_tokens_percent,
+                    session_id
                 )
                 
             return summary
@@ -1153,19 +1149,20 @@ class OpenAIHelper:
             session_name = response[:50]
             
             # Если название пустое, используем дефолтное
-            return session_name or f"Сессия {datetime.now().strftime('%d.%m')}"
+            return session_name or f"Сессия {datetime.now().strftime('%d.%m')}", tokens
         
         except Exception as e:
             logging.error(f"Ошибка генерации названия сессии: {e}")
-            return f"Сессия {datetime.now().strftime('%d.%m')}"
+            return f"Сессия {datetime.now().strftime('%d.%m')}", 0
 
     def ask_sync(self, prompt, user_id, assistant_prompt=None):
-        
-        user_model = self.db.get_user_model(user_id) or self.config["model"]
+        # Получаем модель с учетом приоритетов
+        model_to_use = self.get_current_model(user_id)
         url = f"{self.config['openai_base']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Title": "tgBot"
         }
         
         messages = [
@@ -1174,9 +1171,37 @@ class OpenAIHelper:
         ]
         
         response = requests.post(url, headers=headers, json={
-            "model": user_model,
+            "model": model_to_use,
             "messages": messages,
-            "temperature": 0.7
+            "temperature": 0.7,
+            "max_tokens": int(default_max_tokens(model_to_use) * 0.5)
         })
         data = response.json()
         return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
+        
+    def get_current_model(self, user_id: int = None) -> str:
+        """
+        Получает текущую модель с учетом приоритетов:
+        1. Модель из активной сессии
+        2. Глобальная модель пользователя
+        3. Модель по умолчанию из конфига
+        
+        :param user_id: ID пользователя (опционально)
+        :return: Название модели
+        """
+        if user_id:
+            # Получаем активную сессию
+            sessions = self.db.list_user_sessions(user_id)
+            active_session = next((s for s in sessions if s['is_active']), None)
+            
+            # Проверяем модель в сессии
+            if active_session and active_session.get('context', {}).get('model'):
+                return active_session['context']['model']
+            
+            # Проверяем глобальную модель пользователя
+            user_model = self.db.get_user_model(user_id)
+            if user_model:
+                return user_model
+                
+        # Возвращаем модель по умолчанию
+        return self.config['model']
