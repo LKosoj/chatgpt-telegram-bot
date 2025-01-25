@@ -144,10 +144,6 @@ class OpenAIHelper:
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
-        self.user_models_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_configs.json')
-        os.makedirs(os.path.dirname(self.user_models_file), exist_ok=True)            
-        # Загрузка сохраненных моделей пользователей
-        self.user_models = self.load_user_models()
         self.user_id = ''
         self.message_id = ''
         self.message_ids: Dict[int, List] = {}
@@ -160,23 +156,6 @@ class OpenAIHelper:
         self.config.setdefault('frequency_penalty', 0.0)
         self.config.setdefault('vision_detail', 'auto')
         self.config.setdefault('n_choices', 1)
-
-    def load_user_models(self):
-        try:
-            if os.path.exists(self.user_models_file):
-                with open(self.user_models_file, 'r') as f:
-                    return json.load(f)
-            return {}
-        except Exception as e:
-            logging.error(f"Error loading user models: {e}")
-            return {}
-
-    def save_user_models(self):
-        try:
-            with open(self.user_models_file, 'w') as f:
-                json.dump(self.user_models, f, ensure_ascii=False)
-        except Exception as e:
-            logging.error(f"Error saving user models: {e}")
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
@@ -883,7 +862,8 @@ class OpenAIHelper:
                 parse_mode,
                 temperature,
                 max_tokens_percent,
-                session_id
+                session_id,
+                self
             )
             
             logging.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
@@ -944,7 +924,8 @@ class OpenAIHelper:
             parse_mode, 
             temperature, 
             max_tokens_percent,
-            session_id
+            session_id,
+            self
         )
 
     async def __summarise(self, conversation, chat_id=None, session_id=None) -> str:
@@ -1002,7 +983,8 @@ class OpenAIHelper:
                     parse_mode,
                     temperature,
                     max_tokens_percent,
-                    session_id
+                    session_id,
+                    self
                 )
                 
             return summary
@@ -1191,12 +1173,13 @@ class OpenAIHelper:
         """
         if user_id:
             # Получаем активную сессию
-            sessions = self.db.list_user_sessions(user_id)
+            sessions = self.db.list_user_sessions(user_id, is_active=1)
             active_session = next((s for s in sessions if s['is_active']), None)
             
             # Проверяем модель в сессии
-            if active_session and active_session.get('context', {}).get('model'):
-                return active_session['context']['model']
+            if active_session and active_session.get('model', ''):
+                logging.info(f"Модель из активной сессии: {active_session.get('model', '')}")
+                return active_session.get('model', '')
             
             # Проверяем глобальную модель пользователя
             user_model = self.db.get_user_model(user_id)
