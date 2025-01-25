@@ -78,6 +78,7 @@ class Database:
                     CREATE TABLE IF NOT EXISTS conversation_context (
                         user_id INTEGER,
                         context TEXT NOT NULL,
+                        model TEXT NOT NULL,
                         parse_mode TEXT NOT NULL,
                         temperature FLOAT NOT NULL,
                         max_tokens_percent INTEGER DEFAULT 100,
@@ -231,8 +232,7 @@ class Database:
                     SELECT session_name FROM conversation_context WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
                 result = cursor.fetchone()
-                logging.info("--------------------------------")
-                logging.info(f"Результат запроса: {result}")
+
                 if result and result[0] == "...":
                     # Ищем первое сообщение пользователя
                     user_message = next(
@@ -240,15 +240,18 @@ class Database:
                          if msg.get('role') == 'user'), 
                         None
                     )
-                    
+                    logging.info(f"Первое сообщение пользователя: {user_message}")
                     # Если сообщение найдено, генерируем название
                     if user_message and openai_helper:
-                        session_name = openai_helper.ask_sync(
-                            f"Создай короткое название (до 50 символов) для чата на основе сообщения: {user_message}",
-                            user_id,
-                            "Ты специалист по созданию коротких и точных названий для чатов."
-                        )
-                        session_name = session_name.strip()[:50]
+                        if len(user_message) > 20:
+                            session_name = openai_helper.ask_sync(
+                                f"Создай короткое название (до 20 символов) для чата на основе сообщения: {user_message}",
+                                user_id,
+                                "Ты специалист по созданию коротких и точных названий для чатов."
+                            )
+                        else:
+                            session_name = user_message[:20]
+                        session_name = session_name.strip()[:20]
                     else:
                         # Если сообщение не найдено, используем стандартное название
                         session_name = "..."
@@ -340,6 +343,11 @@ class Database:
                     model_name = excluded.model_name,
                     updated_at = CURRENT_TIMESTAMP
                 ''', (user_id, model_name))
+
+                # Обновляем модель в активной сессии
+                cursor.execute('''
+                    UPDATE conversation_context SET model = ? WHERE user_id = ? AND is_active = 1
+                ''', (model_name, user_id))
         except Exception as e:
             logging.error(f'Error saving user model: {e}', exc_info=True)
             raise
@@ -455,7 +463,7 @@ class Database:
                 cursor.execute("""
                     SELECT COUNT(*) 
                     FROM conversation_context 
-                    WHERE user_id = ? AND is_active = 1
+                    WHERE user_id = ?
                 """, (user_id,))
                 return cursor.fetchone()[0]
         except sqlite3.Error as e:
@@ -474,16 +482,8 @@ class Database:
                 cursor = conn.cursor()
                 
                 # Максимальное количество сессий
-                max_sessions = 5
+                max_sessions=os.getenv('MAX_SESSIONS', 5)
                 
-                # Проверяем текущее количество сессий
-                cursor.execute("""
-                    SELECT COUNT(*) 
-                    FROM conversation_context 
-                    WHERE user_id = ?
-                """, (user_id,))
-                total_sessions = cursor.fetchone()[0]
-                                
                 # SQL-запрос для удаления старых сессий
                 cursor.execute("""
                     DELETE FROM conversation_context 
@@ -498,17 +498,7 @@ class Database:
                     )
                 """, (user_id, user_id, user_id, max_sessions))
                 
-                # Проверяем количество оставшихся сессий
-                cursor.execute("""
-                    SELECT COUNT(*) 
-                    FROM conversation_context 
-                    WHERE user_id = ?
-                """, (user_id,))
-                current_sessions = cursor.fetchone()[0]
-                
-                logging.info(f"Удалены старые сессии для пользователя {user_id}. Было сессий: {total_sessions}, осталось сессий: {current_sessions}")
-                
-                return current_sessions > 0
+                return True
         
         except sqlite3.Error as e:
             logging.error(f"Ошибка при удалении старых сессий: {e}")
@@ -522,18 +512,13 @@ class Database:
         :return: Системное сообщение или None
         """
         try:
-            logging.info(f"Получен контекст для поиска системного сообщения: {context}")
-            
             if isinstance(context, dict) and 'messages' in context:
                 system_messages = [
                     msg for msg in context.get('messages', []) 
                     if msg.get('role') == 'system'
                 ]
-                
-                logging.info(f"Найдено системных сообщений: {len(system_messages)}")
-                
+                                
                 if system_messages:
-                    logging.info(f"Первое системное сообщение: {system_messages[0]}")
                     return system_messages[0]
                 
                 return None
@@ -568,11 +553,9 @@ class Database:
             self.delete_oldest_session(user_id)
             
             # Получаем данные из активной сессии
-            sessions = self.list_user_sessions(user_id)
-            logging.info(f"Найдено сессий: {len(sessions)}")
+            sessions = self.list_user_sessions(user_id, 1)
             
             active_session = next((s for s in sessions if s['is_active']), None)
-            logging.info(f"Активная сессия: {active_session is not None}")
 
             # Значения по умолчанию
             parse_mode = 'HTML'
@@ -616,7 +599,6 @@ class Database:
             # Если есть активная сессия, используем стандартную логику            
             if active_session:
                 # Получаем настройки из активной сессии
-                logging.info(f"Активная сессия: {active_session}")
                 parse_mode = active_session.get('parse_mode', parse_mode)
                 temperature = active_session.get('temperature', temperature)
                 max_tokens_percent = active_session.get('max_tokens_percent', max_tokens_percent)
@@ -663,7 +645,6 @@ class Database:
                         datetime.now()
                     ))
                     
-                    logging.info(f"Создана новая сессия {session_id} для пользователя {user_id}")
                     return session_id
                 
             return None
@@ -672,7 +653,7 @@ class Database:
             logging.error(f"Ошибка при создании сессии: {e}", exc_info=True)
             return None
 
-    def list_user_sessions(self, user_id: int) -> List[Dict[str, Any]]:
+    def list_user_sessions(self, user_id: int, is_active: int = 0) -> List[Dict[str, Any]]:
         """Получение списка сессий пользователя"""
         try:
             with self.get_connection() as conn:
@@ -687,11 +668,12 @@ class Database:
                         context,
                         parse_mode,
                         temperature,
-                        max_tokens_percent
+                        max_tokens_percent,
+                        model
                     FROM conversation_context 
-                    WHERE user_id = ? AND session_id IS NOT NULL
+                    WHERE user_id = ? AND session_id IS NOT NULL AND is_active = case when ? = 1 then 1 else is_active end
                     ORDER BY updated_at DESC
-                ''', (user_id,))
+                ''', (user_id, is_active))
                 sessions = cursor.fetchall()
                 return [
                     {
@@ -703,7 +685,8 @@ class Database:
                         'context': json.loads(session[5]) if session[5] else {},
                         'parse_mode': session[6],
                         'temperature': session[7],
-                        'max_tokens_percent': session[8]
+                        'max_tokens_percent': session[8],
+                        'model': session[9]
                     } for session in sessions
                 ]
         except Exception as e:
@@ -735,12 +718,48 @@ class Database:
     def delete_session(self, user_id: int, session_id: str):
         """Удаление сессии"""
         try:
+            logging.info("--------------------------------")
+            # Проверяем количество сессий пользователя
+            session_count = self.count_user_sessions(user_id)
+            logging.info(f"Количество сессий пользователя {user_id}: {session_count}")
+                
+            # Если это последняя сессия, создаем новую перед удалением
+            if session_count == 1:
+                # Создаем новую сессию
+                new_session_id = self.create_session(user_id)
+                
+                if not new_session_id:
+                    logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
+                else:
+                    logging.info(f"Создана новая сессия при удалении старой {new_session_id} для пользователя {user_id}")
+
+            # Получаем данные из активной сессии
+            sessions = self.list_user_sessions(user_id, 1)
+            active_session = next((s for s in sessions if s['is_active']), None)
+
+            logging.info(f"Активная сессия: {active_session.get('session_id')}")
+            logging.info(f"Сессия: {session_id}")
+
+            # Если удаляется активная сессия, создаем новую
+            if active_session.get('session_id') == session_id:
+                new_session_id = self.create_session(user_id)
+                if not new_session_id:
+                    logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
+                else:
+                    self.switch_active_session(user_id, new_session_id)
+                    logging.error(f"При удалении активной сессии {session_id} для пользователя {user_id} создана новая сессия {new_session_id}")
+            
+            # Удаляем сессию
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                # Удаляем сессию
                 cursor.execute('''
                     DELETE FROM conversation_context 
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
+                
+                logging.info(f'Сессия {session_id} удалена для пользователя {user_id}')
+                
         except Exception as e:
             logging.error(f'Ошибка удаления сессии: {e}', exc_info=True)
             raise
