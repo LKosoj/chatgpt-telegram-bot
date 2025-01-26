@@ -1088,6 +1088,7 @@ class OpenAIHelper:
         self.last_image_file_ids = getattr(self, 'last_image_file_ids', {})
         self.last_image_file_ids[chat_id] = file_id
 
+    @lru_cache(maxsize=128)
     def get_last_image_file_id(self, chat_id: int) -> str | None:
         """
         Gets the last image file ID for a specific chat
@@ -1157,7 +1158,8 @@ class OpenAIHelper:
         })
         data = response.json()
         return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
-        
+
+    @lru_cache(maxsize=128)
     def get_current_model(self, user_id: int = None) -> str:
         """
         Получает текущую модель с учетом приоритетов:
