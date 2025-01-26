@@ -265,8 +265,6 @@ class Database:
                         UPDATE conversation_context SET session_name = ? WHERE user_id = ? AND session_id = ?
                     ''', (session_name, user_id, session_id))
                                     
-                logging.info(f"Контекст сохранен для сессии {session_id}")
-                
         except Exception as e:
             logging.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
             raise
@@ -723,10 +721,8 @@ class Database:
     def delete_session(self, user_id: int, session_id: str):
         """Удаление сессии"""
         try:
-            logging.info("--------------------------------")
             # Проверяем количество сессий пользователя
             session_count = self.count_user_sessions(user_id)
-            logging.info(f"Количество сессий пользователя {user_id}: {session_count}")
                 
             # Если это последняя сессия, создаем новую перед удалением
             if session_count == 1:
@@ -735,15 +731,10 @@ class Database:
                 
                 if not new_session_id:
                     logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
-                else:
-                    logging.info(f"Создана новая сессия при удалении старой {new_session_id} для пользователя {user_id}")
 
             # Получаем данные из активной сессии
             sessions = self.list_user_sessions(user_id, 1)
             active_session = next((s for s in sessions if s['is_active']), None)
-
-            logging.info(f"Активная сессия: {active_session.get('session_id')}")
-            logging.info(f"Сессия: {session_id}")
 
             # Если удаляется активная сессия, создаем новую
             if active_session.get('session_id') == session_id:
@@ -762,8 +753,6 @@ class Database:
                     DELETE FROM conversation_context 
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
-                
-                logging.info(f'Сессия {session_id} удалена для пользователя {user_id}')
                 
         except Exception as e:
             logging.error(f'Ошибка удаления сессии: {e}', exc_info=True)
