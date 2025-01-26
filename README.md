@@ -8,6 +8,8 @@
 - [x] (NEW!) RAG support
 - [x] (NEW!) Prompt select system
 - [x] (NEW!) Select model from inline keyboard
+- [x] (NEW!) Sessions support - see [SESSIONS.md](SESSIONS.md)
+
 # ChatGPT Telegram Bot
 
 ![python-version](https://img.shields.io/badge/python-3.9-blue.svg)

@@ -10,6 +10,7 @@ import uuid
 import random
 from functools import lru_cache
 from datetime import datetime
+import yaml
 
 class Database:
     _instance = None
@@ -831,3 +832,140 @@ class Database:
         except Exception as e:
             logging.error(f'Ошибка миграции базы данных: {e}', exc_info=True)
             raise 
+
+    def get_session_details(self, user_id: int, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает детали конкретной сессии.
+        
+        :param user_id: ID пользователя
+        :param session_id: ID сессии
+        :return: Словарь с деталями сессии или None
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 
+                        session_id, 
+                        session_name, 
+                        is_active, 
+                        message_count, 
+                        created_at, 
+                        context
+                    FROM conversation_context 
+                    WHERE user_id = ? AND session_id = ?
+                ''', (user_id, session_id))
+                result = cursor.fetchone()
+                
+                if result:
+                    session_details = {
+                        'session_id': result[0],
+                        'session_name': result[1],
+                        'is_active': bool(result[2]),
+                        'message_count': result[3],
+                        'created_at': result[4],
+                        'context': json.loads(result[5]) if result[5] else {}
+                    }
+                    return session_details
+                return None
+        except Exception as e:
+            logging.error(f'Error getting session details: {e}', exc_info=True)
+            return None
+
+    def get_conversation_context(self, user_id: int, session_id: str = None, limit: int = None) -> List[Dict[str, Any]]:
+        """
+        Получает контекст разговора для конкретной сессии.
+        
+        :param user_id: ID пользователя
+        :param session_id: ID сессии (опционально)
+        :param limit: Максимальное количество сообщений для возврата
+        :return: Список сообщений
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Если сессия не указана, берем активную
+                if not session_id:
+                    cursor.execute('''
+                        SELECT session_id FROM conversation_context 
+                        WHERE user_id = ? AND is_active = 1
+                    ''', (user_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        session_id = result[0]
+                    else:
+                        return []
+
+                # Получаем контекст сессии
+                cursor.execute('''
+                    SELECT context FROM conversation_context 
+                    WHERE user_id = ? AND session_id = ?
+                ''', (user_id, session_id))
+                result = cursor.fetchone()
+                
+                if result and result[0]:
+                    context = json.loads(result[0])
+                    messages = context.get('messages', [])
+                    
+                    # Применяем лимит, если указан
+                    if limit:
+                        messages = messages[-limit:]
+                    
+                    return messages
+                return []
+        except Exception as e:
+            logging.error(f'Error getting conversation context: {e}', exc_info=True)
+            return [] 
+
+    def export_sessions_to_yaml(self, user_id: int) -> str:
+        """
+        Экспорт всех сессий пользователя в YAML-файл
+        
+        :param user_id: Идентификатор пользователя
+        :return: Путь к сгенерированному YAML-файлу
+        """
+        try:
+            # Получаем список всех сессий пользователя
+            sessions = self.list_user_sessions(user_id)
+            
+            # Подготавливаем данные для экспорта
+            export_data = {
+                'user_id': user_id,
+                'total_sessions': len(sessions),
+                'sessions': []
+            }
+            
+            for session in sessions:
+                session_export = {
+                    'session_id': session['session_id'],
+                    'session_name': session['session_name'],
+                    'is_active': session['is_active'],
+                    'message_count': session['message_count'],
+                    'updated_at': str(session['updated_at']),
+                    'parse_mode': session['parse_mode'],
+                    'temperature': session['temperature'],
+                    'max_tokens_percent': session['max_tokens_percent'],
+                    'context': session['context']
+                }
+                export_data['sessions'].append(session_export)
+            
+            # Создаем директорию для экспорта, если она не существует
+            export_dir = os.path.join(os.getcwd(), 'exports')
+            os.makedirs(export_dir, exist_ok=True)
+            
+            # Генерируем имя файла с отметкой времени
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f'sessions_export_{user_id}_{timestamp}.yaml'
+            filepath = os.path.join(export_dir, filename)
+            
+            # Сохраняем в YAML
+            with open(filepath, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(export_data, f, allow_unicode=True, default_flow_style=False)
+            
+            logging.info(f"Экспортировано сессий: {len(sessions)} в файл {filepath}")
+            return filepath
+        
+        except Exception as e:
+            logging.error(f'Ошибка экспорта сессий в YAML: {e}', exc_info=True)
+            return None 

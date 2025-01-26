@@ -37,3 +37,4 @@ dependencies:
       - md2tgmd
       - clip
       - annoy
+      - PyYAML

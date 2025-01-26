@@ -366,7 +366,7 @@ class ChatGPTTelegramBot:
                 )])
                 
             keyboard.append([InlineKeyboardButton(
-                text="« Назад к группам",
+                text="🔙  Назад к группам",
                 callback_data="modelback:back"
             )])
             
@@ -403,7 +403,7 @@ class ChatGPTTelegramBot:
                 )])
                 
             keyboard.append([InlineKeyboardButton(
-                text="« Назад к сессиям",
+                text="🔙  Назад к сессиям",
                 callback_data="session:back"
             )])
                 
@@ -471,7 +471,14 @@ class ChatGPTTelegramBot:
             
             # Создаем клавиатуру с кнопками управления сессиями
             keyboard = []
-            
+            active_session = next((s for s in sessions if s['is_active']), None)
+            if active_session:
+                preview_button = InlineKeyboardButton(
+                    "👀 Просмотр активной сессии", 
+                    callback_data=f"session:preview:{active_session['session_id']}"
+                )
+                keyboard.append([preview_button])
+   
             # Добавляем кнопку создания новой сессии
             keyboard.append([InlineKeyboardButton(
                 text="🆕 Создать новую сессию",
@@ -528,6 +535,12 @@ class ChatGPTTelegramBot:
             keyboard.append([InlineKeyboardButton(
                 text="🤖 Изменить модель текущей сессии",
                 callback_data="session:change_model"
+            )])
+
+            # Добавляем кнопку экспорта сессий
+            keyboard.append([InlineKeyboardButton(
+                text="📤 Экспорт сессий",
+                callback_data="session:export"
             )])
 
             # Добавляем кнопку закрытия меню
@@ -633,7 +646,7 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="« Назад к группам",
+                    text="🔙  Назад к группам",
                     callback_data="promptback:main"
                 )])
                 
@@ -662,7 +675,7 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку возврата к сессиям
                 keyboard.append([InlineKeyboardButton(
-                    text="« Назад к сессиям",
+                    text="🔙  Назад к сессиям",
                     callback_data="session:back"
                 )])
 
@@ -1508,8 +1521,8 @@ class ChatGPTTelegramBot:
                 analytics_plugin.update_stats(str(chat_id), message_data)
 
             result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
-            if not result:
-                await self.reset(update, context, True)
+            #if not result:
+            #    await self.reset(update, context, True)
 
         except Exception as e:
             logging.exception(e)
@@ -2064,16 +2077,57 @@ class ChatGPTTelegramBot:
 
     async def handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Обработчик callback-запросов для управления сессиями
+        Обработчик callback-запросов для управления сессиями.
         """
         query = update.callback_query
         await query.answer()
-        
+
+        chat_id = query.message.chat_id
+        user_id = query.from_user.id
         data = query.data.split(':')
         action = data[1]
-        user_id = query.from_user.id
-        chat_id = query.message.chat_id
-        
+
+        # Существующие действия...
+        if action == 'preview':
+            session_id = data[2]
+            
+            # Получаем детали сессии
+            session = self.db.get_session_details(user_id, session_id)
+            if not session:
+                await query.edit_message_text("❌ Сессия не найдена.")
+                return
+
+            # Получаем последние 5 сообщений сессии
+            context_messages = self.db.get_conversation_context(
+                user_id, 
+                session_id=session_id, 
+                limit=5
+            )
+
+            # Формируем preview
+            preview_text = f"🔍 Превью сессии: {session['session_name']}\n\n"
+            for msg in context_messages:
+                role = "🤖" if msg['role'] == 'assistant' or msg['role'] == 'system' else "👤"
+                if len(msg['content']) > 200:
+                    preview_text += f"{role} {msg['content'][:200]}...\n"
+                else:
+                    preview_text += f"{role} {msg['content']}\n"
+
+            preview_text += f"\n📊 Всего сообщений: {session['message_count']}"
+            preview_text += f"\n🕒 Создана: {session['created_at']}"
+
+            # Добавляем inline-кнопки для возврата
+            keyboard = [
+                [InlineKeyboardButton("🔙 Назад к сессиям", callback_data="session:back")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(
+                preview_text, 
+                reply_markup=reply_markup
+            )
+            return
+
         try:
             if action == "close":
                 # Просто удаляем сообщение
@@ -2147,7 +2201,7 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="« Назад к сессиям",
+                    text="🔙  Назад к сессиям",
                     callback_data="session:back"
                 )])
                 
@@ -2176,7 +2230,7 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="« Назад к сессиям",
+                    text="🔙  Назад к сессиям",
                     callback_data="session:back"
                 )])
 
@@ -2202,6 +2256,30 @@ class ChatGPTTelegramBot:
                 # Возвращаемся к списку сессий
                 await self.reset(update, context)
                 
+            elif action == "export":
+                # Экспортируем сессии в YAML
+                try:
+                    filepath = self.db.export_sessions_to_yaml(user_id)
+                    
+                    if filepath:
+                        # Отправляем файл пользователю
+                        with open(filepath, 'rb') as file:
+                            await query.message.reply_document(
+                                document=file, 
+                                filename=os.path.basename(filepath),
+                                caption="📦 Экспорт сессий завершен"
+                            )
+                        
+                        # Удаляем файл после отправки
+                        os.remove(filepath)
+                    else:
+                        await query.edit_message_text("❌ Не удалось экспортировать сессии")
+                except Exception as e:
+                    logging.error(f"Ошибка экспорта сессий: {e}")
+                    await query.edit_message_text("❌ Произошла ошибка при экспорте сессий")
+                
+                # Возвращаемся к списку сессий
+                await self.reset(update, context)
         except Exception as e:
             logging.error(f'Error in handle_session_callback: {e}', exc_info=True)
             await query.edit_message_text(

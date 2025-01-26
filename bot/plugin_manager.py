@@ -104,11 +104,13 @@ class PluginManager:
         if plugin_name not in self.plugins:
             return f"Плагин {plugin_name} не найден."
         
-        plugin_class = self.plugins[plugin_name](user_id)
+        # Используем get_plugin и передаем user_id при создании
+        plugin_instance = self.get_plugin(plugin_name)
+        if not plugin_instance:
+            return f"Не удалось создать экземпляр плагина {plugin_name}."
         
-        # Вызов метода execute плагина
-        if hasattr(plugin_class, "execute"):
-            result = await plugin_class.execute(*args)
+        if hasattr(plugin_instance, "execute"):
+            result = await plugin_instance.execute(*args)
             return result
         else:
             return f"Плагин {plugin_name} не поддерживает метод execute."
@@ -128,8 +130,11 @@ class PluginManager:
         all_specs = []
         for plugin_name, plugin_class in self.plugins.items():
             try:
-                # Create an instance of the plugin class and pass the required parameters
-                plugin_instance = plugin_class() if hasattr(plugin_class, '__init__') and len(inspect.signature(plugin_class.__init__).parameters) > 1 else plugin_class()
+                # Используем get_plugin вместо прямого создания экземпляра
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                
                 specs = plugin_instance.get_spec()
                 for spec in specs:
                     if spec and spec.get('name') not in seen_functions:
@@ -179,8 +184,19 @@ class PluginManager:
         return plugin.get_source_name()
 
     def __get_plugin_by_function_name(self, function_name):
-        return next((plugin_class() for plugin_class in self.plugins.values()
-                    if function_name in map(lambda spec: spec.get('name'), plugin_class().get_spec())), None)
+        """
+        Находит плагин по имени функции
+        """
+        for plugin_name, plugin_class in self.plugins.items():
+            plugin_instance = self.get_plugin(plugin_name)
+            if not plugin_instance:
+                continue
+            
+            specs = plugin_instance.get_spec()
+            if any(spec.get('name') == function_name for spec in specs):
+                return plugin_instance
+        
+        return None
 
     def get_plugin(self, plugin_name):
         """
