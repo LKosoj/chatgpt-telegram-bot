@@ -244,7 +244,6 @@ class Database:
                          if msg.get('role') == 'user'), 
                         None
                     )
-                    logging.info(f"Первое сообщение пользователя: {user_message}")
                     # Если сообщение найдено, генерируем название
                     if user_message and openai_helper:
                         if len(user_message) > 20:
