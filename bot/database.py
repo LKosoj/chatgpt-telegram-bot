@@ -94,16 +94,6 @@ class Database:
                     )
                 ''')
                 
-                # Таблица для хранения выбранной модели
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS user_models (
-                        user_id INTEGER PRIMARY KEY,
-                        model_name TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
                 # Таблица для хранения информации об изображениях
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS images (
@@ -359,20 +349,6 @@ class Database:
             logging.error(f'Error saving user model: {e}', exc_info=True)
             raise
     
-    def get_user_model(self, user_id: int) -> Optional[str]:
-        """Получение выбранной модели пользователя"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT model_name FROM user_models WHERE user_id = ?', (user_id,))
-                result = cursor.fetchone()
-                if result:
-                    return result[0]
-                return None
-        except Exception as e:
-            logging.error(f'Error getting user model: {e}', exc_info=True)
-            raise
-
     def save_image(self, user_id: int, chat_id: int, file_id: str, file_path: Optional[str] = None) -> int:
         """Сохранение информации об изображении"""
         try:
@@ -391,6 +367,7 @@ class Database:
             logging.error(f'Error saving image: {e}', exc_info=True)
             raise
 
+    @lru_cache(maxsize=128)
     def get_user_images(self, user_id: int, chat_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """Получение списка изображений пользователя"""
         try:
@@ -871,52 +848,6 @@ class Database:
         except Exception as e:
             logging.error(f'Error getting session details: {e}', exc_info=True)
             return None
-
-    def get_conversation_context(self, user_id: int, session_id: str = None, limit: int = None) -> List[Dict[str, Any]]:
-        """
-        Получает контекст разговора для конкретной сессии.
-        
-        :param user_id: ID пользователя
-        :param session_id: ID сессии (опционально)
-        :param limit: Максимальное количество сообщений для возврата
-        :return: Список сообщений
-        """
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Если сессия не указана, берем активную
-                if not session_id:
-                    cursor.execute('''
-                        SELECT session_id FROM conversation_context 
-                        WHERE user_id = ? AND is_active = 1
-                    ''', (user_id,))
-                    result = cursor.fetchone()
-                    if result:
-                        session_id = result[0]
-                    else:
-                        return []
-
-                # Получаем контекст сессии
-                cursor.execute('''
-                    SELECT context FROM conversation_context 
-                    WHERE user_id = ? AND session_id = ?
-                ''', (user_id, session_id))
-                result = cursor.fetchone()
-                
-                if result and result[0]:
-                    context = json.loads(result[0])
-                    messages = context.get('messages', [])
-                    
-                    # Применяем лимит, если указан
-                    if limit:
-                        messages = messages[-limit:]
-                    
-                    return messages
-                return []
-        except Exception as e:
-            logging.error(f'Error getting conversation context: {e}', exc_info=True)
-            return [] 
 
     def export_sessions_to_yaml(self, user_id: int) -> str:
         """
