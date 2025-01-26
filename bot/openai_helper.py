@@ -34,11 +34,13 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
-O1_MODELS = ("openai/o1", "openai/o1-preview",)
+O1_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 MISTRALAI = ("mistralai/mistral-nemo",)
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI
+DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner")
+GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS\
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -63,15 +65,17 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 16384
+        return 128000
     elif model in O1_MODELS:
-        return 32768
+        return 128000
     elif model in ANTHROPIC:
-        return 16384
+        return 200000
     elif model in MISTRALAI:
-        return 16384
+        return 128000
     elif model in GOOGLE:
-        return 16384
+        return 900000
+    elif model in DEEPSEEK:
+        return 65536
     else:
         return base * 2
 
@@ -91,6 +95,8 @@ def are_functions_available(model: str) -> bool:
     if model in ("gpt-3.5-turbo-0613", "gpt-3.5-turbo-16k-0613"):
         return datetime.date.today() < datetime.date(2024, 6, 13)
     if model == 'gpt-4-vision-preview':
+        return False
+    if model in DEEPSEEK:
         return False
     return True
 
@@ -187,8 +193,8 @@ class OpenAIHelper:
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
-                max_tokens=default_max_tokens(model_to_use) * 0.5,
-                temperature=0.7,
+                max_tokens=self.get_max_tokens(model_to_use, 50),
+                temperature=0.6,
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
             )
@@ -402,7 +408,7 @@ class OpenAIHelper:
             model_to_use = self.get_current_model(user_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
-            max_tokens = int(default_max_tokens(model_to_use) * max_tokens_percent / 100)
+            max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
@@ -435,15 +441,12 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
+            if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
                 stream = False
 
-            if model_to_use in O1_MODELS:
-                if max_tokens >= 32000:
-                    max_tokens = 22000
-                common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
+                #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
                 common_args['max_completion_tokens'] = max_tokens # o1 series only supports max_completion_tokens
-                common_args['max_tokens'] = max_tokens
+                #common_args['max_tokens'] = max_tokens
          
                 # 'temperature', 'top_p', 'n', 'presence_penalty', 'frequency_penalty' are currently fixed and cannot be changed
             else:
@@ -460,7 +463,7 @@ class OpenAIHelper:
             
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use)
-                if tools and model_to_use not in O1_MODELS:
+                if tools and model_to_use not in (O1_MODELS + DEEPSEEK):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
@@ -566,6 +569,7 @@ class OpenAIHelper:
             sessions = self.db.list_user_sessions(user_id, is_active=1)
             active_session = next((s for s in sessions if s['is_active']), None)
             session_id = active_session['session_id'] if active_session else None
+            max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
 
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
 
@@ -574,7 +578,7 @@ class OpenAIHelper:
                 messages=self.conversations[chat_id],
                 tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-                max_tokens=default_max_tokens(model_to_use), # * max_tokens_percent / 100,
+                max_tokens=self.get_max_tokens(model_to_use, max_tokens_percent),
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
@@ -960,7 +964,7 @@ class OpenAIHelper:
                 model=model_to_use,
                 messages=messages,
                 temperature=0.4,
-                max_tokens=max_tokens,  # Явно ограничиваем размер ответа
+                max_tokens=self.get_max_tokens(model_to_use, 50),  # Явно ограничиваем размер ответа
                 extra_headers={ "X-Title": "tgBot" },
             )
             
@@ -1008,7 +1012,7 @@ class OpenAIHelper:
         if model in GPT_3_MODELS + GPT_3_16K_MODELS:
             tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
             tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI:
+        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK:
             tokens_per_message = 3
             tokens_per_name = 1
         else:
@@ -1088,7 +1092,6 @@ class OpenAIHelper:
         self.last_image_file_ids = getattr(self, 'last_image_file_ids', {})
         self.last_image_file_ids[chat_id] = file_id
 
-    @lru_cache(maxsize=128)
     def get_last_image_file_id(self, chat_id: int) -> str | None:
         """
         Gets the last image file ID for a specific chat
@@ -1153,13 +1156,12 @@ class OpenAIHelper:
         response = requests.post(url, headers=headers, json={
             "model": model_to_use,
             "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": int(default_max_tokens(model_to_use) * 0.5)
+            "temperature": 0.6,
+            "max_tokens": int(self.get_max_tokens(model_to_use, 50))
         })
         data = response.json()
         return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
 
-    @lru_cache(maxsize=128)
     def get_current_model(self, user_id: int = None) -> str:
         """
         Получает текущую модель с учетом приоритетов:
@@ -1181,4 +1183,12 @@ class OpenAIHelper:
                 return active_session.get('model', '')
                             
         # Возвращаем модель по умолчанию
+        logging.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
+    
+    def get_max_tokens(self, model_to_use, max_tokens_percent):
+        if model_to_use in DEEPSEEK:
+            return 8192
+        elif model_to_use in O1_MODELS:
+            return 22000
+        return default_max_tokens(model_to_use) * max_tokens_percent / 100
