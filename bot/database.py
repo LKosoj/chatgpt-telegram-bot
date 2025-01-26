@@ -8,6 +8,7 @@ import logging
 import hashlib
 import uuid
 import random
+from functools import lru_cache
 from datetime import datetime
 
 class Database:
@@ -206,6 +207,9 @@ class Database:
                 if not session_id:
                     raise ValueError(f"Не удалось определить сессию для пользователя {user_id}")
                 
+                # Считаем количество пользовательских сообщений в сессии
+                message_count = len([msg for msg in context.get('messages', []) if msg.get('role') == 'user'])
+
                 # Обновляем существующую сессию
                 cursor.execute('''
                     UPDATE conversation_context 
@@ -213,10 +217,10 @@ class Database:
                         parse_mode = ?, 
                         temperature = ?, 
                         max_tokens_percent = ?,
-                        message_count = message_count + 1,
+                        message_count = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND session_id = ?
-                ''', (context_json, parse_mode, temperature, max_tokens_percent, user_id, session_id))
+                ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
                 
                 # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
@@ -266,7 +270,8 @@ class Database:
         except Exception as e:
             logging.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
             raise
-
+    
+    @lru_cache(maxsize=128)
     def get_conversation_context(self, user_id: int, session_id: str = None, openai_helper = None) -> Optional[Dict[str, Any]]:
         """Получение контекста разговора с поддержкой сессий"""
         try:
@@ -308,7 +313,6 @@ class Database:
                     temperature = round(result[2], 2) if result[2] is not None else 0.8
                     max_tokens_percent = result[3] if result[3] is not None else 100
                     
-                    logging.info(f"Получен контекст для сессии {session_id}")
                     return context, parse_mode, temperature, max_tokens_percent, session_id
                 
                 logging.info(f"Контекст не найден для сессии {session_id}, возвращаем значения по умолчанию")
