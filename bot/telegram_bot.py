@@ -10,6 +10,7 @@ import sys
 import yaml
 import re
 from typing import Dict
+from functools import lru_cache
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -85,6 +86,7 @@ class ChatGPTTelegramBot:
         self.application = None
         self.db = Database()  # Инициализация базы данных
 
+    @lru_cache(maxsize=128)
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
