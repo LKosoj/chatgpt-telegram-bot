@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from plugins.plugin import Plugin
 from datetime import datetime
 import json
@@ -68,6 +68,35 @@ class RemindersPlugin(Plugin):
             }
         }]
 
+    def get_commands(self) -> List[Dict]:
+        """Возвращает список команд, которые поддерживает плагин"""
+        return [
+            {
+                "command": "set_reminder",
+                "description": "Установить напоминание на определенное время",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "set_reminder"},
+                "args": "<time> <message>",
+                "plugin_name": "reminders",
+            },
+            {
+                "command": "list_reminders",
+                "description": "Показать список активных напоминаний",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "list_reminders"},
+                "plugin_name": "reminders",
+                "add_to_menu": True
+            },
+            {
+                "command": "delete_reminder",
+                "description": "Удалить напоминание",
+                "args": "<reminder_id>",
+                "handler": self.execute,
+                "handler_kwargs": {"function_name": "delete_reminder"},
+                "plugin_name": "reminders"
+            }
+        ]
+
     def load_reminders(self):
         """Load reminders from storage"""
         try:
@@ -128,8 +157,9 @@ class RemindersPlugin(Plugin):
         """
         Выполнение функций плагина
         """
+        user_id = kwargs.get('chat_id')
+        self.load_reminders()
         if function_name == "set_reminder":
-            user_id = str(helper.user_id)
             reminder_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{user_id}'
             # Convert datetime to ISO format string
             reminder_time = datetime.strptime(kwargs["time"], "%Y-%m-%d %H:%M")
@@ -149,36 +179,65 @@ class RemindersPlugin(Plugin):
             self.save_reminders()
             
             return {
-                "success": True,
-                "message": f"Напоминание установлено на {kwargs['time']}"
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": f"Напоминание установлено на {kwargs['time']}"
+                }
             }
 
         elif function_name == "list_reminders":
-            user_id = str(helper.user_id)
             user_reminders = self.reminders.get(user_id, {})
-            
+
             if not user_reminders:
-                return {"message": "У вас нет активных напоминаний"}
+                return {
+                    "direct_result": {
+                        "kind": "text",
+                        "format": "markdown",
+                        "value": "У вас нет активных напоминаний."
+                    }
+                }                
             
             reminders_list = []
             for r_id, r in user_reminders.items():
                 reminders_list.append(f"ID: {r_id}\nВремя: {r['time']}\nСообщение: {r['message']}")
+                reminders_list.append(f"Удалить напоминание: /delete_reminder {r_id}")
             
             return {
-                "message": "Ваши напоминания:\n\n" + "\n\n".join(reminders_list)
-            }
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": "Ваши напоминания:\n\n" + "\n\n".join(reminders_list)
+                }
+            }                
 
         elif function_name == "delete_reminder":
-            user_id = str(helper.user_id)
-            reminder_id = kwargs["reminder_id"]
-            
+            reminder_id = kwargs.get("reminder_id")
+            if not reminder_id:
+                reminder_id = kwargs.get("query")
+            logging.info(f"Список напоминаний для пользователя {user_id}: {self.reminders}")
+            logging.info(f"kwargs: {kwargs}")
+            logging.info(f"reminder_id: {reminder_id}")
+
             if user_id in self.reminders and reminder_id in self.reminders[user_id]:
                 del self.reminders[user_id][reminder_id]
                 if not self.reminders[user_id]:
                     del self.reminders[user_id]
                 self.save_reminders()
-                return {"message": f"Напоминание {reminder_id} удалено"}
+                return {
+                    "direct_result": {
+                        "kind": "text",
+                        "format": "markdown",
+                        "value": f"Напоминание {reminder_id} удалено"
+                    }
+                }                
             
-            return {"message": "Напоминание не найдено"}
+            return {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": "Напоминание не найдено"
+                }
+            }                
 
         return {"error": "Unknown function"}
