@@ -1177,11 +1177,6 @@ class OpenAIHelper:
             if active_session and active_session.get('model', ''):
                 logging.info(f"Модель из активной сессии: {active_session.get('model', '')}")
                 return active_session.get('model', '')
-            
-            # Проверяем глобальную модель пользователя
-            user_model = self.db.get_user_model(user_id)
-            if user_model:
-                return user_model
-                
+                            
         # Возвращаем модель по умолчанию
         return self.config['model']
