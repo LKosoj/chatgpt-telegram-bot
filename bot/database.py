@@ -244,11 +244,12 @@ class Database:
                     # Если сообщение найдено, генерируем название
                     if user_message and openai_helper:
                         if len(user_message) > 20:
-                            session_name = openai_helper.ask_sync(
+                            session_name, _ = openai_helper.ask_sync(
                                 f"Создай короткое название (до 20 символов) для чата на основе сообщения: {user_message}",
                                 user_id,
                                 "Ты специалист по созданию коротких и точных названий для чатов."
                             )
+                            logging.info(f"!!!!!!!!Название сессии: {session_name}")
                         else:
                             session_name = user_message[:20]
                         session_name = session_name.strip()[:20]

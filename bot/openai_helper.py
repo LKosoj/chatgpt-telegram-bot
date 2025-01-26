@@ -563,9 +563,9 @@ class OpenAIHelper:
             self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
 
             # Получаем активную сессию для пользователя
-            sessions = self.db.list_user_sessions(user_id)
+            sessions = self.db.list_user_sessions(user_id, is_active=1)
             active_session = next((s for s in sessions if s['is_active']), None)
-            session_id = active_session['id'] if active_session else None
+            session_id = active_session['session_id'] if active_session else None
 
             # Получаем контекст с учетом сессии
             context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)

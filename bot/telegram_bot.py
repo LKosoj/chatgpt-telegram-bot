@@ -367,7 +367,7 @@ class ChatGPTTelegramBot:
                 
             keyboard.append([InlineKeyboardButton(
                 text="« Назад к группам",
-                callback_data="modelback"
+                callback_data="modelback:back"
             )])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -381,15 +381,9 @@ class ChatGPTTelegramBot:
             model = value
             # Сохраняем выбранную модель
             self.db.save_user_model(user_id, model)
-                        
-            # Формируем сообщение об успешном обновлении
-            success_message = f"Модель изменена на: {model}\n\n"
-            if active_session:
-                success_message += (
-                    f"✓ Настройки сессии '{active_session['session_name']}' обновлены\n"
-                )
-            
-            await query.edit_message_text(text=success_message)
+                                    
+            # Возвращаемся в главное меню сессий
+            await self.reset(update, context)
             
         elif action == "modelback":
             # Возврат к списку групп
@@ -510,7 +504,9 @@ class ChatGPTTelegramBot:
                     
                     # Формируем имя сессии с информацией о режиме и модели
                     if session['is_active']:
-                        session_name = f"✓ {session_name}\n💫 {current_mode}"
+                        session_name = f"✓ {session_name}"
+                    else:
+                        session_name = f"{session_name}"
                     if current_mode:
                         session_name = f"{session_name}\n💫 {current_mode}"
                     
@@ -536,6 +532,12 @@ class ChatGPTTelegramBot:
             keyboard.append([InlineKeyboardButton(
                 text="🤖 Изменить модель текущей сессии",
                 callback_data="session:change_model"
+            )])
+
+            # Добавляем кнопку закрытия меню
+            keyboard.append([InlineKeyboardButton(
+                text="❌ Закрыть меню",
+                callback_data="session:close"
             )])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -607,9 +609,9 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
-        # Безопасное разделение данных
+        # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
-        action = data_parts[0]
+        action = data_parts[0] if data_parts else ''
         value = data_parts[1] if len(data_parts) > 1 else ''
         
         chat_id = query.message.chat_id
@@ -624,24 +626,6 @@ class ChatGPTTelegramBot:
 
         try:
             if action == "promptgroup":
-                if value == "reset_context":
-                    # Получаем текущую активную сессию
-                    sessions = self.db.list_user_sessions(user_id)
-                    active_session = next((s for s in sessions if s['is_active']), None)
-                    
-                    if active_session:
-                        # Сбрасываем контекст текущей сессии
-                        self.openai.reset_chat_history(chat_id=chat_id, session_id=active_session['session_id'])
-                        await query.edit_message_text(
-                            text=f"Контекст сессии '{active_session['session_name']}' сброшен. Можете начать новый диалог."
-                        )
-                    else:
-                        self.openai.reset_chat_history(chat_id=chat_id, session_id=None)
-                        await query.edit_message_text(
-                            text="Создана новая сессия. Можете начать диалог."
-                        )
-                    return
-                    
                 # Показываем режимы выбранной группы
                 keyboard = []
                 for mode_key, mode_data in chat_modes.items():
@@ -664,46 +648,39 @@ class ChatGPTTelegramBot:
                 )
                 
             elif action == "promptback":
-                if not value or value == "main":
-                    # Возвращаемся к списку групп
-                    mode_groups = {}
-                    for mode_key, mode_data in chat_modes.items():
-                        group = mode_data.get('group', 'Другое')
-                        if group not in mode_groups:
-                            mode_groups[group] = []
-                        mode_groups[group].append((mode_key, mode_data))
+                # Возвращаемся к списку групп
+                mode_groups = {}
+                for mode_key, mode_data in chat_modes.items():
+                    group = mode_data.get('group', 'Другое')
+                    if group not in mode_groups:
+                        mode_groups[group] = []
+                    mode_groups[group].append((mode_key, mode_data))
 
-                    # Создаем клавиатуру с группами
-                    keyboard = []
-                    # Добавляем кнопку сброса контекста в начало списка
+                # Создаем клавиатуру с группами
+                keyboard = []
+                for group_name in sorted(mode_groups.keys()):
                     keyboard.append([InlineKeyboardButton(
-                        text="🔄 Сбросить контекст текущей сессии",
-                        callback_data="promptgroup:reset_context"
+                        text=group_name,
+                        callback_data=f"promptgroup:{group_name}"
                     )])
-                    # Добавляем остальные группы
-                    for group_name in sorted(mode_groups.keys()):
-                        keyboard.append([InlineKeyboardButton(
-                            text=group_name,
-                            callback_data=f"promptgroup:{group_name}"
-                        )])
-                    
-                    # Добавляем кнопку возврата к сессиям
-                    keyboard.append([InlineKeyboardButton(
-                        text="« Назад к сессиям",
-                        callback_data="session:back"
-                    )])
+                
+                # Добавляем кнопку возврата к сессиям
+                keyboard.append([InlineKeyboardButton(
+                    text="« Назад к сессиям",
+                    callback_data="session:back"
+                )])
 
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(
-                        text="Выберите группу режимов:",
-                        reply_markup=reply_markup
-                    )
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    text="Выберите группу режимов:",
+                    reply_markup=reply_markup
+                )
                 
             elif action == "prompt":
                 mode = value
                 if mode in chat_modes:
                     # Получаем текущую активную сессию
-                    sessions = self.db.list_user_sessions(user_id)
+                    sessions = self.db.list_user_sessions(user_id, is_active=1)
                     active_session = next((s for s in sessions if s['is_active']), None)
                     
                     if not active_session:
@@ -731,18 +708,18 @@ class ChatGPTTelegramBot:
                         session_id
                     )
                     
-                    # Отправляем приветственное сообщение
-                    welcome_message = mode_data.get('welcome_message', 'Режим успешно изменен')
-                    parse_mode = mode_data.get('parse_mode', 'HTML')
-                    
-                    await query.edit_message_text(
-                        text=f"Режим сессии изменен на: {mode_data['name']}\n\n{welcome_message}",
-                        parse_mode=parse_mode
-                    )
+                    # Возвращаемся в главное меню сессий
+                    await self.reset(update, context)
                 else:
                     await query.edit_message_text(
                         text="Произошла ошибка при выборе режима. Попробуйте еще раз."
                     )
+            else:
+                # Обработка неизвестных callback-данных
+                logging.warning(f"Неизвестный callback: {query.data}")
+                await query.edit_message_text(
+                    text="Произошла ошибка. Пожалуйста, попробуйте снова."
+                )
         except Exception as e:
             logging.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
             await query.edit_message_text(
@@ -2102,6 +2079,12 @@ class ChatGPTTelegramBot:
         chat_id = query.message.chat_id
         
         try:
+            if action == "close":
+                # Просто удаляем сообщение
+                await query.message.delete()
+                return
+
+            # Остальной существующий код остается без изменений
             if action == "new":
                 # Создаем новую сессию
                 logging.info(f"Создание новой сессии для пользователя {user_id}")
@@ -2138,12 +2121,7 @@ class ChatGPTTelegramBot:
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                # Проверяем, не удаляем ли мы активную сессию
-                sessions = self.db.list_user_sessions(user_id)
-                is_active = any(s['session_id'] == session_id and s['is_active'] for s in sessions)
-                
-                self.db.delete_session(user_id, session_id)
-                                
+                self.db.delete_session(user_id, session_id)                                
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "change_mode":
@@ -2209,14 +2187,13 @@ class ChatGPTTelegramBot:
 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                # Получаем текущую модель пользователя и активную сессию
-                current_model = self.db.get_user_model(user_id) or self.openai.config['model']
-                sessions = self.db.list_user_sessions(user_id)
+                # Получаем активную сессию
+                sessions = self.db.list_user_sessions(user_id, is_active=1)
                 active_session = next((s for s in sessions if s['is_active']), None)
                 
-                message_text = f"Текущая глобальная модель: {current_model}\n"
+                message_text = ""
                 if active_session:
-                    session_model = active_session['context'].get('model', current_model)
+                    session_model = active_session.get('model', '')
                     message_text += f"\nМодель активной сессии '{active_session['session_name']}': {session_model}"
                 
                 message_text += "\n\nВыберите группу моделей:"
@@ -2320,4 +2297,3 @@ class ChatGPTTelegramBot:
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
 
-        
