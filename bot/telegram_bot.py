@@ -28,7 +28,8 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
 from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
-        GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS, ANTHROPIC, GOOGLE, MISTRALAI
+        GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS,\
+              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK
 from plugins.haiper_image_to_video import WAITING_PROMPT
 from usage_tracker import UsageTracker
 from database import Database
@@ -86,7 +87,6 @@ class ChatGPTTelegramBot:
         self.application = None
         self.db = Database()  # Инициализация базы данных
 
-    @lru_cache(maxsize=128)
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
@@ -355,6 +355,8 @@ class ChatGPTTelegramBot:
                 models = GOOGLE
             elif value == "Mistral":
                 models = MISTRALAI
+            elif value == "Deepseek":
+                models = DEEPSEEK
             else:
                 await query.edit_message_text("Неизвестная группа моделей")
                 return
@@ -395,7 +397,8 @@ class ChatGPTTelegramBot:
                 ("O1", O1_MODELS),
                 ("Anthropic", ANTHROPIC),
                 ("Google", GOOGLE),
-                ("Mistral", MISTRALAI)
+                ("Mistral", MISTRALAI),
+                ("Deepseek", DEEPSEEK)
             ]
             
             for group_name, _ in model_groups:
@@ -1373,7 +1376,7 @@ class ChatGPTTelegramBot:
 
             model_to_use = self.openai.get_current_model(user_id)
                 
-            if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
+            if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
 
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
@@ -1614,7 +1617,7 @@ class ChatGPTTelegramBot:
                 model_to_use = self.openai.get_current_model(user_id)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI):
+                if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
                     stream_response = self.openai.get_chat_response_stream(chat_id=user_id, query=query)
                     i = 0
                     prev = ''
@@ -2225,7 +2228,8 @@ class ChatGPTTelegramBot:
                     ("O1", O1_MODELS),
                     ("Anthropic", ANTHROPIC),
                     ("Google", GOOGLE),
-                    ("Mistral", MISTRALAI)
+                    ("Mistral", MISTRALAI),
+                    ("Deepseek", DEEPSEEK)
                 ]
 
                 for group_name, _ in model_groups:
