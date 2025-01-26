@@ -562,7 +562,7 @@ class ChatGPTTelegramBot:
                                     message_text += f"Текущий режим: {mode_data.get('name', mode_key)}\n"
                                     break
                                     
-                message_text += f"\nВсего сессий: {len(sessions)}/{self.config.get('MAX_SESSIONS', 5)}"
+                message_text += f"\nВсего сессий: {len(sessions)}/{self.config.get('max_sessions', 5)}"
             else:
                 message_text += "У вас пока нет активных сессий"
 
