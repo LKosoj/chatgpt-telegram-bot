@@ -263,7 +263,6 @@ class Database:
             logging.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
             raise
     
-    @lru_cache(maxsize=128)
     def get_conversation_context(self, user_id: int, session_id: str = None, openai_helper = None) -> Optional[Dict[str, Any]]:
         """Получение контекста разговора с поддержкой сессий"""
         try:
@@ -367,7 +366,6 @@ class Database:
             logging.error(f'Error saving image: {e}', exc_info=True)
             raise
 
-    @lru_cache(maxsize=128)
     def get_user_images(self, user_id: int, chat_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """Получение списка изображений пользователя"""
         try:
