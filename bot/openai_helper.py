@@ -567,9 +567,6 @@ class OpenAIHelper:
             active_session = next((s for s in sessions if s['is_active']), None)
             session_id = active_session['session_id'] if active_session else None
 
-            # Получаем контекст с учетом сессии
-            context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)
-            
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
 
             response = await self.client.chat.completions.create(
@@ -915,7 +912,7 @@ class OpenAIHelper:
         self.conversations[chat_id].append({"role": role, "content": content})
         
         # Получаем текущий контекст для сохранения с учетом session_id
-        context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+        _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
         self.db.save_conversation_context(
@@ -971,7 +968,7 @@ class OpenAIHelper:
             
             if chat_id is not None:
                 # Получаем текущие настройки из базы данных
-                saved_context, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)
+                _, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)
                 
                 # Используем session_id из параметров, если он передан, иначе из базы
                 session_id = session_id or current_session_id
