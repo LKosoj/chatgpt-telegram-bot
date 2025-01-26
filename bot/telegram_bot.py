@@ -431,7 +431,6 @@ class ChatGPTTelegramBot:
         # Получаем информацию о пользователе из callback_query или message
         if is_callback:
             user_id = update.callback_query.from_user.id
-            user_name = update.callback_query.from_user.name
             # Проверяем права доступа для callback_query
             allowed_user_ids = self.config['allowed_user_ids'].split(',')
             if str(user_id) not in allowed_user_ids and 'guests' not in self.config and not is_admin(self.config, user_id):
@@ -439,7 +438,6 @@ class ChatGPTTelegramBot:
                 return
         elif update.message:
             user_id = update.message.from_user.id
-            user_name = update.message.from_user.name
             # Для обычных сообщений используем стандартную проверку
             if not await is_allowed(self.config, update, context):
                 await self.send_disallowed_message(update, context)
@@ -448,8 +446,6 @@ class ChatGPTTelegramBot:
             logging.error("Neither callback_query nor message found in update")
             return
         
-        logging.info(f'Reset command from user {user_name} (id: {user_id})...')
-
         if error:
             # Сброс из-за ошибки
             message_text = 'Ошибка. Сбрасываю контекст...'
@@ -2087,7 +2083,6 @@ class ChatGPTTelegramBot:
             # Остальной существующий код остается без изменений
             if action == "new":
                 # Создаем новую сессию
-                logging.info(f"Создание новой сессии для пользователя {user_id}")
                 session_id = self.db.create_session(
                     user_id=user_id,
                     max_sessions=self.config.get('MAX_SESSIONS', 5),
