@@ -742,7 +742,6 @@ class Database:
                     logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
                 else:
                     self.switch_active_session(user_id, new_session_id)
-                    logging.error(f"При удалении активной сессии {session_id} для пользователя {user_id} создана новая сессия {new_session_id}")
             
             # Удаляем сессию
             with self.get_connection() as conn:
