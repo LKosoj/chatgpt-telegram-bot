@@ -9,6 +9,8 @@
 - [x] (NEW!) Prompt select system
 - [x] (NEW!) Select model from inline keyboard
 - [x] (NEW!) Sessions support - see [SESSIONS.md](SESSIONS.md)
+- [x] (NEW!) Generate video from image
+- [x] (NEW!) Summarize web-content with Yandex Summarize API
 
 # ChatGPT Telegram Bot
 
