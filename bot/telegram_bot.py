@@ -2099,12 +2099,16 @@ class ChatGPTTelegramBot:
                 await query.edit_message_text("❌ Сессия не найдена.")
                 return
 
-            # Получаем последние 5 сообщений сессии
+            # Получаем все сообщения сессии
             context_messages = self.db.get_conversation_context(
                 user_id, 
                 session_id=session_id, 
-                limit=5
+                openai_helper=self.openai
             )
+
+            # Получаем список сообщений из контекста
+            context_messages, _, _, _, _ = context_messages
+            context_messages = context_messages.get('messages', [])
 
             # Формируем preview
             preview_text = f"🔍 Превью сессии: {session['session_name']}\n\n"
