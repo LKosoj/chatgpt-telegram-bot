@@ -222,6 +222,10 @@ class Database:
                     WHERE user_id = ? AND session_id = ?
                 ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
                 
+                if cursor.rowcount == 0:
+                    logging.info(f"cursor.rowcount: {cursor.rowcount}")
+
+
                 # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
                     logging.info(f"Создаем новую запись для сессии {session_id}")
