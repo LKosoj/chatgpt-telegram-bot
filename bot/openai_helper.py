@@ -38,7 +38,7 @@ O1_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 MISTRALAI = ("mistralai/mistral-nemo",)
-DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner")
+DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner","deepseek/deepseek-r1-distill-llama-70b")
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS\
     + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK
 
@@ -182,6 +182,8 @@ class OpenAIHelper:
             if assistant_prompt == None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
+            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
+                assistant_prompt += " Think step by step!"
             messages = [
                 {"role": "system", "content": assistant_prompt},
                 {"role": "user", "content": prompt}
@@ -409,6 +411,7 @@ class OpenAIHelper:
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent)
+            logging.info(f"Model: {model_to_use}, max_tokens: {max_tokens}, max_tokens_percent: {max_tokens_percent}")
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
@@ -460,7 +463,14 @@ class OpenAIHelper:
                     'stream': stream,
                     'extra_headers': { "X-Title": "tgBot" },
                 })
-            
+
+            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
+                # Находим системное сообщение и добавляем инструкцию
+                for msg in self.conversations[chat_id]:
+                    if msg['role'] == 'system':
+                        msg['content'] += " Think step by step!"
+                        break
+
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use)
                 if tools and model_to_use not in (O1_MODELS + DEEPSEEK):
@@ -572,6 +582,13 @@ class OpenAIHelper:
             max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
 
             logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
+
+            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
+                # Находим системное сообщение и добавляем инструкцию
+                for msg in self.conversations[chat_id]:
+                    if msg['role'] == 'system':
+                        msg['content'] += " Think step by step!"
+                        break
 
             response = await self.client.chat.completions.create(
                 model=model_to_use,
@@ -1187,6 +1204,8 @@ class OpenAIHelper:
         return self.config['model']
     
     def get_max_tokens(self, model_to_use, max_tokens_percent):
+        if max_tokens_percent == 100:
+            max_tokens_percent = 80
         if model_to_use in DEEPSEEK:
             return 8192
         elif model_to_use in O1_MODELS:
