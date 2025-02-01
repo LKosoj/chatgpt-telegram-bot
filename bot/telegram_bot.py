@@ -432,6 +432,7 @@ class ChatGPTTelegramBot:
         """
         chat_id = update.effective_chat.id
         is_callback = bool(update.callback_query)
+        user_id = None
         
         # Получаем информацию о пользователе из callback_query или message
         if is_callback:
@@ -708,14 +709,26 @@ class ChatGPTTelegramBot:
                         session_id = active_session['session_id']
                     
                     mode_data = chat_modes[mode]
-                    # Сбрасываем историю чата с новым промптом
+                    # Получаем текущий контекст сессии
+                    current_context = self.openai.conversations.get(chat_id, [])
+                    
+                    # Добавляем системное сообщение в начало контекста
                     reset_content = mode_data.get('prompt_start', '')
-                    self.openai.reset_chat_history(chat_id=chat_id, content=reset_content, session_id=session_id)
+                    system_message = {"role": "system", "content": reset_content}
+                    
+                    # Если текущий контекст уже содержит системное сообщение, заменяем его
+                    if current_context and current_context[0].get('role') == 'system':
+                        current_context[0] = system_message
+                    else:
+                        current_context.insert(0, system_message)
+                    
+                    # Обновляем контекст в OpenAI и базе данных
+                    self.openai.conversations[chat_id] = current_context
                     
                     # Сохраняем настройки режима в базу данных
                     self.db.save_conversation_context(
                         chat_id, 
-                        {'messages': self.openai.conversations[chat_id]}, 
+                        {'messages': current_context}, 
                         mode_data.get('parse_mode', 'HTML'),
                         mode_data.get('temperature', self.openai.config['temperature']),
                         mode_data.get('max_tokens_percent', 80),
@@ -2160,7 +2173,7 @@ class ChatGPTTelegramBot:
                 
                 # Сбрасываем историю чата для новой сессии
                 self.openai.reset_chat_history(
-                    chat_id=chat_id,
+                    chat_id=user_id,
                     content='',
                     session_id=session_id
                 )
@@ -2171,15 +2184,20 @@ class ChatGPTTelegramBot:
                 session_id = data[2]
                 self.db.switch_active_session(user_id, session_id)
                 # Загружаем контекст выбранной сессии
-                context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)
-                if context and 'messages' in context:
-                    self.openai.conversations[chat_id] = context['messages']
+                current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)
+                if current_context and 'messages' in current_context:
+                    self.openai.conversations[user_id] = current_context['messages']
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                self.db.delete_session(user_id, session_id)                                
+                self.db.delete_session(user_id, session_id)
+                # Получаем контекст активной сессии
+                session_id = self.db.get_active_session_id(user_id)
+                current_context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self.openai)
+                if current_context and 'messages' in current_context:
+                    self.openai.conversations[user_id] = current_context['messages']
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "change_mode":

@@ -182,16 +182,16 @@ class OpenAIHelper:
             if assistant_prompt == None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
+            # Получаем модель с учетом приоритетов
+            model_to_use = self.get_current_model(user_id)
+
             if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
                 assistant_prompt += " Think step by step!"
             messages = [
                 {"role": "system", "content": assistant_prompt},
                 {"role": "user", "content": prompt}
             ]
-            
-            # Получаем модель с учетом приоритетов
-            model_to_use = self.get_current_model(user_id)
-            
+                        
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
@@ -661,8 +661,13 @@ class OpenAIHelper:
         try:
             with open(filename, "rb") as audio:
                 prompt_text = self.config['whisper_prompt']
-                result = await self.client.audio.transcriptions.create(model="whisper-1", file=audio, prompt=prompt_text)
-                return result.text
+                result = await self.client.audio.transcriptions.create(
+                    model="stt-openai/whisper-1", 
+                    file=audio, 
+                    prompt=prompt_text,
+                    response_format="text"
+                )
+                return result
         except Exception as e:
             logging.exception(e)
             raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{str(e)}") from e
@@ -859,7 +864,7 @@ class OpenAIHelper:
         """
         try:
             # Получаем или создаем сессию через базу данных
-            session_id = self.db.create_session(chat_id, openai_helper=self) if not session_id else session_id
+            session_id = self.db.create_session(chat_id, max_sessions=self.config.get('max_sessions', 5), openai_helper=self) if not session_id else session_id
             
             if not session_id:
                 raise ValueError(f"Не удалось создать/получить сессию для пользователя {chat_id}")
@@ -867,11 +872,9 @@ class OpenAIHelper:
             # Получаем контекст сессии
             context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(chat_id, session_id)
             # Инициализируем историю чата
-            existing_messages = context.get('messages', []) if context else []
-            system_message = next((msg for msg in existing_messages if msg.get('role') == 'system'), None)
+            system_message = self.db.get_mode_from_context(context)
             
             self.conversations[chat_id] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
-            self.conversations_vision[chat_id] = False
             
             # Сохраняем обновленный контекст
             self.db.save_conversation_context(

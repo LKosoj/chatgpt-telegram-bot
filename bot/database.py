@@ -171,6 +171,16 @@ class Database:
             logging.error(f'Error getting user settings: {e}', exc_info=True)
             raise
     
+    def get_active_session_id(self, user_id: int) -> Optional[str]:
+        """Получение ID активной сессии"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT session_id FROM conversation_context WHERE user_id = ? AND is_active = 1
+            ''', (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+
     def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100, session_id: str = None, openai_helper = None) -> None:
         """Сохранение контекста разговора с поддержкой сессий"""
         try:
@@ -607,7 +617,6 @@ class Database:
                     # Создаем начальный контекст
                     context = {
                         'messages': [system_message] if system_message else [],
-                        'mode': None
                     }
                     context_json = json.dumps(context, ensure_ascii=False)
                     # Создаем новую сессию
@@ -731,7 +740,7 @@ class Database:
                     DELETE FROM conversation_context 
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
-                
+            
         except Exception as e:
             logging.error(f'Ошибка удаления сессии: {e}', exc_info=True)
             raise
