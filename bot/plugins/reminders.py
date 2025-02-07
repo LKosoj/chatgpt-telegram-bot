@@ -50,7 +50,12 @@ class RemindersPlugin(Plugin):
             "description": "Показать список активных напоминаний",
             "parameters": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "current_time": {
+                        "type": "string",
+                        "description": f'Текущее время {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+                    }
+                },
             }
         },
         {
