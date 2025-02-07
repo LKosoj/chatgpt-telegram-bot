@@ -28,7 +28,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
 from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
-        GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O1_MODELS, GPT_ALL_MODELS,\
+        GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
               ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK
 from plugins.haiper_image_to_video import WAITING_PROMPT
 from usage_tracker import UsageTracker
@@ -347,8 +347,8 @@ class ChatGPTTelegramBot:
             keyboard = []
             if value == "GPT-4O":
                 models = GPT_4O_MODELS
-            elif value == "O1":
-                models = O1_MODELS
+            elif value == "O MODELS":
+                models = O_MODELS
             elif value == "Anthropic":
                 models = ANTHROPIC
             elif value == "Google":
@@ -394,7 +394,7 @@ class ChatGPTTelegramBot:
             keyboard = []
             model_groups = [
                 ("GPT-4O", GPT_4O_MODELS),
-                ("O1", O1_MODELS),
+                ("O MODELS", O_MODELS),
                 ("Anthropic", ANTHROPIC),
                 ("Google", GOOGLE),
                 ("Mistral", MISTRALAI),
@@ -1389,7 +1389,7 @@ class ChatGPTTelegramBot:
 
             model_to_use = self.openai.get_current_model(user_id)
                 
-            if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+            if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
 
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
@@ -1630,7 +1630,7 @@ class ChatGPTTelegramBot:
                 model_to_use = self.openai.get_current_model(user_id)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                if self.config['stream'] and model_to_use not in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+                if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
                     stream_response = self.openai.get_chat_response_stream(chat_id=user_id, query=query)
                     i = 0
                     prev = ''
@@ -2243,7 +2243,7 @@ class ChatGPTTelegramBot:
                 keyboard = []
                 model_groups = [
                     ("GPT-4O", GPT_4O_MODELS),
-                    ("O1", O1_MODELS),
+                    ("O MODELS", O_MODELS),
                     ("Anthropic", ANTHROPIC),
                     ("Google", GOOGLE),
                     ("Mistral", MISTRALAI),
