@@ -5,7 +5,6 @@ from functools import wraps
 import os
 from typing import Any, Dict, Optional
 import httpx
-import openai
 import numpy as np
 import openai
 import pandas as pd
@@ -17,7 +16,13 @@ import matplotlib
 import matplotlib.pyplot as plt
 import ast
 import plotly.express as px
+import json
+from io import StringIO
 matplotlib.use("Agg")
+import uuid
+import re
+import importlib
+import shutil
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,8 +52,19 @@ def timeout(seconds: int):
         signal.alarm(0)
         signal.signal(signal.SIGALRM, original_handler)
 
+def async_handle_exceptions(func):
+    """Асинхронный декоратор для обработки исключений с детальным логированием"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            logging.exception(f"Ошибка в {func.__name__}: {str(e)}")
+            return {'error': str(e)}
+    return wrapper
+
 def handle_exceptions(func):
-    """Улучшенный декоратор для обработки исключений с детальным логированием"""
+    """Декоратор для обработки исключений с детальным логированием"""
     @wraps(func)
     def wrapper(*args, **kwargs):
         try:
@@ -58,7 +74,7 @@ def handle_exceptions(func):
             return None
     return wrapper
 
-class CodeInterpreter:
+class CodeInterpreter():
     def __init__(self):
         """
         Инициализация интерпретатора кода
@@ -67,13 +83,13 @@ class CodeInterpreter:
             api_key (str): API ключ OpenAI
             timeout_seconds (int): Тайм-аут выполнения кода в секундах
         """
-        self.api_key = ''  # Укажите ваш API ключ OpenAI
+        self.api_key = os.getenv('OPENAI_API_KEY') # Укажите ваш API ключ OpenAI
         http_client = httpx.AsyncClient()
         openai.api_base = 'https://api.vsegpt.ru/v1'
         self.client = openai.AsyncOpenAI(api_key=self.api_key, http_client=http_client, timeout=300.0, max_retries=3)
 
         self.data: Optional[pd.DataFrame] = None
-        self.timeout_seconds = 10
+        self.timeout_seconds = 120
         self.supported_formats = {
             '.csv': pd.read_csv,
             '.xlsx': pd.read_excel,
@@ -82,14 +98,14 @@ class CodeInterpreter:
             '.pkl': pd.read_pickle
         }
 
-    @handle_exceptions
-    async def generate_code(self, prompt: str) -> Optional[str]:
+    @async_handle_exceptions
+    async def generate_code(self, prompt: str, session_id: str = None) -> Optional[str]:
         """
         Генерирует Python-код на основе текста.
         
         Args:
             prompt (str): Текстовый запрос для генерации кода
-            
+            session_id (str): Идентификатор сессии
         Returns:
             Optional[str]: Сгенерированный код или None в случае ошибки
         """
@@ -100,22 +116,23 @@ class CodeInterpreter:
         - С обработкой ошибок
         - Код должен содержать if __name__ == "__main__": для получения результата
         - В ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!
-        - Если передан файл на вход, необходимо сгенерировать функцию для получения имен колонок из файла, названия колонок case sensitive. Во всех дальнейших расчетах использовать только имена этих колонок, других колонок не придумывать, это важно!
-        - Если в коде используется построение графиков - сделай их сохранение в каталог 'plots'
+        - Если передан файл на вход, необходимо сгенерировать функцию для получения имен колонок из файла, названия колонок case sensitive.
+        - Если в коде используется построение графиков - сделай их сохранение в каталог 'plots'.
+        - Во всех именах файлов обязательно используй суффикс _{session_id}
 
         Задача:
         {prompt}
         """
-
+        #print(f"enhanced_prompt: {enhanced_prompt}")
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="openai/o3-mini",
                 messages=[
-                    {"role": "system", "content": "Ты - опытный Python разработчик."},
+                    {"role": "system", "content": "Ты - самый опытный Python разработчик, который может написать код для решения любых задач. Ты можешь использовать необходимые библиотеки для решения задач. Все комментарии должны быть на русском языке, это важно! Все графики должны быть в формате png. Все текстовые сообщения должны быть на русском языке, это важно! Включай traceback в код, это важно!"},
                     {"role": "user", "content": enhanced_prompt}
                 ],
-                temperature=0.7,
-                max_tokens=55000,
+                temperature=0.1,
+                max_tokens=70000,
                 extra_headers={ "X-Title": "tgBot" },
             )
             return response.choices[0].message.content
@@ -123,8 +140,8 @@ class CodeInterpreter:
             logging.error(f"Ошибка OpenAI API: {e}")
             return None
 
-    @handle_exceptions
-    def install_package(self, package_name: str) -> bool:
+    @async_handle_exceptions
+    async def install_package(self, package_name: str) -> bool:
         """
         Устанавливает библиотеку, если она не установлена.
         
@@ -139,8 +156,13 @@ class CodeInterpreter:
             return True
         except ImportError:
             logging.info(f"Устанавливаем пакет: {package_name}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-            return True
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", package_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.wait()
+            return proc.returncode == 0
         except Exception as e:
             logging.error(f"Ошибка при установке пакета {package_name}: {e}")
 
@@ -160,7 +182,7 @@ class CodeInterpreter:
             if not isinstance(code, str):
                 if code is None:
                     logging.error("Получен пустой код (None)")
-                    return False
+                    return {"error": "Получен пустой код (None)"}
                 code = str(code)
             
             # Remove any leading/trailing whitespace
@@ -168,34 +190,36 @@ class CodeInterpreter:
             
             if not code:
                 logging.error("Получен пустой код")
-                return False
+                return {"error": "Получен пустой код"}
                 
             ast.parse(code)
-            return True
+            return {"status": True}
             
         except SyntaxError as e:
             logging.error(f"Синтаксическая ошибка: {e}")
-            return False
+            return {"error": f"Синтаксическая ошибка: {e}"}
         except ValueError as e:
             logging.error(f"Ошибка значения при анализе кода: {e}")
-            return False
+            return {"error": f"Ошибка значения при анализе кода: {e}"}
         except TypeError as e:
             logging.error(f"Ошибка типа при анализе кода: {e}")
-            return False
+            return {"error": f"Ошибка типа при анализе кода: {e}"}
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при анализе кода: {e}")
+            return {"error": f"Неожиданная ошибка при анализе кода: {e}"}
 
-    @handle_exceptions
-    async def debug_code(self, code):
+    @async_handle_exceptions
+    async def debug_code(self, code, error_message, add_prompt, session_id):
         """Автоматическая отладка кода с объяснением ошибок."""
         try:
-            fixed_code = await self.generate_code(f"Найди ошибки и исправь код, в ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!:\n{code}")
-            explanation = await self.explain_code(fixed_code)
-            return fixed_code, explanation
+            fixed_code = await self.generate_code(f"Исправь в коде ошибки, в ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!:\nОшибка: {error_message}\nКод: {code}\n", session_id)
+            return fixed_code
         except Exception as e:
             logging.error(f"Ошибка при отладке: {e}")
-            return None, None
+            return None
 
-    @handle_exceptions
-    def _execute_code(self, code: str) -> Optional[Dict[str, Any]]:
+    @async_handle_exceptions
+    async def _execute_code(self, code: str) -> Optional[Dict[str, Any]]:
         """
         Выполняет код с установленным тайм-аутом.
         
@@ -209,14 +233,14 @@ class CodeInterpreter:
             logging.error("Передан пустой код")
             return None
 
+        output_buffer = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = output_buffer
         try:
             with timeout(self.timeout_seconds):
-                from io import StringIO
-                import sys
-                output_buffer = StringIO()
-                original_stdout = sys.stdout
                 
                 exec_globals = {
+                    "__name__": "__main__",
                     "plt": plt,
                     "np": np, 
                     "pd": pd,
@@ -228,70 +252,68 @@ class CodeInterpreter:
                 }
                 exec_locals = {}
                                 
-                if "rm -rf" in code or "os.system" in code:
+                if "rm -r" in code or "os.system" in code:
                     raise SecurityError("Обнаружен потенциально опасный код")
                     
-                logging.info(f"{code}")
-                exec(code, exec_globals, exec_locals)
-                return exec_locals
+                #logging.info(f"{code}")
+                exec(code, exec_globals, exec_globals)
+                # Восстанавливаем stdout и получаем перехваченный вывод
+                sys.stdout = original_stdout
+                captured_output = output_buffer.getvalue().strip()
+                
+                # Добавляем перехваченный вывод в результат
+                exec_globals['__captured_print__'] = captured_output
+                return exec_globals
         except TimeoutException as e:
             logging.error(str(e))
             return {'error': str(e), 'output': 'Превышен лимит времени выполнения'}
         except ModuleNotFoundError as e:
             missing_package = str(e).split("'")[1]
             logging.info(f"Устанавливаем отсутствующую библиотеку: {missing_package}")
-            if self.install_package(missing_package):
-                return self._execute_code(code)
+            if await self.install_package(missing_package):
+                return await self._execute_code(code)
         except Exception as e:
             logging.exception(f"Неожиданная ошибка при выполнении кода: {e}")
             return {'error': str(e), 'output': f'Неожиданная ошибка: {str(e)}'}
-        
-        return None
+        finally:
+            # Восстанавливаем stdout и получаем перехваченный вывод
+            sys.stdout = original_stdout
+            captured_output = output_buffer.getvalue().strip()
+            
+            # Добавляем перехваченный вывод в результат
+            exec_locals['__captured_print__'] = captured_output
 
-    @handle_exceptions
-    async def execute_code(self, code, attempts=5):
+        return exec_locals
+
+    async def preinstall_required_packages(self, code: str):
+        required = re.findall(r'^\s*import (\w+)|^\s*from (\w+)', code, re.M)
+        packages = {pkg for pair in required for pkg in pair if pkg}
+        
+        for pkg in packages:
+            if not self.package_installed(pkg):
+                await self.install_package(pkg)
+
+    def package_installed(self, name: str):
+        return importlib.util.find_spec(name) is not None
+        
+    @async_handle_exceptions
+    async def execute_code(self, code):
         """Выполняет код, проверяет, были ли созданы графики, и сохраняет их."""
         
-        for attempt in range(attempts):
-            if self.analyze_code_syntax(code):
-                # Очищаем текущие графики
-                plt.close("all")
-                
-                result = self._execute_code(code)
-                if result is not None:
-                    # Проверяем наличие созданных графиков
-                    figures = plt.get_fignums()
-                    if figures:  # Если графики есть
-                        logging.info(f"Обнаружено {len(figures)} графиков. Сохраняем их.")
-                        
-                        # Создаем директорию для графиков, если её нет 
-                        os.makedirs('plots', exist_ok=True)
-
-                        # Сохраняем каждый график
-                        for i, num in enumerate(figures, start=1):
-                            fig = plt.figure(num)
-                            output_path = os.path.join('plots', f'generated_plot_{i}.png')
-                            try:
-                                # Явно указываем формат и отключаем прозрачность
-                                fig.savefig(output_path, 
-                                        format='png',
-                                        dpi=300,
-                                        bbox_inches='tight',
-                                        transparent=False)
-                                logging.info(f"График {i} сохранён в {output_path}")
-                            except Exception as e:
-                                logging.error(f"Ошибка при сохранении графика {i}: {e}")
-                            finally:
-                                plt.close(fig)
-                                
-                    return result
-                else:
-                    logging.info("Пытаемся сгенерировать исправленный код...")
-                    code, explanation = await self.debug_code(code) 
+        code = self.extract_code_from_response(code)
+        await self.preinstall_required_packages(code)
+        analyze_result = self.analyze_code_syntax(code)
+        if analyze_result is not None and analyze_result['status']:
+            # Очищаем текущие графики
+            plt.close("all")
+            
+            result = await self._execute_code(code)
+            if result is not None:
+                return result
             else:
-                logging.info("Пытаемся сгенерировать исправленный код...")
-                code, explanation = await self.debug_code(code)
-        return None
+                return {'error': 'Неизвестная ошибка'}
+        else:
+            return analyze_result
     
     @handle_exceptions
     def load_data(self, file_path):
@@ -324,37 +346,28 @@ class CodeInterpreter:
         return True
 
     @handle_exceptions
-    def save_results(self, results, output_path="results.txt"):
-        """Сохраняет текстовые результаты выполнения кода."""
-        try:
-            with open(output_path, "w") as f:
-                f.write(str(results))
-            logging.info(f"Результаты сохранены в {output_path}")
-        except Exception as e:
-            logging.error(f"Ошибка при сохранении результатов: {e}")
-            return None
-
-    @handle_exceptions
-    def advanced_visualization(self, output_path="interactive_plots.html"):
+    def advanced_visualization(self, result, session_id):
         """
         Создаёт HTML страницу из сохраненных графиков.
         
         Args:
             output_path (str): Путь для сохранения HTML файла с графиками
         """
+        output_path=f"interactive_plots_{session_id}.html"
         try:
             # Проверяем наличие директории с графиками
             plots_dir = 'plots'
+            os.makedirs(plots_dir, exist_ok=True)
+
+            plot_files = []
+            # Получаем список всех PNG файлов
             if not os.path.exists(plots_dir):
                 logging.error("Директория с графиками не найдена")
-                return
-
-            # Получаем список всех PNG файлов
-            plot_files = [f for f in os.listdir(plots_dir) if f.endswith('.png')]
+            else:
+                plot_files = [f for f in os.listdir(plots_dir) if f'_{session_id}' in f]
             
             if not plot_files:
                 logging.error("Графики не найдены")
-                return
 
             # Создаем HTML страницу
             html_content = [
@@ -401,6 +414,15 @@ class CodeInterpreter:
                     '    </div>'
                 ])
 
+            result_str = result
+            #print(f"result_str: {result_str}")
+            html_content.extend([
+                '    <div class="result-container">',
+                '        <h2>Результаты выполнения кода</h2>',
+                f'        <pre>{result_str}</pre>',
+                '    </div>'
+            ])
+
             html_content.append('</body></html>')
 
             # Сохраняем HTML файл
@@ -415,16 +437,18 @@ class CodeInterpreter:
     def generate_report(self, code, explanation, results, output_path="report.txt"):
         """Создаёт текстовый отчёт с кодом, объяснением и результатами."""
         try:
-            with open(output_path, "w") as f:
-                f.write("=== Сгенерированный код ===\n")
-                f.write(code + "\n\n")
-                f.write("=== Объяснение ===\n")
-                f.write(explanation + "\n\n")
-                f.write("=== Результаты ===\n")
-                f.write(str(results))
-            logging.info(f"Отчёт сохранён в {output_path}")
+            result_str = "=== Сгенерированный код ===\n" + code + "\n\n" + "=== Объяснение ===\n" + str(explanation) + "\n\n"
+            # Добавляем перехваченный вывод print
+            if '__captured_print__' in results:
+                result_str += "\n=== Вывод print ===\n" + results['__captured_print__']
+
+            #with open(output_path, "w", encoding='utf-8') as f:
+            #    f.write(result_str)
+            #logging.info(f"Отчёт сохранён в {output_path}")
+            return result_str
         except Exception as e:
             logging.error(f"Ошибка при создании отчёта: {e}")
+            return None
 
     async def explain_code(self, code):
         """Генерирует объяснение для заданного кода."""
@@ -442,102 +466,109 @@ class CodeInterpreter:
             logging.error(f"Ошибка при генерации объяснения: {e}")
             return None
 
-    async def execute(self, data_path, code_prompt):
-        """Основной метод для загрузки данных, выполнения и анализа кода."""
-        self.load_data(data_path)
+    # Проверяем, является ли результат словарем с ошибкой
+    def is_error_result(self, result):
+        # Проверяем, является ли результат словарем
+        if not isinstance(result, dict):
+            return False
+        
+        # Проверяем наличие ключей, указывающих на ошибку
+        error_indicators = [
+            'error' in result,
+            'output' in result and 'error' in str(result['output']).lower(),
+            '__captured_print__' in result and 'error' in str(result['__captured_print__']).lower(),
+            '__captured_print__' in result and 'ошибка' in str(result['__captured_print__']).lower(),
+            '__captured_print__' in result and 'name is not defined' in str(result['__captured_print__']).lower(),
+        ]
+        
+        return any(error_indicators)
 
-        if not self.validate_data():
-            return
+    def extract_code_from_response(self, text: str):
+        pattern = r"```(?:python)?(.*?)```"
+        matches = re.findall(pattern, text, re.DOTALL)
+        return matches[0].strip() if matches else text
+    
+    def clean_data(self, session_id):
+        """Удаляет файлы с суффиксом _{session_id} в каталогах data и plots."""
+        for file in os.listdir('data'):
+            if f'_{session_id}' in file:
+                os.remove(os.path.join('data', file))
+        for file in os.listdir('plots'):
+            if f'_{session_id}' in file:
+                os.remove(os.path.join('plots', file))
+
+    async def execute(self, data_path, code_prompt, attempts=3):
+        """Основной метод для загрузки данных, выполнения и анализа кода."""
+        session_id = str(uuid.uuid4())[:8]
+        add_prompt = ""
+        if data_path:
+            # Получаем расширение файла
+            file_name, file_ext = os.path.splitext(data_path)
+            
+            # Создаем новое имя файла с session_id
+            new_data_path = f"{file_name}_{session_id}{file_ext}"
+            
+            # Копируем файл с новым именем
+            os.makedirs('data', exist_ok=True)
+            new_data_path = os.path.join('data', os.path.basename(new_data_path))
+            shutil.copy2(data_path, new_data_path)
+            data_path = new_data_path
+            
+            self.load_data(data_path)
+            if not self.validate_data():
+                return
+            add_prompt = f"\nДанные для анализа находятся в файле {data_path}"
 
         if not code_prompt:
             logging.error("Не задан код для выполнения")
             return
 
         # Генерируем код
-        generated_code = await self.generate_code(code_prompt)
+        generated_code = await self.generate_code(code_prompt + add_prompt, session_id)
         if not generated_code:
             logging.error("Ошибка генерации кода")
-            return
+            return None
+        
+        for attempt in range(attempts):
 
-        # Выполняем код
-        result = await self.execute_code(generated_code)
+            # Выполняем код
+            result = await self.execute_code(generated_code)
 
-        # Объясняем код
-        explanation = await self.explain_code(generated_code)
-        #if explanation:
-        #    print("Объяснение сгенерированного кода:")
-        #    print(explanation)
+            # Проверяем, не является ли результат словарем с ошибкой
+            if result is not None and not self.is_error_result(result):
+                # Код выполнен успешно
+                logging.info("Код успешно выполнен.")
+                
+                explanation = await self.explain_code(generated_code)
+                
+                report = self.generate_report(generated_code, explanation, result)
+                self.advanced_visualization(report, session_id)
+                self.clean_data(session_id)
+                return report
 
-        if result is not None:
-            logging.info("Код успешно выполнен.")
-            self.save_results(result)
-            self.generate_report(generated_code, explanation, result)
-            self.advanced_visualization()
-        else:
-            logging.error("Все попытки выполнения кода завершились неудачей.")
+            # Если обнаружена ошибка
+            if self.is_error_result(result):
+                
+                # Извлекаем сообщение об ошибке
+                if '__captured_print__' in result:
+                    error_message = result['__captured_print__']
+                elif 'error' in result:
+                    error_message = result['error']
+                else:
+                    error_message = "Неизвестная ошибка"
 
+                if attempt == attempts - 1:
+                    logging.warning(f"Попытка {attempt + 1}: Обнаружена ошибка выполнения кода {error_message}. Итоговый код:\n {generated_code}")
+                    logging.error("Все попытки выполнения кода завершились неудачей.")
+                    self.clean_data(session_id)
+                    return
 
-
-if __name__ == "__main__":
-    # Инициализация интерпретатора 
-    interpreter = CodeInterpreter()
-
-    # Создать случайные данные о продажах
-    np.random.seed(42)
-
-    # Генерируем даты за последний год
-    start_date = datetime.datetime(2023, 1, 1)
-    dates = [start_date + datetime.timedelta(days=x) for x in range(365)]
-
-    # Создаем список продуктов
-    products = ['Laptop', 'Smartphone', 'Tablet', 'Headphones', 'Smartwatch']
-    regions = ['North', 'South', 'East', 'West', 'Central']
-
-    # Генерируем случайные данные
-    data = {
-        'Date': np.repeat(dates, 5),
-        'Product': np.tile(np.repeat(products, 1), 365),
-        'Region': np.tile(regions, 365),
-        'Quantity': np.random.randint(1, 50, 365 * 5),
-        'Price': np.random.uniform(100, 2000, 365 * 5).round(2),
-    }
-
-    # Создаем DataFrame и добавляем вычисляемые поля
-    df = pd.DataFrame(data)
-    df['Revenue'] = df['Quantity'] * df['Price']
-    df['Month'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m')
-
-    # Сохраняем в CSV
-    df.to_csv('data/sales_data.csv', index=False)
-
-    print("Пример структуры созданных данных:")
-    print(df.head())
-    print("\nОписание данных:")
-    print(df.describe())
-
-    # Путь к файлу с данными
-    data_path = "data/sales_data.csv"
-    
-    # Текстовый запрос для генерации кода
-    code_prompt = """
-    Проанализировать данные о продажах:
-    1. Найти топ-3 продукта по количеству продаж.
-    Все дальнейшие расчеты делать только по найденным топ-3 продуктам, другие продукты не учитывать!
-    2. Построить график продаж по месяцам
-    3. Рассчитать общую выручку
-    4. Вывести статистику по регионам
-    5. Путь к файлу с данными "data/sales_data.csv"
-    """
-
-    # Создаем и запускаем асинхронную функцию
-    async def main():
-        await interpreter.execute(data_path, code_prompt)
-
-    # Запускаем асинхронную функцию в цикле событий
-    asyncio.run(main())
-
-    # Результаты будут сохранены в:
-    # - results.txt (текстовые результаты)
-    # - generated_plot_*.png (сгенерированные графики)
-    # - interactive_plots.html (интерактивные графики)
-    # - report.txt (полный отчет)
+                logging.warning(f"Попытка {attempt + 1}: Обнаружена ошибка выполнения кода {error_message}. Пытаемся отладить.")
+                generated_code = await self.debug_code(generated_code, error_message, add_prompt, session_id)
+                
+                if not generated_code:
+                    logging.error("Не удалось отладить код.")
+                    return
+            else:
+                logging.error(f"Неожиданный результат выполнения кода: {result}")
+                return
