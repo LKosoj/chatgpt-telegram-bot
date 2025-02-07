@@ -97,7 +97,7 @@ class TextSummarizerPlugin(Plugin):
         try:
             text = kwargs.get('text', '')
             url = kwargs.get('url', '')
-            logging.info(f"helper.config: {helper.config}")
+            #logging.info(f"helper.config: {helper.config}")
             # Запрос к API Яндекса для суммаризации
             summary_result = await self._generate_summary_url(url, text, helper)
 
