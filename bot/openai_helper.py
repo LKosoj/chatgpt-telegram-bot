@@ -192,6 +192,7 @@ class OpenAIHelper:
                 {"role": "user", "content": prompt}
             ]
                         
+            self.__add_to_history(user_id, role="user", content=prompt)
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
@@ -200,7 +201,7 @@ class OpenAIHelper:
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
             )
-            
+            self.__add_to_history(user_id, role="assistant", content=response.choices[0].message.content.strip())
             return response.choices[0].message.content.strip(), response.usage.total_tokens
         except Exception as e:
             logging.error(f'Error in ask method: {str(e)}', exc_info=True)
