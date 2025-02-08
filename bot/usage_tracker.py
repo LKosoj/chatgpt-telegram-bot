@@ -85,10 +85,10 @@ class UsageTracker:
         # update usage_history
         if str(today) in self.usage["usage_history"]["chat_tokens"]:
             # add token usage to existing date
-            self.usage["usage_history"]["chat_tokens"][str(today)] += tokens
+            self.usage["usage_history"]["chat_tokens"][str(today)] = int(self.usage["usage_history"]["chat_tokens"][str(today)]) + int(tokens)
         else:
             # create new entry for current date
-            self.usage["usage_history"]["chat_tokens"][str(today)] = tokens
+            self.usage["usage_history"]["chat_tokens"][str(today)] = int(tokens)
 
         # write updated token usage to user file
         with open(self.user_file, "w") as outfile:
