@@ -34,12 +34,12 @@ GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
-O1_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini")
+O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.5-sonnet","anthropic/claude-3-haiku","anthropic/claude-3-sonnet","anthropic/claude-3-opus")
-GOOGLE = ("google/gemini-flash-1.5-8b",)
+GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001")
 MISTRALAI = ("mistralai/mistral-nemo",)
 DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner","deepseek/deepseek-r1-distill-llama-70b")
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS\
+GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS\
     + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK
 
 @lru_cache(maxsize=128)
@@ -66,7 +66,7 @@ def default_max_tokens(model: str = None) -> int:
         return 4096
     elif model in GPT_4O_MODELS:
         return 128000
-    elif model in O1_MODELS:
+    elif model in O_MODELS:
         return 128000
     elif model in ANTHROPIC:
         return 200000
@@ -444,7 +444,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
                 stream = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
@@ -455,7 +455,7 @@ class OpenAIHelper:
             else:
                 # Parameters for other models
                 common_args.update({
-                    'temperature': self.config['temperature'],
+                    'temperature': temperature,
                     'n': self.config['n_choices'],
                     'max_tokens': max_tokens,
                     'presence_penalty': self.config['presence_penalty'],
@@ -463,7 +463,6 @@ class OpenAIHelper:
                     'stream': stream,
                     'extra_headers': { "X-Title": "tgBot" },
                 })
-
             if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
                 # Находим системное сообщение и добавляем инструкцию
                 for msg in self.conversations[chat_id]:
@@ -473,11 +472,12 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use)
-                if tools and model_to_use not in (O1_MODELS + DEEPSEEK):
+                if tools and model_to_use not in (O_MODELS + DEEPSEEK):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
-            logging.info(f"{common_args}")
+            c = json.dumps(common_args, ensure_ascii=False)
+            logging.info(f"common_args = {c}")
             response = await self.client.chat.completions.create(**common_args)
             
             if stream:
@@ -537,6 +537,7 @@ class OpenAIHelper:
                     first_choice = response.choices[0]
                     #Additional logging
                     logger.info("found tool calls")
+                    logging.info(f"first_choice = {first_choice}")
                     if first_choice.message.tool_calls:
                         if first_choice.message.tool_calls[0].function.name:
                             tool_name += first_choice.message.tool_calls[0].function.name
@@ -618,7 +619,8 @@ class OpenAIHelper:
                 model=self.config['image_model'],
                 quality=self.config['image_quality'],
                 style=self.config['image_style'],
-                size=self.config['image_size']
+                size=self.config['image_size'],
+                extra_headers={ "X-Title": "tgBot" },
             )
 
             if len(response.data) == 0:
@@ -665,7 +667,8 @@ class OpenAIHelper:
                     model="stt-openai/whisper-1", 
                     file=audio, 
                     prompt=prompt_text,
-                    response_format="text"
+                    response_format="text",
+                    extra_headers={ "X-Title": "tgBot" },
                 )
                 return result
         except Exception as e:
@@ -1032,7 +1035,7 @@ class OpenAIHelper:
         if model in GPT_3_MODELS + GPT_3_16K_MODELS:
             tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
             tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O1_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK:
+        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK:
             tokens_per_message = 3
             tokens_per_name = 1
         else:
@@ -1146,7 +1149,7 @@ class OpenAIHelper:
             """
             
             # Получаем название сессии
-            response = self.ask_sync(prompt, chat_id, assistant_prompt="Ты лучший специалист по созданию коротких названий для сессий")
+            response, tokens = self.ask_sync(prompt, chat_id, assistant_prompt="Ты лучший специалист по созданию коротких названий для сессий")
 
             # Очищаем и обрезаем название
             session_name = response[:50]
@@ -1159,28 +1162,57 @@ class OpenAIHelper:
             return f"Сессия {datetime.now().strftime('%d.%m')}", 0
 
     def ask_sync(self, prompt, user_id, assistant_prompt=None):
-        # Получаем модель с учетом приоритетов
-        model_to_use = self.get_current_model(user_id)
-        url = f"{self.config['openai_base']}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "X-Title": "tgBot"
-        }
-        
-        messages = [
-            {"role": "system", "content": assistant_prompt},
-            {"role": "user", "content": prompt}
-        ]
-        
-        response = requests.post(url, headers=headers, json={
-            "model": model_to_use,
-            "messages": messages,
-            "temperature": 0.6,
-            "max_tokens": int(self.get_max_tokens(model_to_use, 50))
-        })
-        data = response.json()
-        return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
+        try:
+            # Получаем модель с учетом приоритетов
+            model_to_use = self.get_current_model(user_id)
+            url = f"{self.config['openai_base']}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "X-Title": "tgBot"
+            }
+            
+            messages = [
+                {"role": "system", "content": assistant_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            
+            response = requests.post(url, headers=headers, json={
+                "model": model_to_use,
+                "messages": messages,
+                "temperature": 0.6,
+                "max_tokens": int(self.get_max_tokens(model_to_use, 50))
+            })
+            
+            # Проверяем статус ответа
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Проверяем наличие необходимых ключей
+            if 'choices' not in data or not data['choices']:
+                logging.error(f"Неожиданный формат ответа API: {data}")
+                return "Ошибка: неожиданный формат ответа API", 0
+                
+            if 'message' not in data['choices'][0] or 'content' not in data['choices'][0]['message']:
+                logging.error(f"Отсутствует сообщение в ответе: {data}")
+                return "Ошибка: некорректный формат ответа", 0
+                
+            if 'usage' not in data or 'total_tokens' not in data['usage']:
+                logging.warning("Отсутствует информация об использовании токенов")
+                return data["choices"][0]["message"]["content"], 0
+                
+            return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Ошибка при отправке запроса к API: {e}")
+            return f"Ошибка соединения с API: {str(e)}", 0
+        except (KeyError, ValueError, TypeError) as e:
+            logging.error(f"Ошибка при обработке ответа API: {e}")
+            return f"Ошибка обработки ответа: {str(e)}", 0
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка: {e}")
+            return f"Неожиданная ошибка: {str(e)}", 0
 
     def get_current_model(self, user_id: int = None) -> str:
         """
@@ -1211,6 +1243,6 @@ class OpenAIHelper:
             max_tokens_percent = 80
         if model_to_use in DEEPSEEK:
             return 8192
-        elif model_to_use in O1_MODELS:
+        elif model_to_use in O_MODELS:
             return 22000
         return default_max_tokens(model_to_use) * max_tokens_percent / 100
