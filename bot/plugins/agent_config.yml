@@ -1,0 +1,43 @@
+openai:
+  model: "gpt-4o-mini"
+  base_url: "https://api.vsegpt.ru/v1"
+  temperature: 0
+  max_tokens: 20000
+  request_timeout: 200
+
+agents:
+  researcher:
+    system_prompt: "Ты - исследователь ИИ. Собирай и анализируй информацию. Используй доступные инструменты. Результаты работы должны быть в формате JSON на русском языке."
+    max_iterations: 15
+    max_execution_time: 300
+    tools:
+      - plugin: ddg_web_search
+        function: web_search
+        name: WebSearch
+        description: "Поиск информации в интернете"
+        parameters:
+          region: 'wt-wt'
+          max_results: 5
+
+      - plugin: conversation_analytics
+        function: analyze_text
+        name: TextAnalysis
+        description: "Анализ тональности и содержания текста"
+
+  planner:
+    system_prompt: "Ты - профессиональный планировщик. Создавай четкие выполнимые планы. Каждый шаг должен быть конкретным и измеримым. Используй только русский язык."
+    max_iterations: 10
+    max_execution_time: 200
+    tools:
+      - plugin: task_management
+        function: create_plan
+        name: CreatePlan
+        description: "Создание структурированного плана"
+
+database:
+  path: "research.db"
+  connection_timeout: 30
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s" 
