@@ -555,7 +555,7 @@ class OpenAIHelper:
                 args = json.loads(arguments)
                 args['chat_id'] = chat_id
                 args['user_id'] = chat_id
-                arguments = json.dumps(args)
+                arguments = json.dumps(args, ensure_ascii=False)
             except json.JSONDecodeError:
                 logging.error(f"Failed to parse arguments JSON: {arguments}")
                 return response, tools_used
