@@ -157,7 +157,7 @@ class AskYourPDFPlugin(Plugin):
                     return None
                 
                 # Обновление метаданных при доступе
-                self._update_cache_metadata(file_hash, len(json.dumps(cached_data)))
+                self._update_cache_metadata(file_hash, len(json.dumps(cached_data, ensure_ascii=False)))
                 
                 return cached_data['result']
         except Exception as e:
@@ -179,7 +179,7 @@ class AskYourPDFPlugin(Plugin):
                 json.dump(cached_data, f, ensure_ascii=False)
             
             # Обновление метаданных кэша
-            self._update_cache_metadata(file_hash, len(json.dumps(cached_data)))
+            self._update_cache_metadata(file_hash, len(json.dumps(cached_data, ensure_ascii=False)))
         
         except Exception as e:
             logging.error(f"Ошибка при сохранении кэша: {e}")
