@@ -74,9 +74,67 @@ def is_group_chat(update: Update) -> bool:
 
 def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     """
-    Splits a string into chunks of a given size.
+    Splits a string into chunks of a given size while preserving Markdown formatting.
+    
+    Args:
+        text: The text to split
+        chunk_size: Maximum size of each chunk
+    
+    Returns:
+        List of chunks with preserved Markdown formatting
     """
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    markdown_stack = []  # Стек для отслеживания открытых Markdown-элементов
+    
+    # Разбиваем текст на строки для сохранения целостности строк
+    lines = text.split('\n')
+    
+    for line in lines:
+        # Если текущая строка с переносом превысит размер чанка
+        if len(current_chunk) + len(line) + 1 > chunk_size:
+            # Закрываем все открытые Markdown-элементы
+            for md in reversed(markdown_stack):
+                if not current_chunk.endswith(md):
+                    current_chunk += md
+            
+            chunks.append(current_chunk.strip())
+            current_chunk = ""
+            
+            # Открываем Markdown-элементы для нового чанка
+            for md in markdown_stack:
+                current_chunk += md
+        
+        # Добавляем строку к текущему чанку
+        if current_chunk:
+            current_chunk += '\n'
+        current_chunk += line
+        
+        # Отслеживаем Markdown-элементы в строке
+        for i, char in enumerate(line):
+            if char in ['*', '_', '`']:
+                # Проверяем, является ли это открывающим или закрывающим элементом
+                if markdown_stack and markdown_stack[-1][-1] == char:
+                    markdown_stack.pop()
+                else:
+                    # Определяем тип элемента (одиночный или двойной)
+                    if i + 1 < len(line) and line[i + 1] == char:
+                        markdown_stack.append(char * 2)
+                    else:
+                        markdown_stack.append(char)
+    
+    # Добавляем последний чанк
+    if current_chunk:
+        # Закрываем все открытые Markdown-элементы
+        for md in reversed(markdown_stack):
+            if not current_chunk.endswith(md):
+                current_chunk += md
+        chunks.append(current_chunk.strip())
+    
+    return chunks
 
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
                             chat_action: constants.ChatAction = "", is_inline=False):
@@ -379,6 +437,8 @@ async def handle_direct_result(config, update: Update, response: any):
     format = result['format']
     value = result['value']
 
+    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}")
+
     common_args = {
         'message_thread_id': get_thread_id(update),
         'reply_to_message_id': get_reply_to_message_id(config, update),
@@ -399,13 +459,25 @@ async def handle_direct_result(config, update: Update, response: any):
     elif kind == 'text':
         try:
             if format == 'markdown':
-                escaped_text = escape_markdown(value)
-                await update.effective_message.reply_text(**common_args, text=escaped_text, parse_mode=constants.ParseMode.MARKDOWN_V2)
+                # Используем MARKDOWN вместо MARKDOWN_V2 для более простого синтаксиса
+                await update.effective_message.reply_text(**common_args, text=value, parse_mode=constants.ParseMode.MARKDOWN)
             else:
                 await update.effective_message.reply_text(**common_args, text=value)
         except telegram.error.BadRequest as e:
-            logging.warning(f"Failed to send message with markdown formatting: {e}")
-            # Попытка отправить без форматирования в случае ошибки
+            if "can't parse entities" in str(e).lower():
+                # Если возникла ошибка парсинга, пробуем отправить с экранированием
+                try:
+                    escaped_text = escape_markdown(value)
+                    await update.effective_message.reply_text(**common_args, text=escaped_text, parse_mode=constants.ParseMode.MARKDOWN_V2)
+                except telegram.error.BadRequest:
+                    # Если и это не помогло, отправляем без форматирования
+                    await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
+            else:
+                # Для других ошибок просто отправляем без форматирования
+                await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
+        except Exception as e:
+            logging.error(f"Unexpected error in handle_direct_result: {e}")
+            # В случае любой другой ошибки отправляем без форматирования
             await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
 
     if format == 'path':
