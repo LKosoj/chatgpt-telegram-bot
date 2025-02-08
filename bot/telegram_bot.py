@@ -985,7 +985,7 @@ class ChatGPTTelegramBot:
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
                             text=transcript_chunk,
-                            parse_mode=constants.ParseMode.MARKDOWN
+                            parse_mode=None
                         )
                 else:
                     # Get the response of the transcript
@@ -1000,6 +1000,7 @@ class ChatGPTTelegramBot:
                         f"_{localized_text('transcript', bot_language)}:_\n\"{transcript}\"\n\n"
                         f"_{localized_text('answer', bot_language)}:_\n{response}"
                     )
+                    logging.info(f"Transcript output: {transcript_output}")
                     chunks = split_into_chunks(transcript_output)
 
                     for index, transcript_chunk in enumerate(chunks):
@@ -1007,7 +1008,7 @@ class ChatGPTTelegramBot:
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
                             text=transcript_chunk,
-                            parse_mode=constants.ParseMode.MARKDOWN
+                            parse_mode=None
                         )
 
             except Exception as e:
