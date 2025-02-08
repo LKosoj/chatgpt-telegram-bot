@@ -127,28 +127,33 @@ class RemindersPlugin(Plugin):
         
         # Создаем inline кнопки для каждого напоминания
         keyboard = []
-        reminders_list = []
         
-        for r_id, r in user_reminders.items():
+        for r_id, r in user_reminders.items():            
             reminder_time = datetime.fromisoformat(r['time'])
-            reminder_text = f"🕒 {reminder_time.strftime('%d.%m.%Y %H:%M')}\n📝 {r['message']}"
-            reminders_list.append(reminder_text)
+            formatted_time = reminder_time.strftime('%d.%m.%Y %H:%M')
             
-            # Добавляем кнопки для каждого напоминания
+            # Создаем ряд из двух кнопок для каждого напоминания
             keyboard.append([
                 InlineKeyboardButton(
-                    text=f"❌ Удалить напоминание от {reminder_time.strftime('%d.%m.%Y %H:%M')}",
+                    text=f"📅 {formatted_time} 📝 {r['message']}",
+                    callback_data=f"reminder:view:{r_id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Удалить",
                     callback_data=f"reminder:delete:{r_id}"
                 )
             ])
         
+        # Добавляем кнопку закрытия
+        keyboard.append([
+            InlineKeyboardButton("❌ Закрыть", callback_data="reminder:close_menu:")
+        ])
+
         # Создаем разметку с кнопками
         reply_markup = InlineKeyboardMarkup(keyboard)
-        menu_text = "Ваши напоминания:\n\n" + "\n\n".join(reminders_list)
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text(
-            menu_text,
+            "Ваши напоминания:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -285,13 +290,39 @@ class RemindersPlugin(Plugin):
     async def handle_reminder_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик callback-запросов от кнопок напоминаний"""
         query = update.callback_query
-        await query.answer()  # Отвечаем на callback запрос
 
         try:
             action, command, reminder_id = query.data.split(":")
             
+            # Обработка закрытия меню
+            if action == "reminder" and command == "close_menu":
+                await query.answer("Меню закрыто")
+                await query.message.delete()
+                return
+
+            if action == "reminder" and command == "view":
+                user_id = str(query.from_user.id)
+                
+                # Проверяем существование напоминания
+                if user_id in self.reminders and reminder_id in self.reminders[user_id]:
+                    reminder = self.reminders[user_id][reminder_id]
+                    reminder_time = datetime.fromisoformat(reminder['time'])
+                    formatted_time = reminder_time.strftime('%d.%m.%Y %H:%M')
+                    
+                    # Показываем детали напоминания во всплывающем окне
+                    await query.answer(
+                        text=f"📅 {formatted_time}\n📝 {reminder['message']}",
+                        show_alert=True,
+                        cache_time=0
+                    )
+                    return
+                else:
+                    await query.answer("Напоминание не найдено", show_alert=True)
+                    return
+
             if action == "reminder" and command == "delete":
                 user_id = str(query.from_user.id)
+                await query.answer()  # Отвечаем на callback запрос для удаления
                 
                 # Проверяем существование напоминания
                 if user_id in self.reminders and reminder_id in self.reminders[user_id]:
@@ -304,22 +335,29 @@ class RemindersPlugin(Plugin):
                     # Обновляем сообщение со списком напоминаний
                     if user_id in self.reminders:
                         keyboard = []
-                        reminders_list = []
                         
-                        for r_id, r in self.reminders[user_id].items():
+                        for r_id, r in self.reminders[user_id].items():      
                             reminder_time = datetime.fromisoformat(r['time'])
-                            reminder_text = f"🕒 {reminder_time.strftime('%d.%m.%Y %H:%M')}\n📝 {r['message']}"
-                            reminders_list.append(reminder_text)
+                            formatted_time = reminder_time.strftime('%d.%m.%Y %H:%M')
                             
+                            # Создаем ряд из двух кнопок для каждого напоминания
                             keyboard.append([
                                 InlineKeyboardButton(
-                                    text=f"❌ Удалить напоминание от {reminder_time.strftime('%d.%m.%Y %H:%M')}",
+                                    text=f"📅 {formatted_time} 📝 {r['message']}",
+                                    callback_data=f"reminder:view:{r_id}"
+                                ),
+                                InlineKeyboardButton(
+                                    text="❌ Удалить",
                                     callback_data=f"reminder:delete:{r_id}"
-                                )
+                                ),
                             ])
                         
+                        # Добавляем кнопку закрытия
+                        keyboard.append([
+                            InlineKeyboardButton("❌ Закрыть", callback_data="reminder:close_menu:")
+                        ])
                         await query.edit_message_text(
-                            text="Ваши напоминания:\n\n" + "\n\n".join(reminders_list),
+                            text="Ваши напоминания:",
                             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
                             parse_mode='markdown'
                         )
