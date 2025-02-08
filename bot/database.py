@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Dict, Any, Optional, List, ContextManager
+from typing import Dict, Any, Optional, List, ContextManager, Generator
 from contextlib import contextmanager
 import json
 import threading
@@ -34,7 +34,7 @@ class Database:
         pass
         
     @contextmanager
-    def get_connection(self) -> ContextManager[sqlite3.Connection]:
+    def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         """
         Контекстный менеджер для потокобезопасного доступа к соединению с базой данных.
         Каждый поток получает свое собственное соединение.
