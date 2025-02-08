@@ -39,7 +39,7 @@ class ShowMeDiagramsPlugin(Plugin):
             'project_timeline': self._generate_project_timeline,
             'infographic': self._generate_infographic,
             'org_chart': self._generate_org_chart,
-            'process_diagram': self._generate_process_diagram
+            'process_diagram': self._generate_process_diagram,
         }
         # Путь к JAR файлу PlantUML
         self.plantuml_jar = str(Path(__file__).parent / 'plantuml.jar')
@@ -111,7 +111,7 @@ class ShowMeDiagramsPlugin(Plugin):
 - Условия при необходимости
 - Параллельные процессы при необходимости
 Описание: {description}
-Заголовок: {title}"""
+Заголовок: {title}""",
         }
 
     def get_source_name(self) -> str:
@@ -228,7 +228,7 @@ class ShowMeDiagramsPlugin(Plugin):
         plantuml_code, _ = await helper.ask(
             prompt=prompt,
             user_id=user_id,
-            assistant_prompt="Ты помощник, который создает PlantUML код для диаграмм. Лучше тебя в этом не разбирается никто! Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. Всегда используй цвета, стили, формы, размеры, шрифты, чтобы сделать диаграмму более наглядной, размещай код офомления в начале. Вернуть нужно только PlantUML код, никаких комментариев и объяснений, без лишних ковычек, это очень важно!"
+            assistant_prompt="Ты помощник, который создает PlantUML код для диаграмм. Лучше тебя в этом не разбирается никто! Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. Всегда используй цвета, стили, формы, размеры, шрифты, чтобы сделать диаграмму более наглядной, размещай код офомления в начале. Так же используй Creole синтаксис, OpenIconic, Emoji, чтобы сделать диаграмму более наглядной. Вернуть нужно только PlantUML код, никаких комментариев и объяснений, без лишних ковычек, это очень важно! Всегда проверяй сгенерированный код на ошибки и неточности, если есть ошибки, исправь их."
         )
         return plantuml_code.strip()
 
