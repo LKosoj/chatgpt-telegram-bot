@@ -187,7 +187,8 @@ class ShowMeDiagramsPlugin(Plugin):
         try:
             generator_method = self.diagram_types[diagram_type]
             puml_content, output_file = await generator_method(title, description, helper, user_id)
-            puml_content = "Текст для диаграммы в формате PlantUML:\n```PlantUML\n" + puml_content + "\n```"
+            if "```" not in puml_content:
+                puml_content = "Текст для диаграммы в формате PlantUML:\n```plantuml\n" + puml_content + "\n```"
             return {
                 "direct_result": {
                     "kind": "photo",
@@ -219,7 +220,7 @@ class ShowMeDiagramsPlugin(Plugin):
         return puml_content, output_file
 
     async def _generate_diagram_code(self, diagram_type: str, title: str, description: str, helper, user_id: int) -> str:
-        """Генерирует PlantUML код с помощью ask_sync"""
+        """Генерирует PlantUML код с помощью ask"""
         prompt = self.diagram_prompts[diagram_type].format(
             description=description,
             title=title
@@ -227,7 +228,7 @@ class ShowMeDiagramsPlugin(Plugin):
         plantuml_code, _ = await helper.ask(
             prompt=prompt,
             user_id=user_id,
-            assistant_prompt="Ты помощник, который создает PlantUML код для диаграмм. Лучше тебя в этом не разбирается никто! Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. Вернуть нужно только PlantUML код, никаких комментариев и объяснений, без лишних ковычек, это очень важно!"
+            assistant_prompt="Ты помощник, который создает PlantUML код для диаграмм. Лучше тебя в этом не разбирается никто! Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. Всегда используй цвета, стили, формы, размеры, шрифты, чтобы сделать диаграмму более наглядной, размещай код офомления в начале. Вернуть нужно только PlantUML код, никаких комментариев и объяснений, без лишних ковычек, это очень важно!"
         )
         return plantuml_code.strip()
 
