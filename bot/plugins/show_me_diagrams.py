@@ -19,7 +19,7 @@
 
 import os
 import tempfile
-from typing import Dict
+from typing import Dict, List
 import uuid
 import subprocess
 import logging
@@ -117,7 +117,7 @@ class ShowMeDiagramsPlugin(Plugin):
     def get_source_name(self) -> str:
         return "Show Me Diagrams"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "generate_diagram",
             "description": "Generate visual diagrams and charts (gantt, flowchart, infographic, mind map, project timeline, process diagram, org chart) from textual descriptions",
