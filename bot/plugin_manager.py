@@ -72,7 +72,6 @@ class PluginManager:
         try:
             #plugin_path = Path(self.plugins_directory) / f"{plugin_name}.py"
             plugin_path = Path(f"./plugins/{plugin_name}.py")
-            logging.info(f"Attempting to load plugin from path: {plugin_path.absolute()}")
             spec = importlib.util.spec_from_file_location(plugin_name, plugin_path)
             plugin_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(plugin_module)
