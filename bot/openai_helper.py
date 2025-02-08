@@ -191,7 +191,7 @@ class OpenAIHelper:
                 {"role": "system", "content": assistant_prompt},
                 {"role": "user", "content": prompt}
             ]
-                        
+
             self.__add_to_history(user_id, role="user", content=prompt)
             response = await self.client.chat.completions.create(
                 model=model_to_use,
@@ -554,6 +554,7 @@ class OpenAIHelper:
             try:
                 args = json.loads(arguments)
                 args['chat_id'] = chat_id
+                args['user_id'] = chat_id
                 arguments = json.dumps(args)
             except json.JSONDecodeError:
                 logging.error(f"Failed to parse arguments JSON: {arguments}")
