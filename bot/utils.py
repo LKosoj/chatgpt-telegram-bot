@@ -456,42 +456,31 @@ async def handle_direct_result(config, update: Update, response: any):
             await update.effective_message.reply_document(**common_args, document=open(value, 'rb'))
     elif kind == 'dice':
         await update.effective_message.reply_dice(**common_args, emoji=value)
-    elif kind == 'text':
-        try:
-            if format == 'markdown':
-                # Используем MARKDOWN вместо MARKDOWN_V2 для более простого синтаксиса
-                await update.effective_message.reply_text(**common_args, text=value, parse_mode=constants.ParseMode.MARKDOWN)
-            else:
-                await update.effective_message.reply_text(**common_args, text=value)
-        except telegram.error.BadRequest as e:
-            if "can't parse entities" in str(e).lower():
-                # Если возникла ошибка парсинга, пробуем отправить с экранированием
-                try:
-                    escaped_text = escape_markdown(value)
-                    await update.effective_message.reply_text(**common_args, text=escaped_text, parse_mode=constants.ParseMode.MARKDOWN_V2)
-                except telegram.error.BadRequest:
-                    # Если и это не помогло, отправляем без форматирования
-                    await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
-            else:
-                # Для других ошибок просто отправляем без форматирования
-                await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
-        except Exception as e:
-            logging.error(f"Unexpected error in handle_direct_result: {e}")
-            # В случае любой другой ошибки отправляем без форматирования
-            await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
 
-    if add_value:
+    if add_value or kind == 'text':
         # Split long messages into chunks
-        chunks = split_into_chunks(add_value)
+        if add_value:
+            chunks = split_into_chunks(add_value)
+        else:
+            chunks = split_into_chunks(value)
+        if format == 'markdown':
+            parse_mode = constants.ParseMode.MARKDOWN
+        else:
+            parse_mode = None
         for i, chunk in enumerate(chunks):
             # Only reply to original message for first chunk
             reply_to = get_reply_to_message_id(config, update) if i == 0 else None
-            await update.effective_message.reply_text(
-                message_thread_id=get_thread_id(update),
-                reply_to_message_id=reply_to,
-                text=chunk,
-                parse_mode=constants.ParseMode.MARKDOWN
-            )
+            try:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    reply_to_message_id=reply_to,
+                    text=chunk,
+                    parse_mode=parse_mode
+                )
+            except Exception as e:
+                logging.error(f"Unexpected error in handle_direct_result: {e}")
+                # В случае любой другой ошибки отправляем без форматирования
+                await update.effective_message.reply_text(**common_args, text=chunk, parse_mode=None)
 
     if format == 'path':
         cleanup_intermediate_files(response)
