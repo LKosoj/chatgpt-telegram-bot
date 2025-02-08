@@ -436,7 +436,7 @@ async def handle_direct_result(config, update: Update, response: any):
     kind = result['kind']
     format = result['format']
     value = result['value']
-
+    add_value = result.get('add_value', None)
     logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}")
 
     common_args = {
@@ -479,6 +479,19 @@ async def handle_direct_result(config, update: Update, response: any):
             logging.error(f"Unexpected error in handle_direct_result: {e}")
             # В случае любой другой ошибки отправляем без форматирования
             await update.effective_message.reply_text(**common_args, text=value, parse_mode=None)
+
+    if add_value:
+        # Split long messages into chunks
+        chunks = split_into_chunks(add_value)
+        for i, chunk in enumerate(chunks):
+            # Only reply to original message for first chunk
+            reply_to = get_reply_to_message_id(config, update) if i == 0 else None
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                reply_to_message_id=reply_to,
+                text=chunk,
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
 
     if format == 'path':
         cleanup_intermediate_files(response)
