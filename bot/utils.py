@@ -480,7 +480,12 @@ async def handle_direct_result(config, update: Update, response: any):
             except Exception as e:
                 logging.error(f"Unexpected error in handle_direct_result: {e}")
                 # В случае любой другой ошибки отправляем без форматирования
-                await update.effective_message.reply_text(**common_args, text=chunk, parse_mode=None)
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    reply_to_message_id=reply_to,
+                    text=chunk,
+                    parse_mode=None
+                )
 
     if format == 'path':
         cleanup_intermediate_files(response)
