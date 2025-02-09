@@ -21,7 +21,7 @@ class GitHubCodeAnalysisPlugin(Plugin):
             OpenAI.api_base = openai_base
         openai_api_key = os.environ['OPENAI_API_KEY']
         self.client = OpenAI(api_key=openai_api_key)
-        self.model = os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo')
+        self.model = "google/gemini-2.0-flash-001"
         self.max_tokens = int(os.environ.get('MAX_TOKENS', 1000))
         self.temperature = float(os.environ.get('TEMPERATURE', 1.0))
 
@@ -115,7 +115,7 @@ class GitHubCodeAnalysisPlugin(Plugin):
             logging.info(f"GITHUB filename: {filename}")
             lexer = get_lexer_for_filename(filename, code)
             logging.info(f"Detected lexer: {lexer.name}")
-            if lexer.name in ('C', 'Arduino', 'Objective-C', 'Python'):
+            if lexer.name in ('C', 'Arduino', 'Objective-C', 'Python', 'HTML', 'CSS', 'JavaScript', 'TypeScript', 'PHP', 'Ruby', 'Java', 'Kotlin', 'Swift', 'Go', 'Rust', 'C#', 'Visual Basic', 'SQL', 'Markdown', 'YAML', 'JSON', 'XML', 'SVG', 'TeX', 'Assembly', 'Haskell', 'Erlang', 'Elixir', 'OCaml', 'Scala', 'Groovy', 'R', 'MATLAB', 'Perl', 'Tcl', 'Lua', 'Erlang', 'Elixir', 'OCaml', 'Scala', 'Groovy', 'R', 'MATLAB', 'Perl', 'Tcl', 'Lua'):
                  return lexer.name
             else:
                 return None
