@@ -24,8 +24,8 @@ class ChiefPlugin(Plugin):
         self._init_schemas()
         self.session = None
         self._recipe_cache = {}
-        self._cache_timeout = 600  # 10 минут
-        self._api_timeout = 300  # 5 минут
+        self._cache_timeout = 180  # 3 минуты
+        self._api_timeout = 120  # 2 минуты
 
     def get_source_name(self) -> str:
         return "Chief"
