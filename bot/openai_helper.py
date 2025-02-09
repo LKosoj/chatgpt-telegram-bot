@@ -174,10 +174,11 @@ class OpenAIHelper:
             self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
-    async def ask(self, prompt, user_id, assistant_prompt=None):
+    async def ask(self, prompt, user_id, assistant_prompt=None, model=None):
         """
         Send a prompt to OpenAI and get a response.
         """
+        model_to_use = model or self.get_current_model(user_id)        
         try:
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
             if assistant_prompt == None:
@@ -411,7 +412,7 @@ class OpenAIHelper:
                         f"Определи режим работы для сообщения, верни только название режима. Сообщение: ^{query}^. Доступные режимы: ^{self.get_all_modes()}^. Если ни один режим не подходит, верни 'assistant'.",
                         chat_id,
                         "Ты специалист по определению режима работы для сообщений.",
-                        model="google/gemini-flash-1.5-8b"
+                        model="google/gemini-2.0-flash-001"
                     )
                 logging.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
                 
@@ -1329,6 +1330,3 @@ class OpenAIHelper:
             return [f"name: {mode_key}, welcome_message: {mode_data['welcome_message']}" 
                    for mode_key, mode_data in modes.items() 
                    if isinstance(mode_data, dict) and 'welcome_message' in mode_data]
-
-    def is_first_message(session):
-        return session['message_count'] == 0 or len([msg for msg in session['context'].get('messages', []) if msg.get('role') == 'user']) == 0
