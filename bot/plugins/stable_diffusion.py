@@ -249,8 +249,13 @@ class StableDiffusionPlugin(Plugin):
             # Запускаем мониторинг статуса в отдельной задаче
             asyncio.create_task(self._monitor_task_status(task))
 
-            return {"result": "Генерация изображения добавлена в очередь"}
-            #return {"result": "Генерация изображения добавлена в очередь", "no_context": True}
+            return {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": "Генерация изображения добавлена в очередь",
+                }
+            }
 
         except Exception as e:
             logger.error(f"Unexpected error in execute: {e}", exc_info=True)
