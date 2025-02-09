@@ -391,7 +391,7 @@ class OpenAIHelper:
             
             # Пытаемся загрузить контекст из базы данных
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
-            
+                        
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
@@ -403,6 +403,44 @@ class OpenAIHelper:
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
                 self.conversations_vision[chat_id] = False
+
+            # Проверяем, является ли это первым сообщением в сессии, если да, то определяем режим работы
+            user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
+            if len(user_messages) == 0 and self.config['auto_chat_modes']:
+                mode_name, _ = self.ask_sync(
+                        f"Определи режим работы для сообщения, верни только название режима. Сообщение: ^{query}^. Доступные режимы: ^{self.get_all_modes()}^. Если ни один режим не подходит, верни 'assistant'.",
+                        chat_id,
+                        "Ты специалист по определению режима работы для сообщений.",
+                        model="google/gemini-flash-1.5-8b"
+                    )
+                logging.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
+                
+                # Загружаем режимы из файла
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+                with open(chat_modes_path, 'r', encoding='utf-8') as file:
+                    chat_modes = yaml.safe_load(file)
+                
+                # Ищем режим по имени
+                mode_key = mode_name.strip().lower()
+                if mode_key in chat_modes:
+                    # Обновляем системное сообщение
+                    new_system_prompt = chat_modes[mode_key].get('prompt_start', '')
+                    if new_system_prompt:
+                        # Заменяем системное сообщение в истории
+                        self.conversations[chat_id][0]['content'] = new_system_prompt
+                        logging.info(f"🔄 Режим работы изменен на: {mode_key}")
+                        
+                        # Сохраняем обновленный контекст
+                        self.db.save_conversation_context(
+                            chat_id,
+                            {'messages': self.conversations[chat_id]},
+                            parse_mode,
+                            temperature,
+                            max_tokens_percent,
+                            session_id,
+                            self
+                        )
             
             self.last_updated[chat_id] = datetime.datetime.now()
 
@@ -1194,10 +1232,10 @@ class OpenAIHelper:
             logging.error(f"Ошибка генерации названия сессии: {e}")
             return f"Сессия {datetime.now().strftime('%d.%m')}", 0
 
-    def ask_sync(self, prompt, user_id, assistant_prompt=None):
+    def ask_sync(self, prompt, user_id, assistant_prompt=None, model=None):
         try:
             # Получаем модель с учетом приоритетов
-            model_to_use = self.get_current_model(user_id)
+            model_to_use = model or self.get_current_model(user_id)
             url = f"{self.config['openai_base']}/chat/completions"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -1271,6 +1309,7 @@ class OpenAIHelper:
         logging.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
     
+    @lru_cache(maxsize=128)
     def get_max_tokens(self, model_to_use, max_tokens_percent):
         if max_tokens_percent == 100:
             max_tokens_percent = 80
@@ -1279,3 +1318,17 @@ class OpenAIHelper:
         elif model_to_use in O_MODELS:
             return 22000
         return default_max_tokens(model_to_use) * max_tokens_percent / 100
+
+    @lru_cache(maxsize=256)
+    def get_all_modes(self):
+        # Получаем все режимы из chat_modes.yml
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(current_dir, 'chat_modes.yml')
+        with open(config_path, 'r') as file:
+            modes = yaml.safe_load(file)
+            return [f"name: {mode_key}, welcome_message: {mode_data['welcome_message']}" 
+                   for mode_key, mode_data in modes.items() 
+                   if isinstance(mode_data, dict) and 'welcome_message' in mode_data]
+
+    def is_first_message(session):
+        return session['message_count'] == 0 or len([msg for msg in session['context'].get('messages', []) if msg.get('role') == 'user']) == 0
