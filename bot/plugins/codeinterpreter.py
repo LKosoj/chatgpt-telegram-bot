@@ -150,6 +150,7 @@ class CodeInterpreterPlugin(Plugin):
                 }
 
             result = await self.run_code(data_path, code_prompt, session_id)
+            #logging.info(f"🔄 Результат выполнения кода: {result}")
             
             if isinstance(result, str):
                 # Проверяем, есть ли сгенерированный HTML файл
@@ -159,17 +160,18 @@ class CodeInterpreterPlugin(Plugin):
                     return {
                         "direct_result": {
                             "kind": "file",
-                            "format": "html",
+                            "format": "path",
                             "value": html_file,
-                            "add_value": "Сгенерированный код:\n\n" + result
                         }
                     }
                 else:
+                    self.advanced_visualization(result, session_id)
                     return {
                         "direct_result": {
-                            "kind": "text",
-                            "format": "markdown",
-                            "value": "Ошибка выполнения кода. Сгенерированный код:\n\n" + result
+                            "kind": "file",
+                            "format": "path",
+                            "value": html_file,
+                            "add_value": "🔄 Ошибка выполнения кода, попробуйте повторить запрос"
                         }
                     }
             elif isinstance(result, dict):
@@ -656,10 +658,10 @@ class CodeInterpreterPlugin(Plugin):
                         error_message = "Неизвестная ошибка"
 
                     if attempt == attempts - 1:
-                        logging.warning(f"Попытка {attempt + 1}: Обнаружена ошибка выполнения кода {error_message}. Итоговый код:\n {generated_code}")
+                        #logging.warning(f"Попытка {attempt + 1}: Обнаружена ошибка выполнения кода {error_message}. Итоговый код:\n {generated_code}")
                         logging.error("Все попытки выполнения кода завершились неудачей.")
                         self.clean_data(session_id)
-                        return None
+                        return f"Обнаружена ошибка выполнения кода {error_message}. Итоговый код:\n {generated_code}"
 
                     logging.warning(f"Попытка {attempt + 1}: Обнаружена ошибка выполнения кода {error_message}. Пытаемся отладить.")
                     generated_code = await self.debug_code(generated_code, error_message, add_prompt, session_id)
