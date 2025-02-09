@@ -138,7 +138,7 @@ class CodeInterpreterPlugin(Plugin):
         Returns:
             Dict: Результат выполнения в формате, совместимом с системой плагинов
         """
-        if function_name == "execute_code":
+        if function_name == "deep_analysis":
             session_id = str(uuid.uuid4())[:8]
             code_prompt = kwargs.get('code_prompt')
             data_path = kwargs.get('data_path', None)
