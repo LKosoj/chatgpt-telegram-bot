@@ -16,6 +16,7 @@ import io
 from datetime import date
 from calendar import monthrange
 from PIL import Image
+import yaml
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
@@ -472,7 +473,37 @@ class OpenAIHelper:
                         break
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                tools = self.plugin_manager.get_functions_specs(self, model_to_use)
+                # Получаем текущий режим из контекста
+                saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+                allowed_plugins = ['All']  # По умолчанию разрешены все плагины
+                
+                if saved_context and 'messages' in saved_context:
+                    system_message = next(
+                        (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
+                        None
+                    )
+                    
+                    # Загружаем режимы из файла
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+                    
+                    with open(chat_modes_path, 'r', encoding='utf-8') as file:
+                        chat_modes = yaml.safe_load(file)
+                    
+                    # Ищем текущий режим по системному сообщению
+                    current_mode = None
+                    for mode_key, mode_data in chat_modes.items():
+                        if mode_data.get('prompt_start', '').strip() == system_message.get('content', '').strip():
+                            current_mode = mode_data
+                            break
+                    
+                    # Получаем список разрешенных плагинов из режима
+                    if current_mode and 'tools' in current_mode:
+                        allowed_plugins = current_mode['tools']
+                
+                # Получаем спецификации функций с учетом разрешенных плагинов
+                tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
+                
                 if tools and model_to_use not in (O_MODELS + DEEPSEEK):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'

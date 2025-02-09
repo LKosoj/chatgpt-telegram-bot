@@ -121,15 +121,29 @@ class PluginManager:
         self.load_plugins()  # Перезагружаем плагины из директории
         logging.info("Плагины переинициализированы.")
 
-    def get_functions_specs(self, helper, model_to_use):
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins=None):
         """
         Return the list of function specs that can be called by the model
+        
+        :param helper: OpenAIHelper instance
+        :param model_to_use: Model name
+        :param allowed_plugins: List of allowed plugin names or ['All'] or ['None']
+        :return: List of function specifications
         """
+        # Если разрешенных плагинов нет или ['None'], возвращаем пустой список
+        if not allowed_plugins or allowed_plugins == ['None']:
+            return []
+            
         seen_functions = set()
         all_specs = []
+        
+        # Перебираем все плагины
         for plugin_name, plugin_class in self.plugins.items():
+            # Пропускаем плагин если он не в списке разрешенных (кроме случая ['All'])
+            if allowed_plugins != ['All'] and plugin_name not in allowed_plugins:
+                continue
+                
             try:
-                # Используем get_plugin вместо прямого создания экземпляра
                 plugin_instance = self.get_plugin(plugin_name)
                 if not plugin_instance:
                     continue
@@ -142,6 +156,7 @@ class PluginManager:
             except Exception as e:
                 logging.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
+                
         if model_to_use in (GOOGLE):
             return {"function_declarations": all_specs}
         return [{"type": "function", "function": spec} for spec in all_specs]
