@@ -3,7 +3,7 @@ import os
 import json
 from datetime import datetime
 from typing import Dict, Any
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 class TaskManagementPlugin(Plugin):
     """

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from plugins.plugin import Plugin
+from .plugins.plugin import Plugin
 
 GOOGLE = ("google/gemini-flash-1.5-8b",)
 

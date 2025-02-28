@@ -3,7 +3,7 @@ import aiohttp
 import logging
 from typing import Dict
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
 

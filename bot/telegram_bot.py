@@ -23,16 +23,16 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
 from pydub import AudioSegment
 from PIL import Image
 
-from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
+from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
+from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
         GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
               ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK
-from plugins.haiper_image_to_video import WAITING_PROMPT
-from usage_tracker import UsageTracker
-from database import Database
+from .plugins.haiper_image_to_video import WAITING_PROMPT
+from .usage_tracker import UsageTracker
+from .database import Database
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 

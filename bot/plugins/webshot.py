@@ -1,6 +1,6 @@
 import os, requests, random, string
 from typing import Dict
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 class WebshotPlugin(Plugin):
     """

@@ -7,7 +7,7 @@ from openai import OpenAI
 from typing import Dict
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 #logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

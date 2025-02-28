@@ -25,7 +25,7 @@ import subprocess
 import logging
 from pathlib import Path
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 class ShowMeDiagramsPlugin(Plugin):
     """

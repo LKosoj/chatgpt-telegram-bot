@@ -5,7 +5,7 @@ import httpx
 import readability
 from bs4 import BeautifulSoup
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 class TextSummarizerPlugin(Plugin):
     """

@@ -2,7 +2,7 @@ from typing import Dict
 
 from telegram.constants import ReactionEmoji
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class ReactionPlugin(Plugin):

@@ -3,7 +3,7 @@ from typing import Dict
 
 import requests
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class WeatherPlugin(Plugin):

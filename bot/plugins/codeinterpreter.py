@@ -23,7 +23,7 @@ import uuid
 import re
 import importlib
 import shutil
-from plugins.plugin import Plugin
+from .plugin import Plugin
 from urllib.parse import urlparse
 
 # Настройка логирования

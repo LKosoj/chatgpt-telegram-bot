@@ -3,7 +3,7 @@ import os
 import requests
 import logging
 import random
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class MovieInfoPlugin(Plugin):

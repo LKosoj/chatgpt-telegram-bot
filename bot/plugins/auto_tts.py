@@ -2,7 +2,7 @@ import logging
 import tempfile
 from typing import Dict
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class AutoTextToSpeech(Plugin):

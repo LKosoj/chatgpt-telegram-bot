@@ -28,8 +28,8 @@ import hashlib
 import telegram
 from telegram import constants
 
-from plugins.plugin import Plugin
-from utils import escape_markdown
+from .plugin import Plugin
+from ..utils import escape_markdown
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
 MAX_RETRIES = 4
