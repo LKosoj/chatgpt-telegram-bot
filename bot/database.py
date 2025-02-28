@@ -12,6 +12,9 @@ from functools import lru_cache
 from datetime import datetime
 import yaml
 
+logger = logging.getLogger(__name__)
+
+
 class Database:
     _instance = None
     _lock = threading.Lock()
@@ -61,7 +64,7 @@ class Database:
     def init_db(self):
         """Инициализация базы данных и создание необходимых таблиц"""
         try:
-            logging.info(f'Initializing database at {self.db_path}')
+            logger.info(f'Initializing database at {self.db_path}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -121,7 +124,7 @@ class Database:
                 
                 # Если нет новых колонок, выполняем миграцию
                 #if 'session_id' not in columns:
-                #    logging.warning('Performing database migration for conversation_context')
+                #    logger.warning('Performing database migration for conversation_context')
                 #    self.migrate_conversation_context()
 
                 # Индекс для быстрого поиска сессий (создаем после миграции)
@@ -131,15 +134,15 @@ class Database:
                 ''')
 
                 conn.commit()
-                logging.info('Database initialized successfully')
+                logger.info('Database initialized successfully')
         except Exception as e:
-            logging.error(f'Error initializing database: {e}', exc_info=True)
+            logger.error(f'Error initializing database: {e}', exc_info=True)
             raise
     
     def save_user_settings(self, user_id: int, settings: Dict[str, Any]) -> None:
         """Сохранение пользовательских настроек"""
         try:
-            logging.info(f'Saving settings for user_id={user_id}')
+            logger.info(f'Saving settings for user_id={user_id}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 settings_json = json.dumps(settings, ensure_ascii=False)
@@ -151,24 +154,24 @@ class Database:
                     updated_at = CURRENT_TIMESTAMP
                 ''', (user_id, settings_json))
         except Exception as e:
-            logging.error(f'Error saving user settings: {e}', exc_info=True)
+            logger.error(f'Error saving user settings: {e}', exc_info=True)
             raise
     
     def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получение пользовательских настроек"""
         try:
-            logging.info(f'Getting settings for user_id={user_id}')
+            logger.info(f'Getting settings for user_id={user_id}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT settings FROM user_settings WHERE user_id = ?', (user_id,))
                 result = cursor.fetchone()
                 if result:
-                    logging.info(f'Settings found for user_id={user_id}')
+                    logger.info(f'Settings found for user_id={user_id}')
                     return json.loads(result[0])
-                logging.info(f'No settings found for user_id={user_id}')
+                logger.info(f'No settings found for user_id={user_id}')
                 return None
         except Exception as e:
-            logging.error(f'Error getting user settings: {e}', exc_info=True)
+            logger.error(f'Error getting user settings: {e}', exc_info=True)
             raise
     
     def get_active_session_id(self, user_id: int) -> Optional[str]:
@@ -197,7 +200,7 @@ class Database:
                 
                 # Если нет активной сессии, создаем новую
                 if not result and not session_id:
-                    logging.info(f"Создаем новую сессию для пользователя {user_id}")
+                    logger.info(f"Создаем новую сессию для пользователя {user_id}")
                     session_id = self.create_session(user_id, openai_helper=openai_helper)
                     if not session_id:
                         raise ValueError(f"Не удалось создать сессию для пользователя {user_id}")
@@ -224,12 +227,12 @@ class Database:
                 ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
                 
                 if cursor.rowcount == 0:
-                    logging.info(f"cursor.rowcount: {cursor.rowcount}")
+                    logger.info(f"cursor.rowcount: {cursor.rowcount}")
 
 
                 # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
-                    logging.info(f"Создаем новую запись для сессии {session_id}")
+                    logger.info(f"Создаем новую запись для сессии {session_id}")
                     cursor.execute('''
                         INSERT INTO conversation_context 
                         (user_id, session_id, context, parse_mode, temperature, max_tokens_percent, is_active, message_count)
@@ -257,7 +260,7 @@ class Database:
                                 user_id,
                                 "Ты специалист по созданию коротких и точных названий для чатов."
                             )
-                            logging.info(f"!!!!!!!!Название сессии: {session_name}")
+                            logger.info(f"!!!!!!!!Название сессии: {session_name}")
                         else:
                             session_name = user_message[:20]
                         session_name = session_name.strip()[:20]
@@ -270,7 +273,7 @@ class Database:
                     ''', (session_name, user_id, session_id))
                                     
         except Exception as e:
-            logging.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
+            logger.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
             raise
     
     def get_conversation_context(self, user_id: int, session_id: str = None, openai_helper = None) -> Optional[Dict[str, Any]]:
@@ -288,17 +291,17 @@ class Database:
                 
                 # Если нет активной сессии и не указан session_id, создаем новую
                 if not result and not session_id:
-                    logging.info(f"Создаем новую сессию для пользователя {user_id}")
+                    logger.info(f"Создаем новую сессию для пользователя {user_id}")
                     session_id = self.create_session(user_id, openai_helper=openai_helper)
                     if not session_id:
-                        logging.warning(f"Не удалось создать сессию для пользователя {user_id}")
+                        logger.warning(f"Не удалось создать сессию для пользователя {user_id}")
                         return None, 'HTML', 0.8, 80, None
                 elif not session_id and result:
                     session_id = result[0]
                 
                 # Если сессия всё ещё не определена, используем значения по умолчанию
                 if not session_id:
-                    logging.warning(f"Не удалось определить сессию для пользователя {user_id}")
+                    logger.warning(f"Не удалось определить сессию для пользователя {user_id}")
                     return None, 'HTML', 0.8, 80, None
                 
                 cursor.execute('''
@@ -316,25 +319,25 @@ class Database:
                     
                     return context, parse_mode, temperature, max_tokens_percent, session_id
                 
-                logging.info(f"Контекст не найден для сессии {session_id}, возвращаем значения по умолчанию")
+                logger.info(f"Контекст не найден для сессии {session_id}, возвращаем значения по умолчанию")
                 return None, 'HTML', 0.8, 80, None
                 
         except Exception as e:
-            logging.error(f'Ошибка получения контекста сессии: {e}', exc_info=True)
+            logger.error(f'Ошибка получения контекста сессии: {e}', exc_info=True)
             return None, 'HTML', 0.8, 80, None
     
     def delete_user_data(self, user_id: int) -> None:
         """Удаление всех данных пользователя"""
         try:
-            logging.info(f'Deleting all data for user_id={user_id}')
+            logger.info(f'Deleting all data for user_id={user_id}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM conversation_context WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM user_models WHERE user_id = ?', (user_id,))
-                logging.info(f'All data deleted successfully for user_id={user_id}')
+                logger.info(f'All data deleted successfully for user_id={user_id}')
         except Exception as e:
-            logging.error(f'Error deleting user data: {e}', exc_info=True)
+            logger.error(f'Error deleting user data: {e}', exc_info=True)
             raise
     
     def save_user_model(self, user_id: int, model_name: str) -> None:
@@ -355,7 +358,7 @@ class Database:
                     UPDATE conversation_context SET model = ? WHERE user_id = ? AND is_active = 1
                 ''', (model_name, user_id))
         except Exception as e:
-            logging.error(f'Error saving user model: {e}', exc_info=True)
+            logger.error(f'Error saving user model: {e}', exc_info=True)
             raise
     
     def save_image(self, user_id: int, chat_id: int, file_id: str, file_path: Optional[str] = None) -> int:
@@ -373,7 +376,7 @@ class Database:
                 ''', (user_id, chat_id, file_id, file_id_hash, file_path))
                 return cursor.lastrowid
         except Exception as e:
-            logging.error(f'Error saving image: {e}', exc_info=True)
+            logger.error(f'Error saving image: {e}', exc_info=True)
             raise
 
     def get_user_images(self, user_id: int, chat_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
@@ -412,7 +415,7 @@ class Database:
                     for row in rows
                 ]
         except Exception as e:
-            logging.error(f'Error getting user images: {e}', exc_info=True)
+            logger.error(f'Error getting user images: {e}', exc_info=True)
             raise
 
     def update_image_status(self, image_id: int, status: str) -> None:
@@ -426,7 +429,7 @@ class Database:
                     WHERE id = ?
                 ''', (status, image_id))
         except Exception as e:
-            logging.error(f'Error updating image status: {e}', exc_info=True)
+            logger.error(f'Error updating image status: {e}', exc_info=True)
             raise
 
     def cleanup_old_images(self, days: int = 7) -> None:
@@ -439,7 +442,7 @@ class Database:
                     WHERE created_at < datetime('now', '-' || ? || ' days')
                 ''', (days,))
         except Exception as e:
-            logging.error(f'Error cleaning up old images: {e}', exc_info=True)
+            logger.error(f'Error cleaning up old images: {e}', exc_info=True)
             raise
 
     def count_user_sessions(self, user_id: int) -> int:
@@ -459,7 +462,7 @@ class Database:
                 """, (user_id,))
                 return cursor.fetchone()[0]
         except sqlite3.Error as e:
-            logging.error(f"Ошибка при подсчете сессий пользователя: {e}")
+            logger.error(f"Ошибка при подсчете сессий пользователя: {e}")
             return 0
 
     def delete_oldest_session(self, user_id: int) -> bool:
@@ -493,7 +496,7 @@ class Database:
                 return True
         
         except sqlite3.Error as e:
-            logging.error(f"Ошибка при удалении старых сессий: {e}")
+            logger.error(f"Ошибка при удалении старых сессий: {e}")
             return False
 
     def get_mode_from_context(self, context: Dict[str, Any]) -> Optional[Dict]:
@@ -515,11 +518,11 @@ class Database:
                 
                 return None
             
-            logging.warning(f"Некорректный формат контекста: {type(context)}")
+            logger.warning(f"Некорректный формат контекста: {type(context)}")
             return None
         
         except Exception as e:
-            logging.error(f'Ошибка получения системного сообщения из контекста: {e}', exc_info=True)
+            logger.error(f'Ошибка получения системного сообщения из контекста: {e}', exc_info=True)
             return None
 
     def create_session(
@@ -585,7 +588,7 @@ class Database:
                         datetime.now()
                     ))
                     
-                    logging.info(f"Создана первая сессия {session_id} для пользователя {user_id}")
+                    logger.info(f"Создана первая сессия {session_id} для пользователя {user_id}")
                     return session_id
             
             # Если есть активная сессия, используем стандартную логику            
@@ -641,7 +644,7 @@ class Database:
             return None
                 
         except Exception as e:
-            logging.error(f"Ошибка при создании сессии: {e}", exc_info=True)
+            logger.error(f"Ошибка при создании сессии: {e}", exc_info=True)
             return None
 
     def list_user_sessions(self, user_id: int, is_active: int = 0) -> List[Dict[str, Any]]:
@@ -681,7 +684,7 @@ class Database:
                     } for session in sessions
                 ]
         except Exception as e:
-            logging.error(f'Ошибка получения списка сессий: {e}', exc_info=True)
+            logger.error(f'Ошибка получения списка сессий: {e}', exc_info=True)
             return []
 
     def switch_active_session(self, user_id: int, session_id: str):
@@ -703,7 +706,7 @@ class Database:
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
         except Exception as e:
-            logging.error(f'Ошибка переключения сессии: {e}', exc_info=True)
+            logger.error(f'Ошибка переключения сессии: {e}', exc_info=True)
             raise
 
     def delete_session(self, user_id: int, session_id: str):
@@ -718,7 +721,7 @@ class Database:
                 new_session_id = self.create_session(user_id)
                 
                 if not new_session_id:
-                    logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
+                    logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
 
             # Получаем данные из активной сессии
             sessions = self.list_user_sessions(user_id, 1)
@@ -728,7 +731,7 @@ class Database:
             if active_session.get('session_id') == session_id:
                 new_session_id = self.create_session(user_id)
                 if not new_session_id:
-                    logging.error(f"Не удалось создать новую сессию для пользователя {user_id}")
+                    logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
                 else:
                     self.switch_active_session(user_id, new_session_id)
             
@@ -742,7 +745,7 @@ class Database:
                 ''', (user_id, session_id))
             
         except Exception as e:
-            logging.error(f'Ошибка удаления сессии: {e}', exc_info=True)
+            logger.error(f'Ошибка удаления сессии: {e}', exc_info=True)
             raise
 
     def migrate_conversation_context(self):
@@ -751,7 +754,7 @@ class Database:
         Преобразует существующие записи в первую сессию для каждого пользователя
         """
         try:
-            logging.info('Начало миграции conversation_context')
+            logger.info('Начало миграции conversation_context')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -810,11 +813,11 @@ class Database:
                     # Удаляем старую таблицу
                     cursor.execute('DROP TABLE conversation_context_old')
                     
-                    logging.info('Миграция conversation_context завершена успешно')
+                    logger.info('Миграция conversation_context завершена успешно')
                 else:
-                    logging.info('Миграция не требуется, таблица уже в новом формате')
+                    logger.info('Миграция не требуется, таблица уже в новом формате')
         except Exception as e:
-            logging.error(f'Ошибка миграции базы данных: {e}', exc_info=True)
+            logger.error(f'Ошибка миграции базы данных: {e}', exc_info=True)
             raise 
 
     def get_session_details(self, user_id: int, session_id: str) -> Optional[Dict[str, Any]]:
@@ -853,7 +856,7 @@ class Database:
                     return session_details
                 return None
         except Exception as e:
-            logging.error(f'Error getting session details: {e}', exc_info=True)
+            logger.error(f'Error getting session details: {e}', exc_info=True)
             return None
 
     def export_sessions_to_yaml(self, user_id: int) -> str:
@@ -901,9 +904,9 @@ class Database:
             with open(filepath, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(export_data, f, allow_unicode=True, default_flow_style=False)
             
-            logging.info(f"Экспортировано сессий: {len(sessions)} в файл {filepath}")
+            logger.info(f"Экспортировано сессий: {len(sessions)} в файл {filepath}")
             return filepath
         
         except Exception as e:
-            logging.error(f'Ошибка экспорта сессий в YAML: {e}', exc_info=True)
+            logger.error(f'Ошибка экспорта сессий в YAML: {e}', exc_info=True)
             return None 

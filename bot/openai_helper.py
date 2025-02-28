@@ -117,12 +117,12 @@ def localized_text(key, bot_language):
     try:
         return translations[bot_language][key]
     except KeyError:
-        logging.warning(f"No translation available for bot_language code '{bot_language}' and key '{key}'")
+        logger.warning(f"No translation available for bot_language code '{bot_language}' and key '{key}'")
         # Fallback to English if the translation is not available
         if key in translations['en']:
             return translations['en'][key]
         else:
-            logging.warning(f"No english definition found for key '{key}' in translations.json")
+            logger.warning(f"No english definition found for key '{key}' in translations.json")
             # return key as text
             return key
 
@@ -206,7 +206,7 @@ class OpenAIHelper:
             self.__add_to_history(user_id, role="assistant", content=response.choices[0].message.content.strip())
             return response.choices[0].message.content.strip(), response.usage.total_tokens
         except Exception as e:
-            logging.error(f'Error in ask method: {str(e)}', exc_info=True)
+            logger.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
 
     async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None) -> tuple[str, str]:
@@ -237,7 +237,7 @@ class OpenAIHelper:
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 response, plugins_used = await self.__handle_function_call(chat_id, response)
                 if is_direct_result(response):
-                    logging.debug('Direct result returned, skipping further processing')
+                    logger.debug('Direct result returned, skipping further processing')
                     return response, '0'
 
             answer = ''
@@ -269,7 +269,7 @@ class OpenAIHelper:
 
             return answer, response.usage.total_tokens
         except Exception as e:
-            logging.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
+            logger.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
             raise
         finally:
             # Clean up after response is generated
@@ -287,11 +287,11 @@ class OpenAIHelper:
         """
         plugins_used = ()
         try:
-            logging.info(f'Starting chat response stream for chat_id={chat_id}')
+            logger.info(f'Starting chat response stream for chat_id={chat_id}')
             
             # Проверяем, инициализирован ли контекст разговора
             if chat_id not in self.conversations:
-                logging.info(f'Initializing conversation context for chat_id={chat_id}')
+                logger.info(f'Initializing conversation context for chat_id={chat_id}')
                 # Пытаемся загрузить контекст из базы данных с учетом session_id
                 saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
                 
@@ -309,7 +309,7 @@ class OpenAIHelper:
             if request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
                 
-            logging.info('Getting chat response from model')
+            logger.info('Getting chat response from model')
             try:
                 # Вызов с учетом возможного отсутствия session_id
                 response = await self.__common_get_chat_response(
@@ -319,7 +319,7 @@ class OpenAIHelper:
                     session_id=session_id
                 )
             except Exception as e:
-                logging.error(f'Error getting chat response: {str(e)}')
+                logger.error(f'Error getting chat response: {str(e)}')
                 yield f"Error: {str(e)}", '0'
                 return
 
@@ -330,7 +330,7 @@ class OpenAIHelper:
                         yield response, '0'
                         return
                 except Exception as e:
-                    logging.error(f'Error in function call: {str(e)}')
+                    logger.error(f'Error in function call: {str(e)}')
                     yield f"Error in function call: {str(e)}", '0'
                     return
 
@@ -347,7 +347,7 @@ class OpenAIHelper:
                         answer += delta.content
                         yield answer, 'not_finished'
             except Exception as e:
-                logging.error(f'Error processing response stream: {str(e)}')
+                logger.error(f'Error processing response stream: {str(e)}')
                 if answer:
                     yield answer, 'not_finished'
                 return
@@ -368,7 +368,7 @@ class OpenAIHelper:
             yield answer, tokens_used
 
         except Exception as e:
-            logging.error(f"Error in chat response stream: {e}", exc_info=True)
+            logger.error(f"Error in chat response stream: {e}", exc_info=True)
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
@@ -387,8 +387,8 @@ class OpenAIHelper:
         """
         bot_language = self.config['bot_language']
         try:
-            logging.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
-            logging.debug(f'Query: {query}')
+            logger.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
+            logger.debug(f'Query: {query}')
             
             # Пытаемся загрузить контекст из базы данных
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
@@ -414,7 +414,7 @@ class OpenAIHelper:
                         "Ты специалист по определению режима работы для сообщений.",
                         model="google/gemini-2.0-flash-001"
                     )
-                logging.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
+                logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
                 
                 # Загружаем режимы из файла
                 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -430,7 +430,7 @@ class OpenAIHelper:
                     if new_system_prompt:
                         # Заменяем системное сообщение в истории
                         self.conversations[chat_id][0]['content'] = new_system_prompt
-                        logging.info(f"🔄 Режим работы изменен на: {mode_key}")
+                        logger.info(f"🔄 Режим работы изменен на: {mode_key}")
                         
                         # Сохраняем обновленный контекст
                         self.db.save_conversation_context(
@@ -452,7 +452,7 @@ class OpenAIHelper:
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent)
-            logging.info(f"Model: {model_to_use}, max_tokens: {max_tokens}, max_tokens_percent: {max_tokens_percent}")
+            logger.info(f"Model: {model_to_use}, max_tokens: {max_tokens}, max_tokens_percent: {max_tokens_percent}")
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
@@ -460,18 +460,18 @@ class OpenAIHelper:
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
-                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
                     summary = await self.__summarise(self.conversations[chat_id][:-1], user_id, session_id)
-                    logging.debug(f'Summary: {summary}')
+                    logger.debug(f'Summary: {summary}')
                     self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'], session_id)
                     self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
                     self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
                 except Exception as e:
-                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                    logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
-            logging.info(f"Model: {model_to_use}")
+            logger.info(f"Model: {model_to_use}")
 
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
@@ -548,7 +548,7 @@ class OpenAIHelper:
                     common_args['tool_choice'] = 'auto'
 
             c = json.dumps(common_args, ensure_ascii=False)
-            logging.info(f"common_args = {c}")
+            logger.info(f"common_args = {c}")
             response = await self.client.chat.completions.create(**common_args)
             
             if stream:
@@ -556,23 +556,23 @@ class OpenAIHelper:
                 return response
             else:
                 # For non-streaming responses, log the number of choices and return the response
-                logging.debug(f'_______________________Response choices: {len(response.choices)}')
+                logger.debug(f'_______________________Response choices: {len(response.choices)}')
                 return response
     
         except openai.RateLimitError as e:
-            logging.warning(f'Rate limit error: {str(e)}')
+            logger.warning(f'Rate limit error: {str(e)}')
             raise e
 
         except openai.BadRequestError as e:
-            logging.error(f'Bad request error: {str(e)}')
+            logger.error(f'Bad request error: {str(e)}')
             raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
 
         except ValueError as e:
-            logging.error(f'Configuration error: {str(e)}')
+            logger.error(f'Configuration error: {str(e)}')
             raise Exception(f"⚠️ Configuration error: {str(e)}") from e
 
         except Exception as e:
-            logging.error(f'Unexpected error in chat response generation: {str(e)}', exc_info=True)
+            logger.error(f'Unexpected error in chat response generation: {str(e)}', exc_info=True)
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
     async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=()):
@@ -601,14 +601,14 @@ class OpenAIHelper:
                         else:
                             return response, tools_used
                 except openai.APIError as e:
-                    logging.error(f"API Error in function call streaming: {e}")
+                    logger.error(f"API Error in function call streaming: {e}")
                     return response, tools_used
             else:
                 if len(response.choices) > 0:
                     first_choice = response.choices[0]
                     #Additional logging
                     logger.info("found tool calls")
-                    logging.info(f"first_choice = {first_choice}")
+                    logger.info(f"first_choice = {first_choice}")
                     if first_choice.message.tool_calls:
                         if first_choice.message.tool_calls[0].function.name:
                             tool_name += first_choice.message.tool_calls[0].function.name
@@ -618,7 +618,7 @@ class OpenAIHelper:
                         return response, tools_used
                 else:
                     return response, tools_used
-            logging.info(f'Calling tool {tool_name} with arguments {arguments}')
+            logger.info(f'Calling tool {tool_name} with arguments {arguments}')
             
             # Добавляем chat_id в аргументы
             try:
@@ -627,7 +627,7 @@ class OpenAIHelper:
                 args['user_id'] = chat_id
                 arguments = json.dumps(args, ensure_ascii=False)
             except json.JSONDecodeError:
-                logging.error(f"Failed to parse arguments JSON: {arguments}")
+                logger.error(f"Failed to parse arguments JSON: {arguments}")
                 return response, tools_used
             
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
@@ -635,7 +635,7 @@ class OpenAIHelper:
             model_to_use = self.get_current_model(user_id)
 
             tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
-            logging.info(f'Function {tool_name} response: {tool_response}')
+            logger.info(f'Function {tool_name} response: {tool_response}')
 
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
@@ -654,7 +654,7 @@ class OpenAIHelper:
             session_id = active_session['session_id'] if active_session else None
             max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
 
-            logging.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
+            logger.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
 
             if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
                 # Находим системное сообщение и добавляем инструкцию
@@ -674,7 +674,7 @@ class OpenAIHelper:
             )
             return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used)
         except Exception as e:
-            logging.error(f'Error in function call handling: {str(e)}', exc_info=True)
+            logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
             raise
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
@@ -696,7 +696,7 @@ class OpenAIHelper:
             )
 
             if len(response.data) == 0:
-                logging.error(f'No response from GPT: {str(response)}')
+                logger.error(f'No response from GPT: {str(response)}')
                 raise Exception(
                     f"⚠️ _{localized_text('error', bot_language)}._ "
                     f"⚠️\n{localized_text('try_again', bot_language)}."
@@ -744,7 +744,7 @@ class OpenAIHelper:
                 )
                 return result
         except Exception as e:
-            logging.exception(e)
+            logger.exception(e)
             raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{str(e)}") from e
 
     @retry(
@@ -788,17 +788,17 @@ class OpenAIHelper:
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
-                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
                     
                     last = self.conversations[chat_id][-1]
                     summary = await self.__summarise(self.conversations[chat_id][:-1])
-                    logging.debug(f'Summary: {summary}')
+                    logger.debug(f'Summary: {summary}')
                     self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'])
                     self.__add_to_history(chat_id, role="assistant", content=summary)
                     self.conversations[chat_id] += [last]
                 except Exception as e:
-                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                    logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
             message = {'role':'user', 'content':content}
@@ -962,10 +962,10 @@ class OpenAIHelper:
                 self
             )
             
-            logging.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
+            logger.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
             
         except Exception as e:
-            logging.error(f'Error in reset_chat_history: {str(e)}', exc_info=True)
+            logger.error(f'Error in reset_chat_history: {str(e)}', exc_info=True)
             raise
 
     def __max_age_reached(self, chat_id) -> bool:
@@ -1085,7 +1085,7 @@ class OpenAIHelper:
                 
             return summary
         except Exception as e:
-            logging.error(f'Error in summarise: {str(e)}')
+            logger.error(f'Error in summarise: {str(e)}')
             # В случае ошибки возвращаем базовое сообщение
             return "Previous conversation history was too long and has been truncated."
 
@@ -1165,7 +1165,7 @@ class OpenAIHelper:
                 else:
                     raise ValueError(f"Unknown vision_detail parameter: {detail}")
         except Exception as e:
-            logging.error(f"Error processing image for token counting: {e}")
+            logger.error(f"Error processing image for token counting: {e}")
             raise
 
     async def get_file_data(self, file_id: str) -> bytes:
@@ -1179,7 +1179,7 @@ class OpenAIHelper:
             file = await self.bot.get_file(file_id)
             return await file.download_as_bytearray()
         except Exception as e:
-            logging.error(f"Error downloading file: {e}")
+            logger.error(f"Error downloading file: {e}")
             raise
 
     def set_last_image_file_id(self, chat_id: int, file_id: str):
@@ -1230,7 +1230,7 @@ class OpenAIHelper:
             return session_name or f"Сессия {datetime.now().strftime('%d.%m')}", tokens
         
         except Exception as e:
-            logging.error(f"Ошибка генерации названия сессии: {e}")
+            logger.error(f"Ошибка генерации названия сессии: {e}")
             return f"Сессия {datetime.now().strftime('%d.%m')}", 0
 
     def ask_sync(self, prompt, user_id, assistant_prompt=None, model=None):
@@ -1263,27 +1263,27 @@ class OpenAIHelper:
             
             # Проверяем наличие необходимых ключей
             if 'choices' not in data or not data['choices']:
-                logging.error(f"Неожиданный формат ответа API: {data}")
+                logger.error(f"Неожиданный формат ответа API: {data}")
                 return "Ошибка: неожиданный формат ответа API", 0
                 
             if 'message' not in data['choices'][0] or 'content' not in data['choices'][0]['message']:
-                logging.error(f"Отсутствует сообщение в ответе: {data}")
+                logger.error(f"Отсутствует сообщение в ответе: {data}")
                 return "Ошибка: некорректный формат ответа", 0
                 
             if 'usage' not in data or 'total_tokens' not in data['usage']:
-                logging.warning("Отсутствует информация об использовании токенов")
+                logger.warning("Отсутствует информация об использовании токенов")
                 return data["choices"][0]["message"]["content"], 0
                 
             return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
             
         except requests.exceptions.RequestException as e:
-            logging.error(f"Ошибка при отправке запроса к API: {e}")
+            logger.error(f"Ошибка при отправке запроса к API: {e}")
             return f"Ошибка соединения с API: {str(e)}", 0
         except (KeyError, ValueError, TypeError) as e:
-            logging.error(f"Ошибка при обработке ответа API: {e}")
+            logger.error(f"Ошибка при обработке ответа API: {e}")
             return f"Ошибка обработки ответа: {str(e)}", 0
         except Exception as e:
-            logging.error(f"Неожиданная ошибка: {e}")
+            logger.error(f"Неожиданная ошибка: {e}")
             return f"Неожиданная ошибка: {str(e)}", 0
 
     def get_current_model(self, user_id: int = None) -> str:
@@ -1303,11 +1303,11 @@ class OpenAIHelper:
             
             # Проверяем модель в сессии
             if active_session and active_session.get('model', ''):
-                logging.info(f"Модель из активной сессии: {active_session.get('model', '')}")
+                logger.info(f"Модель из активной сессии: {active_session.get('model', '')}")
                 return active_session.get('model', '')
                             
         # Возвращаем модель по умолчанию
-        logging.info(f"Модель по умолчанию: {self.config['model']}")
+        logger.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
     
     @lru_cache(maxsize=128)
