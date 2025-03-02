@@ -23,20 +23,22 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
 from pydub import AudioSegment
 from PIL import Image
 
-from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
+from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
+from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
         GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
               ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK
-from plugins.haiper_image_to_video import WAITING_PROMPT
-from usage_tracker import UsageTracker
-from database import Database
+from .plugins.haiper_image_to_video import WAITING_PROMPT
+from .usage_tracker import UsageTracker
+from .database import Database
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 WAITING_PROMPT = 1
+
 
 class ChatGPTTelegramBot:
     """
@@ -139,12 +141,12 @@ class ChatGPTTelegramBot:
         а также информацию о сессиях пользователя.
         """
         if not await is_allowed(self.config, update, context):
-            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
                             'is not allowed to request their usage statistics')
             await self.send_disallowed_message(update, context)
             return
 
-        logging.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+        logger.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
                      'requested their usage statistics')
 
         user_id = update.message.from_user.id
@@ -309,14 +311,14 @@ class ChatGPTTelegramBot:
         Resend the last request
         """
         if not await is_allowed(self.config, update, context):
-            logging.warning(f'User {update.message.from_user.name}  (id: {update.message.from_user.id})'
+            logger.warning(f'User {update.message.from_user.name}  (id: {update.message.from_user.id})'
                             ' is not allowed to resend the message')
             await self.send_disallowed_message(update, context)
             return
 
         chat_id = update.effective_chat.id
         if chat_id not in self.last_message:
-            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id})'
+            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id})'
                             ' does not have anything to resend')
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
@@ -325,7 +327,7 @@ class ChatGPTTelegramBot:
             return
 
         # Update message text, clear self.last_message and send the request to prompt
-        logging.info(f'Resending the last prompt from user: {update.message.from_user.name} '
+        logger.info(f'Resending the last prompt from user: {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})')
         with update.message._unfrozen() as message:
             message.text = self.last_message.pop(chat_id)
@@ -461,7 +463,7 @@ class ChatGPTTelegramBot:
                 await self.send_disallowed_message(update, context)
                 return
         else:
-            logging.error("Neither callback_query nor message found in update")
+            logger.error("Neither callback_query nor message found in update")
             return
         
         if error:
@@ -615,7 +617,7 @@ class ChatGPTTelegramBot:
                     raise
             
         except Exception as e:
-            logging.error(f"Error in reset: {str(e)}", exc_info=True)
+            logger.error(f"Error in reset: {str(e)}", exc_info=True)
             error_text = "Произошла ошибка при управлении сессиями. Пожалуйста, попробуйте еще раз через несколько секунд."
             if is_callback:
                 try:
@@ -755,12 +757,12 @@ class ChatGPTTelegramBot:
                     )
             else:
                 # Обработка неизвестных callback-данных
-                logging.warning(f"Неизвестный callback: {query.data}")
+                logger.warning(f"Неизвестный callback: {query.data}")
                 await query.edit_message_text(
                     text="Произошла ошибка. Пожалуйста, попробуйте снова."
                 )
         except Exception as e:
-            logging.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
+            logger.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
             await query.edit_message_text(
                 text=f"Произошла ошибка: {str(e)}"
             )
@@ -770,7 +772,7 @@ class ChatGPTTelegramBot:
         Перезапускает бота. Доступно только администраторам.
         """
         if not is_admin(self.config, update.message.from_user.id):
-            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
                           'tried to restart the bot but is not admin')
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
@@ -778,7 +780,7 @@ class ChatGPTTelegramBot:
             )
             return
 
-        logging.info(f'Restarting bot by admin {update.message.from_user.name} '
+        logger.info(f'Restarting bot by admin {update.message.from_user.name} '
                     f'(id: {update.message.from_user.id})...')
         
         await update.effective_message.reply_text(
@@ -812,7 +814,7 @@ class ChatGPTTelegramBot:
                 sys.exit(0)
                 
         except Exception as e:
-            logging.warning(f"Failed to restart systemd service: {e}")
+            logger.warning(f"Failed to restart systemd service: {e}")
         
         # Если не получилось перезапустить сервис, перезапускаем процесс Python
         os.execl(sys.executable, sys.executable, *sys.argv)
@@ -833,7 +835,7 @@ class ChatGPTTelegramBot:
             )
             return
 
-        logging.info(f'New image generation request received from user {update.message.from_user.name} '
+        logger.info(f'New image generation request received from user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})')
 
         async def _generate():
@@ -860,7 +862,7 @@ class ChatGPTTelegramBot:
                     self.usage["guests"].add_image_request(image_size, self.config['image_prices'])
 
             except Exception as e:
-                logging.exception(e)
+                logger.exception(e)
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -886,7 +888,7 @@ class ChatGPTTelegramBot:
             )
             return
 
-        logging.info(f'New speech generation request received from user {update.message.from_user.name} '
+        logger.info(f'New speech generation request received from user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})')
 
         async def _generate():
@@ -907,7 +909,7 @@ class ChatGPTTelegramBot:
                                                          self.config['tts_prices'])
 
             except Exception as e:
-                logging.exception(e)
+                logger.exception(e)
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -925,7 +927,7 @@ class ChatGPTTelegramBot:
             return
 
         if is_group_chat(update) and self.config['ignore_group_transcriptions']:
-            logging.info('Transcription coming from group chat, ignoring...')
+            logger.info('Transcription coming from group chat, ignoring...')
             return
 
         chat_id = update.effective_chat.id
@@ -939,7 +941,7 @@ class ChatGPTTelegramBot:
                 media_file = await self.application.bot.get_file(update.message.effective_attachment.file_id)
                 await media_file.download_to_drive(filename)
             except Exception as e:
-                logging.exception(e)
+                logger.exception(e)
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -954,11 +956,11 @@ class ChatGPTTelegramBot:
             try:
                 audio_track = AudioSegment.from_file(filename)
                 audio_track.export(filename_mp3, format="mp3")
-                logging.info(f'New transcribe request received from user {update.message.from_user.name} '
+                logger.info(f'New transcribe request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
 
             except Exception as e:
-                logging.exception(e)
+                logger.exception(e)
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1012,7 +1014,7 @@ class ChatGPTTelegramBot:
                         f"_{localized_text('transcript', bot_language)}:_\n\"{transcript}\"\n\n"
                         f"_{localized_text('answer', bot_language)}:_\n{response}"
                     )
-                    logging.info(f"Transcript output: {transcript_output}")
+                    logger.info(f"Transcript output: {transcript_output}")
                     chunks = split_into_chunks(transcript_output)
 
                     for index, transcript_chunk in enumerate(chunks):
@@ -1024,7 +1026,7 @@ class ChatGPTTelegramBot:
                         )
 
             except Exception as e:
-                logging.exception(e)
+                logger.exception(e)
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1050,7 +1052,7 @@ class ChatGPTTelegramBot:
         user_id = update.message.from_user.id
         prompt = update.message.caption
         
-        logging.info(f"Vision handler called for chat_id: {chat_id}, user_id: {user_id}")
+        logger.info(f"Vision handler called for chat_id: {chat_id}, user_id: {user_id}")
 
         # Cleanup old images first
         self.db.cleanup_old_images()
@@ -1058,24 +1060,24 @@ class ChatGPTTelegramBot:
         # Store the image in database
         if len(update.message.photo) > 0:
             file_id = update.message.photo[-1].file_id
-            logging.info(f"Storing photo file_id: {file_id}")
+            logger.info(f"Storing photo file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
         elif update.message.document and update.message.document.mime_type.startswith('image/'):
             file_id = update.message.document.file_id
-            logging.info(f"Storing document file_id: {file_id}")
+            logger.info(f"Storing document file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
 
         # Only proceed with vision if there's a caption or it's a valid vision request
         if prompt or (is_group_chat(update) and not self.config['ignore_group_vision']):
             if is_group_chat(update):
                 if self.config['ignore_group_vision']:
-                    logging.info('Vision coming from group chat, ignoring...')
+                    logger.info('Vision coming from group chat, ignoring...')
                     return
                 else:
                     trigger_keyword = self.config['group_trigger_keyword']
                     if (prompt is None and trigger_keyword != '') or \
                             (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
-                        logging.info('Vision coming from group chat with wrong keyword, ignoring...')
+                        logger.info('Vision coming from group chat with wrong keyword, ignoring...')
                         return
 
             image = update.message.effective_attachment[-1]
@@ -1086,7 +1088,7 @@ class ChatGPTTelegramBot:
                     media_file = await self.application.bot.get_file(image.file_id)
                     temp_file = io.BytesIO(await media_file.download_as_bytearray())
                 except Exception as e:
-                    logging.exception(e)
+                    logger.exception(e)
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1106,11 +1108,11 @@ class ChatGPTTelegramBot:
                     original_image = Image.open(temp_file)
 
                     original_image.save(temp_file_png, format='PNG')
-                    logging.info(f'New vision request received from user {update.message.from_user.name} '
+                    logger.info(f'New vision request received from user {update.message.from_user.name} '
                                 f'(id: {update.message.from_user.id})')
 
                 except Exception as e:
-                    logging.exception(e)
+                    logger.exception(e)
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1222,7 +1224,7 @@ class ChatGPTTelegramBot:
                                     text=interpretation
                                 )
                             except Exception as e:
-                                logging.exception(e)
+                                logger.exception(e)
                                 await update.effective_message.reply_text(
                                     message_thread_id=get_thread_id(update),
                                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1230,7 +1232,7 @@ class ChatGPTTelegramBot:
                                     parse_mode=constants.ParseMode.MARKDOWN
                                 )
                     except Exception as e:
-                        logging.exception(e)
+                        logger.exception(e)
                         await update.effective_message.reply_text(
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1267,7 +1269,7 @@ class ChatGPTTelegramBot:
         prompt = message_text(update.message)
         message_id = update.message.message_id
 
-        logging.info(f"Prompt handler called for chat_id: {chat_id}, user_id: {user_id}")
+        logger.info(f"Prompt handler called for chat_id: {chat_id}, user_id: {user_id}")
 
         # Get last active image from database if exists
         user_images = self.db.get_user_images(user_id, chat_id, limit=1)
@@ -1275,7 +1277,7 @@ class ChatGPTTelegramBot:
             last_image = user_images[0]
             if last_image['status'] == 'active':
                 self.openai.set_last_image_file_id(user_id, last_image['file_id'])  # Changed to use user_id
-                logging.info(f"Found active image {last_image['file_id']} for user {user_id}")
+                logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
 
         async with self.buffer_lock:
             # Инициализируем буфер для чата, если его нет
@@ -1354,13 +1356,13 @@ class ChatGPTTelegramBot:
                     try:
                         await self.process_message(combined_text, first_msg['update'], first_msg['context'])
                     except Exception as e:
-                        logging.error(f"Error processing message: {e}")
+                        logger.error(f"Error processing message: {e}")
                         continue
 
                     await asyncio.sleep(0.1)  # Prevent flooding
 
         except Exception as e:
-            logging.error(f"Error in process_buffer: {e}")
+            logger.error(f"Error in process_buffer: {e}")
         finally:
             # Reset processing flag
             async with self.buffer_lock:
@@ -1377,7 +1379,7 @@ class ChatGPTTelegramBot:
         self.last_message[chat_id] = prompt
         request_id = f"{chat_id}_{message_id}"
             
-        logging.info(
+        logger.info(
             f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
 
         if is_group_chat(update):
@@ -1392,9 +1394,9 @@ class ChatGPTTelegramBot:
                     prompt = f'"{update.message.reply_to_message.text}" {prompt}'
             else:
                 if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
-                    logging.info('Message is a reply to the bot, allowing...')
+                    logger.info('Message is a reply to the bot, allowing...')
                 else:
-                    logging.warning('Message does not start with trigger keyword, ignoring...')
+                    logger.warning('Message does not start with trigger keyword, ignoring...')
                     return
 
         try:
@@ -1556,7 +1558,7 @@ class ChatGPTTelegramBot:
             #    await self.reset(update, context, True)
 
         except Exception as e:
-            logging.exception(e)
+            logger.exception(e)
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -1605,7 +1607,7 @@ class ChatGPTTelegramBot:
 
             await update.inline_query.answer([inline_query_result], cache_time=0)
         except Exception as e:
-            logging.error(f'An error occurred while generating the result card for inline query {e}')
+            logger.error(f'An error occurred while generating the result card for inline query {e}')
 
     async def handle_callback_inline_query(self, update: Update, context: CallbackContext):
         """
@@ -1711,7 +1713,7 @@ class ChatGPTTelegramBot:
                                                             text=f'{query}\n\n_{answer_tr}:_\n{loading_tr}',
                                                             parse_mode=constants.ParseMode.MARKDOWN)
 
-                        logging.info(f'Generating response for inline query by {name}')
+                        logger.info(f'Generating response for inline query by {name}')
                         response, total_tokens = await self.openai.get_chat_response(chat_id=user_id, query=query)
 
                         if is_direct_result(response):
@@ -1739,8 +1741,8 @@ class ChatGPTTelegramBot:
                     await self.reset(update, context, True)
 
         except Exception as e:
-            logging.error(f'Failed to respond to an inline query via button callback: {e}')
-            logging.exception(e)
+            logger.error(f'Failed to respond to an inline query via button callback: {e}')
+            logger.exception(e)
             localized_answer = localized_text('chat_fail', self.config['bot_language'])
             await edit_message_with_retry(context, chat_id=None, message_id=inline_message_id,
                                           text=f"{query}\n\n_{answer_tr}:_\n{localized_answer} {str(e)}",
@@ -1759,11 +1761,11 @@ class ChatGPTTelegramBot:
         user_id = update.inline_query.from_user.id if is_inline else update.message.from_user.id
 
         if not await is_allowed(self.config, update, context, is_inline=is_inline):
-            logging.warning(f'User {name} (id: {user_id}) is not allowed to use the bot')
+            logger.warning(f'User {name} (id: {user_id}) is not allowed to use the bot')
             await self.send_disallowed_message(update, context, is_inline)
             return False
         if not is_within_budget(self.config, self.usage, update, is_inline=is_inline):
-            logging.warning(f'User {name} (id: {user_id}) reached their usage limit')
+            logger.warning(f'User {name} (id: {user_id}) reached their usage limit')
             await self.send_budget_reached_message(update, context, is_inline)
             return False
 
@@ -1931,7 +1933,7 @@ class ChatGPTTelegramBot:
                 await update.message.reply_text(str(result))
 
         except Exception as e:
-            logging.error(f"Ошибка при обработке команды плагина: {e}")
+            logger.error(f"Ошибка при обработке команды плагина: {e}")
             await update.message.reply_text(f"Произошла ошибка при выполнении команды: {str(e)}")
 
     async def cleanup(self):
@@ -1966,7 +1968,7 @@ class ChatGPTTelegramBot:
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
                     except Exception as e:
-                        logging.error(f"Error cancelling task: {e}")
+                        logger.error(f"Error cancelling task: {e}")
 
             # Cancel all running tasks except current
             current_task = asyncio.current_task()
@@ -1974,7 +1976,7 @@ class ChatGPTTelegramBot:
                            if t is not current_task and not t.done()]
             
             if running_tasks:
-                logging.info(f"Cancelling {len(running_tasks)} remaining tasks...")
+                logger.info(f"Cancelling {len(running_tasks)} remaining tasks...")
                 for task in running_tasks:
                     task.cancel()
                 
@@ -1985,7 +1987,7 @@ class ChatGPTTelegramBot:
                 await self.openai.close()
 
         except Exception as e:
-            logging.error(f"Error during cleanup: {e}")
+            logger.error(f"Error during cleanup: {e}")
             raise
 
     async def buffer_data_checker(self):
@@ -2005,7 +2007,7 @@ class ChatGPTTelegramBot:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logging.error(f"Error in buffer data checker: {e}")
+                logger.error(f"Error in buffer data checker: {e}")
             
             await asyncio.sleep(1)
 
@@ -2017,7 +2019,7 @@ class ChatGPTTelegramBot:
                 try:
                     await reminders_plugin.check_reminders(self.application.bot)
                 except Exception as e:
-                    logging.error(f"Error in reminder checker: {e}")
+                    logger.error(f"Error in reminder checker: {e}")
                 
                 # Sleep for a minute between checks to avoid excessive processing
                 await asyncio.sleep(60)
@@ -2027,14 +2029,14 @@ class ChatGPTTelegramBot:
         Обработчик для загруженных документов
         """
         if not await is_allowed(self.config, update, context):
-            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
                           'is not allowed to upload documents')
             await self.send_disallowed_message(update, context)
             return
 
         try:
             document = update.message.document
-            logging.info(f"Получен документ: {document.file_name}, mime_type: {document.mime_type}")
+            logger.info(f"Получен документ: {document.file_name}, mime_type: {document.mime_type}")
             
             # Список поддерживаемых MIME-типов
             supported_mimes = [
@@ -2051,7 +2053,7 @@ class ChatGPTTelegramBot:
             supported_extensions = ['.txt', '.doc', '.docx', '.pdf', '.rtf', '.odt', '.md']
             file_extension = os.path.splitext(document.file_name)[1].lower()
             
-            logging.info(f"Проверка типа файла: mime_type={document.mime_type}, extension={file_extension}")
+            logger.info(f"Проверка типа файла: mime_type={document.mime_type}, extension={file_extension}")
             
             # Проверяем сначала MIME-тип, потом расширение
             if document.mime_type not in supported_mimes and file_extension not in supported_extensions:
@@ -2059,26 +2061,26 @@ class ChatGPTTelegramBot:
                     "Пожалуйста, загрузите текстовый документ в одном из следующих форматов:\n" +
                     ", ".join(supported_extensions)
                 )
-                logging.warning(f"Файл отклонен: неподдерживаемый формат {document.mime_type} / {file_extension}")
+                logger.warning(f"Файл отклонен: неподдерживаемый формат {document.mime_type} / {file_extension}")
                 return
 
-            logging.info("Начинаем скачивание файла...")
+            logger.info("Начинаем скачивание файла...")
             # Скачиваем файл
             file = await context.bot.get_file(document.file_id)
             file_content = await file.download_as_bytearray()
-            logging.info(f"Файл успешно скачан, размер: {len(file_content)} байт")
+            logger.info(f"Файл успешно скачан, размер: {len(file_content)} байт")
             
             # Вызываем плагин для обработки документа
             plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
             if not plugin:
-                logging.error("Плагин text_document_qa не найден")
+                logger.error("Плагин text_document_qa не найден")
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     text="Document processing is not available. The plugin is not enabled."
                 )
                 return
 
-            logging.info("Передаем файл в плагин для обработки...")
+            logger.info("Передаем файл в плагин для обработки...")
             # Execute the plugin function directly
             result = await plugin.execute(
                 'upload_document',
@@ -2091,19 +2093,19 @@ class ChatGPTTelegramBot:
 
             # Обрабатываем результат
             if isinstance(result, dict) and "error" in result:
-                logging.error(f"Ошибка от плагина: {result['error']}")
+                logger.error(f"Ошибка от плагина: {result['error']}")
                 await update.message.reply_text(f"Ошибка: {result['error']}")
             else:
                 try:
-                    logging.info("Файл успешно обработан, отправляем результат")
+                    logger.info("Файл успешно обработан, отправляем результат")
                     await handle_direct_result(self.config, update, result)
                 except Exception as e:
-                    logging.error(f"Error handling direct result: {e}")
+                    logger.error(f"Error handling direct result: {e}")
                     await update.message.reply_text(str(result))
 
         except Exception as e:
             error_text = f"Произошла ошибка при обработке документа: {str(e)}"
-            logging.error(error_text)
+            logger.error(error_text)
             await update.message.reply_text(error_text)
 
     async def handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2316,13 +2318,13 @@ class ChatGPTTelegramBot:
                     else:
                         await query.edit_message_text("❌ Не удалось экспортировать сессии")
                 except Exception as e:
-                    logging.error(f"Ошибка экспорта сессий: {e}")
+                    logger.error(f"Ошибка экспорта сессий: {e}")
                     await query.edit_message_text("❌ Произошла ошибка при экспорте сессий")
                 
                 # Возвращаемся к списку сессий
                 await self.reset(update, context)
         except Exception as e:
-            logging.error(f'Error in handle_session_callback: {e}', exc_info=True)
+            logger.error(f'Error in handle_session_callback: {e}', exc_info=True)
             await query.edit_message_text(
                 text=f"Произошла ошибка: {str(e)}"
             )

@@ -4,7 +4,7 @@ import json
 import requests
 from jsonschema import validate, ValidationError
 import logging
-from plugins.plugin import Plugin
+from .plugin import Plugin
 import aiohttp
 import asyncio
 from functools import lru_cache

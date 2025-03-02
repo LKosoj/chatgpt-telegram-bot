@@ -13,7 +13,7 @@ from typing import Dict, Any, Callable, Optional
 from datetime import datetime, timedelta
 from enum import Enum
 from dataclasses import dataclass
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 # Конфигурация API
 API_URL = "https://api-inference.huggingface.co/models/ali-vilab/In-Context-LoRA"

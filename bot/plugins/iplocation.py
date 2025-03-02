@@ -1,7 +1,7 @@
 import requests
 from typing import Dict
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class IpLocationPlugin(Plugin):

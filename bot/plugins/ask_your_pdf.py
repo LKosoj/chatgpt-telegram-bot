@@ -9,7 +9,7 @@ from typing import Dict, List
 import PyPDF2
 import textract
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 class AskYourPDFPlugin(Plugin):
     """

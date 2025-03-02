@@ -28,8 +28,8 @@ import hashlib
 import telegram
 from telegram import constants
 
-from plugins.plugin import Plugin
-from utils import escape_markdown
+from .plugin import Plugin
+from ..utils import escape_markdown
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
 MAX_RETRIES = 4
@@ -279,7 +279,7 @@ class HaiperImageToVideoPlugin(Plugin):
                                 caption=f"🎬 Видео создано с промптом:\n{task.prompt}"
                             )
                         except Exception as e:
-                            logging.error(f"Error sending video to user: {e}")
+                            logger.error(f"Error sending video to user: {e}")
                             await self.bot.send_message(
                                 chat_id=task.chat_id,
                                 text=f"❌ Произошла ошибка при отправке видео: {str(e)}"
@@ -287,7 +287,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 except Exception as e:
                     task.status = TaskStatus.FAILED
                     task.error = str(e)
-                    logging.error(f"Error processing task {task.task_id}: {e}")
+                    logger.error(f"Error processing task {task.task_id}: {e}")
                     # Отправляем сообщение об ошибке пользователю
                     try:
                         await self.bot.send_message(
@@ -295,11 +295,11 @@ class HaiperImageToVideoPlugin(Plugin):
                             text=f"❌ Произошла ошибка при создании видео: {str(e)}"
                         )
                     except Exception as send_error:
-                        logging.error(f"Error sending error message to user: {send_error}")
+                        logger.error(f"Error sending error message to user: {send_error}")
 
                 self.task_queue.task_done()
             except Exception as e:
-                logging.error(f"Error in queue processor: {e}")
+                logger.error(f"Error in queue processor: {e}")
                 await asyncio.sleep(1)
 
     async def _process_video_task(self, task: VideoTask) -> Dict:
@@ -351,11 +351,11 @@ class HaiperImageToVideoPlugin(Plugin):
                             timeout=aiohttp.ClientTimeout(total=60)
                         ) as response:
                             response_text = await response.text()
-                            logging.info(f"API Response status: {response.status}, text: {response_text}")
+                            logger.info(f"API Response status: {response.status}, text: {response_text}")
                             
                             if response.status == 429:  # Rate limit
                                 retry_after = int(response.headers.get('Retry-After', RETRY_DELAY))
-                                logging.warning(f"Rate limit reached. Waiting {retry_after} seconds...")
+                                logger.warning(f"Rate limit reached. Waiting {retry_after} seconds...")
                                 await asyncio.sleep(retry_after)
                                 continue
                             elif response.status == 402:  # Payment required
@@ -367,7 +367,7 @@ class HaiperImageToVideoPlugin(Plugin):
                             
                             try:
                                 response_data = json.loads(response_text)
-                                logging.info(f"Parsed response data: {response_data}")
+                                logger.info(f"Parsed response data: {response_data}")
                             except json.JSONDecodeError:
                                 raise Exception(f"Invalid JSON response: {response_text}")
                             
@@ -386,7 +386,7 @@ class HaiperImageToVideoPlugin(Plugin):
 
                 task_id = response_data.get("request_id")
                 if not task_id:
-                    logging.error(f"No request_id in response. Full response: {response_data}")
+                    logger.error(f"No request_id in response. Full response: {response_data}")
                     raise Exception("No request_id in response")
 
                 # Poll for task completion
@@ -403,7 +403,7 @@ class HaiperImageToVideoPlugin(Plugin):
                         
                         status_data = await response.json()
                         task_status = status_data.get("status")
-                        #logging.info(f"Task {task_id} status: {task_status}")
+                        #logger.info(f"Task {task_id} status: {task_status}")
                         
                         if task_status == "COMPLETED":
                             video_url = status_data.get('url')
@@ -414,14 +414,14 @@ class HaiperImageToVideoPlugin(Plugin):
                             raise Exception(f"Task failed: {status_data.get('reason', 'Unknown error')}")
                         elif task_status in ["pending", "processing", "IN_QUEUE", "IN_PROGRESS"]:
                             await asyncio.sleep(STATUS_CHECK_INTERVAL)
-                            logging.info(f"Task {task_id} status: {task_status}")
+                            logger.info(f"Task {task_id} status: {task_status}")
                         else:
                             raise Exception(f"Unknown task status: {task_status}")
 
                 raise Exception("Task timed out")
 
         except Exception as e:
-            logging.error(f"Error processing video task: {e}")
+            logger.error(f"Error processing video task: {e}")
             raise
 
     def initialize(self, helper):
@@ -443,17 +443,17 @@ class HaiperImageToVideoPlugin(Plugin):
         self.initialize(helper)
 
         try:
-            logging.info(f"haiper_image_to_video execute called with kwargs: {kwargs}")
+            logger.info(f"haiper_image_to_video execute called with kwargs: {kwargs}")
             prompt = kwargs.get('prompt', "оживи картинку")
             chat_id = kwargs.get('chat_id')
-            logging.info(f"animation prompt: {prompt}")
+            logger.info(f"animation prompt: {prompt}")
 
             # Получаем file_id из сохраненного изображения
             file_id = kwargs.get('image_path')
             if not file_id:
                 raise ValueError("No image file_id provided")
 
-            logging.info(f"Found image {file_id} for user {chat_id}")
+            logger.info(f"Found image {file_id} for user {chat_id}")
 
             # Создаем новую задачу
             task = VideoTask(
@@ -474,7 +474,7 @@ class HaiperImageToVideoPlugin(Plugin):
             return {"message": "Ваш запрос добавлен в очередь на обработку. Это может занять несколько минут."}
 
         except Exception as e:
-            logging.error(f"Error in execute: {e}")
+            logger.error(f"Error in execute: {e}")
             raise
 
     async def handle_animate_command(self, update: Update, context) -> None:
@@ -485,7 +485,7 @@ class HaiperImageToVideoPlugin(Plugin):
         message = update.message
         chat_id = message.chat.id
         user_id = message.from_user.id
-        logging.info(f"handle_animate_command called with chat_id: {chat_id}, user_id: {user_id}")
+        logger.info(f"handle_animate_command called with chat_id: {chat_id}, user_id: {user_id}")
         
         if not self.openai:
             await message.reply_text("Ошибка: не инициализирован OpenAI helper")
@@ -505,7 +505,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 else:
                     file_id = message.reply_to_message.document.file_id
                     
-                logging.info(f"Processing animation for replied photo with file_id: {file_id}")
+                logger.info(f"Processing animation for replied photo with file_id: {file_id}")
                 # Сразу обрабатываем фото с промптом
                 await self._process_animate_command(message, file_id, prompt)
                 return
@@ -539,7 +539,7 @@ class HaiperImageToVideoPlugin(Plugin):
             )
 
         except Exception as e:
-            logging.error(f"Error in handle_animate_command: {e}")
+            logger.error(f"Error in handle_animate_command: {e}")
             await message.reply_text(
                 "❌ Произошла ошибка при обработке команды\n\n"
                 f"Детали ошибки: {str(e)}\n\n"
@@ -655,7 +655,7 @@ class HaiperImageToVideoPlugin(Plugin):
         except Exception as e:
             elapsed_time = datetime.now() - start_time
             elapsed_minutes = elapsed_time.total_seconds() / 60
-            logging.error(f"Error in _process_animate_command: {e}")
+            logger.error(f"Error in _process_animate_command: {e}")
             await message.reply_text(
                 "❌ Произошла ошибка при обработке команды\n\n"
                 f"Детали ошибки: {str(e)}\n\n"
@@ -673,7 +673,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 try:
                     os.unlink(temp_file.name)
                 except Exception as e:
-                    logging.error(f"Error deleting temporary file: {e}")
+                    logger.error(f"Error deleting temporary file: {e}")
 
     async def handle_animate_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> None:
         """Обработчик команды /animate_help"""
@@ -746,12 +746,12 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             data = query.data.replace('haiper_', '')
-            #logging.info(f"Получен callback_query: {data} от пользователя {user_id}")
-            #logging.info(f"Текущие настройки пользователя: {self.user_settings.get(user_id, {})}")
+            #logger.info(f"Получен callback_query: {data} от пользователя {user_id}")
+            #logger.info(f"Текущие настройки пользователя: {self.user_settings.get(user_id, {})}")
             
             # Обработка закрытия меню
             if data == "close_menu":
-                #logging.info("Закрытие меню конструктора")
+                #logger.info("Закрытие меню конструктора")
                 await query.answer("Меню закрыто")
                 await query.message.delete()
                 return
@@ -794,16 +794,16 @@ class HaiperImageToVideoPlugin(Plugin):
                 return
 
             if data == "prompt_restart":
-                logging.info("Обработка кнопки сброса")
+                logger.info("Обработка кнопки сброса")
                 await query.answer("🔄 Настройки сброшены")
                 if user_id in self.user_settings:
                     self.user_settings[user_id] = {}
-                logging.info("Настройки пользователя сброшены")
+                logger.info("Настройки пользователя сброшены")
                 await self.show_main_menu_with_selections(query.message, user_id)
                 return
 
             if data == "back_to_main":
-                logging.info("Обработка кнопки 'Назад'")
+                logger.info("Обработка кнопки 'Назад'")
                 await query.answer()
                 await self.show_main_menu_with_selections(query.message, user_id)
                 return
@@ -827,11 +827,11 @@ class HaiperImageToVideoPlugin(Plugin):
                 await self.apply_settings(query)
                 return
 
-            logging.warning(f"Получен неизвестный callback_data: {data}")
+            logger.warning(f"Получен неизвестный callback_data: {data}")
             await query.answer("⚠️ Неизвестная команда")
 
         except Exception as e:
-            logging.error(f"Ошибка в handle_callback_query: {e}", exc_info=True)
+            logger.error(f"Ошибка в handle_callback_query: {e}", exc_info=True)
             await query.message.reply_text(
                 "❌ Произошла ошибка. Попробуйте позже."
             )
@@ -890,12 +890,12 @@ class HaiperImageToVideoPlugin(Plugin):
             )
         except telegram.error.BadRequest as e:
             if "Message is not modified" not in str(e):
-                logging.error(f"Ошибка при обновлении меню стилей: {e}")
+                logger.error(f"Ошибка при обновлении меню стилей: {e}")
                 raise
             else:
-                logging.info("Сообщение не было изменено (это нормально)")
+                logger.info("Сообщение не было изменено (это нормально)")
         except Exception as e:
-            logging.error(f"Неожиданная ошибка в show_style_selection: {e}")
+            logger.error(f"Неожиданная ошибка в show_style_selection: {e}")
             raise
 
     async def show_effects_selection(self, message):
@@ -1028,12 +1028,12 @@ class HaiperImageToVideoPlugin(Plugin):
             )
         except telegram.error.BadRequest as e:
             if "Message is not modified" not in str(e):
-                logging.error(f"Ошибка при обновлении меню пресетов: {e}")
+                logger.error(f"Ошибка при обновлении меню пресетов: {e}")
                 raise
             else:
-                logging.info("Сообщение не было изменено (это нормально)")
+                logger.info("Сообщение не было изменено (это нормально)")
         except Exception as e:
-            logging.error(f"Неожиданная ошибка в show_presets_selection: {e}")
+            logger.error(f"Неожиданная ошибка в show_presets_selection: {e}")
             raise
 
     def get_preset_name(self, preset_id: str) -> str:
@@ -1155,7 +1155,7 @@ class HaiperImageToVideoPlugin(Plugin):
             await self._process_animate_command(query.message, file_id)
             
         except Exception as e:
-            logging.error(f"Error in handle_animate_button: {e}")
+            logger.error(f"Error in handle_animate_button: {e}")
             await query.message.reply_text(
                 "❌ Произошла ошибка. Попробуйте позже."
             )
@@ -1304,7 +1304,7 @@ class HaiperImageToVideoPlugin(Plugin):
             )
             
         except Exception as e:
-            logging.error(f"Error in handle_prompt_constructor: {e}")
+            logger.error(f"Error in handle_prompt_constructor: {e}")
             if update and update.message:
                 await update.message.reply_text(
                     "❌ Произошла ошибка. Попробуйте позже."
@@ -1319,7 +1319,7 @@ class HaiperImageToVideoPlugin(Plugin):
         """Показывает главное меню с отметками о выбранных настройках"""
         try:
             settings = self.user_settings.get(user_id, {})
-            logging.info(f"Текущие настройки пользователя: {settings}")
+            logger.info(f"Текущие настройки пользователя: {settings}")
             
             # Формируем текст с выбранными настройками
             menu_text = "*🎬 Конструктор анимации*\n\n"
@@ -1375,12 +1375,12 @@ class HaiperImageToVideoPlugin(Plugin):
             )
         except telegram.error.BadRequest as e:
             if "Message is not modified" not in str(e):
-                logging.error(f"Ошибка при обновлении главного меню: {e}")
+                logger.error(f"Ошибка при обновлении главного меню: {e}")
                 raise
             else:
-                logging.info("Сообщение не было изменено (это нормально)")
+                logger.info("Сообщение не было изменено (это нормально)")
         except Exception as e:
-            logging.error(f"Неожиданная ошибка в show_main_menu_with_selections: {e}")
+            logger.error(f"Неожиданная ошибка в show_main_menu_with_selections: {e}")
             raise
 
     def get_style_name(self, style_id: str) -> str:

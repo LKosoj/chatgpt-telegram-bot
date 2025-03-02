@@ -4,7 +4,7 @@ from typing import Dict
 
 from duckduckgo_search import DDGS
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class DDGWebSearchPlugin(Plugin):

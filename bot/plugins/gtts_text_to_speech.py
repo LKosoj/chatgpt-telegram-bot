@@ -3,7 +3,7 @@ from typing import Dict
 
 from gtts import gTTS
 
-from plugins.plugin import Plugin
+from .plugin import Plugin
 
 
 class GTTSTextToSpeech(Plugin):
