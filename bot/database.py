@@ -331,6 +331,7 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM conversation_context WHERE user_id = ?', (user_id,))
+                cursor.execute('DELETE FROM user_models WHERE user_id = ?', (user_id,))
                 logging.info(f'All data deleted successfully for user_id={user_id}')
         except Exception as e:
             logging.error(f'Error deleting user data: {e}', exc_info=True)
@@ -341,6 +342,13 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO user_models (user_id, model_name)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET 
+                    model_name = excluded.model_name,
+                    updated_at = CURRENT_TIMESTAMP
+                ''', (user_id, model_name))
 
                 # Обновляем модель в активной сессии
                 cursor.execute('''
