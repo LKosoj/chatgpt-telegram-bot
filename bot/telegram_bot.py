@@ -33,6 +33,7 @@ from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GP
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
+import assemblyai as aai
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -975,7 +976,18 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
             try:
-                transcript = await self.openai.transcribe(filename_mp3)
+                transcript = ''
+                if self.config['assemblyai_api_key']:
+                    aai.settings.api_key = self.config['assemblyai_api_key']
+                    config = aai.TranscriptionConfig(speaker_labels=True, language_code="ru")
+                    transcriber = aai.Transcriber()
+                    transcript = transcriber.transcribe(filename_mp3, config=config)
+                    transcript_text = ''
+                    for utterance in transcript.utterances:
+                        transcript_text += f"Speaker {utterance.speaker}: {utterance.text}\n"                    
+                    transcript = transcript_text
+                else:
+                    transcript = await self.openai.transcribe(filename_mp3)
 
                 transcription_price = self.config['transcription_price']
                 self.usage[user_id].add_transcription_seconds(audio_track.duration_seconds, transcription_price)

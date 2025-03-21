@@ -89,7 +89,11 @@ text_improver:
     - website_content
 #    - text_summarizer  
     - prompt_perfect
-
+    - gtts_text_to_speech
+    - auto_tts
+    - youtube_transcript
+    - text_document_qa
+    - reminders
 travel_guide:
   name: 🧳 Travel Guide
   group: 1. Общие
@@ -147,6 +151,12 @@ travel_guide:
     - website_content
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - youtube_transcript
+    - text_document_qa
+    - deepl_translate
+    - reminders
 
 content_creator:
   name: 👩🏼‍💻 Content Creator
@@ -227,6 +237,12 @@ content_creator:
     - show_me_diagrams
     - ddg_image_search
     - stable_diffusion
+    - gtts_text_to_speech
+    - auto_tts
+    - youtube_transcript
+    - text_document_qa
+    - show_me_diagrams
+    - reminders
 
 technical_writer:
   name: 🔧 Technical Writer
@@ -309,6 +325,11 @@ technical_writer:
 #    - text_summarizer
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - youtube_transcript
+    - text_document_qa
+    - reminders
 
 summary_assistant:
   name: 👩🏼‍💻 Summary Assistant
@@ -381,6 +402,11 @@ summary_assistant:
 #    - text_summarizer
     - prompt_perfect
     - youtube_transcript
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - show_me_diagrams
+    - reminders
 
 primitives:
   name: 🧠 Упроститель
@@ -449,6 +475,10 @@ primitives:
     - youtube_transcript
     - ddg_web_search
     - website_content
+    - gtts_text_to_speech
+    - auto_tts
+    - show_me_diagrams
+    - reminders
 
 chief_assistant:
   name: 🍽️ Шеф-повар
@@ -491,7 +521,10 @@ chief_assistant:
     - chief
     - ddg_web_search
     - website_content
-
+    - gtts_text_to_speech
+    - auto_tts
+    - deepl_translate
+    - reminders
 code_assistant:
   name: 👩🏼‍💻 Code Assistant
   group: 2. Программирование
@@ -562,7 +595,10 @@ code_assistant:
     - website_content
     - github_analyses
     - show_me_diagrams
-
+    - gtts_text_to_speech
+    - auto_tts
+    - prompt_perfect
+    - reminders
 sql_assistant:
   name: 📊 SQL Assistant
   group: 2. Программирование
@@ -633,6 +669,12 @@ sql_assistant:
     - website_content
     - github_analyses
     - show_me_diagrams
+    - text_document_qa
+    - codeinterpreter
+    - gtts_text_to_speech
+    - auto_tts
+    - reminders
+
 artist:
   name: 👩‍🎨 Художник
   group: 3. Обучение
@@ -721,6 +763,8 @@ english_tutor:
     - show_me_diagrams
     - deepl_translate
     - gtts_text_to_speech
+    - auto_tts
+    - reminders
 
 psychologist:
   name: 🧠 Психолог
@@ -792,6 +836,9 @@ psychologist:
     - website_content
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - reminders
 
 movie_expert:
   name: 🎬 Эксперт по фильмам
@@ -863,6 +910,10 @@ movie_expert:
     - website_content
     - movie_info
     - prompt_perfect
+    - gtts_text_to_speech
+    - auto_tts
+    - deepl_translate
+    - reminders
 
 code_interpreter:
   name: 💻 Бизнес-аналитик
@@ -884,7 +935,10 @@ code_interpreter:
     - prompt_perfect
     - show_me_diagrams
     - codeinterpreter
-
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - reminders
 startup_idea_generator:
   name: 💡 Startup Idea Generator
   group: 4. Бизнес
@@ -955,6 +1009,12 @@ startup_idea_generator:
     - website_content
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - codeinterpreter
+    - reminders
+
 money_maker:
   name: 💰 Money Maker
   group: 4. Бизнес
@@ -1025,6 +1085,12 @@ money_maker:
     - website_content
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - show_me_diagrams
+    - codeinterpreter
+    - reminders
 
 accountant:
   name: 🧮 Бухгалтер
@@ -1096,6 +1162,11 @@ accountant:
     - website_content
     - prompt_perfect
     - show_me_diagrams
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - codeinterpreter
+    - reminders
 
 project_manager:
   name: 📊 Project Manager
@@ -1167,7 +1238,11 @@ project_manager:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-
+    - gtts_text_to_speech
+    - auto_tts
+    - text_document_qa
+    - codeinterpreter
+    - reminders
 meta_writer:
   name: 📝 Meta Writer
   group: 4. Бизнес
@@ -1237,3 +1312,9 @@ meta_writer:
     - ddg_web_search
     - website_content
     - prompt_perfect
+    - deepl_translate
+    - gtts_text_to_speech
+    - auto_tts
+    - show_me_diagrams
+    - codeinterpreter
+    - reminders

@@ -14,7 +14,7 @@ import asyncio
 from docling.document_converter import DocumentConverter
 import tempfile
 import concurrent.futures
-from utils import handle_direct_result
+from ..utils import handle_direct_result
 import torch
 import gc
 

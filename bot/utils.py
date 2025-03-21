@@ -86,14 +86,24 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     if len(text) <= chunk_size:
         return [text]
     
+    # Предварительная обработка очень длинных строк
+    max_line_length = 3800  # Немного меньше чем chunk_size для обеспечения безопасности
+    processed_lines = []
+    
+    for line in text.split('\n'):
+        if len(line) > max_line_length:
+            # Разбиваем длинную строку на части с переносами
+            parts = [line[i:i+max_line_length] for i in range(0, len(line), max_line_length)]
+            processed_lines.extend(parts)
+        else:
+            processed_lines.append(line)
+    
     chunks = []
     current_chunk = ""
     markdown_stack = []  # Стек для отслеживания открытых Markdown-элементов
     
-    # Разбиваем текст на строки для сохранения целостности строк
-    lines = text.split('\n')
-    
-    for line in lines:
+    # Используем предварительно обработанные строки
+    for line in processed_lines:
         # Если текущая строка с переносом превысит размер чанка
         if len(current_chunk) + len(line) + 1 > chunk_size:
             # Закрываем все открытые Markdown-элементы

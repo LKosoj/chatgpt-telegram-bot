@@ -14,3 +14,5 @@ bot/plugins/reminders.json
 bot/.vscode/lua.booster.lint.json
 bot/plugins/.cursorrules
 /.specstory
+bot/user_data.db
+*.html
