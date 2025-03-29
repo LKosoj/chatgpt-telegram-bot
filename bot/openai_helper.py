@@ -20,7 +20,7 @@ import yaml
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
-from .utils import is_direct_result, encode_image, decode_image
+from .utils import is_direct_result, encode_image, decode_image, escape_markdown
 from .plugin_manager import PluginManager
 from .database import Database
 
@@ -66,13 +66,13 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 128000
+        return 100000
     elif model in O_MODELS:
-        return 128000
+        return 100000
     elif model in ANTHROPIC:
-        return 200000
+        return 180000
     elif model in MISTRALAI:
-        return 128000
+        return 100000
     elif model in GOOGLE:
         return 900000
     elif model in DEEPSEEK:
@@ -198,7 +198,7 @@ class OpenAIHelper:
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
-                max_tokens=self.get_max_tokens(model_to_use, 50),
+                max_tokens=self.get_max_tokens(model_to_use, 50, user_id),
                 temperature=0.6,
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
@@ -209,13 +209,14 @@ class OpenAIHelper:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
 
-    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, **kwargs) -> tuple[str, str]:
         """
         Gets a full response from the GPT model with optional session support.
         :param chat_id: The chat ID
         :param query: The query to send to the model
         :param request_id: Optional request identifier
         :param session_id: Optional session identifier
+        :param **kwargs: Additional keyword arguments
         :return: The answer from the model and the number of tokens used
         """
         try:
@@ -231,7 +232,8 @@ class OpenAIHelper:
             response = await self.__common_get_chat_response(
                 chat_id, 
                 query, 
-                session_id=session_id
+                session_id=session_id,
+                **kwargs
             )
             
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
@@ -378,14 +380,16 @@ class OpenAIHelper:
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None):
+    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None, **kwargs):
         """
         Request a response from the GPT model.
         :param chat_id: The chat ID
         :param query: The query to send to the model
+        :param **kwargs: Additional keyword arguments
         :return: The answer from the model and the number of tokens used
         """
         bot_language = self.config['bot_language']
+        big_context = kwargs.get('big_context', False)
         try:
             logger.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
             logger.debug(f'Query: {query}')
@@ -451,7 +455,7 @@ class OpenAIHelper:
             model_to_use = self.get_current_model(user_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
-            max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent)
+            max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
             logger.info(f"Model: {model_to_use}, max_tokens: {max_tokens}, max_tokens_percent: {max_tokens_percent}")
 
             # Summarize the chat history if it's too long to avoid excessive token usage
@@ -467,11 +471,18 @@ class OpenAIHelper:
                     self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'], session_id)
                     self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
                     self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
+                    token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
                 except Exception as e:
                     logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
             logger.info(f"Model: {model_to_use}")
+
+            if max_tokens + token_count + 10000 > default_max_tokens(model_to_use):
+                max_tokens = default_max_tokens(model_to_use) - token_count - 10000
+            # Если token_count больше max_tokens или big_context, используем модель из переменной BIG_MODEL_TO_USE
+            if (token_count > max_tokens or big_context) and self.config['big_model_to_use']:
+                model_to_use = self.config['big_model_to_use']
 
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
@@ -565,15 +576,18 @@ class OpenAIHelper:
 
         except openai.BadRequestError as e:
             logger.error(f'Bad request error: {str(e)}')
-            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
 
         except ValueError as e:
             logger.error(f'Configuration error: {str(e)}')
-            raise Exception(f"⚠️ Configuration error: {str(e)}") from e
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ Configuration error: {error_message}") from e
 
         except Exception as e:
             logger.error(f'Unexpected error in chat response generation: {str(e)}', exc_info=True)
-            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=()):
         tool_name = ''
@@ -668,14 +682,16 @@ class OpenAIHelper:
                 messages=self.conversations[chat_id],
                 tools=self.plugin_manager.get_functions_specs(self, model_to_use),
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-                max_tokens=self.get_max_tokens(model_to_use, max_tokens_percent),
+                max_tokens=self.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
             return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used)
         except Exception as e:
             logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
-            raise
+            bot_language = self.config['bot_language']
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """
@@ -726,7 +742,8 @@ class OpenAIHelper:
             temp_file.seek(0)
             return temp_file, len(text)
         except Exception as e:
-            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     async def transcribe(self, filename):
         """
@@ -745,7 +762,8 @@ class OpenAIHelper:
                 return result
         except Exception as e:
             logger.exception(e)
-            raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{str(e)}") from e
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{error_message}") from e
 
     @retry(
         reraise=True,
@@ -830,10 +848,14 @@ class OpenAIHelper:
             raise e
 
         except openai.BadRequestError as e:
-            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+            logger.error(f'Bad request error: {str(e)}')
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
 
         except Exception as e:
-            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+            logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
+            error_message = escape_markdown(str(e))
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
 
     async def interpret_image(self, chat_id, fileobj, prompt=None):
@@ -1059,7 +1081,7 @@ class OpenAIHelper:
                 model=model_to_use,
                 messages=messages,
                 temperature=0.4,
-                max_tokens=self.get_max_tokens(model_to_use, 50),  # Явно ограничиваем размер ответа
+                max_tokens=self.get_max_tokens(model_to_use, 50, chat_id),  # Явно ограничиваем размер ответа
                 extra_headers={ "X-Title": "tgBot" },
             )
             
@@ -1253,7 +1275,7 @@ class OpenAIHelper:
                 "model": model_to_use,
                 "messages": messages,
                 "temperature": 0.6,
-                "max_tokens": int(self.get_max_tokens(model_to_use, 50))
+                "max_tokens": int(self.get_max_tokens(model_to_use, 50, user_id))
             })
             
             # Проверяем статус ответа
@@ -1311,14 +1333,42 @@ class OpenAIHelper:
         return self.config['model']
     
     @lru_cache(maxsize=128)
-    def get_max_tokens(self, model_to_use, max_tokens_percent):
-        if max_tokens_percent == 100:
-            max_tokens_percent = 80
-        if model_to_use in DEEPSEEK:
-            return 8192
-        elif model_to_use in O_MODELS:
-            return 22000
-        return default_max_tokens(model_to_use) * max_tokens_percent / 100
+    def get_max_tokens(self, model_to_use, max_tokens_percent, chat_id):
+        # Получаем максимальное количество токенов для модели
+        total_max_tokens = default_max_tokens(model_to_use)
+        
+        # Рассчитываем текущее количество токенов в контексте
+        current_tokens = 0
+        if chat_id is not None and chat_id in self.conversations:
+            current_tokens = self.__count_tokens(self.conversations[chat_id], model_to_use)
+        
+        # Резервируем место для системных токенов
+        reserved_tokens = 3000  # Увеличено резервирование
+        
+        # Максимальное количество токенов для генерации
+        max_generation_tokens = max(
+            50,  # Минимальное количество токенов для генерации
+            min(
+                total_max_tokens - current_tokens - reserved_tokens,  # Оставшиеся токены
+                total_max_tokens // 3  # Не более трети от общего количества
+            )
+        )
+        
+        # Применяем процентное ограничение
+        max_generation_tokens = min(
+            max_generation_tokens, 
+            total_max_tokens * max_tokens_percent / 100
+        )
+        
+        logger.info(f"""
+        Токены для модели {model_to_use}:
+        - Всего: {total_max_tokens}
+        - Текущий контекст: {current_tokens}
+        - Зарезервировано: {reserved_tokens}
+        - Доступно для генерации: {max_generation_tokens}
+        """)
+        
+        return int(max_generation_tokens)
 
     @lru_cache(maxsize=256)
     def get_all_modes(self):
