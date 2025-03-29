@@ -554,7 +554,7 @@ class OpenAIHelper:
                 # Получаем спецификации функций с учетом разрешенных плагинов
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
-                if tools and model_to_use not in (O_MODELS + DEEPSEEK):
+                if tools and model_to_use not in (O_MODELS + DEEPSEEK + GOOGLE):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 

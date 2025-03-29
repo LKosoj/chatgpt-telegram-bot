@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import os
+import io
 import base64
 
 import telegram
@@ -523,3 +524,155 @@ def encode_image(fileobj):
 def decode_image(imgbase64):
     image = imgbase64[len('data:image/jpeg;base64,'):]
     return base64.b64decode(image)
+
+# Функция для конвертации markdown в HTML
+def markdown_to_html(text):
+    import re
+    
+    # Экранирование HTML-символов
+    def escape_html(text):
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    
+    # Последовательность преобразований
+    conversions = [
+        # Блоки кода с подсветкой языка
+        (r'```(\w*)\n(.*?)```', 
+            lambda m: f'<pre><code class="language-{m.group(1)}">{escape_html(m.group(2))}</code></pre>', 
+            re.DOTALL),
+        
+        # Моноширный текст (код)
+        (r'`(.*?)`', 
+            lambda m: f'<code>{escape_html(m.group(1))}</code>'),
+        
+        # Жирный текст (должен идти до курсива)
+        (r'\*\*(.*?)\*\*', 
+            lambda m: f'<b>{m.group(1)}</b>'),
+        (r'__(.*?)__', 
+            lambda m: f'<b>{m.group(1)}</b>'),
+        
+        # Курсив
+        (r'\*(.*?)\*', 
+            lambda m: f'<i>{m.group(1)}</i>'),
+        (r'_(.*?)_', 
+            lambda m: f'<i>{m.group(1)}</i>'),
+        
+        # Зачеркнутый текст
+        (r'~~(.*?)~~', 
+            lambda m: f'<s>{m.group(1)}</s>'),
+        
+        # Ссылки с титлом
+        (r'\[(.*?)\]\((.*?)(?:\s+"(.*?)")?\)', 
+            lambda m: f'<a href="{m.group(2)}" title="{m.group(3) or ""}">{m.group(1)}</a>'),
+        
+        # Списки
+        (r'^(\s*[-*+])\s*(.*)', 
+            lambda m: f'<li>{m.group(2)}</li>', 
+            re.MULTILINE),
+        
+        # Заголовки
+        (r'^(#{1,6})\s*(.*)', 
+            lambda m: f'<h{len(m.group(1))}>{m.group(2)}</h{len(m.group(1))}>', 
+            re.MULTILINE)
+    ]
+    
+    # Применяем преобразования
+    for pattern, repl, *flags in conversions:
+        flag = flags[0] if flags else 0
+        text = re.sub(pattern, repl, text, flags=flag)
+    
+    # Переносы строк и абзацы
+    text = re.sub(r'\n\n+', '</p><p>', text)
+    text = re.sub(r'\n', '<br>', text)
+    
+    # Оборачиваем в параграфы, если нет других блочных элементов
+    if not re.search(r'<(h\d|pre|ul|ol|blockquote)', text):
+        text = f'<p>{text}</p>'
+    
+    return text
+
+async def send_long_response_as_file(config, update: Update, response: str, session_name: str = 'response'):
+    """
+    Отправляет длинный ответ в виде HTML-файла с сохранением форматирования
+    
+    :param config: Конфигурация бота
+    :param update: Объект обновления Telegram
+    :param response: Текст ответа для отправки
+    :param session_name: Базовое имя файла (по умолчанию 'response')
+    """
+    # Конвертируем ответ в HTML
+    formatted_response = markdown_to_html(response)
+
+    # Создаем полноценный HTML-документ
+    html_content = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>{session_name}</title>
+<style>
+    body {{
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f4f4f4;
+    }}
+    pre {{
+        background-color: #f1f1f1;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 10px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }}
+    code {{
+        background-color: #f1f1f1;
+        padding: 2px 4px;
+        border-radius: 4px;
+        font-family: monospace;
+    }}
+    a {{
+        color: #0066cc;
+        text-decoration: none;
+    }}
+    a:hover {{
+        text-decoration: underline;
+    }}
+    h1, h2, h3, h4, h5, h6 {{
+        margin-top: 1em;
+        margin-bottom: 0.5em;
+    }}
+    li {{
+        margin-bottom: 0.5em;
+    }}
+</style>
+</head>
+<body>
+<h1>Полный ответ</h1>
+{formatted_response}
+</body>
+</html>"""
+    
+    # Создаем файл с ответом
+    response_file = io.BytesIO()
+    response_file.write(html_content.encode('utf-8'))
+    response_file.seek(0)
+    
+    # Формируем имя файла, заменяя недопустимые символы
+    import re
+    from datetime import datetime
+    
+    safe_session_name = re.sub(r'[^\w\-_\.]', '_', session_name)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{safe_session_name}_{timestamp}.html"
+    
+    await update.effective_message.reply_document(
+        message_thread_id=get_thread_id(update),
+        reply_to_message_id=get_reply_to_message_id(config, update),
+        document=response_file,
+        filename=filename,
+        caption="Полный ответ:",
+        parse_mode=constants.ParseMode.HTML
+    )
+

@@ -64,6 +64,7 @@ def main():
         'tts_voice': os.environ.get('TTS_VOICE', 'alloy'),
         'yandex_api_token': os.environ.get('YANDEX_API_TOKEN', ''),
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
+        'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', ''),
     }
 
     if openai_config['enable_functions'] and not functions_available:
@@ -108,6 +109,8 @@ def main():
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
         'max_sessions': int(os.environ.get('MAX_SESSIONS', 5)),
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
+        'telegram_download_bot_id': os.environ.get('TELEGRAM_DOWNLOAD_BOT_ID', ''),
+        'telegram_download_dir': os.environ.get('TELEGRAM_DOWNLOAD_DIR', 'media'),
     }
 
     plugin_config = {
