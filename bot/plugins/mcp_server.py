@@ -1,12 +1,15 @@
 from __future__ import annotations
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import httpx
 import json
 import asyncio
 from urllib.parse import urljoin
 import os
 from pathlib import Path
+
+from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp import ClientSession, types
 
 from .plugin import Plugin
 
@@ -28,6 +31,7 @@ class MCPServerPlugin(Plugin):
         self.load_servers_config()
         self.admin_ids = self._get_admin_ids()
         self.allowed_users = self._get_allowed_users()
+        self.sessions = {}  # Словарь для хранения активных сессий
 
     def _get_config_path(self) -> Path:
         """Получает путь к файлу конфигурации MCP серверов"""
@@ -168,12 +172,30 @@ class MCPServerPlugin(Plugin):
                         "type": "string",
                         "description": "Описание сервера и его функций"
                     },
+                    "transport": {
+                        "type": "string",
+                        "description": "Тип транспорта (http или stdio)",
+                        "enum": ["http", "stdio"]
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Команда для запуска сервера (для stdio транспорта)"
+                    },
+                    "args": {
+                        "type": "array",
+                        "description": "Аргументы командной строки (для stdio транспорта)",
+                        "items": {"type": "string"}
+                    },
+                    "env": {
+                        "type": "object",
+                        "description": "Переменные окружения (для stdio транспорта)"
+                    },
                     "user_id": {
                         "type": "integer",
                         "description": "ID пользователя, выполняющего действие"
                     }
                 },
-                "required": ["server_name", "base_url", "user_id"]
+                "required": ["server_name", "user_id"]
             }
         })
         
@@ -237,23 +259,415 @@ class MCPServerPlugin(Plugin):
         
         server_config = self.servers[server_name]
         try:
-            # Получаем инструменты с сервера
-            tools_data = await self._fetch_server_tools(
-                server_config["base_url"], 
-                server_config.get("api_key")
-            )
-            
-            if tools_data:
-                server_config["tools"] = tools_data
-                self.save_servers_config()
-                logger.info(f"Обновлены инструменты для сервера {server_name}: {len(tools_data)} инструментов")
+            # Проверяем тип транспорта
+            if server_config.get("transport") == "stdio":
+                # Для stdio транспорта получаем инструменты через сессию
+                session = await self._get_or_create_session(server_name)
+                if session:
+                    tools_data = await self._fetch_stdio_tools(session)
+                    if tools_data:
+                        server_config["tools"] = tools_data
+                        self.save_servers_config()
+                        logger.info(f"Обновлены инструменты для сервера {server_name} (stdio): {len(tools_data)} инструментов")
+            else:
+                # Для HTTP транспорта используем существующий метод
+                tools_data = await self._fetch_server_tools(
+                    server_config["base_url"], 
+                    server_config.get("api_key")
+                )
+                
+                if tools_data:
+                    server_config["tools"] = tools_data
+                    self.save_servers_config()
+                    logger.info(f"Обновлены инструменты для сервера {server_name} (http): {len(tools_data)} инструментов")
                 
         except Exception as e:
             logger.error(f"Ошибка при обновлении инструментов сервера {server_name}: {str(e)}")
 
+    async def _fetch_stdio_tools(self, session: ClientSession) -> List[Dict]:
+        """
+        Получает список инструментов от MCP сервера через stdio транспорт
+        
+        :param session: Активная сессия клиента MCP
+        :return: Список инструментов в формате спецификаций OpenAI
+        """
+        try:
+            # Получаем инструменты из сессии
+            mcp_tools = await session.list_tools()
+            
+            # Преобразуем в формат, совместимый с OpenAI
+            openai_tools = []
+            for tool in mcp_tools:
+                openai_tool = {
+                    "name": tool.name,
+                    "description": tool.description or f"Инструмент {tool.name}",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+                
+                # Преобразуем параметры
+                if tool.parameters:
+                    for param_name, param_schema in tool.parameters.items():
+                        openai_tool["parameters"]["properties"][param_name] = {
+                            "type": param_schema.get("type", "string"),
+                            "description": param_schema.get("description", f"Параметр {param_name}")
+                        }
+                        if param_name in (tool.required_parameters or []):
+                            openai_tool["parameters"]["required"].append(param_name)
+                
+                openai_tools.append(openai_tool)
+            
+            return openai_tools
+                
+        except Exception as e:
+            logger.error(f"Ошибка при получении инструментов через stdio: {str(e)}")
+            return []
+
+    async def _get_or_create_session(self, server_name: str) -> Optional[ClientSession]:
+        """
+        Получает существующую сессию или создает новую для stdio транспорта
+        
+        :param server_name: Имя сервера
+        :return: Клиентская сессия или None при ошибке
+        """
+        # Проверяем наличие активной сессии
+        if server_name in self.sessions and self.sessions[server_name]:
+            try:
+                # Проверяем, что сессия все еще активна
+                await self.sessions[server_name].ping()
+                return self.sessions[server_name]
+            except Exception:
+                # Сессия больше не активна, закрываем и создаем новую
+                try:
+                    await self.sessions[server_name].__aexit__(None, None, None)
+                except Exception:
+                    pass
+                self.sessions.pop(server_name, None)
+        
+        # Создаем новую сессию
+        return await self._connect_to_server(server_name)
+
+    async def _connect_to_server(self, server_name: str) -> Optional[ClientSession]:
+        """
+        Подключается к MCP серверу через соответствующий транспорт
+        
+        :param server_name: Имя сервера
+        :return: Клиентская сессия или None при ошибке
+        """
+        if server_name not in self.servers:
+            return None
+        
+        server_config = self.servers[server_name]
+        
+        # Определяем тип транспорта
+        transport_type = server_config.get("transport", "http")
+        
+        if transport_type == "stdio":
+            return await self._connect_to_server_stdio(server_name)
+        else:
+            # По умолчанию используем HTTP транспорт
+            # Для HTTP транспорта не нужна постоянная сессия
+            return None
+
+    async def _connect_to_server_stdio(self, server_name: str) -> Optional[ClientSession]:
+        """
+        Подключается к MCP серверу через Stdio транспорт
+        
+        :param server_name: Имя сервера
+        :return: Клиентская сессия или None при ошибке
+        """
+        if server_name not in self.servers:
+            return None
+        
+        server_config = self.servers[server_name]
+        
+        if "command" not in server_config:
+            logger.error(f"Отсутствует команда для запуска MCP сервера {server_name}")
+            return None
+        
+        try:
+            # Создаем параметры для запуска сервера
+            server_params = StdioServerParameters(
+                command=server_config["command"],
+                args=server_config.get("args", []),
+                env=server_config.get("env", {})
+            )
+            
+            # Подключаемся к серверу через stdio транспорт
+            read_stream, write_stream = await stdio_client(server_params).__aenter__()
+            
+            # Создаем клиентскую сессию
+            session = ClientSession(read_stream, write_stream)
+            await session.__aenter__()
+            
+            # Инициализируем соединение
+            await session.initialize()
+            
+            # Сохраняем сессию
+            self.sessions[server_name] = session
+            logger.info(f"Установлено соединение с MCP сервером {server_name} через stdio транспорт")
+            
+            return session
+            
+        except Exception as e:
+            logger.error(f"Ошибка при подключении к MCP серверу {server_name} через stdio: {str(e)}")
+            return None
+
+    async def register_server(self, server_name: str, user_id: int, **kwargs) -> Dict:
+        """
+        Регистрирует новый MCP сервер и получает его функции.
+        
+        :param server_name: Уникальное имя сервера
+        :param user_id: ID пользователя, выполняющего действие
+        :param kwargs: Дополнительные параметры (base_url, api_key, description и т.д.)
+        :return: Результат регистрации
+        """
+        try:
+            # Проверяем права доступа
+            if not self.is_admin(user_id):
+                return {"error": "Регистрация MCP серверов доступна только администраторам"}
+            
+            # Проверяем, что сервер еще не зарегистрирован
+            if server_name in self.servers:
+                return {"error": f"Сервер с именем {server_name} уже зарегистрирован"}
+            
+            # Определяем тип транспорта
+            transport_type = kwargs.get("transport", "http").lower()
+            
+            if transport_type == "stdio":
+                # Проверяем обязательные параметры для stdio транспорта
+                if "command" not in kwargs:
+                    return {"error": "Для stdio транспорта необходимо указать команду запуска сервера"}
+                
+                # Создаем конфигурацию сервера
+                self.servers[server_name] = {
+                    "transport": "stdio",
+                    "command": kwargs["command"],
+                    "args": kwargs.get("args", []),
+                    "env": kwargs.get("env", {}),
+                    "description": kwargs.get("description", ""),
+                    "tools": []
+                }
+                
+                # Пытаемся подключиться и получить инструменты
+                session = await self._connect_to_server_stdio(server_name)
+                if not session:
+                    # Удаляем сервер из конфигурации, если не удалось подключиться
+                    del self.servers[server_name]
+                    return {"error": f"Не удалось подключиться к серверу {server_name} через stdio транспорт"}
+                
+                # Получаем список инструментов
+                tools_data = await self._fetch_stdio_tools(session)
+                
+                if not tools_data:
+                    # Удаляем сервер из конфигурации, если не удалось получить инструменты
+                    del self.servers[server_name]
+                    return {"error": f"Не удалось получить инструменты с сервера {server_name}"}
+                
+                # Сохраняем инструменты в конфигурации
+                self.servers[server_name]["tools"] = tools_data
+                
+            else:
+                # Для HTTP транспорта
+                if "base_url" not in kwargs:
+                    return {"error": "Для HTTP транспорта необходимо указать базовый URL сервера"}
+                
+                # Получаем список инструментов от MCP сервера через HTTP
+                tools_data = await self._fetch_server_tools(kwargs["base_url"], kwargs.get("api_key"))
+                
+                if not tools_data:
+                    return {"error": f"Не удалось получить инструменты с сервера {kwargs['base_url']}"}
+                
+                # Сохраняем конфигурацию сервера
+                self.servers[server_name] = {
+                    "transport": "http",
+                    "base_url": kwargs["base_url"],
+                    "api_key": kwargs.get("api_key"),
+                    "description": kwargs.get("description", ""),
+                    "tools": tools_data
+                }
+            
+            # Сохраняем конфигурацию в файл
+            self.save_servers_config()
+            
+            tool_names = [tool["name"] for tool in self.servers[server_name]["tools"]]
+            
+            return {
+                "success": True,
+                "message": f"Сервер {server_name} успешно зарегистрирован",
+                "transport": transport_type,
+                "tools_count": len(self.servers[server_name]["tools"]),
+                "tools": tool_names
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка при регистрации сервера {server_name}: {str(e)}")
+            return {"error": str(e)}
+
+    async def list_servers(self) -> Dict:
+        """
+        Возвращает список всех зарегистрированных MCP серверов.
+        
+        :return: Список серверов с их описаниями
+        """
+        result = {
+            "servers": []
+        }
+        
+        for server_name, config in self.servers.items():
+            server_info = {
+                "name": server_name,
+                "base_url": config["base_url"],
+                "description": config.get("description", ""),
+                "tools_count": len(config.get("tools", [])),
+                "tools": [tool["name"] for tool in config.get("tools", [])]
+            }
+            result["servers"].append(server_info)
+        
+        return result
+
+    async def remove_server(self, server_name: str, user_id: int) -> Dict:
+        """
+        Удаляет зарегистрированный MCP сервер.
+        
+        :param server_name: Имя сервера для удаления
+        :param user_id: ID пользователя, выполняющего действие
+        :return: Результат удаления
+        """
+        # Проверяем права доступа
+        if not self.is_admin(user_id):
+            return {"error": "Удаление MCP серверов доступно только администраторам"}
+            
+        if server_name not in self.servers:
+            return {"error": f"Сервер {server_name} не найден"}
+        
+        del self.servers[server_name]
+        
+        # Сохраняем обновленную конфигурацию
+        self.save_servers_config()
+        
+        return {
+            "success": True,
+            "message": f"Сервер {server_name} успешно удален"
+        }
+
+    async def call_mcp_function(self, server_name: str, function_name: str, **kwargs) -> Dict:
+        """
+        Вызывает функцию на удаленном MCP сервере.
+        
+        :param server_name: Имя сервера
+        :param function_name: Имя функции для вызова
+        :param kwargs: Аргументы для функции
+        :return: Результат выполнения функции
+        """
+        if server_name not in self.servers:
+            return {"error": f"Сервер {server_name} не найден"}
+        
+        server_config = self.servers[server_name]
+        
+        # Определяем тип транспорта
+        transport_type = server_config.get("transport", "http")
+        
+        if transport_type == "stdio":
+            # Для stdio транспорта
+            try:
+                # Получаем или создаем сессию
+                session = await self._get_or_create_session(server_name)
+                if not session:
+                    return {"error": f"Не удалось подключиться к серверу {server_name}"}
+                
+                # Вызываем инструмент
+                result = await session.call_tool(function_name, arguments=kwargs)
+                return result
+            except Exception as e:
+                logger.error(f"Ошибка при вызове функции {function_name} через stdio: {str(e)}")
+                return {"error": str(e)}
+        else:
+            # Для HTTP транспорта используем существующий код
+            base_url = server_config["base_url"]
+            api_key = server_config.get("api_key")
+            
+            # Подготовка заголовков
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            
+            # Подготовка данных запроса
+            request_data = {
+                "name": function_name,
+                "arguments": kwargs
+            }
+            
+            # Устанавливаем таймаут из конфигурации
+            timeout = int(os.getenv("MCP_REQUEST_TIMEOUT", "30"))
+            
+            try:
+                # Выполнение запроса к MCP серверу
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        urljoin(base_url, "/execute"),
+                        headers=headers,
+                        json=request_data
+                    )
+                    
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    return result
+                    
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP ошибка при вызове функции {function_name} на сервере {server_name}: {e}")
+                return {"error": f"Ошибка HTTP {e.response.status_code}: {e.response.text}"}
+            except Exception as e:
+                logger.error(f"Ошибка при вызове функции {function_name} на сервере {server_name}: {str(e)}")
+                return {"error": str(e)}
+
+    async def handle_mcp_servers_command(self, update, context):
+        """
+        Обработчик команды для управления MCP серверами.
+        """
+        user_id = update.effective_user.id
+        
+        # Проверяем права доступа для команды управления
+        is_admin = self.is_admin(user_id)
+        is_allowed = self.is_user_allowed(user_id)
+        
+        if not is_allowed:
+            return {"text": "У вас нет доступа к использованию MCP серверов.", "parse_mode": "Markdown"}
+        
+        servers_info = await self.list_servers()
+        servers = servers_info.get("servers", [])
+        
+        if not servers:
+            if not is_admin:
+                return {"text": "Управление MCP серверами доступно только администраторам.", "parse_mode": "Markdown"}
+        
+        result = "Зарегистрированные MCP серверы:\n\n"
+        for server in servers:
+            result += f"• **{server['name']}**\n"
+            result += f"  Транспорт: {server.get('transport', 'http')}\n"
+            if server.get('transport') == 'stdio':
+                result += f"  Команда: `{server.get('command', '')} {' '.join(server.get('args', []))}`\n"
+            else:
+                result += f"  URL: `{server.get('base_url', '')}`\n"
+            if server.get("description"):
+                result += f"  Описание: {server['description']}\n"
+            result += f"  Инструментов: {server['tools_count']}\n\n"
+        
+        if is_admin:
+            result += "\n**Управление серверами** (только для администраторов):\n"
+            result += "• Для добавления HTTP: `Зарегистрируй MCP сервер с именем example, URL http://example.com`\n"
+            result += "• Для добавления Stdio: `Зарегистрируй MCP сервер с именем example, транспорт stdio, команда python, аргументы [\"examples/mcp_stdio_server.py\"]`\n"
+            result += "• Для удаления: `Удали MCP сервер example`"
+        
+        return {"text": result, "parse_mode": "Markdown"}
+
     async def _fetch_server_tools(self, base_url: str, api_key: Optional[str] = None) -> List[Dict]:
         """
-        Получает список инструментов от MCP сервера
+        Получает список инструментов от MCP сервера через HTTP
         
         :param base_url: URL MCP сервера
         :param api_key: API ключ для авторизации (опционально)
@@ -342,157 +756,6 @@ class MCPServerPlugin(Plugin):
             logger.error(f"Ошибка при выполнении функции {function_name}: {str(e)}")
             return {"error": str(e)}
 
-    async def register_server(self, server_name: str, base_url: str, user_id: int, api_key: str = None, description: str = "") -> Dict:
-        """
-        Регистрирует новый MCP сервер и получает его функции.
-        
-        :param server_name: Уникальное имя сервера
-        :param base_url: Базовый URL сервера
-        :param user_id: ID пользователя, выполняющего действие
-        :param api_key: API ключ (опционально)
-        :param description: Описание сервера
-        :return: Результат регистрации
-        """
-        try:
-            # Проверяем права доступа
-            if not self.is_admin(user_id):
-                return {"error": "Регистрация MCP серверов доступна только администраторам"}
-            
-            # Проверяем, что сервер еще не зарегистрирован
-            if server_name in self.servers:
-                return {"error": f"Сервер с именем {server_name} уже зарегистрирован"}
-            
-            # Получаем список инструментов от MCP сервера
-            tools_data = await self._fetch_server_tools(base_url, api_key)
-            
-            if not tools_data:
-                return {"error": f"Не удалось получить инструменты с сервера {base_url}"}
-            
-            # Сохраняем конфигурацию сервера
-            self.servers[server_name] = {
-                "base_url": base_url,
-                "api_key": api_key,
-                "description": description,
-                "tools": tools_data
-            }
-            
-            # Сохраняем конфигурацию в файл
-            self.save_servers_config()
-            
-            tool_names = [tool["name"] for tool in tools_data]
-            
-            return {
-                "success": True,
-                "message": f"Сервер {server_name} успешно зарегистрирован",
-                "tools_count": len(tools_data),
-                "tools": tool_names
-            }
-            
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP ошибка при регистрации сервера {server_name}: {e}")
-            return {"error": f"Ошибка HTTP {e.response.status_code}: {e.response.text}"}
-        except Exception as e:
-            logger.error(f"Ошибка при регистрации сервера {server_name}: {str(e)}")
-            return {"error": str(e)}
-
-    async def list_servers(self) -> Dict:
-        """
-        Возвращает список всех зарегистрированных MCP серверов.
-        
-        :return: Список серверов с их описаниями
-        """
-        result = {
-            "servers": []
-        }
-        
-        for server_name, config in self.servers.items():
-            server_info = {
-                "name": server_name,
-                "base_url": config["base_url"],
-                "description": config.get("description", ""),
-                "tools_count": len(config.get("tools", [])),
-                "tools": [tool["name"] for tool in config.get("tools", [])]
-            }
-            result["servers"].append(server_info)
-        
-        return result
-
-    async def remove_server(self, server_name: str, user_id: int) -> Dict:
-        """
-        Удаляет зарегистрированный MCP сервер.
-        
-        :param server_name: Имя сервера для удаления
-        :param user_id: ID пользователя, выполняющего действие
-        :return: Результат удаления
-        """
-        # Проверяем права доступа
-        if not self.is_admin(user_id):
-            return {"error": "Удаление MCP серверов доступно только администраторам"}
-            
-        if server_name not in self.servers:
-            return {"error": f"Сервер {server_name} не найден"}
-        
-        del self.servers[server_name]
-        
-        # Сохраняем обновленную конфигурацию
-        self.save_servers_config()
-        
-        return {
-            "success": True,
-            "message": f"Сервер {server_name} успешно удален"
-        }
-
-    async def call_mcp_function(self, server_name: str, function_name: str, **kwargs) -> Dict:
-        """
-        Вызывает функцию на удаленном MCP сервере.
-        
-        :param server_name: Имя сервера
-        :param function_name: Имя функции для вызова
-        :param kwargs: Аргументы для функции
-        :return: Результат выполнения функции
-        """
-        if server_name not in self.servers:
-            return {"error": f"Сервер {server_name} не найден"}
-        
-        server_config = self.servers[server_name]
-        base_url = server_config["base_url"]
-        api_key = server_config.get("api_key")
-        
-        # Подготовка заголовков
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        
-        # Подготовка данных запроса
-        request_data = {
-            "name": function_name,
-            "arguments": kwargs
-        }
-        
-        # Устанавливаем таймаут из конфигурации
-        timeout = int(os.getenv("MCP_REQUEST_TIMEOUT", "30"))
-        
-        try:
-            # Выполнение запроса к MCP серверу
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    urljoin(base_url, "/execute"),
-                    headers=headers,
-                    json=request_data
-                )
-                
-                response.raise_for_status()
-                result = response.json()
-                
-                return result
-                
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP ошибка при вызове функции {function_name} на сервере {server_name}: {e}")
-            return {"error": f"Ошибка HTTP {e.response.status_code}: {e.response.text}"}
-        except Exception as e:
-            logger.error(f"Ошибка при вызове функции {function_name} на сервере {server_name}: {str(e)}")
-            return {"error": str(e)}
-
     def get_commands(self) -> List[Dict]:
         """
         Возвращает список команд, поддерживаемых плагином.
@@ -504,40 +767,3 @@ class MCPServerPlugin(Plugin):
                 "handler": self.handle_mcp_servers_command
             }
         ]
-    
-    async def handle_mcp_servers_command(self, update, context):
-        """
-        Обработчик команды для управления MCP серверами.
-        """
-        user_id = update.effective_user.id
-        
-        # Проверяем права доступа для команды управления
-        is_admin = self.is_admin(user_id)
-        is_allowed = self.is_user_allowed(user_id)
-        
-        if not is_allowed:
-            return {"text": "У вас нет доступа к использованию MCP серверов.", "parse_mode": "Markdown"}
-        
-        servers_info = await self.list_servers()
-        servers = servers_info.get("servers", [])
-        
-        if not servers:
-            if is_admin:
-                return {"text": "Нет зарегистрированных MCP серверов.\n\nДля добавления нового сервера отправьте сообщение: `Зарегистрируй MCP сервер с именем example, URL http://example.com`", "parse_mode": "Markdown"}
-            else:
-                return {"text": "Нет зарегистрированных MCP серверов.", "parse_mode": "Markdown"}
-        
-        result = "Зарегистрированные MCP серверы:\n\n"
-        for server in servers:
-            result += f"• **{server['name']}**\n"
-            result += f"  URL: `{server['base_url']}`\n"
-            if server.get("description"):
-                result += f"  Описание: {server['description']}\n"
-            result += f"  Инструментов: {server['tools_count']}\n\n"
-        
-        if is_admin:
-            result += "\n**Управление серверами** (только для администраторов):\n"
-            result += "• Для добавления: `Зарегистрируй MCP сервер с именем example, URL http://example.com`\n"
-            result += "• Для удаления: `Удали MCP сервер example`"
-        
-        return {"text": result, "parse_mode": "Markdown"}
