@@ -566,8 +566,8 @@ class Database:
                     cursor.execute("""
                         INSERT INTO conversation_context 
                         (user_id, context, parse_mode, temperature, max_tokens_percent, 
-                         session_id, session_name, created_at, is_active, message_count) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                         session_id, session_name, created_at, is_active, message_count, model) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
                     """, (
                         user_id,
                         json.dumps(context),
@@ -576,7 +576,8 @@ class Database:
                         max_tokens_percent,
                         session_id, 
                         "...", 
-                        datetime.now()
+                        datetime.now(),
+                        openai_helper.config['model'] if openai_helper else 'anthropic/claude-3-5-haiku'
                     ))
                     
                     logger.info(f"Создана первая сессия {session_id} для пользователя {user_id}")
@@ -617,8 +618,8 @@ class Database:
                     cursor.execute("""
                         INSERT INTO conversation_context 
                         (user_id, context, parse_mode, temperature, max_tokens_percent, 
-                         session_id, session_name, created_at, is_active, message_count) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                         session_id, session_name, created_at, is_active, message_count, model) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
                     """, (
                         user_id,
                         context_json,
@@ -627,7 +628,8 @@ class Database:
                         max_tokens_percent,
                         session_id, 
                         final_session_name, 
-                        datetime.now()
+                        datetime.now(),
+                        openai_helper.config['model'] if openai_helper else 'anthropic/claude-3-5-haiku'
                     ))
                     
                     return session_id

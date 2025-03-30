@@ -470,33 +470,39 @@ async def handle_direct_result(config, update: Update, response: any):
 
     if add_value or kind == 'text':
         # Split long messages into chunks
-        if add_value:
-            chunks = split_into_chunks(add_value)
-        else:
-            chunks = split_into_chunks(value)
+        text = add_value if add_value else value
+        chunks = split_into_chunks(text)
         if format == 'markdown':
             parse_mode = constants.ParseMode.MARKDOWN
         else:
             parse_mode = None
-        for i, chunk in enumerate(chunks):
-            # Only reply to original message for first chunk
-            reply_to = get_reply_to_message_id(config, update) if i == 0 else None
-            try:
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=reply_to,
-                    text=chunk,
-                    parse_mode=parse_mode
-                )
-            except Exception as e:
-                logging.error(f"Unexpected error in handle_direct_result: {e}")
-                # В случае любой другой ошибки отправляем без форматирования
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=reply_to,
-                    text=chunk,
-                    parse_mode=None
-                )
+
+        # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
+        if len(chunks) > 3:
+            # Получаем имя текущей сессии
+            session_name = text[:10]
+            
+            await send_long_response_as_file(config, update, response, session_name)
+        else:
+            for i, chunk in enumerate(chunks):
+                # Only reply to original message for first chunk
+                reply_to = get_reply_to_message_id(config, update) if i == 0 else None
+                try:
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        reply_to_message_id=reply_to,
+                        text=chunk,
+                        parse_mode=parse_mode
+                    )
+                except Exception as e:
+                    logging.error(f"Unexpected error in handle_direct_result: {e}")
+                    # В случае любой другой ошибки отправляем без форматирования
+                    await update.effective_message.reply_text(
+                        message_thread_id=get_thread_id(update),
+                        reply_to_message_id=reply_to,
+                        text=chunk,
+                        parse_mode=None
+                    )
 
     if format == 'path':
         cleanup_intermediate_files(response)

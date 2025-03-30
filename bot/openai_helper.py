@@ -40,8 +40,9 @@ ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.7-sonnet", "anthro
 GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001")
 MISTRALAI = ("mistralai/mistral-nemo",)
 DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner","deepseek/deepseek-r1-distill-llama-70b")
+PERPLEXITY = ("perplexity/sonar-online",)
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -77,6 +78,8 @@ def default_max_tokens(model: str = None) -> int:
         return 900000
     elif model in DEEPSEEK:
         return 65536
+    elif model in PERPLEXITY:
+        return 100000
     else:
         return base * 2
 
@@ -411,12 +414,13 @@ class OpenAIHelper:
 
             # Проверяем, является ли это первым сообщением в сессии, если да, то определяем режим работы
             user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
+            model_to_use = self.config['big_model_to_use'] if self.config['big_model_to_use'] else self.config['model']
             if len(user_messages) == 0 and self.config['auto_chat_modes']:
                 mode_name, _ = self.ask_sync(
                         f"Определи режим работы для сообщения, верни только название режима. Сообщение: ^{query}^. Доступные режимы: ^{self.get_all_modes()}^. Если ни один режим не подходит, верни 'assistant'.",
                         chat_id,
                         "Ты специалист по определению режима работы для сообщений.",
-                        model="google/gemini-2.0-flash-001"
+                        model=model_to_use
                     )
                 logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
                 
@@ -496,7 +500,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
                 stream = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
@@ -554,7 +558,7 @@ class OpenAIHelper:
                 # Получаем спецификации функций с учетом разрешенных плагинов
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
-                if tools and model_to_use not in (O_MODELS + DEEPSEEK + GOOGLE):
+                if tools and model_to_use not in (O_MODELS + DEEPSEEK + GOOGLE + PERPLEXITY):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
@@ -1129,7 +1133,7 @@ class OpenAIHelper:
         if model in GPT_3_MODELS + GPT_3_16K_MODELS:
             tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
             tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK:
+        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY:
             tokens_per_message = 3
             tokens_per_name = 1
         else:
