@@ -448,7 +448,7 @@ async def handle_direct_result(config, update: Update, response: any):
     format = result['format']
     value = result['value']
     add_value = result.get('add_value', None)
-    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}")
+    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}, add_value: {add_value:200}")
 
     common_args = {
         'message_thread_id': get_thread_id(update),
@@ -482,7 +482,7 @@ async def handle_direct_result(config, update: Update, response: any):
             # Получаем имя текущей сессии
             session_name = text[:10]
             
-            await send_long_response_as_file(config, update, response, session_name)
+            await send_long_response_as_file(config, update, text, session_name)
         else:
             for i, chunk in enumerate(chunks):
                 # Only reply to original message for first chunk
