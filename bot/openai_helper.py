@@ -593,7 +593,7 @@ class OpenAIHelper:
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
-    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=()):
+    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All']):
         tool_name = ''
         arguments = ''
         try:
@@ -681,16 +681,18 @@ class OpenAIHelper:
                         msg['content'] += " Think step by step!"
                         break
 
+            tools=self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
+
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=self.conversations[chat_id],
-                tools=self.plugin_manager.get_functions_specs(self, model_to_use),
+                tools=tools,
                 tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
                 max_tokens=self.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
-            return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used)
+            return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used, allowed_plugins)
         except Exception as e:
             logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
             bot_language = self.config['bot_language']
