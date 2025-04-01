@@ -577,7 +577,7 @@ class Database:
                         session_id, 
                         "...", 
                         datetime.now(),
-                        openai_helper.config['model'] if openai_helper else 'anthropic/claude-3-5-haiku'
+                        openai_helper.config['model'] if openai_helper else 'deepseek/deepseek-chat-0324-alt-structured'
                     ))
                     
                     logger.info(f"Создана первая сессия {session_id} для пользователя {user_id}")
@@ -629,7 +629,7 @@ class Database:
                         session_id, 
                         final_session_name, 
                         datetime.now(),
-                        openai_helper.config['model'] if openai_helper else 'anthropic/claude-3-5-haiku'
+                        openai_helper.config['model'] if openai_helper else 'deepseek/deepseek-chat-0324-alt-structured'
                     ))
                     
                     return session_id
@@ -702,7 +702,7 @@ class Database:
             logger.error(f'Ошибка переключения сессии: {e}', exc_info=True)
             raise
 
-    def delete_session(self, user_id: int, session_id: str):
+    def delete_session(self, user_id: int, session_id: str, openai_helper=None):
         """Удаление сессии"""
         try:
             # Проверяем количество сессий пользователя
@@ -711,7 +711,7 @@ class Database:
             # Если это последняя сессия, создаем новую перед удалением
             if session_count == 1:
                 # Создаем новую сессию
-                new_session_id = self.create_session(user_id)
+                new_session_id = self.create_session(user_id, openai_helper=openai_helper)
                 
                 if not new_session_id:
                     logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
@@ -722,7 +722,7 @@ class Database:
 
             # Если удаляется активная сессия, создаем новую
             if active_session.get('session_id') == session_id:
-                new_session_id = self.create_session(user_id)
+                new_session_id = self.create_session(user_id, openai_helper=openai_helper)
                 if not new_session_id:
                     logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
                 else:

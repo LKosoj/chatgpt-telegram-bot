@@ -7,6 +7,7 @@ import logging
 import os
 import io
 import base64
+from PIL import Image
 
 import telegram
 from telegram import Message, MessageEntity, Update, ChatMember, constants
@@ -436,6 +437,46 @@ def escape_markdown(text: str, exclude_code_blocks: bool = True) -> str:
     
     return ''.join(result)
 
+def get_image_size(image_path: str) -> tuple[int, int]:
+    """
+    Получает размеры изображения
+    """
+    with Image.open(image_path) as img:
+        return img.size
+
+def resize_image_if_needed(image_path: str, max_dimension: int = 10000) -> tuple[io.BytesIO, str]:
+    """
+    Проверяет размеры изображения и изменяет их при необходимости.
+    
+    Args:
+        image_path: Путь к изображению
+        max_dimension: Максимальный размер стороны изображения
+        
+    Returns:
+        Tuple[BytesIO, str]: (объект BytesIO с изображением, формат изображения)
+    """
+    with Image.open(image_path) as img:
+        # Получаем формат изображения
+        format = img.format.lower()
+        
+        # Проверяем размеры
+        width, height = img.size
+        if width > max_dimension or height > max_dimension:
+            # Вычисляем новые размеры с сохранением пропорций
+            ratio = min(max_dimension / width, max_dimension / height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+            
+            # Изменяем размер
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Сохраняем в BytesIO
+        output = io.BytesIO()
+        img.save(output, format=format)
+        output.seek(0)
+        
+        return output, format
+
 async def handle_direct_result(config, update: Update, response: any):
     """
     Handles a direct result from a plugin
@@ -448,7 +489,7 @@ async def handle_direct_result(config, update: Update, response: any):
     format = result['format']
     value = result['value']
     add_value = result.get('add_value', None)
-    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}, add_value: {add_value:200}")
+    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}, add_value: {str(add_value)[:200]}")
 
     common_args = {
         'message_thread_id': get_thread_id(update),
@@ -459,7 +500,18 @@ async def handle_direct_result(config, update: Update, response: any):
         if format == 'url':
             await update.effective_message.reply_photo(**common_args, photo=value)
         elif format == 'path':
-            await update.effective_message.reply_photo(**common_args, photo=open(value, 'rb'))
+            try:
+                if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
+                    # Пробуем отправить как документ
+                    await update.effective_message.reply_document(**common_args, document=open(value, 'rb'))
+                else:
+                    # Пробуем отправить как фото
+                    await update.effective_message.reply_photo(**common_args, photo=value)
+            except Exception as e:
+                logging.error(f"Error handling photo: {e}")
+                # Проверяем и изменяем размеры изображения при необходимости
+                photo_file, photo_format = resize_image_if_needed(value)
+                await update.effective_message.reply_photo(**common_args, photo=photo_file)
     elif kind == 'gif' or kind == 'file':
         if format == 'url':
             await update.effective_message.reply_document(**common_args, document=value)

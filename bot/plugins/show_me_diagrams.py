@@ -200,7 +200,7 @@ class ShowMeDiagramsPlugin(Plugin):
         except Exception as e:
             return {"result": f"Error generating diagram: {str(e)}"}
     
-    def _generate_plantuml(self, puml_content: str) -> str:
+    def _generate_plantuml(self, puml_content: str, helper, user_id: int) -> str:
         """Генерирует изображение из PlantUML кода"""
         temp_dir = tempfile.gettempdir()
         file_name = f'diagram_{uuid.uuid4()}'
@@ -212,10 +212,59 @@ class ShowMeDiagramsPlugin(Plugin):
             f.write(puml_content)
         
         # Запускаем PlantUML для генерации изображения
-        result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir])
+        result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir], 
+                              capture_output=True, text=True, check=False)
+        
+        # Пытаемся исправить ошибки до 3 раз
+        attempts = 0
+        max_attempts = 3
+        
+        while result.returncode != 0 and attempts < max_attempts:
+            attempts += 1
+            logging.error(f"Ошибка при генерации PlantUML изображения для {file_name} (попытка {attempts}/{max_attempts}): "
+                        f"{result.stderr}")
+            print(f"Ошибка при генерации PlantUML (попытка {attempts}/{max_attempts}): {result.stderr}")
+            
+            # Читаем текущее содержимое файла
+            with open(puml_file, 'r', encoding='utf-8') as f:
+                current_puml_code = f.read()
+                
+            messages = [
+                {"role": "system", "content": "Ты самый лучший специалист по генерации и исправлению ошибок в коде для PlantUML."},
+                {"role": "user", "content": f"При генерации диаграммы возникла ошибка:\n{result.stderr}\n\nВот текущий код PlantUML:\n\n{current_puml_code}\n\nИсправь ошибку, так же проверь код на отсутствие других ошибок и верни правильный код для PlantUML. Верни только исправленный код, без комментариев и объяснений."}
+            ]
+            response, _ = helper.ask(messages, user_id=user_id)
+            
+            # Удаляем маркеры кода, если они есть
+            generated_text = response.replace("```plantuml", "").replace("```", "").strip()
+            
+            # Записываем исправленный код обратно в файл
+            with open(puml_file, 'w', encoding='utf-8') as f:
+                f.write(generated_text)
+            
+            # Заново запускаем PlantUML для генерации изображения
+            result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir], 
+                                  capture_output=True, text=True, check=False)
+            
+            if result.returncode == 0:
+                logging.info(f"Ошибка исправлена с {attempts} попытки для {file_name}")
+                print(f"Ошибка в PlantUML исправлена с {attempts} попытки")
+                break
+        
+        if result.returncode != 0 and attempts >= max_attempts:
+            logging.error(f"Не удалось исправить ошибки в PlantUML после {max_attempts} попыток для {file_name}")
+            print(f"Не удалось исправить ошибки в PlantUML после {max_attempts} попыток")
+            raise Exception(f"Не удалось сгенерировать диаграмму после {max_attempts} попыток")
+        
+        # Проверяем, что файл был создан
+        if not os.path.exists(output_file):
+            raise Exception(f"Файл диаграммы не был создан: {output_file}")
         
         # Удаляем временный файл с кодом
-        os.remove(puml_file)
+        try:
+            os.remove(puml_file)
+        except Exception as e:
+            logging.warning(f"Не удалось удалить временный файл {puml_file}: {str(e)}")
         
         return puml_content, output_file
 
@@ -234,28 +283,28 @@ class ShowMeDiagramsPlugin(Plugin):
 
     async def _generate_gantt_chart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('gantt_chart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_flowchart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('flowchart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_mind_map(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('mind_map', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_project_timeline(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('project_timeline', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_infographic(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('infographic', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_org_chart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('org_chart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_process_diagram(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('process_diagram', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code)
+        return self._generate_plantuml(puml_code, helper, user_id)

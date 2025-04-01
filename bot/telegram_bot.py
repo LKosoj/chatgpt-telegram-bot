@@ -2292,7 +2292,7 @@ class ChatGPTTelegramBot:
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                self.db.delete_session(user_id, session_id)
+                self.db.delete_session(user_id, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
                 session_id = self.db.get_active_session_id(user_id)
                 current_context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self.openai)

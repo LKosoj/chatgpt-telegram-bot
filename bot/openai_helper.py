@@ -39,7 +39,7 @@ O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini",
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.7-sonnet", "anthropic/claude-3.7-sonnet-thinking-high")
 GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001")
 MISTRALAI = ("mistralai/mistral-nemo",)
-DEEPSEEK = ("deepseek/deepseek-chat","deepseek/deepseek-reasoner","deepseek/deepseek-r1-distill-llama-70b")
+DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
 PERPLEXITY = ("perplexity/sonar-online",)
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS\
     + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY
@@ -77,7 +77,7 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GOOGLE:
         return 900000
     elif model in DEEPSEEK:
-        return 65536
+        return 128000
     elif model in PERPLEXITY:
         return 100000
     else:
@@ -101,7 +101,7 @@ def are_functions_available(model: str) -> bool:
     if model == 'gpt-4-vision-preview':
         return False
     if model in DEEPSEEK:
-        return False
+        return True
     return True
 
 
@@ -190,8 +190,6 @@ class OpenAIHelper:
             # Получаем модель с учетом приоритетов
             model_to_use = self.get_current_model(user_id)
 
-            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
-                assistant_prompt += " Think step by step!"
             messages = [
                 {"role": "system", "content": assistant_prompt},
                 {"role": "user", "content": prompt}
@@ -201,7 +199,7 @@ class OpenAIHelper:
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
-                max_tokens=self.get_max_tokens(model_to_use, 50, user_id),
+                max_tokens=self.get_max_tokens(model_to_use, 60, user_id),
                 temperature=0.6,
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
@@ -464,7 +462,7 @@ class OpenAIHelper:
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
-            exceeded_max_tokens = token_count + max_tokens > default_max_tokens(model_to_use)
+            exceeded_max_tokens = token_count + max_tokens > default_max_tokens(model_to_use) * 0.95
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -482,8 +480,8 @@ class OpenAIHelper:
 
             logger.info(f"Model: {model_to_use}")
 
-            if max_tokens + token_count + 10000 > default_max_tokens(model_to_use):
-                max_tokens = default_max_tokens(model_to_use) - token_count - 10000
+            # if max_tokens + token_count + 10000 > default_max_tokens(model_to_use):
+            #     max_tokens = default_max_tokens(model_to_use) - token_count - 10000
             # Если token_count больше max_tokens или big_context, используем модель из переменной BIG_MODEL_TO_USE
             if (token_count > max_tokens or big_context) and self.config['big_model_to_use']:
                 model_to_use = self.config['big_model_to_use']
@@ -500,7 +498,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
+            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY):
                 stream = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
@@ -519,12 +517,6 @@ class OpenAIHelper:
                     'stream': stream,
                     'extra_headers': { "X-Title": "tgBot" },
                 })
-            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
-                # Находим системное сообщение и добавляем инструкцию
-                for msg in self.conversations[chat_id]:
-                    if msg['role'] == 'system':
-                        msg['content'] += " Think step by step!"
-                        break
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 # Получаем текущий режим из контекста
@@ -558,7 +550,7 @@ class OpenAIHelper:
                 # Получаем спецификации функций с учетом разрешенных плагинов
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
-                if tools and model_to_use not in (O_MODELS + DEEPSEEK + GOOGLE + PERPLEXITY):
+                if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
@@ -673,13 +665,6 @@ class OpenAIHelper:
             max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
 
             logger.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
-
-            if model_to_use == "deepseek/deepseek-r1-distill-llama-70b":
-                # Находим системное сообщение и добавляем инструкцию
-                for msg in self.conversations[chat_id]:
-                    if msg['role'] == 'system':
-                        msg['content'] += " Think step by step!"
-                        break
 
             tools=self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
 
@@ -1066,7 +1051,7 @@ class OpenAIHelper:
             if chat_id is not None:
                 model_to_use = self.get_current_model(chat_id)
 
-            max_tokens = default_max_tokens(model_to_use) / 2  # Оставляем место для ответа
+            max_tokens = default_max_tokens(model_to_use)
             current_tokens = 0
             truncated_conversation = []
             
@@ -1087,7 +1072,7 @@ class OpenAIHelper:
                 model=model_to_use,
                 messages=messages,
                 temperature=0.4,
-                max_tokens=self.get_max_tokens(model_to_use, 50, chat_id),  # Явно ограничиваем размер ответа
+                max_tokens=self.get_max_tokens(model_to_use, 80, chat_id),  # Явно ограничиваем размер ответа
                 extra_headers={ "X-Title": "tgBot" },
             )
             
