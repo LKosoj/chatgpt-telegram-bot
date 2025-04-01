@@ -10,7 +10,7 @@ import sys
 import yaml
 import re
 from typing import Dict
-from functools import lru_cache
+from functools import lru_cache 
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -26,10 +26,10 @@ from PIL import Image
 from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
-    cleanup_intermediate_files
+    cleanup_intermediate_files, send_long_response_as_file
 from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
         GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
-              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK
+              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
@@ -372,6 +372,8 @@ class ChatGPTTelegramBot:
                 models = MISTRALAI
             elif value == "Deepseek":
                 models = DEEPSEEK
+            elif value == "Perplexity":
+                models = PERPLEXITY
             else:
                 await query.edit_message_text("Неизвестная группа моделей")
                 return
@@ -413,7 +415,8 @@ class ChatGPTTelegramBot:
                 ("Anthropic", ANTHROPIC),
                 ("Google", GOOGLE),
                 ("Mistral", MISTRALAI),
-                ("Deepseek", DEEPSEEK)
+                ("Deepseek", DEEPSEEK),
+                ("Perplexity", PERPLEXITY)
             ]
             
             for group_name, _ in model_groups:
@@ -934,29 +937,55 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
         filename = update.message.effective_attachment.file_unique_id
+        file_unique_id = filename
+        filename_mp3 = None
+        max_retries = 3
+        retry_delay = 2
 
         async def _execute():
+            nonlocal filename, filename_mp3
+            filename = f'{file_unique_id}'
             filename_mp3 = f'{filename}.mp3'
             bot_language = self.config['bot_language']
-            try:
-                media_file = await self.application.bot.get_file(update.message.effective_attachment.file_id)
-                await media_file.download_to_drive(filename)
-            except Exception as e:
-                logger.exception(e)
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                    text=(
-                        f"{localized_text('media_download_fail', bot_language)[0]}: "
-                        f"{str(e)}. {localized_text('media_download_fail', bot_language)[1]}"
-                    ),
-                    parse_mode=constants.ParseMode.MARKDOWN
-                )
-                return
+            
+            # Создаем временную директорию для файлов
+            temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, filename)
+            file_path_mp3 = os.path.join(temp_dir, filename_mp3)
+            
+            for attempt in range(max_retries):
+                try:
+                    try:
+                        media_file = await self.application.bot.get_file(update.message.effective_attachment.file_id)
+                        await media_file.download_to_drive(file_path)
+                        break
+                    except TimedOut:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Attempt {attempt + 1} failed with timeout, retrying in {retry_delay} seconds...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise
+                    except Exception as e:
+                        logger.exception(e)
+                        raise
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.exception(e)
+                        await update.effective_message.reply_text(
+                            message_thread_id=get_thread_id(update),
+                            reply_to_message_id=get_reply_to_message_id(self.config, update),
+                            text=(
+                                f"{localized_text('media_download_fail', bot_language)[0]}: "
+                                f"{str(e)}. {localized_text('media_download_fail', bot_language)[1]}"
+                            ),
+                            parse_mode=constants.ParseMode.MARKDOWN
+                        )
+                        return
 
             try:
-                audio_track = AudioSegment.from_file(filename)
-                audio_track.export(filename_mp3, format="mp3")
+                audio_track = AudioSegment.from_file(file_path)
+                audio_track.export(file_path_mp3, format="mp3")
                 logger.info(f'New transcribe request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
 
@@ -967,8 +996,10 @@ class ChatGPTTelegramBot:
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
                     text=localized_text('media_type_fail', bot_language)
                 )
-                if os.path.exists(filename):
-                    os.remove(filename)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                if os.path.exists(file_path_mp3):
+                    os.remove(file_path_mp3)
                 return
 
             user_id = update.message.from_user.id
@@ -977,17 +1008,19 @@ class ChatGPTTelegramBot:
 
             try:
                 transcript = ''
+                transcription_price = 0
                 if self.config['assemblyai_api_key']:
                     aai.settings.api_key = self.config['assemblyai_api_key']
                     config = aai.TranscriptionConfig(speaker_labels=True, language_code="ru")
                     transcriber = aai.Transcriber()
-                    transcript = transcriber.transcribe(filename_mp3, config=config)
+                    transcript = transcriber.transcribe(file_path_mp3, config=config)
                     transcript_text = ''
                     for utterance in transcript.utterances:
                         transcript_text += f"Speaker {utterance.speaker}: {utterance.text}\n"                    
                     transcript = transcript_text
+                    transcription_price = len(transcript_text) * 0.001
                 else:
-                    transcript = await self.openai.transcribe(filename_mp3)
+                    transcript = await self.openai.transcribe(file_path_mp3)
 
                 transcription_price = self.config['transcription_price']
                 self.usage[user_id].add_transcription_seconds(audio_track.duration_seconds, transcription_price)
@@ -1015,12 +1048,21 @@ class ChatGPTTelegramBot:
                         )
                 else:
                     # Get the response of the transcript
-                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=transcript)
+                    if len(transcript) > 60000:
+                        kwargs = {
+                            'big_context': True
+                        }
+                    else:
+                        kwargs = {}
+                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=transcript, **kwargs)
 
                     self.usage[user_id].add_chat_tokens(total_tokens, self.config['token_price'])
                     if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
                         self.usage["guests"].add_chat_tokens(total_tokens, self.config['token_price'])
 
+                    if is_direct_result(response):
+                        return await handle_direct_result(self.config, update, response)
+                    
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     transcript_output = (
                         f"_{localized_text('transcript', bot_language)}:_\n\"{transcript}\"\n\n"
@@ -1028,14 +1070,22 @@ class ChatGPTTelegramBot:
                     )
                     logger.info(f"Transcript output: {transcript_output}")
                     chunks = split_into_chunks(transcript_output)
-
-                    for index, transcript_chunk in enumerate(chunks):
-                        await update.effective_message.reply_text(
-                            message_thread_id=get_thread_id(update),
-                            reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
-                            text=transcript_chunk,
-                            parse_mode=None
-                        )
+                    # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
+                    if len(chunks) > 3:
+                        # Получаем имя текущей сессии
+                        sessions = self.db.list_user_sessions(user_id, is_active=1)
+                        active_session = next((s for s in sessions if s['is_active']), None)
+                        session_name = active_session['session_name'] if active_session else 'transcription'
+                        
+                        await send_long_response_as_file(self.config, update, response, session_name)
+                    else:
+                        for index, transcript_chunk in enumerate(chunks):
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
+                                text=transcript_chunk,
+                                parse_mode=None
+                            )
 
             except Exception as e:
                 logger.exception(e)
@@ -1046,10 +1096,11 @@ class ChatGPTTelegramBot:
                     parse_mode=constants.ParseMode.MARKDOWN
                 )
             finally:
-                if os.path.exists(filename_mp3):
-                    os.remove(filename_mp3)
-                if os.path.exists(filename):
-                    os.remove(filename)
+                # Очищаем временные файлы
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                if os.path.exists(file_path_mp3):
+                    os.remove(file_path_mp3)
 
         await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
 
@@ -1416,7 +1467,7 @@ class ChatGPTTelegramBot:
 
             model_to_use = self.openai.get_current_model(user_id)
                 
-            if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+            if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
 
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
@@ -1469,12 +1520,12 @@ class ChatGPTTelegramBot:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
                                                                 message_id=sent_message.message_id)
                             # Получаем parse_mode из контекста
-                            #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
+                            chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
                                 text=content,
-                                #parse_mode=parse_mode
+                                parse_mode=parse_mode
                             )
                         except:
                             continue
@@ -1530,25 +1581,34 @@ class ChatGPTTelegramBot:
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     chunks = split_into_chunks(response)
 
-                    for index, chunk in enumerate(chunks):
-                        try:
-                            await update.effective_message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=get_reply_to_message_id(self.config,
-                                                                            update) if index == 0 else None,
-                                text=chunk,
-                                parse_mode=constants.ParseMode.MARKDOWN
-                            )
-                        except Exception:
+                    # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
+                    if len(chunks) > 3:
+                        # Получаем имя текущей сессии
+                        sessions = self.db.list_user_sessions(user_id, is_active=1)
+                        active_session = next((s for s in sessions if s['is_active']), None)
+                        session_name = active_session['session_name'] if active_session else 'transcription'
+                        
+                        await send_long_response_as_file(self.config, update, response, session_name)
+                    else:
+                        for index, chunk in enumerate(chunks):
                             try:
                                 await update.effective_message.reply_text(
                                     message_thread_id=get_thread_id(update),
                                     reply_to_message_id=get_reply_to_message_id(self.config,
                                                                                 update) if index == 0 else None,
-                                    text=chunk
+                                    text=chunk,
+                                    parse_mode=constants.ParseMode.MARKDOWN
                                 )
-                            except Exception as exception:
-                                raise exception
+                            except Exception:
+                                try:
+                                    await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        reply_to_message_id=get_reply_to_message_id(self.config,
+                                                                                    update) if index == 0 else None,
+                                        text=chunk
+                                    )
+                                except Exception as exception:
+                                    raise exception
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
             # Cleanup the stored message_id after processing is complete
@@ -1571,10 +1631,12 @@ class ChatGPTTelegramBot:
 
         except Exception as e:
             logger.exception(e)
+            from .utils import escape_markdown
+            error_message = escape_markdown(str(e))
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 reply_to_message_id=get_reply_to_message_id(self.config, update),
-                text=f"{localized_text('chat_fail', self.config['bot_language'])} {str(e)}",
+                text=f"{localized_text('chat_fail', self.config['bot_language'])} {error_message}",
                 parse_mode=constants.ParseMode.MARKDOWN
             )
 
@@ -1657,7 +1719,7 @@ class ChatGPTTelegramBot:
                 model_to_use = self.openai.get_current_model(user_id)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK):
+                if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
                     stream_response = self.openai.get_chat_response_stream(chat_id=user_id, query=query)
                     i = 0
                     prev = ''
@@ -1909,7 +1971,13 @@ class ChatGPTTelegramBot:
                 # Для обработчиков команд Telegram
                 result = await handler(update, context)
                 if result:  # Если обработчик что-то вернул
-                    await update.message.reply_text(str(result))
+                    if isinstance(result, dict) and "text" in result and "parse_mode" in result:
+                        await update.message.reply_text(
+                            text=result["text"],
+                            parse_mode=result["parse_mode"]
+                        )
+                    else:
+                        await update.message.reply_text(str(result))
                 return
 
             # Для обработчиков функций плагина
@@ -1941,6 +2009,11 @@ class ChatGPTTelegramBot:
                 await handle_direct_result(self.config, update, result)
             elif isinstance(result, dict) and 'error' in result:
                 await update.message.reply_text(f"Ошибка: {result['error']}")
+            elif isinstance(result, dict) and "text" in result and "parse_mode" in result:
+                await update.message.reply_text(
+                    text=result["text"],
+                    parse_mode=result["parse_mode"]
+                )
             elif result:
                 await update.message.reply_text(str(result))
 
@@ -2274,7 +2347,8 @@ class ChatGPTTelegramBot:
                     ("Anthropic", ANTHROPIC),
                     ("Google", GOOGLE),
                     ("Mistral", MISTRALAI),
-                    ("Deepseek", DEEPSEEK)
+                    ("Deepseek", DEEPSEEK),
+                    ("Perplexity", PERPLEXITY)
                 ]
 
                 for group_name, _ in model_groups:
@@ -2351,10 +2425,10 @@ class ChatGPTTelegramBot:
 
             application = ApplicationBuilder() \
                 .token(self.config['token']) \
-                .proxy_url(self.config['proxy']) \
-                .get_updates_proxy_url(self.config['proxy']) \
                 .post_init(self.post_init) \
                 .concurrent_updates(True) \
+                .local_mode(True) \
+                .base_url('http://localhost:8081/bot') \
                 .build()
 
             self.application = application
@@ -2424,4 +2498,3 @@ class ChatGPTTelegramBot:
             loop = asyncio.get_event_loop()
             if not loop.is_closed():
                 loop.run_until_complete(self.cleanup())
-
