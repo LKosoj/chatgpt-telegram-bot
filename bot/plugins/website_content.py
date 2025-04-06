@@ -57,7 +57,7 @@ class WebsiteContentPlugin(Plugin):
             response.raise_for_status()
         except Exception as e:
             print(f"Ошибка загрузки страницы: {e}")
-            return None
+            return "", "Ошибка загрузки страницы"
 
         title = self.get_title(response.content)
         

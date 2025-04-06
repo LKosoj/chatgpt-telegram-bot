@@ -6,7 +6,7 @@ python-telegram-bot==21.1.1
 requests==2.31.0
 tenacity==8.3.0
 wolframalpha~=5.0.0
-duckduckgo_search==5.3.1b1
+duckduckgo_search
 spotipy~=2.23.0
 pytube~=15.0.0
 gtts~=2.5.1
@@ -61,3 +61,4 @@ pytest-asyncio>=0.21.1
 ipython>=8.16.0
 trafilatura
 beautifulsoup4
+markdown2

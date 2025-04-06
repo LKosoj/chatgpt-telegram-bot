@@ -8,12 +8,14 @@ import os
 import io
 import base64
 from PIL import Image
+import uuid
 
 import telegram
 from telegram import Message, MessageEntity, Update, ChatMember, constants
 from telegram.ext import CallbackContext, ContextTypes
 
 from .usage_tracker import UsageTracker
+from .html_utils import HTMLVisualizer
 
 def message_text(message: Message) -> str:
     """
@@ -529,8 +531,10 @@ async def handle_direct_result(config, update: Update, response: any):
         else:
             parse_mode = None
 
-        # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-        if len(chunks) > 3:
+        # Отправляем как файл если: 
+        # - ответ больше 3х частей ИЛИ 
+        # - (ответ больше одной части И содержит вставки кода)
+        if len(chunks) > 3 or (len(chunks) > 1 and '```' in text):
             # Получаем имя текущей сессии
             session_name = text[:10]
             
@@ -657,67 +661,26 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     :param response: Текст ответа для отправки
     :param session_name: Базовое имя файла (по умолчанию 'response')
     """
-    # Конвертируем ответ в HTML
-    formatted_response = markdown_to_html(response)
-
-    # Создаем полноценный HTML-документ
-    html_content = f"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8">
-<title>{session_name}</title>
-<style>
-    body {{
-        font-family: Arial, sans-serif;
-        line-height: 1.6;
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 20px;
-        background-color: #f4f4f4;
-    }}
-    pre {{
-        background-color: #f1f1f1;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        padding: 10px;
-        overflow-x: auto;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-    }}
-    code {{
-        background-color: #f1f1f1;
-        padding: 2px 4px;
-        border-radius: 4px;
-        font-family: monospace;
-    }}
-    a {{
-        color: #0066cc;
-        text-decoration: none;
-    }}
-    a:hover {{
-        text-decoration: underline;
-    }}
-    h1, h2, h3, h4, h5, h6 {{
-        margin-top: 1em;
-        margin-bottom: 0.5em;
-    }}
-    li {{
-        margin-bottom: 0.5em;
-    }}
-</style>
-</head>
-<body>
-<h1>Полный ответ</h1>
-{formatted_response}
-</body>
-</html>"""
+    # Создаем директории output, data и plots, если их нет
+    os.makedirs('output', exist_ok=True)
+    os.makedirs('data', exist_ok=True)
+    os.makedirs('plots', exist_ok=True)
     
-    # Создаем файл с ответом
-    response_file = io.BytesIO()
-    response_file.write(html_content.encode('utf-8'))
-    response_file.seek(0)
+    # Генерируем уникальный идентификатор сессии
+    session_id = str(uuid.uuid4())[:8]
     
-    # Формируем имя файла, заменяя недопустимые символы
+    # Используем HTMLVisualizer для создания HTML-файла
+    visualizer = HTMLVisualizer()
+    output_path = visualizer.advanced_visualization(response, session_id)
+    
+    # Получаем содержимое созданного файла
+    with open(output_path, 'rb') as f:
+        file_content = f.read()
+    
+    # Создаем файл с ответом для отправки
+    response_file = io.BytesIO(file_content)
+    
+    # Формируем имя файла
     import re
     from datetime import datetime
     
@@ -725,6 +688,7 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"{safe_session_name}_{timestamp}.html"
     
+    # Отправляем файл пользователю
     await update.effective_message.reply_document(
         message_thread_id=get_thread_id(update),
         reply_to_message_id=get_reply_to_message_id(config, update),
@@ -733,4 +697,10 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
         caption="Полный ответ:",
         parse_mode=constants.ParseMode.HTML
     )
+    
+    # Удаляем созданный файл после отправки
+    try:
+        os.remove(output_path)
+    except Exception as e:
+        logging.warning(f"Не удалось удалить временный файл {output_path}: {e}")
 

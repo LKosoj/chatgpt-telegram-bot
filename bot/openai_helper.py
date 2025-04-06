@@ -37,12 +37,13 @@ GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-prev
 GPT_4O_MODELS = ("gpt-4o","gpt-4o-mini")
 O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini","openai/o3-mini-high")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.7-sonnet", "anthropic/claude-3.7-sonnet-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001")
+GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001","google/gemini-2.5-pro-preview")
 MISTRALAI = ("mistralai/mistral-nemo",)
 DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
+LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
 PERPLEXITY = ("perplexity/sonar-online",)
 GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -80,6 +81,8 @@ def default_max_tokens(model: str = None) -> int:
         return 128000
     elif model in PERPLEXITY:
         return 100000
+    elif model in LLAMA:
+        return 300000
     else:
         return base * 2
 
@@ -101,6 +104,8 @@ def are_functions_available(model: str) -> bool:
     if model == 'gpt-4-vision-preview':
         return False
     if model in DEEPSEEK:
+        return True
+    if model in LLAMA:
         return True
     return True
 
@@ -1120,7 +1125,7 @@ class OpenAIHelper:
         if model in GPT_3_MODELS + GPT_3_16K_MODELS:
             tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
             tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY:
+        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA:
             tokens_per_message = 3
             tokens_per_name = 1
         else:

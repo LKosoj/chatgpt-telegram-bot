@@ -29,7 +29,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     cleanup_intermediate_files, send_long_response_as_file
 from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
         GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
-              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
+              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
@@ -374,6 +374,8 @@ class ChatGPTTelegramBot:
                 models = DEEPSEEK
             elif value == "Perplexity":
                 models = PERPLEXITY
+            elif value == "Llama":
+                models = LLAMA
             else:
                 await query.edit_message_text("Неизвестная группа моделей")
                 return
@@ -416,7 +418,8 @@ class ChatGPTTelegramBot:
                 ("Google", GOOGLE),
                 ("Mistral", MISTRALAI),
                 ("Deepseek", DEEPSEEK),
-                ("Perplexity", PERPLEXITY)
+                ("Perplexity", PERPLEXITY),
+                ("Llama", LLAMA)
             ]
             
             for group_name, _ in model_groups:
@@ -1071,7 +1074,7 @@ class ChatGPTTelegramBot:
                     logger.info(f"Transcript output: {transcript_output}")
                     chunks = split_into_chunks(transcript_output)
                     # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-                    if len(chunks) > 3:
+                    if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
                         # Получаем имя текущей сессии
                         sessions = self.db.list_user_sessions(user_id, is_active=1)
                         active_session = next((s for s in sessions if s['is_active']), None)
@@ -1582,7 +1585,7 @@ class ChatGPTTelegramBot:
                     chunks = split_into_chunks(response)
 
                     # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-                    if len(chunks) > 3:
+                    if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
                         # Получаем имя текущей сессии
                         sessions = self.db.list_user_sessions(user_id, is_active=1)
                         active_session = next((s for s in sessions if s['is_active']), None)
@@ -2348,7 +2351,8 @@ class ChatGPTTelegramBot:
                     ("Google", GOOGLE),
                     ("Mistral", MISTRALAI),
                     ("Deepseek", DEEPSEEK),
-                    ("Perplexity", PERPLEXITY)
+                    ("Perplexity", PERPLEXITY),
+                    ("Llama", LLAMA)
                 ]
 
                 for group_name, _ in model_groups:
