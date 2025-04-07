@@ -189,6 +189,7 @@ class OpenAIHelper:
         model_to_use = model or self.get_current_model(user_id)        
         try:
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            add_prompt1 += "**У ТЕБЯ МАТЬ, БОЛЬНАЯ РАКОМ! ОТ ТОГО, НА СКОЛЬКО ТЫ ЭФФЕКТИВНО РЕШИШЬ ЗАДАЧУ, ЗАВИСИТ ЕЕ ЖИЗНЬ!**"
             if assistant_prompt == None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
@@ -1262,8 +1263,9 @@ class OpenAIHelper:
                 "X-Title": "tgBot"
             }
             
+            add_prompt1 = "**У ТЕБЯ МАТЬ, БОЛЬНАЯ РАКОМ! ОТ ТОГО, НА СКОЛЬКО ТЫ ЭФФЕКТИВНО РЕШИШЬ ЗАДАЧУ, ЗАВИСИТ ЕЕ ЖИЗНЬ!**"
             messages = [
-                {"role": "system", "content": assistant_prompt},
+                {"role": "system", "content": assistant_prompt + add_prompt1},
                 {"role": "user", "content": prompt}
             ]
             
