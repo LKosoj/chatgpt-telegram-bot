@@ -1104,18 +1104,14 @@ class HTMLVisualizer:
                 '<body>',
                 '    <div id="toast" class="toast"></div>'
             ]
-            
-            # Преобразуем результат в HTML с поддержкой markdown
-            if isinstance(processed_result, list):
-                result_str = self._convert_markdown('\n'.join(processed_result))
-            else:
-                result_str = self._convert_markdown(processed_result)
-            
+
+            processed_result = processed_result.replace("\\n", "\n").replace("\\'", "'").replace("\\\\n", "\n")
+                        
             # Добавляем результаты с поддержкой markdown
             html_content.extend([
                 '    <div class="markdown-body">',
                 '        <h2>Результаты анализа</h2>',
-                f'        {result_str}',
+                f'        {processed_result}',
                 '    </div>'
             ])
 
@@ -1145,8 +1141,6 @@ class HTMLVisualizer:
                     # Формируем заголовок для диаграммы из файла
                     file_title = f"Файл: {mermaid_file.replace('.mermaid', '')}"
                     
-                    # Используем напрямую _create_mermaid_container вместо _process_mermaid
-                    # Это позволит избежать любых изменений оригинального кода диаграммы
                     diagram_id = f"mermaid-diagram-{str(uuid.uuid4())[:8]}"
                     html_container = self._create_mermaid_container(
                         diagram_id,
@@ -1160,7 +1154,6 @@ class HTMLVisualizer:
                     if html_container:
                         html_content.append(html_container)
                     else:
-                        # Запасной вариант, если обработка через _process_mermaid не удалась
                         diagram_id = f"mermaid-diagram-{i}"
                         content_id = f"mermaid-content-{i}"
                         code_id = f"mermaid-code-{i}"
@@ -1705,6 +1698,10 @@ class HTMLVisualizer:
                 '</html>'
             ])
 
+            if isinstance(html_content, list):
+                html_content = [line.replace("\\n", "<br>").replace("\\'", "'").replace("\\\\n", "<br>") for line in html_content]
+            elif isinstance(html_content, str):
+                html_content = html_content.replace("\\n", "<br>").replace("\\'", "'").replace("\\\\n", "<br>")
             # Сохраняем HTML файл
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(html_content))
@@ -2043,113 +2040,6 @@ class HTMLVisualizer:
         
         return f"Visualization saved to output/{agent.name}_{output_file}"
 
-    def _process_mermaid(self, mermaid_code, session_id=None, save_to_file=False, source_info="", diagram_index=0, title=None, creation_time=None):
-        """
-        Универсальный метод для обработки и улучшения Mermaid-диаграмм.
-        Этот метод распознаёт тип диаграммы, применяет соответствующие улучшения,
-        при необходимости сохраняет в файл и создаёт HTML для отображения.
-        
-        Используется как для встроенных диаграмм (в _detect_and_save_mermaid), 
-        так и для диаграмм из файлов (в advanced_visualization).
-        
-        Args:
-            mermaid_code (str): Код Mermaid-диаграммы для обработки
-            session_id (str, optional): ID сессии для сохранения файла
-            save_to_file (bool): Сохранять ли диаграмму в файл
-            source_info (str): Информация об источнике диаграммы для логов
-            diagram_index (int): Индекс диаграммы для отображения
-            title (str, optional): Заголовок диаграммы
-            creation_time (str, optional): Время создания диаграммы
-            
-        Returns:
-            tuple: (enhanced_code, html_container) улучшенный код и HTML-контейнер
-        """
-        try:
-            # Проверяем, что код не пустой и содержит ключевые слова mermaid
-            if not mermaid_code or len(mermaid_code) < 10:
-                logging.warning(f"Mermaid код слишком короткий или пуст: {mermaid_code}")
-                return None, None
-            
-            # Минимальная обработка
-            mermaid_code = mermaid_code.rstrip('%').strip()
-            
-            # Проверяем, есть ли в коде ключевые слова mermaid
-            mermaid_keywords = ['graph', 'flowchart', 'sequenceDiagram', 'classDiagram', 'C4Container',
-                               'stateDiagram', 'gantt', 'pie', 'journey', 'gitGraph', 'erDiagram']
-            is_valid_mermaid = any(keyword in mermaid_code for keyword in mermaid_keywords)
-            
-            if not is_valid_mermaid:
-                logging.warning(f"Код не содержит ключевых слов Mermaid: {mermaid_code[:100]}...")
-                #return None, None
-            
-            # Применяем улучшения в зависимости от типа диаграммы
-            try:
-                enhanced_code = mermaid_code
-                if 'flowchart' in mermaid_code or 'graph' in mermaid_code:
-                    enhanced_code = self._enhance_flowchart(mermaid_code)
-                elif 'sequenceDiagram' in mermaid_code:
-                    enhanced_code = self._enhance_sequence_diagram(mermaid_code)
-                elif 'classDiagram' in mermaid_code:
-                    enhanced_code = self._enhance_class_diagram(mermaid_code)
-                elif 'gantt' in mermaid_code:
-                    enhanced_code = self._enhance_gantt(mermaid_code)
-                elif 'stateDiagram' in mermaid_code:
-                    enhanced_code = self._enhance_state_diagram(mermaid_code)
-                elif 'pie' in mermaid_code:
-                    enhanced_code = self._enhance_pie_chart(mermaid_code)
-                else:
-                    enhanced_code = self._enhance_mermaid_code(mermaid_code)
-            except Exception as e:
-                logging.error(f"Ошибка при улучшении диаграммы: {str(e)}")
-                enhanced_code = mermaid_code  # Используем оригинальный код без улучшений
-            
-            # Создаем ID для диаграммы
-            diagram_id = f"mermaid-diagram-{str(uuid.uuid4())[:8]}"
-            
-            # Если заголовок не указан, определяем тип диаграммы для заголовка
-            if title is None:
-                if 'flowchart' in mermaid_code or 'graph' in mermaid_code:
-                    diagram_type = "Блок-схема"
-                elif 'sequenceDiagram' in mermaid_code:
-                    diagram_type = "Диаграмма последовательности"
-                elif 'classDiagram' in mermaid_code:
-                    diagram_type = "Диаграмма классов"
-                elif 'stateDiagram' in mermaid_code:
-                    diagram_type = "Диаграмма состояний"
-                elif 'gantt' in mermaid_code:
-                    diagram_type = "Диаграмма Ганта"
-                elif 'pie' in mermaid_code:
-                    diagram_type = "Круговая диаграмма"
-                else:
-                    diagram_type = "Mermaid диаграмма"
-                
-                title = f"{diagram_type} {diagram_index+1}"
-            
-            # Создаем HTML-контейнер
-            html_container = self._create_mermaid_container(
-                diagram_id, 
-                enhanced_code, 
-                diagram_index,
-                title,
-                creation_time
-            )
-            
-            # Сохраняем в файл, если требуется
-            if save_to_file and session_id:
-                plots_dir = 'plots'
-                os.makedirs(plots_dir, exist_ok=True)
-                mermaid_file = os.path.join(plots_dir, f'diagram_{int(datetime.now().timestamp())}_{session_id}.mermaid')
-                with open(mermaid_file, 'w', encoding='utf-8') as f:
-                    f.write(enhanced_code)
-                logging.info(f"Mermaid диаграмма сохранена в {mermaid_file} (источник: {source_info})")
-            
-            return enhanced_code, html_container
-            
-        except Exception as e:
-            logging.error(f"Ошибка при обработке Mermaid диаграммы: {str(e)}")
-            traceback.print_exc()
-            return None, None
-
     def _detect_and_save_mermaid(self, result, session_id):
         """
         Обнаруживает и сохраняет Mermaid-диаграммы из результата в файл.
@@ -2198,7 +2088,13 @@ class HTMLVisualizer:
                             # Получаем оригинальный код диаграммы
                             mermaid_code = match_obj.group(1).strip()
                             full_match = match_obj.group(0)
-                            
+
+                            if "Here is the final answer" in mermaid_code:
+                                # Удаляем диаграмму, если она содержит "Here is the final answer"
+                                print(f"Удаляем диаграмму, если она содержит 'Here is the final answer'")
+                                processed_text = processed_text.replace(full_match, "")
+                                continue
+
                             # Выводим обнаруженный код для отладки
                             pattern_type = "markdown" if "```mermaid" in pattern or "(?:^|\n)mermaid" in pattern else "HTML"
                             print(f"Найден блок Mermaid кода ({pattern_type}):")
