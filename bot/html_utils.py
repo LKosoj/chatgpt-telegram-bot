@@ -131,32 +131,28 @@ class HTMLVisualizer:
                 pattern = r'```mermaid\s*' + re.escape(content) + r'\s*```'
                 processed_text = re.sub(pattern, f"<div id='{block_id}'></div>", processed_text, flags=re.DOTALL)
             
-            # Предварительно защищаем URL-адреса с подчеркиваниями от интерпретации как Markdown-разметки
-            url_pattern = r'(https?://[^\s<>"]+)'
-            def protect_underscores_in_url(match):
-                url = match.group(1)
-                # Экранируем подчеркивания в URL с помощью обратного слеша, чтобы Markdown их не интерпретировал
-                protected_url = url.replace('_', '\\_')
-                return protected_url
+            processed_text = processed_text.replace('_', '\\_').replace("\\n", "<br/>").replace("\n", "<br/>")
             
-            # Применяем защиту URL перед обработкой Markdown
-            processed_text = re.sub(url_pattern, protect_underscores_in_url, processed_text)
-            
-            # Конвертируем markdown в HTML
+            # Конвертируем текст с базовыми опциями markdown
             try:
                 # Используем базовый набор опций, который точно поддерживается
                 base_extras = [
-                    'tables', 
-                    'fenced-code-blocks', 
-                    'header-ids',
-                    'break-on-newline'
+                    'tables',           # Поддержка таблиц
+                    'fenced-code-blocks', # Блоки кода с ограждением
+                    'header-ids',       # Идентификаторы для заголовков
+                    #'break-on-newline', # Перевод строк
+                    'smart-strong',     # Умное форматирование жирного текста
+                    'cuddled-lists',    # Улучшенная обработка списков
+                    #'smart-quotes',     # Умные кавычки
                 ]
+                
                 html = markdown2.markdown(processed_text, extras=base_extras)
+                
             except Exception as e:
                 logging.warning(f"Ошибка при обработке markdown: {str(e)}")
                 # Используем минимальный набор опций
                 html = markdown2.markdown(processed_text)
-            
+                
             # В HTML, обратные слеши могли быть преобразованы в &amp;#92; - исправляем это
             html = html.replace('&amp;#92;_', '_')
             html = html.replace('\\_', '_')
@@ -278,7 +274,7 @@ class HTMLVisualizer:
             # Применяем обработку ко всему HTML
             result_html = str(soup)
             result_html = make_urls_clickable(result_html)
-            
+
             # Пересоздаем soup из обновленного HTML
             soup = BeautifulSoup(result_html, 'html.parser')
             
@@ -426,7 +422,7 @@ class HTMLVisualizer:
                 result_html = result_html.replace(container_id, container_html)
             
             # Финальная обработка - восстанавливаем плейсхолдеры Mermaid
-            result_html = str(soup)
+            #result_html = str(soup)
             
             # Восстанавливаем временные TEMP-MERMAID-PLACEHOLDER плейсхолдеры обратно в MERMAID-PLACEHOLDER
             for temp_id, original_placeholder in mermaid_placeholders.items():
@@ -447,231 +443,9 @@ class HTMLVisualizer:
                 result_html = result_html.replace(container_id, container_html)
             
             return result_html
-        except ImportError:
-            # Если markdown2 не установлен, обрабатываем простой текст
-            # Сначала сохраняем уже готовые HTML-контейнеры диаграмм
-            mermaid_containers = {}
-            mermaid_container_pattern = r'<div class="mermaid-container"[\s\S]*?</div>\s*</div>'
-            
-            def extract_containers(match):
-                container_id = f"MERMAID-CONTAINER-{len(mermaid_containers)}"
-                mermaid_containers[container_id] = match.group(0)
-                return container_id
-            
-            # Заменяем готовые контейнеры на маркеры
-            text_with_container_markers = re.sub(mermaid_container_pattern, extract_containers, text, flags=re.DOTALL)
-            
-            # Находим блоки mermaid и обрабатываем их
-            mermaid_pattern = r'```mermaid\s*([\s\S]*?)```'
-            mermaid_blocks = []
-            mermaid_replacements = {}
-            
-            # Сначала обработаем и заменим все блоки mermaid на маркеры
-            text_with_markers = text_with_container_markers
-            for i, match in enumerate(re.finditer(mermaid_pattern, text_with_container_markers, re.DOTALL)):
-                try:
-                    # Сохраняем оригинальный код mermaid до преобразования
-                    mermaid_content = match.group(1).strip()
-                    
-                    # Создаем уникальный ID для диаграммы
-                    diagram_id = f"mermaid-diagram-{str(uuid.uuid4())[:8]}"
-                    
-                    # Создаем маркер для замены
-                    marker = f"MERMAID-HTML-{i}"
-                    
-                    # Заменяем блок mermaid на маркер
-                    text_with_markers = text_with_markers.replace(match.group(0), marker)
-                    
-                    # Сохраняем информацию о блоке mermaid
-                    mermaid_blocks.append({
-                        'marker': marker,
-                        'content': mermaid_content,
-                        'diagram_id': diagram_id,
-                        'index': i
-                    })
-                except Exception as e:
-                    logging.error(f"Ошибка при обработке блока mermaid: {str(e)}")
-                    # В случае ошибки также используем маркер
-                    marker = f"MERMAID-HTML-{i}"
-                    text_with_markers = text_with_markers.replace(match.group(0), marker)
-                    mermaid_blocks.append({
-                        'marker': marker,
-                        'content': match.group(1).strip(),
-                        'diagram_id': f"mermaid-diagram-error-{i}",
-                        'index': i,
-                        'error': True
-                    })
-            
-            # Сохраняем ссылки в формате [N], которые присутствуют в документе
-            reference_links = {}
-            ref_pattern = r'\[(\d+)\]'
-            references = list(re.finditer(ref_pattern, text_with_markers))
-            
-            if references:
-                # Ищем раздел Sources или Источники в конце документа
-                sources_section = None
-                sources_patterns = [
-                    r'Sources\s*\n([\s\S]+)$',
-                    r'Источники\s*\n([\s\S]+)$',
-                    r'Список литературы\s*\n([\s\S]+)$',
-                    r'Литература\s*\n([\s\S]+)$',
-                    r'References\s*\n([\s\S]+)$'
-                ]
-                
-                for pattern in sources_patterns:
-                    sources_match = re.search(pattern, text_with_markers)
-                    if sources_match:
-                        sources_section = sources_match.group(1)
-                        break
-                
-                if sources_section:
-                    # Парсим источники в формате [1] Текст источника http://example.com
-                    source_pattern = r'\[(\d+)\](.*?)(?=\[\d+\]|$)'
-                    sources = re.finditer(source_pattern, sources_section, re.DOTALL)
-                    
-                    for source_match in sources:
-                        ref_num = source_match.group(1)
-                        source_text = source_match.group(2).strip()
-                        
-                        # Ищем URL в тексте источника
-                        url_match = re.search(r'https?://[^\s]+', source_text)
-                        if url_match:
-                            url = url_match.group(0)
-                            # Сохраняем номер ссылки и соответствующий URL
-                            reference_links[ref_num] = {
-                                'url': url,
-                                'text': source_text
-                            }
-            
-            # Обрабатываем базовое форматирование для текста, НО не применяем его к маркерам Mermaid
-            # Вместо прямой замены всех \n сначала разбиваем текст по маркерам
-            parts = []
-            current_pos = 0
-            
-            # Создаем список всех маркеров в тексте
-            all_markers = []
-            for block in mermaid_blocks:
-                all_markers.append(block['marker'])
-            
-            # Добавляем контейнеры в список маркеров
-            for container_id in mermaid_containers:
-                all_markers.append(container_id)
-            
-            # Сортируем маркеры по их позиции в тексте
-            markers_with_pos = []
-            for marker in all_markers:
-                pos = text_with_markers.find(marker)
-                if pos != -1:
-                    markers_with_pos.append((pos, marker))
-            
-            markers_with_pos.sort()
-            
-            # Обрабатываем текст между маркерами
-            formatted_parts = []
-            last_end = 0
-            
-            for pos, marker in markers_with_pos:
-                # Обрабатываем текст до маркера
-                if pos > last_end:
-                    text_part = text_with_markers[last_end:pos]
-                    # Применяем базовое форматирование только к тексту, не содержащему маркеры
-                    formatted_part = text_part.replace('\n\n', '<br><br>')
-                    formatted_part = formatted_part.replace('\n', '<br>')
-                    formatted_parts.append(formatted_part)
-                
-                # Добавляем сам маркер без изменений
-                formatted_parts.append(marker)
-                last_end = pos + len(marker)
-            
-            # Добавляем оставшийся текст после последнего маркера
-            if last_end < len(text_with_markers):
-                text_part = text_with_markers[last_end:]
-                formatted_part = text_part.replace('\n\n', '<br><br>')
-                formatted_part = formatted_part.replace('\n', '<br>')
-                formatted_parts.append(formatted_part)
-            
-            # Собираем текст обратно
-            formatted_text = ''.join(formatted_parts)
-            
-            # Обрабатываем простые ссылки формата [текст](url)
-            markdown_link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
-            def replace_markdown_link(match):
-                link_text = match.group(1)
-                url = match.group(2).strip()
-                return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{link_text}</a>'
-            
-            formatted_text = re.sub(markdown_link_pattern, replace_markdown_link, formatted_text)
-            
-            # Обрабатываем ссылки на источники формата [N]
-            if reference_links:
-                def replace_reference_link(match):
-                    ref_num = match.group(1)
-                    if ref_num in reference_links:
-                        source_info = reference_links[ref_num]
-                        url = source_info['url']
-                        title = source_info['text'].replace('"', '&quot;')
-                        return f'<a href="{url}" target="_blank" rel="noopener noreferrer" title="{title}">[{ref_num}]</a>'
-                    return match.group(0)  # Возвращаем исходный текст, если источник не найден
-                
-                ref_pattern = r'\[(\d+)\]'
-                formatted_text = re.sub(ref_pattern, replace_reference_link, formatted_text)
-            
-            # Обрабатываем простые URL
-            url_pattern = r'(https?://[^\s<>"]+)(?![^<]*>|[^<>]*<\/a>)'
-            def replace_url(match):
-                url = match.group(1)
-                return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>'
-            
-            formatted_text = re.sub(url_pattern, replace_url, formatted_text)
-            
-            # ТЕПЕРЬ создаем HTML-контейнеры для блоков mermaid и восстанавливаем их
-            for block in mermaid_blocks:
-                try:
-                    if block.get('error', False):
-                        # В случае ошибки используем простой div mermaid
-                        mermaid_html = f'<div class="mermaid">{block["content"]}</div>'
-                    else:
-                        # Создаем HTML-контейнер с оригинальным кодом mermaid
-                        # Важно: используем оригинальный код без замены \n на <br>
-                        html_container = self._create_mermaid_container(
-                            block['diagram_id'],
-                            block['content'],  # Оригинальный код без изменений
-                            block['index']
-                        )
-                        if html_container:
-                            mermaid_html = html_container
-                        else:
-                            # Если не удалось создать контейнер, используем простой div mermaid
-                            mermaid_html = f'<div class="mermaid">{block["content"]}</div>'
-                except Exception as e:
-                    logging.error(f"Ошибка при создании HTML-контейнера для mermaid: {str(e)}")
-                    # В случае ошибки используем простой div mermaid
-                    mermaid_html = f'<div class="mermaid">{block["content"]}</div>'
-                
-                # Заменяем маркер на HTML-контейнер
-                formatted_text = formatted_text.replace(block['marker'], mermaid_html)
-            
-            # Восстанавливаем оригинальные контейнеры
-            for container_id, container_html in mermaid_containers.items():
-                formatted_text = formatted_text.replace(container_id, container_html)
-            
-            # Финальная обработка всех оставшихся URL во всем HTML
-            # Паттерн для поиска URL-подобных строк, исключая те, что уже в <a> тегах
-            url_pattern = r'(https?://[^\s<>"]+)(?![^<]*>|[^<>]*<\/a>)'
-            
-            # Функция замены, которая преобразует найденный URL в тег <a>
-            def replace_with_link(match):
-                url = match.group(1)
-                # Создаем тег <a> с защитой от интерпретации символов подчеркивания как Markdown-разметки
-                # Используем обработку URL как обычного текста вместо интерпретации Markdown-синтаксиса
-                # Заменяем символы подчеркивания на экранированные HTML-коды
-                safe_url = url.replace('_', '&#95;')
-                return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{safe_url}</a>'
-            
-            # Заменяем все найденные URL на теги <a>
-            formatted_text = re.sub(url_pattern, replace_with_link, formatted_text)
-                
-            return formatted_text
+        except Exception as e:
+            logging.warning(f"___________Ошибка при обработке markdown: {str(e)}")
+            return processed_text
     
     def _sort_files_by_creation_time(self, files, directory):
         """
@@ -1105,7 +879,37 @@ class HTMLVisualizer:
                 '    <div id="toast" class="toast"></div>'
             ]
 
-            processed_result = processed_result.replace("\\n", "\n").replace("\\'", "'").replace("\\\\n", "\n")
+            # Добавляем каждый график в HTML
+            for i, plot_file in enumerate(plot_files, 1):
+                plot_path = os.path.join(plots_dir, plot_file)
+                
+                # Получаем дату создания файла
+                try:
+                    creation_time = os.path.getctime(plot_path)
+                    creation_time_str = datetime.fromtimestamp(creation_time).strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    creation_time_str = "Время создания неизвестно"
+                
+                # Конвертируем изображение в base64
+                with open(plot_path, 'rb') as img_file:
+                    import base64
+                    img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                html_content.extend([
+                    '    <div class="plot-container">',
+                    f'        <h2>График {i} <span class="file-time">({creation_time_str})</span></h2>',
+                    f'        <img src="data:image/png;base64,{img_data}" alt="График {i}">',
+                    '    </div>'
+                ])
+
+            try:
+                # Преобразуем список в строку, если это список
+                if isinstance(processed_result, list):
+                    processed_result = ' '.join(map(str, processed_result))
+                
+                processed_result = processed_result.replace("\\n", "\n").replace("\\'", "'").replace("\\\\n", "\n")
+            except Exception as e:
+                print(f"____Ошибка при обработке результата: {e}", traceback.format_exc())
                         
             # Добавляем результаты с поддержкой markdown
             html_content.extend([
@@ -1698,13 +1502,11 @@ class HTMLVisualizer:
                 '</html>'
             ])
 
-            if isinstance(html_content, list):
-                html_content = [line.replace("\\n", "<br>").replace("\\'", "'").replace("\\\\n", "<br>") for line in html_content]
-            elif isinstance(html_content, str):
-                html_content = html_content.replace("\\n", "<br>").replace("\\'", "'").replace("\\\\n", "<br>")
+            html_content = '\n'.join(html_content)
+            html_content = html_content.replace("\\n", "<br>").replace("\\'", "'").replace("\\\\n", "<br>")
             # Сохраняем HTML файл
             with open(output_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(html_content))
+                f.write(html_content)
 
             logging.info(f"HTML страница с графиками сохранена в {output_path}")
             self.clean_data(session_id)            
@@ -2088,13 +1890,13 @@ class HTMLVisualizer:
                             # Получаем оригинальный код диаграммы
                             mermaid_code = match_obj.group(1).strip()
                             full_match = match_obj.group(0)
-
+                            
                             if "Here is the final answer" in mermaid_code:
                                 # Удаляем диаграмму, если она содержит "Here is the final answer"
                                 print(f"Удаляем диаграмму, если она содержит 'Here is the final answer'")
                                 processed_text = processed_text.replace(full_match, "")
                                 continue
-
+                            
                             # Выводим обнаруженный код для отладки
                             pattern_type = "markdown" if "```mermaid" in pattern or "(?:^|\n)mermaid" in pattern else "HTML"
                             print(f"Найден блок Mermaid кода ({pattern_type}):")
@@ -2123,7 +1925,7 @@ class HTMLVisualizer:
             # Преобразуем текст с плейсхолдерами через _convert_markdown
             # Важно: на этом этапе плейсхолдеры сохраняются без изменений
             html_result = self._convert_markdown(processed_text)
-            
+
             # После конвертации Markdown в HTML, заменяем плейсхолдеры на HTML-контейнеры с диаграммами
             for placeholder, data in mermaid_blocks.items():
                 try:
@@ -2160,21 +1962,19 @@ class HTMLVisualizer:
                 print(f"Обнаружено и обработано {mermaid_count} Mermaid диаграмм")
                 logging.info(f"Обнаружено и обработано {mermaid_count} Mermaid диаграмм")
                 
-                # Если исходный результат был списком, преобразуем HTML-результат обратно в список
-                if isinstance(original_result, list):
-                    return [html_result]
-                return html_result
             else:
                 print("Mermaid диаграммы не обнаружены")
                 logging.info("Mermaid диаграммы не обнаружены")
-                return result
-        
+
+            if isinstance(original_result, list):
+                return [html_result]
+            return html_result
+
         except Exception as e:
             print(f"Ошибка при обработке Mermaid диаграмм: {str(e)}")
             logging.error(f"Ошибка при обработке Mermaid диаграмм: {str(e)}")
             traceback.print_exc()  # Добавляем полный стек-трейс для отладки
             return result
-
 
 
 
