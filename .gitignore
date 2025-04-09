@@ -16,3 +16,4 @@ bot/plugins/.cursorrules
 /.specstory
 bot/user_data.db
 *.html
+/.vscode
