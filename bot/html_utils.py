@@ -131,7 +131,7 @@ class HTMLVisualizer:
                 pattern = r'```mermaid\s*' + re.escape(content) + r'\s*```'
                 processed_text = re.sub(pattern, f"<div id='{block_id}'></div>", processed_text, flags=re.DOTALL)
             
-            processed_text = processed_text.replace('_', '\\_').replace("\\n", "<br/>").replace("\n", "<br/>")
+            processed_text = processed_text.replace('_', '\\_').replace("\\n", "\n")
             
             # Конвертируем текст с базовыми опциями markdown
             try:
