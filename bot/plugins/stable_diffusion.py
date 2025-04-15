@@ -8,22 +8,24 @@ import logging
 import asyncio
 import tempfile
 import json
-import aiohttp
+import io
+from PIL import Image
 from typing import Dict, Any, Callable, Optional
 from datetime import datetime, timedelta
 from enum import Enum
 from dataclasses import dataclass
 from .plugin import Plugin
+from huggingface_hub import InferenceClient
 
-# Конфигурация API
-API_URL = "https://api-inference.huggingface.co/models/ali-vilab/In-Context-LoRA"
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# Конфигурация генерации
+MODEL = "black-forest-labs/FLUX.1-dev"  # Модель по умолчанию
 MAX_RETRIES = 5  # Максимальное количество попыток
 RETRY_DELAY = 3  # Задержка между попытками в секундах
 STATUS_CHECK_INTERVAL = 10  # Интервал проверки статуса в секундах
 TIMEOUT_MINUTES = 5  # Таймаут для генерации изображения
-
-# Настройка логирования
-logger = logging.getLogger(__name__)
 
 class TaskStatus(Enum):
     """
@@ -49,14 +51,20 @@ class ImageTask:
 
 class StableDiffusionPlugin(Plugin):
     """
-    Плагин для генерации изображений с использованием Stable Diffusion
+    Плагин для генерации изображений с использованием Hugging Face Inference API
     """
 
     def __init__(self):
-        self.stable_diffusion_token = os.getenv('STABLE_DIFFUSION_TOKEN')
-        if not self.stable_diffusion_token:
-            raise ValueError('STABLE_DIFFUSION_TOKEN environment variable must be set to use StableDiffusionPlugin')
-        self.headers = {"Authorization": f"Bearer {self.stable_diffusion_token}"}
+        self.hf_token = os.getenv('STABLE_DIFFUSION_TOKEN')
+        if not self.hf_token:
+            raise ValueError('HUGGINGFACE_TOKEN environment variable must be set to use StableDiffusionPlugin')
+        
+        # Инициализация клиента Hugging Face
+        self.client = InferenceClient(
+            provider="together",
+            api_key=self.hf_token,
+        )
+        
         self.task_queue = asyncio.Queue()
         self.active_tasks = {}
         self.worker_task = None
@@ -64,12 +72,12 @@ class StableDiffusionPlugin(Plugin):
         self.openai = None
 
     def get_source_name(self) -> str:
-        return "StableDiffusion"
+        return "Image Generator"
 
     def get_spec(self) -> [Dict]:
         return [{
             "name": "stable_diffusion",
-            "description": "Generate an image from a textual prompt using Stable Diffusion.",
+            "description": "Generate an image from a textual prompt",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -152,32 +160,16 @@ class StableDiffusionPlugin(Plugin):
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Генерация изображения через API
-                payload = {
-                    "inputs": task.prompt,
-                    "options": {
-                        "height": 1024,
-                        "width": 1024,
-                    }
-                }
+                # Генерация изображения через Hugging Face API
+                image = await self._generate_image(task.prompt)
                 
-                image_bytes = await self.diffusion(payload)
-                img_array = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-                
-                if img_array is None:
-                    raise Exception("Failed to decode the image")
-
                 # Сохранение изображения
-                output_dir = os.path.join(tempfile.gettempdir(), 'stable_diffusion')
+                output_dir = os.path.join(tempfile.gettempdir(), 'image_generation')
                 os.makedirs(output_dir, exist_ok=True)
                 image_file_path = os.path.join(output_dir, f"{self.generate_random_string()}.png")
 
-                success, png_image = cv2.imencode(".png", img_array)
-                if not success:
-                    raise Exception("Failed to encode the image")
-
-                with open(image_file_path, "wb") as f:
-                    f.write(png_image.tobytes())
+                # Сохранение изображения
+                image.save(image_file_path, format="PNG")
 
                 return {
                     "path": image_file_path,
@@ -189,14 +181,19 @@ class StableDiffusionPlugin(Plugin):
                     raise Exception(f"Failed to generate image after {MAX_RETRIES} attempts: {str(e)}")
                 await asyncio.sleep(RETRY_DELAY * (attempt + 1))
 
-    async def diffusion(self, payload: Dict) -> bytes:
-        """Отправляет запрос к Stable Diffusion API"""
-        async with aiohttp.ClientSession() as session:
-            async with session.post(API_URL, headers=self.headers, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"API request failed with status code {response.status}: {error_text}")
-                return await response.read()
+    async def _generate_image(self, prompt: str) -> Image.Image:
+        """Генерирует изображение с использованием Hugging Face Inference API"""
+        loop = asyncio.get_event_loop()
+        
+        def query():
+            # Используем InferenceClient для генерации изображения
+            return self.client.text_to_image(
+                prompt,
+                model=MODEL,
+            )
+        
+        # Выполняем блокирующий запрос в отдельном потоке
+        return await loop.run_in_executor(None, query)
 
     @staticmethod
     def generate_random_string(length: int = 15) -> str:
