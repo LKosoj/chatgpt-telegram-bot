@@ -68,7 +68,7 @@ def default_max_tokens(model: str = None) -> int:
     elif model in GPT_4_128K_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 100000
+        return 900000
     elif model in O_MODELS:
         return 100000
     elif model in ANTHROPIC:
@@ -1358,6 +1358,9 @@ class OpenAIHelper:
             total_max_tokens * max_tokens_percent / 100
         )
         
+        if model_to_use in GPT_4O_MODELS:
+            max_generation_tokens = 32768
+
         logger.info(f"""
         Токены для модели {model_to_use}:
         - Всего: {total_max_tokens}
