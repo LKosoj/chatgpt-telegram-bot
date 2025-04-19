@@ -21,7 +21,8 @@ from huggingface_hub import InferenceClient
 logger = logging.getLogger(__name__)
 
 # Конфигурация генерации
-MODEL = "black-forest-labs/FLUX.1-dev"  # Модель по умолчанию
+#MODEL = "black-forest-labs/FLUX.1-dev"  # Модель по умолчанию
+MODEL = "HiDream-ai/HiDream-I1-Full"
 MAX_RETRIES = 5  # Максимальное количество попыток
 RETRY_DELAY = 3  # Задержка между попытками в секундах
 STATUS_CHECK_INTERVAL = 10  # Интервал проверки статуса в секундах
@@ -61,7 +62,7 @@ class StableDiffusionPlugin(Plugin):
         
         # Инициализация клиента Hugging Face
         self.client = InferenceClient(
-            provider="together",
+            provider="fal-ai",
             api_key=self.hf_token,
         )
         
