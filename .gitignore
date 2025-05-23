@@ -17,3 +17,5 @@ bot/plugins/.cursorrules
 bot/user_data.db
 *.html
 /.vscode
+# SpecStory explanation file
+.specstory/.what-is-this.md

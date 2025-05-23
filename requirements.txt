@@ -62,3 +62,4 @@ ipython>=8.16.0
 trafilatura
 beautifulsoup4
 markdown2
+pdfminer.six
