@@ -27,8 +27,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file
-from .openai_helper import GPT_3_16K_MODELS, GPT_3_MODELS, GPT_4_128K_MODELS, GPT_4_32K_MODELS, GPT_4_MODELS, \
-        GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
+from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
               ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
@@ -63,6 +62,10 @@ class ChatGPTTelegramBot:
         self.openai.bot = None
         # Устанавливаем openai в plugin_manager
         self.openai.plugin_manager.set_openai(self.openai)
+        
+        # Кешируем chat_modes.yml
+        self._chat_modes_cache = None
+        self._chat_modes_cache_time = 0
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
@@ -86,9 +89,51 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
+        self._inline_cache_cleanup_time = 0  # Время последней очистки кеша
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
-        self.db = Database()  # Инициализация базы данных
+        # Убираем повторную инициализацию Database
+
+    def get_chat_modes(self):
+        """
+        Получает chat_modes с кешированием
+        """
+        import time
+        current_time = time.time()
+        
+        # Если кеш устарел (старше 5 минут) или не существует, перезагружаем
+        if (self._chat_modes_cache is None or 
+            current_time - self._chat_modes_cache_time > 300):
+            
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+            
+            try:
+                with open(chat_modes_path, 'r', encoding='utf-8') as file:
+                    self._chat_modes_cache = yaml.safe_load(file)
+                    self._chat_modes_cache_time = current_time
+            except Exception as e:
+                logger.error(f"Ошибка загрузки chat_modes.yml: {e}")
+                if self._chat_modes_cache is None:
+                    self._chat_modes_cache = {}
+        
+        return self._chat_modes_cache
+
+    def cleanup_inline_cache(self):
+        """
+        Очищает устаревшие записи из кеша inline запросов
+        """
+        import time
+        current_time = time.time()
+        
+        # Очищаем кеш каждые 10 минут
+        if current_time - self._inline_cache_cleanup_time > 600:
+            # Оставляем только последние 100 записей
+            if len(self.inline_queries_cache) > 100:
+                items = list(self.inline_queries_cache.items())
+                self.inline_queries_cache = dict(items[-100:])
+            
+            self._inline_cache_cleanup_time = current_time
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -178,11 +223,8 @@ class ChatGPTTelegramBot:
                     None
                 )
                 if last_system_message:
-                    # Загружаем режимы из файла
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-                    with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                        chat_modes = yaml.safe_load(file)
+                    # Используем кешированные режимы
+                    chat_modes = self.get_chat_modes()
                     
                     for mode_key, mode_data in chat_modes.items():
                         if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
@@ -489,12 +531,8 @@ class ChatGPTTelegramBot:
             # Получаем список сессий пользователя
             sessions = self.db.list_user_sessions(user_id)
             
-            # Загружаем режимы из файла для определения имен режимов
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-            
-            with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                chat_modes = yaml.safe_load(file)
+            # Используем кешированные режимы для определения имен режимов
+            chat_modes = self.get_chat_modes()
             
             # Создаем клавиатуру с кнопками управления сессиями
             keyboard = []
@@ -645,20 +683,21 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
+        # Проверяем права доступа для callback_query
+        user_id = query.from_user.id
+        if not await is_allowed(self.config, update, context):
+            await query.edit_message_text(text="У вас нет доступа к этой команде.")
+            return
+        
         # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
         action = data_parts[0] if data_parts else ''
         value = data_parts[1] if len(data_parts) > 1 else ''
         
         chat_id = query.message.chat_id
-        user_id = query.from_user.id
         
-        # Загружаем промпты из файла
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-        
-        with open(chat_modes_path, 'r', encoding='utf-8') as file:
-            chat_modes = yaml.safe_load(file)
+        # Используем кешированные промпты
+        chat_modes = self.get_chat_modes()
 
         try:
             if action == "promptgroup":
@@ -953,7 +992,12 @@ class ChatGPTTelegramBot:
             
             # Создаем временную директорию для файлов
             temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
-            os.makedirs(temp_dir, exist_ok=True)
+            try:
+                os.makedirs(temp_dir, exist_ok=True)
+            except PermissionError:
+                # Используем системную временную директорию
+                import tempfile
+                temp_dir = tempfile.gettempdir()
             file_path = os.path.join(temp_dir, filename)
             file_path_mp3 = os.path.join(temp_dir, filename_mp3)
             
@@ -1364,6 +1408,19 @@ class ChatGPTTelegramBot:
                 'message_id': message_id,
                 'message_timestamp': update.message.date.timestamp()
             })
+            
+            # Запускаем таймер обработки буфера, если он не запущен
+            if buffer_data['timer'] is None or buffer_data['timer'].done():
+                buffer_data['timer'] = asyncio.create_task(
+                    self._delayed_process_buffer(chat_id)
+                )
+
+    async def _delayed_process_buffer(self, chat_id: int):
+        """
+        Задержка перед обработкой буфера для сбора всех сообщений
+        """
+        await asyncio.sleep(self.buffer_timeout)
+        await self.process_buffer(chat_id)
 
     async def process_buffer(self, chat_id: int):
         """
@@ -1647,6 +1704,9 @@ class ChatGPTTelegramBot:
         """
         Handle the inline query. This is run when you type: @botusername <query>
         """
+        # Очищаем кеш от устаревших записей
+        self.cleanup_inline_cache()
+        
         query = update.inline_query.query
         if len(query) < 3:
             return
@@ -2307,12 +2367,8 @@ class ChatGPTTelegramBot:
                 # Показываем меню выбора режима для текущей сессии
                 keyboard = []
                 
-                # Загружаем режимы из файла
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-                
-                with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                    chat_modes = yaml.safe_load(file)
+                # Используем кешированные режимы
+                chat_modes = self.get_chat_modes()
                 
                 # Группируем режимы по group
                 mode_groups = {}
@@ -2424,8 +2480,14 @@ class ChatGPTTelegramBot:
         Runs the bot indefinitely.
         """
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # Проверяем, есть ли уже запущенный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                logger.warning("Event loop is already running, using existing loop")
+            except RuntimeError:
+                # Нет активного loop, создаем новый
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
             application = ApplicationBuilder() \
                 .token(self.config['token']) \
