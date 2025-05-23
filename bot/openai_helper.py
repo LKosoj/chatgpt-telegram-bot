@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 from typing import Dict, List, Optional
+from datetime import datetime as dt
 
 import tiktoken
 
@@ -13,7 +14,6 @@ from functools import lru_cache
 import json
 import httpx
 import io
-from datetime import date
 from calendar import monthrange
 from PIL import Image
 import yaml
@@ -718,9 +718,13 @@ class OpenAIHelper:
             )
 
             temp_file = io.BytesIO()
-            temp_file.write(response.read())
-            temp_file.seek(0)
-            return temp_file, len(text)
+            try:
+                temp_file.write(response.read())
+                temp_file.seek(0)
+                return temp_file, len(text)
+            except Exception:
+                temp_file.close()
+                raise
         except Exception as e:
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
@@ -1106,7 +1110,12 @@ class OpenAIHelper:
         except KeyError:
             encoding = tiktoken.get_encoding("cl100k_base")
 
-        if model in GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA:
+        supported_models = (
+            GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
+            ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
+            PERPLEXITY + LLAMA
+        )
+        if model in supported_models:
             tokens_per_message = 3
             tokens_per_name = 1
         else:
@@ -1226,11 +1235,11 @@ class OpenAIHelper:
             session_name = response[:50]
             
             # Если название пустое, используем дефолтное
-            return session_name or f"Сессия {datetime.now().strftime('%d.%m')}", tokens
+            return session_name or f"Сессия {dt.now().strftime('%d.%m')}", tokens
         
         except Exception as e:
             logger.error(f"Ошибка генерации названия сессии: {e}")
-            return f"Сессия {datetime.now().strftime('%d.%m')}", 0
+            return f"Сессия {dt.now().strftime('%d.%m')}", 0
 
     def ask_sync(self, prompt, user_id, assistant_prompt=None, model=None):
         try:
@@ -1310,7 +1319,6 @@ class OpenAIHelper:
         logger.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
     
-    @lru_cache(maxsize=128)
     def get_max_tokens(self, model_to_use, max_tokens_percent, chat_id):
         # Получаем максимальное количество токенов для модели
         total_max_tokens = default_max_tokens(model_to_use)
