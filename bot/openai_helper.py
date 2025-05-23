@@ -28,21 +28,16 @@ logger = logging.getLogger(__name__)
 
 # Models can be found here: https://platform.openai.com/docs/models/overview
 # Models gpt-3.5-turbo-0613 and  gpt-3.5-turbo-16k-0613 will be deprecated on June 13, 2024
-GPT_3_MODELS = ("gpt-3.5-turbo", "gpt-3.5-turbo-0301", "gpt-3.5-turbo-0613")
-GPT_3_16K_MODELS = ("gpt-3.5-turbo-16k", "gpt-3.5-turbo-16k-0613", "gpt-3.5-turbo-1106", "gpt-3.5-turbo-0125")
-GPT_4_MODELS = ("gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-turbo-preview")
-GPT_4_32K_MODELS = ("gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613")
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
-GPT_4_128K_MODELS = ("gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("openai/gpt-4.1-nano","openai/gpt-4.1-mini", "openai/gpt-4.1")
 O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini","openai/o3-mini-high")
-ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-3.7-sonnet", "anthropic/claude-3.7-sonnet-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.0-flash-001","google/gemini-2.5-pro-preview")
-MISTRALAI = ("mistralai/mistral-nemo",)
+ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-thinking-high")
+GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-pre-05-20","google/gemini-2.5-pro-preview")
+MISTRALAI = ("mistralai/mistral-medium-3",)
 DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
 LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
 PERPLEXITY = ("perplexity/sonar-online",)
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS\
+GPT_ALL_MODELS = GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS\
     + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA
 
 @lru_cache(maxsize=128)
@@ -53,19 +48,7 @@ def default_max_tokens(model: str = None) -> int:
     :return: The default number of max tokens
     """
     base = 1200
-    if model in GPT_3_MODELS:
-        return base
-    elif model in GPT_4_MODELS:
-        return base * 2
-    elif model in GPT_3_16K_MODELS:
-        if model == "gpt-3.5-turbo-1106":
-            return 4096
-        return base * 4
-    elif model in GPT_4_32K_MODELS:
-        return base * 8
-    elif model in GPT_4_VISION_MODELS:
-        return 4096
-    elif model in GPT_4_128K_MODELS:
+    if model in GPT_4_VISION_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
         return 900000
@@ -1123,10 +1106,7 @@ class OpenAIHelper:
         except KeyError:
             encoding = tiktoken.get_encoding("cl100k_base")
 
-        if model in GPT_3_MODELS + GPT_3_16K_MODELS:
-            tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
-            tokens_per_name = -1  # if there's a name, the role is omitted
-        elif model in GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA:
+        if model in GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA:
             tokens_per_message = 3
             tokens_per_name = 1
         else:
