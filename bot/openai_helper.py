@@ -51,7 +51,7 @@ def default_max_tokens(model: str = None) -> int:
     if model in GPT_4_VISION_MODELS:
         return 4096
     elif model in GPT_4O_MODELS:
-        return 900000
+        return 1000000
     elif model in O_MODELS:
         return 100000
     elif model in ANTHROPIC:

@@ -683,19 +683,19 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
         
-        # Проверяем права доступа для callback_query
+        chat_id = query.message.chat_id
         user_id = query.from_user.id
-        if not await is_allowed(self.config, update, context):
-            await query.edit_message_text(text="У вас нет доступа к этой команде.")
-            return
+
+        # Проверяем права доступа для callback_query
+        #if not await is_allowed(self.config, update, context):
+        #    await query.edit_message_text(text="У вас нет доступа к этой команде.")
+        #    return
         
         # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
         action = data_parts[0] if data_parts else ''
         value = data_parts[1] if len(data_parts) > 1 else ''
-        
-        chat_id = query.message.chat_id
-        
+                
         # Используем кешированные промпты
         chat_modes = self.get_chat_modes()
 
