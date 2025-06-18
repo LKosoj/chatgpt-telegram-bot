@@ -550,6 +550,35 @@ async def handle_direct_result(config, update: Update, response: any):
                         text=chunk,
                         parse_mode=parse_mode
                     )
+                except telegram.error.BadRequest as e:
+                    if "can't parse entities" in str(e).lower():
+                        logging.warning(f"Markdown parsing error in handle_direct_result: {e}. Retrying without markdown formatting.")
+                        # Убираем проблемные символы и пытаемся снова
+                        try:
+                            # Экранируем специальные символы для markdown
+                            escaped_chunk = escape_markdown(chunk, exclude_code_blocks=False)
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=reply_to,
+                                text=escaped_chunk,
+                                parse_mode=parse_mode
+                            )
+                        except Exception:
+                            # Если все еще не получается, отправляем без форматирования
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=reply_to,
+                                text=chunk,
+                                parse_mode=None
+                            )
+                    else:
+                        # Для других BadRequest ошибок просто убираем форматирование
+                        await update.effective_message.reply_text(
+                            message_thread_id=get_thread_id(update),
+                            reply_to_message_id=reply_to,
+                            text=chunk,
+                            parse_mode=None
+                        )
                 except Exception as e:
                     logging.error(f"Unexpected error in handle_direct_result: {e}")
                     # В случае любой другой ошибки отправляем без форматирования

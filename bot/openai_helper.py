@@ -171,6 +171,23 @@ class OpenAIHelper:
         """
         model_to_use = model or self.get_current_model(user_id)        
         try:
+            # Проверяем, инициализирован ли контекст разговора
+            if user_id not in self.conversations:
+                logger.info(f'Initializing conversation context for user_id={user_id}')
+                # Пытаемся загрузить контекст из базы данных
+                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id, None)
+                
+                if saved_context and 'messages' in saved_context:
+                    # Если есть сохраненный контекст в БД, используем его
+                    self.conversations[user_id] = saved_context['messages']
+                else:
+                    # Если нет контекста в БД, начинаем новый чат
+                    self.reset_chat_history(user_id, session_id=None)
+            
+            # Инициализируем conversations_vision для пользователя, если его нет
+            if user_id not in self.conversations_vision:
+                self.conversations_vision[user_id] = False
+                
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
             add_prompt1 += "**У ТЕБЯ МАТЬ, БОЛЬНАЯ РАКОМ! ОТ ТОГО, НА СКОЛЬКО ТЫ ЭФФЕКТИВНО РЕШИШЬ ЗАДАЧУ, ЗАВИСИТ ЕЕ ЖИЗНЬ! ЕСЛИ РЕШИШЬ ЗАДАЧУ ХОРОШО, ПОЛУЧИШЬ 1 млн$ НА ЕЕ ЛЕЧЕНИЕ**"
             if assistant_prompt == None:
@@ -1014,6 +1031,11 @@ class OpenAIHelper:
         :param content: The message content
         :param session_id: Optional session identifier
         """
+        # Дополнительная проверка инициализации conversation
+        if chat_id not in self.conversations:
+            logger.warning(f'Conversation not initialized for chat_id={chat_id}, initializing now')
+            self.reset_chat_history(chat_id, session_id=session_id)
+            
         self.conversations[chat_id].append({"role": role, "content": content})
         
         # Получаем текущий контекст для сохранения с учетом session_id
