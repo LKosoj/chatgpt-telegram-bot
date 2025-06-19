@@ -1,10 +1,14 @@
 import os
+import asyncio
+import logging
 from itertools import islice
 from typing import Dict
 
 from duckduckgo_search import DDGS
 
 from .plugin import Plugin
+
+logger = logging.getLogger(__name__)
 
 
 class DDGWebSearchPlugin(Plugin):
@@ -13,6 +17,8 @@ class DDGWebSearchPlugin(Plugin):
     """
     def __init__(self):
         self.safesearch = os.getenv('DUCKDUCKGO_SAFESEARCH', 'moderate')
+        self.max_retries = 3
+        self.base_delay = 2  # базовая задержка в секундах
 
     def get_source_name(self) -> str:
         return "DuckDuckGo"
@@ -46,22 +52,74 @@ class DDGWebSearchPlugin(Plugin):
             },
         }]
 
-    async def execute(self, function_name, helper, **kwargs) -> Dict:
-        with DDGS() as ddgs:
-            ddgs_gen = ddgs.text(
-                kwargs['query'],
-                region=kwargs.get('region', 'wt-wt'),
-                safesearch=self.safesearch
-            )
-            results = list(islice(ddgs_gen, 3))
+    async def _search_with_retry(self, query: str, region: str = 'wt-wt') -> list:
+        """
+        Выполняет поиск с повторными попытками при rate limit
+        """
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Попытка поиска #{attempt + 1} для запроса: {query}")
+                #webshare.io/proxy
+                #with DDGS(proxy = "http://jtsfkail-rotate:xlxati736fhs@p.webshare.io:80") as ddgs:
+                with DDGS() as ddgs:
+                    ddgs_gen = ddgs.text(
+                        query,
+                        region=region,
+                        safesearch=self.safesearch
+                    )
+                    results = list(islice(ddgs_gen, 3))
+                    
+                    logger.info(f"Поиск успешен, найдено результатов: {len(results)}")
+                    return results
+                    
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"Ошибка при поиске (попытка {attempt + 1}): {error_msg}")
+                
+                # Проверяем, является ли это ошибкой rate limit
+                if "ratelimit" in error_msg.lower() or "rate limit" in error_msg.lower() or "202" in error_msg:
+                    if attempt < self.max_retries - 1:
+                        # Экспоненциальная задержка: 2, 4, 8 секунд
+                        delay = self.base_delay * (2 ** attempt)
+                        logger.info(f"Rate limit обнаружен, ожидание {delay} секунд перед следующей попыткой...")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"Превышено максимальное количество попыток ({self.max_retries}) из-за rate limit")
+                        raise Exception(f"DuckDuckGo rate limit: превышено максимальное количество попыток поиска. Попробуйте позже.")
+                else:
+                    # Если это не rate limit ошибка, пробрасываем её дальше
+                    raise e
+        
+        return []
 
-            if results is None or len(results) == 0:
-                return {"Result": "No good DuckDuckGo Search Result was found"}
+    async def execute(self, function_name, helper, **kwargs) -> Dict:
+        try:
+            query = kwargs.get('query', '')
+            region = kwargs.get('region', 'wt-wt')
+            
+            if not query:
+                return {"error": "Запрос не может быть пустым"}
+            
+            logger.info(f"Выполняется поиск DuckDuckGo для запроса: {query}, регион: {region}")
+            
+            results = await self._search_with_retry(query, region)
+            
+            if not results or len(results) == 0:
+                return {"Result": "Не найдено результатов поиска DuckDuckGo"}
 
             def to_metadata(result: Dict) -> Dict[str, str]:
                 return {
-                    "snippet": result["body"],
-                    "title": result["title"],
-                    "link": result["href"],
+                    "snippet": result.get("body", ""),
+                    "title": result.get("title", ""),
+                    "link": result.get("href", ""),
                 }
-            return {"result": [to_metadata(result) for result in results]}
+            
+            formatted_results = [to_metadata(result) for result in results]
+            logger.info(f"Возвращаем {len(formatted_results)} результатов поиска")
+            
+            return {"result": formatted_results}
+            
+        except Exception as e:
+            error_msg = f"Ошибка выполнения поиска DuckDuckGo: {str(e)}"
+            logger.error(error_msg)
+            return {"error": error_msg}
