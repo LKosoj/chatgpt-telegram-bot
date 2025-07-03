@@ -193,8 +193,12 @@ class OpenAIHelper:
             if assistant_prompt == None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
-            # Получаем модель с учетом приоритетов
-            model_to_use = self.get_current_model(user_id)
+            if model:
+                model_to_use = model
+            else:
+                # Получаем модель с учетом приоритетов
+                model_to_use = self.get_current_model(user_id)
+            logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
                 {"role": "system", "content": assistant_prompt},
@@ -1265,8 +1269,12 @@ class OpenAIHelper:
 
     def ask_sync(self, prompt, user_id, assistant_prompt=None, model=None):
         try:
-            # Получаем модель с учетом приоритетов
-            model_to_use = model or self.get_current_model(user_id)
+            if model:
+                model_to_use = model
+            else:
+                # Получаем модель с учетом приоритетов
+                model_to_use = self.get_current_model(user_id)
+            logger.info(f"Используемая модель: {model_to_use}")
             url = f"{self.config['openai_base']}/chat/completions"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",

@@ -1,5 +1,5 @@
 openai:
-  model: "gpt-4o-mini"
+  model: "anthropic/claude-3-5-haiku"
   base_url: "https://api.vsegpt.ru/v1"
   temperature: 0
   max_tokens: 20000
