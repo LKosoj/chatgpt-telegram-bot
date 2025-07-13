@@ -4,7 +4,7 @@ import logging
 from itertools import islice
 from typing import Dict
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 from .plugin import Plugin
 

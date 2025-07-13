@@ -37,8 +37,9 @@ MISTRALAI = ("mistralai/mistral-medium-3",)
 DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
 LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
 PERPLEXITY = ("perplexity/sonar-online",)
+MOONSHOTAI = ("moonshotai/kimi-k2",)
 GPT_ALL_MODELS = GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -66,6 +67,8 @@ def default_max_tokens(model: str = None) -> int:
         return 100000
     elif model in LLAMA:
         return 300000
+    elif model in MOONSHOTAI:
+        return 128000
     else:
         return base * 2
 
@@ -86,10 +89,6 @@ def are_functions_available(model: str) -> bool:
         return datetime.date.today() < datetime.date(2024, 6, 13)
     if model == 'gpt-4-vision-preview':
         return False
-    if model in DEEPSEEK:
-        return True
-    if model in LLAMA:
-        return True
     return True
 
 
@@ -130,7 +129,8 @@ class OpenAIHelper:
         :param plugin_manager: The plugin manager
         :param db: Database instance
         """
-        http_client = httpx.AsyncClient(proxies=config['proxy']) if 'proxy' in config else None
+        # http_client = httpx.AsyncClient(proxies=config['proxy']) if 'proxy' in config else None
+        http_client = httpx.AsyncClient()
         
         if config['openai_base'] != '' :
             openai.api_base = config['openai_base']
@@ -189,7 +189,6 @@ class OpenAIHelper:
                 self.conversations_vision[user_id] = False
                 
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
-            add_prompt1 += "**У ТЕБЯ МАТЬ, БОЛЬНАЯ РАКОМ! ОТ ТОГО, НА СКОЛЬКО ТЫ ЭФФЕКТИВНО РЕШИШЬ ЗАДАЧУ, ЗАВИСИТ ЕЕ ЖИЗНЬ! ЕСЛИ РЕШИШЬ ЗАДАЧУ ХОРОШО, ПОЛУЧИШЬ 1 млн$ НА ЕЕ ЛЕЧЕНИЕ**"
             if assistant_prompt == None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
@@ -508,7 +507,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY):
+            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI):
                 stream = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
@@ -1019,9 +1018,8 @@ class OpenAIHelper:
         if model_to_use in (ANTHROPIC):
             function_result = f"Function {function_name} returned: {content}"
             self.conversations[chat_id].append({"role": "user", "content": function_result})
-        elif model_to_use in (MISTRALAI):
-            #function_result = f"Function {function_name} returned: {content}"
-            #self.conversations[chat_id].append({"role": "user", "content": function_result})
+        elif model_to_use in (MISTRALAI + MOONSHOTAI):
+            # Mistral и Moonshot используют роль "tool" вместо "function"
             self.conversations[chat_id].append({"role": "tool", "name": function_name, "content": content})
         else:
             # For OpenAI-style models, use the function role
@@ -1139,7 +1137,7 @@ class OpenAIHelper:
         supported_models = (
             GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
             ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
-            PERPLEXITY + LLAMA
+            PERPLEXITY + LLAMA + MOONSHOTAI
         )
         if model in supported_models:
             tokens_per_message = 3
@@ -1363,7 +1361,7 @@ class OpenAIHelper:
         
         # Максимальное количество токенов для генерации
         max_generation_tokens = max(
-            50,  # Минимальное количество токенов для генерации
+            500,  # Минимальное количество токенов для генерации
             min(
                 total_max_tokens - current_tokens - reserved_tokens,  # Оставшиеся токены
                 total_max_tokens // 3  # Не более трети от общего количества
