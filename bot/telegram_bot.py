@@ -28,7 +28,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file
 from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
-              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA
+              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA, MOONSHOTAI
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
@@ -418,6 +418,8 @@ class ChatGPTTelegramBot:
                 models = PERPLEXITY
             elif value == "Llama":
                 models = LLAMA
+            elif value == "Moonshotai":
+                models = MOONSHOTAI
             else:
                 await query.edit_message_text("Неизвестная группа моделей")
                 return
@@ -461,7 +463,8 @@ class ChatGPTTelegramBot:
                 ("Mistral", MISTRALAI),
                 ("Deepseek", DEEPSEEK),
                 ("Perplexity", PERPLEXITY),
-                ("Llama", LLAMA)
+                ("Llama", LLAMA),
+                ("Moonshotai", MOONSHOTAI)
             ]
             
             for group_name, _ in model_groups:
@@ -493,6 +496,11 @@ class ChatGPTTelegramBot:
         """
         Сброс контекста разговора и управление сессиями
         """
+        # Проверяем, что effective_chat существует (не для inline queries)
+        if not update.effective_chat:
+            logger.warning("reset called without effective_chat (likely inline query)")
+            return
+            
         chat_id = update.effective_chat.id
         is_callback = bool(update.callback_query)
         user_id = None
@@ -1538,7 +1546,7 @@ class ChatGPTTelegramBot:
                 self.openai.message_ids = getattr(self.openai, 'message_ids', {})
                 self.openai.message_ids[request_id] = message_id
 
-                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt, request_id=request_id)
+                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt, request_id=request_id, user_id=user_id)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -1625,7 +1633,7 @@ class ChatGPTTelegramBot:
                     self.openai.message_ids = getattr(self.openai, 'message_ids', {})
                     self.openai.message_ids[request_id] = message_id
 
-                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id)
+                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id, user_id=user_id)
 
                     if is_direct_result(response):
                         analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
@@ -2408,7 +2416,8 @@ class ChatGPTTelegramBot:
                     ("Mistral", MISTRALAI),
                     ("Deepseek", DEEPSEEK),
                     ("Perplexity", PERPLEXITY),
-                    ("Llama", LLAMA)
+                    ("Llama", LLAMA),
+                    ("Moonshotai", MOONSHOTAI)
                 ]
 
                 for group_name, _ in model_groups:
