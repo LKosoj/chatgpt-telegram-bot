@@ -643,13 +643,20 @@ class OpenAIHelper:
             try:
                 args = json.loads(arguments)
                 args['chat_id'] = chat_id
-                args['user_id'] = chat_id
+                
+                # Получаем правильный user_id из контекста разговора
+                user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+                if user_id is not None:
+                    args['user_id'] = user_id
+                else:
+                    # Если не найден user_id в контексте, используем chat_id как fallback для личных сообщений
+                    args['user_id'] = chat_id
+                
                 arguments = json.dumps(args, ensure_ascii=False)
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
                 return response, tools_used
             
-            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             self.user_id = user_id
             model_to_use = self.get_current_model(user_id)
 
