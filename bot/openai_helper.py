@@ -219,7 +219,7 @@ class OpenAIHelper:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
 
-    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, **kwargs) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None, **kwargs) -> tuple[str, str]:
         """
         Gets a full response from the GPT model with optional session support.
         :param chat_id: The chat ID
@@ -247,7 +247,7 @@ class OpenAIHelper:
             )
             
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
-                response, plugins_used = await self.__handle_function_call(chat_id, response)
+                response, plugins_used = await self.__handle_function_call(chat_id, response, user_id=user_id)
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
                     return response, '0'
@@ -288,7 +288,7 @@ class OpenAIHelper:
             if hasattr(self, 'last_image_file_id'):
                 delattr(self, 'last_image_file_id')
 
-    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None, session_id: str = None):
+    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None):
         """
         Stream response from the GPT model with optional session support.
         :param chat_id: The chat ID
@@ -337,7 +337,7 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 try:
-                    response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
+                    response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True, user_id=user_id)
                     if is_direct_result(response):
                         yield response, '0'
                         return
@@ -594,7 +594,7 @@ class OpenAIHelper:
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
-    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All']):
+    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All'], user_id=None):
         tool_name = ''
         arguments = ''
         try:
@@ -644,12 +644,11 @@ class OpenAIHelper:
                 args = json.loads(arguments)
                 args['chat_id'] = chat_id
                 
-                # Получаем правильный user_id из контекста разговора
-                user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
+                # Используем переданный user_id или chat_id как fallback для личных сообщений
                 if user_id is not None:
                     args['user_id'] = user_id
                 else:
-                    # Если не найден user_id в контексте, используем chat_id как fallback для личных сообщений
+                    # Если не передан user_id, используем chat_id как fallback для личных сообщений
                     args['user_id'] = chat_id
                 
                 arguments = json.dumps(args, ensure_ascii=False)
@@ -693,7 +692,7 @@ class OpenAIHelper:
                 stream=stream,
                 extra_headers={ "X-Title": "tgBot" },
             )
-            return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used, allowed_plugins)
+            return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used, allowed_plugins, user_id)
         except Exception as e:
             logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
             bot_language = self.config['bot_language']

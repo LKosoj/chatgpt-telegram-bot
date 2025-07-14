@@ -231,7 +231,7 @@ class StableDiffusionPlugin(Plugin):
             task = ImageTask(
                 task_id=f"{chat_id}_{datetime.now().timestamp()}",
                 user_id=user_id,
-                chat_id=chat_id,
+                chat_id=int(chat_id),  # Преобразуем в int для корректной работы с Telegram API
                 prompt=prompt,
                 status=TaskStatus.PENDING
             )
@@ -275,7 +275,12 @@ class StableDiffusionPlugin(Plugin):
                         "Это может занять некоторое время. Я сообщу, когда изображение будет готово."
                     )
                 )
-                logger.info(f"Sent initial status message: {status_message.message_id}")
+                if status_message:
+                    logger.info(f"Sent initial status message: {status_message.message_id}")
+                else:
+                    logger.error("send_message returned None")
+                    self.active_tasks.pop(task.task_id, None)
+                    return
             except Exception as e:
                 logger.error(f"Error sending initial message: {e}", exc_info=True)
                 self.active_tasks.pop(task.task_id, None)
