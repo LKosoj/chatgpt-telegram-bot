@@ -310,7 +310,7 @@ class PluginManager:
     def get_message_handlers(self) -> List[Dict]:
         """Возвращает список обработчиков сообщений от всех плагинов."""
         handlers = []
-        for plugin_name in self.plugins.items():
+        for plugin_name in self.plugins.keys():
             plugin_instance = self.get_plugin(plugin_name)
             if plugin_instance:
                 handlers.extend(plugin_instance.get_message_handlers())
