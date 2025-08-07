@@ -30,16 +30,17 @@ logger = logging.getLogger(__name__)
 # Models gpt-3.5-turbo-0613 and  gpt-3.5-turbo-16k-0613 will be deprecated on June 13, 2024
 GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
 GPT_4O_MODELS = ("openai/gpt-4.1-nano","openai/gpt-4.1-mini", "openai/gpt-4.1")
+GPT_5_MODELS = ("openai/gpt-5-mini","openai/gpt-5-chat")
 O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini","openai/o3-mini-high")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-lite-pre-06-17","google/gemini-2.5-flash","google/gemini-2.5-pro-preview")
+GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-lite-pre-06-17","google/gemini-2.5-flash","google/gemini-2.5-pro")
 MISTRALAI = ("mistralai/mistral-medium-3",)
 DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
 LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
 PERPLEXITY = ("perplexity/sonar-online",)
 MOONSHOTAI = ("moonshotai/kimi-k2",)
 GPT_ALL_MODELS = GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI + GPT_5_MODELS
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -68,6 +69,8 @@ def default_max_tokens(model: str = None) -> int:
     elif model in LLAMA:
         return 300000
     elif model in MOONSHOTAI:
+        return 128000
+    elif model in GPT_5_MODELS:
         return 128000
     else:
         return base * 2
@@ -1143,7 +1146,7 @@ class OpenAIHelper:
         supported_models = (
             GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
             ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
-            PERPLEXITY + LLAMA + MOONSHOTAI
+            PERPLEXITY + LLAMA + MOONSHOTAI + GPT_5_MODELS
         )
         if model in supported_models:
             tokens_per_message = 3
