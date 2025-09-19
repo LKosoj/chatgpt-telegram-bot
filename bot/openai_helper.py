@@ -1406,3 +1406,20 @@ class OpenAIHelper:
             return [f"name: {mode_key}, welcome_message: {mode_data['welcome_message']}" 
                    for mode_key, mode_data in modes.items() 
                    if isinstance(mode_data, dict) and 'welcome_message' in mode_data]
+
+    async def close(self):
+        """
+        Закрывает HTTP-клиенты и освобождает ресурсы OpenAIHelper.
+        
+        Этот метод необходим для корректного завершения работы, так как:
+        - OpenAI клиент использует httpx.AsyncClient для HTTP-соединений
+        - Без закрытия могут остаться висящие соединения
+        - Вызывается из telegram_bot.cleanup() при завершении работы бота
+        """
+        try:
+            # Закрываем OpenAI клиент, который автоматически закроет httpx.AsyncClient
+            if hasattr(self, 'client') and self.client:
+                await self.client.close()
+                logger.info("OpenAI client closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing OpenAI client: {e}")
