@@ -1990,9 +1990,15 @@ class ChatGPTTelegramBot:
 
         # Регистрируем обработчики сообщений от плагинов
         for handler_config in self.openai.plugin_manager.get_message_handlers():
-            if 'handler' in handler_config:
-                    # Если handler уже является готовым обработчиком (например, ConversationHandler)
-                application.add_handler(handler_config['handler'])
+            if 'handler' in handler_config and 'filters' not in handler_config:
+                # Если handler уже является готовым обработчиком (например, ConversationHandler)
+                handler = handler_config['handler']
+                try:
+                    application.add_handler(handler)
+                    logger.info(f"Successfully added handler in post_init: {type(handler).__name__}")
+                except TypeError as e:
+                    logger.error(f"Invalid handler type {type(handler).__name__} in post_init: {e}")
+                    continue
             elif 'filters' in handler_config:
                 # Если указаны фильтры, создаем MessageHandler
                 handler = MessageHandler(
@@ -2537,9 +2543,16 @@ class ChatGPTTelegramBot:
 
             # Регистрируем обработчики сообщений от плагинов
             for handler_config in self.openai.plugin_manager.get_message_handlers():
-                if 'handler' in handler_config:
+                if 'handler' in handler_config and 'filters' not in handler_config:
                     # Если handler уже является готовым обработчиком (например, ConversationHandler)
-                    application.add_handler(handler_config['handler'])
+                    handler = handler_config['handler']
+                    # Проверяем, что это действительно валидный обработчик
+                    try:
+                        application.add_handler(handler)
+                        logger.info(f"Successfully added handler: {type(handler).__name__}")
+                    except TypeError as e:
+                        logger.error(f"Invalid handler type {type(handler).__name__}: {e}")
+                        continue
                 elif 'filters' in handler_config:
                     # Если указаны фильтры, создаем MessageHandler
                     handler = MessageHandler(

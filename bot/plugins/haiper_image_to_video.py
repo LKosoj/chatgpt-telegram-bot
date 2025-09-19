@@ -220,7 +220,7 @@ class HaiperImageToVideoPlugin(Plugin):
             {
                 "handler": ConversationHandler(
                     entry_points=[
-                        CommandHandler("animate_prompt", self.handle_prompt_constructor)
+                        CommandHandler("animate_prompt", self.handle_prompt_constructor_command)
                     ],
                     states={
                         None: [
@@ -238,7 +238,7 @@ class HaiperImageToVideoPlugin(Plugin):
                     ],
                     name="haiper_conversation",
                     persistent=False,
-                    map_to_parent=True
+                    per_message=False
                 ),
                 "handler_kwargs": {}
             },
@@ -1221,6 +1221,12 @@ class HaiperImageToVideoPlugin(Plugin):
             is_personal=True
         )
 
+    async def handle_prompt_constructor_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """
+        Telegram обработчик команды /animate_prompt для ConversationHandler
+        """
+        return await self.handle_prompt_constructor("animate_prompt", self.openai, update)
+
     async def handle_prompt_constructor(self, function_name: str, openai, update: Update = None, **kwargs) -> None:
         """
         Обработчик для конструктора промптов
@@ -1231,7 +1237,7 @@ class HaiperImageToVideoPlugin(Plugin):
             logger.info("Вызван handle_prompt_constructor")
             if not update or not update.message:
                 logger.error("update или message отсутствуют")
-                return
+                return ConversationHandler.END
                 
             message = update.message
             chat_id = str(message.chat.id)
@@ -1248,7 +1254,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 await message.reply_text(
                     "⚠️ Сначала отправьте изображение, а затем используйте конструктор анимации"
                 )
-                return
+                return ConversationHandler.END
 
             logger.info(f"Найдены изображения для пользователя {user_id}")
             # Создаем компактное меню с эмодзи для визуального разделения
@@ -1302,6 +1308,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
+            return WAITING_PROMPT
             
         except Exception as e:
             logger.error(f"Error in handle_prompt_constructor: {e}")
@@ -1309,6 +1316,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 await update.message.reply_text(
                     "❌ Произошла ошибка. Попробуйте позже."
                 )
+            return ConversationHandler.END
     
     def get_file_id_hash(self, file_id: str) -> str:
         """Генерирует короткий хеш для file_id"""
