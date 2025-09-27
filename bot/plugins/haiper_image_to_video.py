@@ -223,14 +223,11 @@ class HaiperImageToVideoPlugin(Plugin):
                         CommandHandler("animate_prompt", self.handle_prompt_constructor_command)
                     ],
                     states={
-                        None: [
-                            CallbackQueryHandler(self.apply_settings, pattern="^haiper_apply_settings$")
-                        ],
                         WAITING_PROMPT: [
                             MessageHandler(
                                 filters.TEXT & ~filters.COMMAND & filters.REPLY,
                                 self.handle_prompt_reply
-                            ),
+                            )
                         ]
                     },
                     fallbacks=[
@@ -245,6 +242,15 @@ class HaiperImageToVideoPlugin(Plugin):
             {
                 "filters": "filters.PHOTO",
                 "handler": self.handle_photo_message,
+                "handler_kwargs": {}
+            }
+        ]
+
+    def get_callback_handlers(self) -> List[Dict]:
+        """Возвращает список обработчиков callback запросов"""
+        return [
+            {
+                "handler": CallbackQueryHandler(self.apply_settings, pattern="^haiper_apply_settings$"),
                 "handler_kwargs": {}
             }
         ]

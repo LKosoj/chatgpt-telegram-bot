@@ -28,7 +28,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file
 from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
-              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA, MOONSHOTAI, GPT_5_MODELS
+              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA, MOONSHOTAI, QWEN, GPT_5_MODELS
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
@@ -422,6 +422,8 @@ class ChatGPTTelegramBot:
                 models = LLAMA
             elif value == "Moonshotai":
                 models = MOONSHOTAI
+            elif value == "Qwen":
+                models = QWEN
             else:
                 await query.edit_message_text("Неизвестная группа моделей")
                 return
@@ -467,7 +469,8 @@ class ChatGPTTelegramBot:
                 ("Deepseek", DEEPSEEK),
                 ("Perplexity", PERPLEXITY),
                 ("Llama", LLAMA),
-                ("Moonshotai", MOONSHOTAI)
+                ("Moonshotai", MOONSHOTAI),
+                ("Qwen", QWEN)
             ]
             
             for group_name, _ in model_groups:
@@ -2427,7 +2430,8 @@ class ChatGPTTelegramBot:
                     ("Deepseek", DEEPSEEK),
                     ("Perplexity", PERPLEXITY),
                     ("Llama", LLAMA),
-                    ("Moonshotai", MOONSHOTAI)
+                    ("Moonshotai", MOONSHOTAI),
+                    ("Qwen", QWEN)
                 ]
 
                 for group_name, _ in model_groups:

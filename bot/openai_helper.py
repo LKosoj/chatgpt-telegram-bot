@@ -39,8 +39,9 @@ DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-a
 LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
 PERPLEXITY = ("perplexity/sonar-online",)
 MOONSHOTAI = ("moonshotai/kimi-k2",)
+QWEN = ("qwen/qwen3-235b-a22b-07-25", "qwen/qwen3-next-80b-a3b")
 GPT_ALL_MODELS = GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI + GPT_5_MODELS
+    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -72,6 +73,8 @@ def default_max_tokens(model: str = None) -> int:
         return 128000
     elif model in GPT_5_MODELS:
         return 128000
+    elif model in QWEN:
+        return 131072  # Qwen models typically support 128K context
     else:
         return base * 2
 
@@ -510,7 +513,7 @@ class OpenAIHelper:
                 'extra_headers': { "X-Title": "tgBot" },
             }
 
-            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI):
+            if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
                 stream = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
@@ -1030,10 +1033,15 @@ class OpenAIHelper:
         elif model_to_use in (MISTRALAI + MOONSHOTAI):
             # Mistral и Moonshot используют роль "tool" вместо "function"
             self.conversations[chat_id].append({"role": "tool", "name": function_name, "content": content})
+        elif model_to_use in (O_MODELS + GPT_4O_MODELS):
+            # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
+            # The 'function' role is no longer supported in OpenAI API as of 2025
+            function_result = f"Function {function_name} returned: {content}"
+            self.conversations[chat_id].append({"role": "assistant", "content": function_result})
         else:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
-            
+
     def __add_to_history(self, chat_id, role, content, session_id=None):
         """
         Adds a message to the conversation history.
@@ -1146,7 +1154,7 @@ class OpenAIHelper:
         supported_models = (
             GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
             ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
-            PERPLEXITY + LLAMA + MOONSHOTAI + GPT_5_MODELS
+            PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS
         )
         if model in supported_models:
             tokens_per_message = 3
