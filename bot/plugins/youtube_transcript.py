@@ -1,8 +1,15 @@
 import json
 from typing import Dict
 
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.formatters import JSONFormatter
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable,
+    CouldNotRetrieveTranscript,
+    RequestBlocked,
+    IpBlocked
+)
 
 from .plugin import Plugin
 
@@ -37,22 +44,77 @@ class YoutubeTranscriptPlugin(Plugin):
         try:
             video_id = kwargs.get('video_id')
             if not video_id:
-                return {'result': 'Video ID not provided'}
+                return {'error': 'Video ID not provided'}
 
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'ru'])
-            #decoded_transcript = []
-            decoded_transcript = ""
-            for entry in transcript:
-                decoded_entry = {
-                    'text': entry['text'],
-                    #'start': entry['start'],
-                    #'duration': entry['duration']
+            # Создаем экземпляр API (версия 1.2.3+)
+            api = YouTubeTranscriptApi()
+            
+            # Попытка получить список доступных транскриптов
+            try:
+                transcript_list = api.list(video_id)
+            except TranscriptsDisabled:
+                return {'error': 'Субтитры отключены для этого видео'}
+            except VideoUnavailable:
+                return {'error': 'Видео недоступно или не существует'}
+            except RequestBlocked:
+                return {'error': 'Запрос заблокирован YouTube. Попробуйте позже'}
+            except IpBlocked:
+                return {'error': 'IP-адрес заблокирован YouTube. Попробуйте использовать VPN'}
+            except CouldNotRetrieveTranscript:
+                return {'error': 'Не удалось получить транскрипт для этого видео'}
+            
+            # Попытка получить транскрипт на предпочитаемых языках
+            transcript = None
+            
+            # Сначала пробуем получить вручную созданные субтитры
+            try:
+                # Попробуем русский, затем английский
+                transcript = transcript_list.find_manually_created_transcript(['ru', 'en'])
+            except NoTranscriptFound:
+                # Если не нашли вручную созданные, берем автогенерированные
+                try:
+                    transcript = transcript_list.find_generated_transcript(['ru', 'en'])
+                except NoTranscriptFound:
+                    # Если все еще не нашли, берем любой доступный
+                    try:
+                        transcript = transcript_list.find_transcript(['ru', 'en'])
+                    except NoTranscriptFound:
+                        # Берем первый доступный транскрипт
+                        try:
+                            transcript = next(iter(transcript_list))
+                        except StopIteration:
+                            return {'error': 'Не найдено ни одного доступного транскрипта'}
+            
+            # Получаем данные транскрипта
+            if transcript:
+                # Получаем данные транскрипта
+                fetched_transcript = transcript.fetch()
+                decoded_transcript = ""
+                
+                # Итерируем по объекту FetchedTranscript
+                # В версии 1.2.3+ каждый элемент - это FetchedTranscriptSnippet с атрибутами text, start, duration
+                for snippet in fetched_transcript:
+                    decoded_transcript += " " + snippet.text
+                
+                # Информация о полученном транскрипте
+                lang_info = f"Язык: {transcript.language}, "
+                lang_info += "Автогенерированный" if transcript.is_generated else "Ручной"
+                
+                return {
+                    "model_response": f"{lang_info}\n\nТранскрипт:\n{decoded_transcript.strip()}"
                 }
-                #decoded_transcript.append(decoded_entry)
-                decoded_transcript += " " + entry['text']
-
-            return {
-            "model_response": decoded_transcript
-            }
+            else:
+                return {'error': 'Не удалось получить транскрипт'}
+                
+        except TranscriptsDisabled:
+            return {'error': 'Субтитры отключены для этого видео'}
+        except VideoUnavailable:
+            return {'error': 'Видео недоступно или не существует'}
+        except RequestBlocked:
+            return {'error': 'Запрос заблокирован YouTube. Попробуйте позже'}
+        except IpBlocked:
+            return {'error': 'IP-адрес заблокирован YouTube. Попробуйте использовать VPN'}
+        except CouldNotRetrieveTranscript:
+            return {'error': 'Не удалось получить транскрипт для этого видео'}
         except Exception as e:
-            return {'error': 'An unexpected error occurred: ' + str(e)}
+            return {'error': f'Произошла неожиданная ошибка: {type(e).__name__}: {str(e)}'}
