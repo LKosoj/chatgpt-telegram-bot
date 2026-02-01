@@ -8,8 +8,13 @@ import json
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
-from agent_factory import AgentFactory, model_lite, model_hard, model_search
-
+import logging
+import uuid
+import subprocess
+import tempfile
+from pathlib import Path
+from agent_factory import AgentFactory, model_lite, model_hard, model_search, AGENT_PROFILES
+from datetime import datetime
 class DynamicAgentSystem:
     """Система с динамическим созданием и управлением агентами"""
     
@@ -19,10 +24,12 @@ class DynamicAgentSystem:
         self.agent_pool = {}
         # Для хранения промежуточных результатов
         self.shared_results = {}
-    
+        # Путь к JAR файлу PlantUML
+        self.plantuml_jar = str(Path(__file__).parent / 'plantuml.jar')
+
     def get_agent_dependencies(self, agent_type: str) -> List[str]:
         """Получает список зависимостей для агента из его профиля"""
-        return self.factory.AGENT_PROFILES[agent_type].get('dependencies', [])
+        return AGENT_PROFILES[agent_type].get('dependencies', [])
     
     def get_available_agents(self) -> Dict[str, Dict[str, Any]]:
         """Возвращает словарь всех доступных агентов с их описаниями, зависимостями и возможностями
@@ -37,10 +44,19 @@ class DynamicAgentSystem:
         """
         agents_info = {}
         diagram_result = None
-        for agent_type, profile in self.factory.AGENT_PROFILES.items():
+        for agent_type, profile in AGENT_PROFILES.items():
+            # Преобразуем зависимости в читаемый формат
+            formatted_dependencies = []
+            for dep in profile.get('dependencies', []):
+                if isinstance(dep, list):
+                    # Если зависимость - список альтернатив, объединяем через " или "
+                    formatted_dependencies.append(' или '.join(dep))
+                else:
+                    formatted_dependencies.append(dep)
+            
             agents_info[agent_type] = {
-                'description': profile.get('description', 'Описание отсутствует'),
-                'dependencies': profile.get('dependencies', []),
+                'description': profile.get('description', 'Описание отсутствует').split('\n')[0],
+                'dependencies': formatted_dependencies,
                 'capabilities': profile.get('capabilities', []),
                 'tools': profile.get('tools', []),
                 'api_integrations': profile.get('api_integrations', [])
@@ -56,7 +72,9 @@ class DynamicAgentSystem:
                 diagram_description += f"\n\nАгент: {agent_type}"
                 diagram_description += f"\nОписание: {info['description']}"
                 if info['dependencies']:
-                    diagram_description += f"\nЗависимости: {', '.join(info['dependencies'])}"
+                    # Преобразуем зависимости в строку, учитывая возможные альтернативы
+                    dependencies_str = ', '.join(str(dep) for dep in info['dependencies'])
+                    diagram_description += f"\nЗависимости: {dependencies_str}"
                 if info['capabilities']:
                     diagram_description += f"\nВозможности: {', '.join(info['capabilities'])}"
             
@@ -71,10 +89,13 @@ class DynamicAgentSystem:
     async def analyze_task(self, task: str) -> List[str]:
         """Анализ задачи и определение необходимых агентов"""
         try:
+            dependencies = {', '.join((' ИЛИ '.join(dep) if isinstance(dep, list) else dep) for dep in v['dependencies']) for k, v in AGENT_PROFILES.items()}
+            print(dependencies)
             analysis_prompt = f"""
             Определи какие типы агентов нужны для выполнения задачи. 
-            Доступные типы, их описание и зависимости:
-            {', '.join(f"{k} ({v['description']}) - {', '.join(v['dependencies'])}" for k, v in self.factory.AGENT_PROFILES.items())}
+            Доступные типы, их описание и зависимости.
+            Зависимости: {', '.join(f"{k} ({v['description']}) - {dependencies}" for k, v in AGENT_PROFILES.items())}
+            Добавляй зависимости, только если они нужны для выполнения задачи! Лишних не добавляй, это очень важно, иначе результат будет неверным и пользователь расстроится):
             
             Задача: {task}
             
@@ -84,7 +105,7 @@ class DynamicAgentSystem:
             
             model = model_lite
             messages = [
-                {"role": "system", "content": "Ты помощник, который анализирует задачи и определяет необходимые типы агентов. Возвращай типы агентов без кавычек. Выбирай только тех агентов, которые явно требуются для выполнения задачи."},
+                {"role": "system", "content": "Ты помощник, который анализирует задачи и определяет необходимые типы агентов. Возвращай типы агентов без кавычек. Выбирай только тех агентов, которые явно требуются для выполнения задачи. Если типы указаны через ИЛИ, значит можно выбрать одного из них, если второй не нужен, не добавляй лишних агентов!"},
                 {"role": "user", "content": analysis_prompt}
             ]
             response = model(messages)
@@ -93,7 +114,7 @@ class DynamicAgentSystem:
                 raise ValueError("Получен пустой ответ от модели")
                 
             agent_types = [a.strip().strip("'\"") for a in response.content.split(',')]
-            invalid_types = [t for t in agent_types if t not in self.factory.AGENT_PROFILES]
+            invalid_types = [t for t in agent_types if t not in AGENT_PROFILES]
             if invalid_types:
                 raise ValueError(f"Обнаружены недопустимые типы агентов: {invalid_types}")
                 
@@ -101,23 +122,32 @@ class DynamicAgentSystem:
             all_required_agents = set(agent_types)
             for agent_type in agent_types:
                 dependencies = self.get_agent_dependencies(agent_type)
-                # Добавляем только прямые зависимости
-                all_required_agents.update(dependencies)
+                # Добавляем только прямые зависимости, учитывая альтернативы
+                for dep in dependencies:
+                    if isinstance(dep, list):
+                        all_required_agents.update(dep)
+                    else:
+                        all_required_agents.add(dep)
             
             return list(all_required_agents)
         except Exception as e:
             print(f"Ошибка при анализе задачи: {str(e)}")
             return ['researcher']
 
+
     def can_start_agent(self, agent_type: str) -> bool:
-        """Проверяет, готовы ли все зависимости для запуска агента"""
+        """Проверяет, готовы ли зависимости для запуска агента с поддержкой альтернативных зависимостей."""
         dependencies = self.get_agent_dependencies(agent_type)
         if not dependencies:
             return True
-        
         for dependency in dependencies:
-            if dependency not in self.shared_results or not self.shared_results[dependency]:
-                return False
+            # Если зависимость задана как список альтернатив
+            if isinstance(dependency, list):
+                if not any(dep in self.shared_results and self.shared_results[dep] for dep in dependency):
+                    return False
+            else:
+                if dependency not in self.shared_results or not self.shared_results[dependency]:
+                    return False
         return True
 
     async def assign_task(self, agent: CodeAgent, task: str):
@@ -133,8 +163,17 @@ class DynamicAgentSystem:
             if dependencies:
                 context = "\nКонтекст от других агентов:\n"
                 for dep in dependencies:
-                    if dep in self.shared_results and self.shared_results[dep]:
-                        context += f"\nРезультаты от {dep}:\n{self.shared_results[dep]}\n"
+                    # Если зависимость - список альтернатив, берем первый непустой элемент
+                    dep0 = None
+                    if isinstance(dep, list):
+                        dep0 = next((d for d in dep if d in self.shared_results and self.shared_results[d]), None)
+                        if dep0 is None:
+                            dep0 = dep[0]  # Если все элементы пусты, берем первый
+                    else:
+                        dep0 = dep
+                    
+                    if dep0 in self.shared_results and self.shared_results[dep0]:
+                        context += f"\nРезультаты от {dep0}:\n{self.shared_results[dep0]}\n"
             
             # Добавляем контекст к задаче
             task_with_context = f"{task}\n{context}" if context else task
@@ -170,7 +209,8 @@ class DynamicAgentSystem:
             if not required_agents:
                 print("Не удалось определить необходимых агентов")
                 return
-            
+            session_id = str(uuid.uuid4())[:8]
+
             # Создание агентов и подзадач
             # Добавляем исходную задачу к подзадачам
             for agent_type in required_agents:
@@ -181,7 +221,7 @@ class DynamicAgentSystem:
                         'agent': agent,
                         'status': 'idle',
                         'results': [],
-                        'subtask': f"{initial_task}\n\nВаша роль - {self.factory.AGENT_PROFILES[agent_type]['description']}"
+                        'subtask': f"Исходная задача: {initial_task}\n\nВаша роль - {AGENT_PROFILES[agent_type]['description']}\n {AGENT_PROFILES[agent_type]['prompt_templates']}. session_id: {session_id}. Текущие дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                     }
             
             # Выполняем агентов с учетом зависимостей
@@ -219,40 +259,200 @@ class DynamicAgentSystem:
             
             # Добавляем результаты каждого агента
             for agent_id, info in self.agent_pool.items():
+                agent_type = agent_id.split('-')[0]
+                if agent_type in ['visualizer', 'researcher']:
+                    continue
+                if agent_type == 'diagram_creator':
+                    diagrams = info['results']
+                    diagrams_str = '\n'.join(str(diagram) for diagram in diagrams)
+                    print(f"Диаграммы:\n{diagrams_str}")
+                    _, _ = self._generate_plantuml(diagrams_str, session_id)
                 if info['results']:
                     report.append(f"📋 Результаты агента {agent_id}:")
                     for idx, result in enumerate(info['results'], 1):
                         report.append(f"  Результат #{idx}:")
                         try:
-                            parsed_result = json.loads(result)
-                            for key, value in parsed_result.items():
-                                report.append(f"    {key}: {value}")
-                        except:
-                            report.append(f"    {result}")
+                            # Обработка различных типов результатов
+                            if isinstance(result, str):
+                                # Если результат - строка, пытаемся распарсить как JSON
+                                try:
+                                    parsed_result = json.loads(result)
+                                    for key, value in parsed_result.items():
+                                        report.append(f"    {key}: {value}")
+                                except (json.JSONDecodeError, TypeError):
+                                    # Если не JSON, выводим как есть
+                                    report.append(f"    {result}")
+                            elif isinstance(result, dict):
+                                # Если результат - словарь, выводим его содержимое
+                                for key, value in result.items():
+                                    report.append(f"    {key}: {value}")
+                            elif isinstance(result, list):
+                                # Если результат - список, выводим его элементы
+                                for item in result:
+                                    report.append(f"    {item}")
+                            else:
+                                # Для остальных типов используем str()
+                                report.append(f"    {str(result)}")
+                        except Exception as e:
+                            report.append(f"    Ошибка при обработке результата: {str(e)}")
                     report.append("")
-            
+            self.advanced_visualization(report, session_id)
             return "\n".join(report)
                     
         except Exception as e:
             print(f"Критическая ошибка в координации: {str(e)}")
             return f"Ошибка: {str(e)}"
 
-def show_available_agents(system: DynamicAgentSystem):
-    # Выводим список доступных агентов
-    print("\n📋 Доступные агенты:")
-    print("=" * 50)
-    agents, diagram = system.get_available_agents()
-    for agent_type, info in agents.items():
-        print(f"\n🤖 {agent_type}:")
-        print(f"   📝 Описание: {info['description']}")
-        if info['dependencies']:
-            print(f"   🔗 Зависимости: {', '.join(info['dependencies'])}")
-        if info['capabilities']:
-            print(f"   💪 Возможности: {', '.join(info['capabilities'])}")
-    print("=" * 50 + "\n")
-    print(f"Диаграмма агентов:\n{diagram}")
-    print("=" * 50 + "\n")
+    def show_available_agents(self):
+        # Выводим список доступных агентов
+        session_id = str(uuid.uuid4())[:8]
+        result = "\n📋 Доступные агенты:"
+        result += "=" * 50
+        agents, diagram = self.get_available_agents()
+        for agent_type, info in agents.items():
+            result += f"\n🤖 {agent_type}:"
+            result += f"   📝 Описание: {info['description']}"
+            if info['dependencies']:
+                dependencies = info['dependencies']
+                result += f"   🔗 Зависимости: {dependencies}"
+            if info['capabilities']:
+                result += f"   💪 Возможности: {', '.join(info['capabilities'])}"
+        result += "\n" + "=" * 50 + "\n"
+        _, _ = self._generate_plantuml(diagram, session_id)
+        result += f"Диаграмма агентов:\n{diagram}"
+        result += "\n" + "=" * 50 + "\n"
+        print(result)
+        self.advanced_visualization(result, session_id)
+
+    def advanced_visualization(self, result, session_id):
+        """
+        Создаёт HTML страницу из сохраненных графиков.
+        
+        Args:
+            output_path (str): Путь для сохранения HTML файла с графиками
+        """
+        output_path=f"interactive_plots_{session_id}.html"
+        try:
+            # Проверяем наличие директории с графиками
+            plots_dir = 'plots'
+            os.makedirs(plots_dir, exist_ok=True)
+
+            plot_files = []
+            # Получаем список всех PNG файлов
+            if not os.path.exists(plots_dir):
+                logging.error("Директория с графиками не найдена")
+            else:
+                plot_files = [f for f in os.listdir(plots_dir) if f'_{session_id}' in f]
             
+            if not plot_files:
+                logging.error("Графики не найдены")
+
+            # Создаем HTML страницу
+            html_content = [
+                '<!DOCTYPE html>',
+                '<html>',
+                '<head>',
+                '    <meta charset="utf-8">',
+                '    <title>Визуализация данных</title>',
+                '    <style>',
+                '        .plot-container {',
+                '            max-width: 800px;',
+                '            margin: 20px auto;',
+                '            padding: 20px;',
+                '            border: 1px solid #ddd;',
+                '            border-radius: 5px;',
+                '        }',
+                '        img {',
+                '            max-width: 100%;',
+                '            height: auto;',
+                '            display: block;',
+                '            margin: 0 auto;',
+                '        }',
+                '        h2 {',
+                '            text-align: center;',
+                '            color: #333;',
+                '        }',
+                '        pre {',
+                '            white-space: pre-wrap;',
+                '            word-wrap: break-word;',
+                '            background-color: #f5f5f5;',
+                '            padding: 15px;',
+                '            border-radius: 5px;',
+                '            font-family: monospace;',
+                '            font-size: 14px;',
+                '            line-height: 1.4;',
+                '            overflow-x: auto;',
+                '        }',
+                '    </style>',
+                '</head>',
+                '<body>'
+            ]
+
+            # Добавляем каждый график в HTML
+            for i, plot_file in enumerate(sorted(plot_files), 1):
+                plot_path = os.path.join(plots_dir, plot_file)
+                
+                # Конвертируем изображение в base64
+                with open(plot_path, 'rb') as img_file:
+                    import base64
+                    img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                html_content.extend([
+                    '    <div class="plot-container">',
+                    f'        <h2>График {i}</h2>',
+                    f'        <img src="data:image/png;base64,{img_data}" alt="График {i}">',
+                    '    </div>'
+                ])
+
+            result_str = '\n'.join(result) if isinstance(result, list) else str(result)
+            html_content.extend([
+                '    <div class="result-container">',
+                '        <h2>Результаты анализа</h2>',
+                f'        <pre>{result_str}</pre>',
+                '    </div>'
+            ])
+
+            html_content.append('</body></html>')
+
+            # Сохраняем HTML файл
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(html_content))
+
+            logging.info(f"HTML страница с графиками сохранена в {output_path}")
+            self.clean_data(session_id)            
+        except Exception as e:
+            logging.error(f"Ошибка при создании HTML страницы: {e}")
+        finally:
+            self.clean_data(session_id)
+            pass
+
+    def clean_data(self, session_id):
+        """Удаляет файлы с суффиксом _{session_id} в каталогах data и plots."""
+        for file in os.listdir('data'):
+            if f'_{session_id}' in file:
+                os.remove(os.path.join('data', file))
+        for file in os.listdir('plots'):
+            if f'_{session_id}' in file:
+                os.remove(os.path.join('plots', file))
+
+    def _generate_plantuml(self, puml_content: str, session_id: str) -> str:
+        """Генерирует изображение из PlantUML кода"""
+        temp_dir = tempfile.gettempdir()
+        file_name = f'diagram_{session_id}'
+        puml_file = os.path.join('plots', f'{file_name}.puml')
+        output_file = os.path.join('plots', f'{file_name}.png')
+        
+        # Записываем PlantUML код во временный файл
+        with open(puml_file, 'w', encoding='utf-8') as f:
+            f.write(puml_content)
+        
+        # Запускаем PlantUML для генерации изображения
+        result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file ])
+        
+        # Удаляем временный файл с кодом
+        os.remove(puml_file)
+        
+        return puml_content, output_file
 
 def analyze_ai_trends(system: DynamicAgentSystem):
     complex_task = """
@@ -313,15 +513,15 @@ async def main():
     system = DynamicAgentSystem()
     
     # Показывает доступных агентов и их диаграмму зависимостей
-    #show_available_agents(system)
+    #system.show_available_agents()
     #return
 
     # Примеры для тестирования мультиагентной системы. Запускать по одному, остальные комментировать!!!
-    complex_task = analyze_ai_trends(system)
+    #complex_task = analyze_ai_trends(system)
     #complex_task = analyze_real_estate_trends(system)
     #complex_task = analyze_data_trends(system)
     #complex_task = analyze_crypto_trends(system)
-    #complex_task = analyze_crypto_system(system)
+    complex_task = analyze_crypto_system(system)
     #complex_task = create_mind_map(system)
     
 
