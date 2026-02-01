@@ -33,7 +33,7 @@ GPT_4O_MODELS = ("openai/gpt-4.1-nano","openai/gpt-4.1-mini", "openai/gpt-4.1")
 GPT_5_MODELS = ("openai/gpt-5-mini","openai/gpt-5-chat")
 O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini","openai/o3-mini-high")
 ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-lite-pre-06-17","google/gemini-2.5-flash","google/gemini-2.5-pro")
+GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-lite","google/gemini-2.5-flash","google/gemini-2.5-pro")
 MISTRALAI = ("mistralai/mistral-medium-3",)
 DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
 LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
@@ -449,8 +449,13 @@ class OpenAIHelper:
                     # Обновляем системное сообщение
                     new_system_prompt = chat_modes[mode_key].get('prompt_start', '')
                     if new_system_prompt:
-                        # Заменяем системное сообщение в истории
-                        self.conversations[chat_id][0]['content'] = new_system_prompt
+                        # Проверяем, что история не пуста
+                        if not self.conversations[chat_id]:
+                            logger.warning(f'Conversation history is empty for chat_id {chat_id}. Initializing with system message.')
+                            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt}]
+                        else:
+                            # Заменяем системное сообщение в истории
+                            self.conversations[chat_id][0]['content'] = new_system_prompt
                         logger.info(f"🔄 Режим работы изменен на: {mode_key}")
                         
                         # Сохраняем обновленный контекст
@@ -544,6 +549,19 @@ class OpenAIHelper:
                         None
                     )
                     
+                    # Если системное сообщение отсутствует, контекст поврежден - сбрасываем сессию
+                    if not system_message:
+                        logger.warning(f'System message not found in context for chat_id {chat_id}, session {session_id}. Resetting session.')
+                        # Сброс истории чата с пустым содержимым (будет использован режим по умолчанию)
+                        self.reset_chat_history(chat_id, '', session_id)
+                        # После сброса получаем новый контекст
+                        saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+                        if saved_context and 'messages' in saved_context:
+                            system_message = next(
+                                (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
+                                None
+                            )
+                    
                     # Загружаем режимы из файла
                     current_dir = os.path.dirname(os.path.abspath(__file__))
                     chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
@@ -553,10 +571,11 @@ class OpenAIHelper:
                     
                     # Ищем текущий режим по системному сообщению
                     current_mode = None
-                    for mode_key, mode_data in chat_modes.items():
-                        if mode_data.get('prompt_start', '').strip() == system_message.get('content', '').strip():
-                            current_mode = mode_data
-                            break
+                    if system_message:  # Проверяем, что system_message не None
+                        for mode_key, mode_data in chat_modes.items():
+                            if mode_data.get('prompt_start', '').strip() == system_message.get('content', '').strip():
+                                current_mode = mode_data
+                                break
                     
                     # Получаем список разрешенных плагинов из режима
                     if current_mode and 'tools' in current_mode:

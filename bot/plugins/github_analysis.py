@@ -135,9 +135,8 @@ class GitHubCodeAnalysisPlugin(Plugin):
         completion = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": prompt}],
-            max_tokens=self.max_tokens,
             temperature=self.temperature,
-            max_tokens=55000,
+            max_tokens=self.max_tokens,
             extra_headers={ "X-Title": "tgBot" },
         )
 
