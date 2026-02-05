@@ -2788,8 +2788,15 @@ class ChatGPTTelegramBot:
                         continue
                 elif 'filters' in handler_config:
                     # Если указаны фильтры, создаем MessageHandler
+                    filter_obj = handler_config['filters']
+                    if isinstance(filter_obj, str):
+                        key = filter_obj.replace("filters.", "").strip()
+                        filter_obj = getattr(filters, key, None)
+                    if filter_obj is None:
+                        logger.error(f"Invalid filter in plugin handler config: {handler_config.get('filters')}")
+                        continue
                     handler = MessageHandler(
-                        eval(handler_config['filters']),  # Преобразуем строку фильтра в объект
+                        filter_obj,
                         lambda update, context, h=handler_config: self.handle_plugin_command(
                             update, context, {"handler": h['handler'], **h['handler_kwargs']}
                         )
