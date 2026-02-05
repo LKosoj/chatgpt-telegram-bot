@@ -98,6 +98,8 @@ class ChatGPTTelegramBot:
         self.plugin_command_index = {}
         self.plugin_menu_entries = []
         self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
+        self._background_tasks = []
+        self._cleanup_called = False
 
     def get_chat_modes(self):
         """
@@ -2435,6 +2437,9 @@ class ChatGPTTelegramBot:
         - Close any open connections/resources
         """
         try:
+            if self._cleanup_called:
+                return
+            self._cleanup_called = True
             # Stop all background tasks first
             tasks = []
             if hasattr(self, '_background_tasks'):
@@ -2481,6 +2486,9 @@ class ChatGPTTelegramBot:
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
             raise
+
+    async def _post_shutdown(self, application: Application):
+        await self.cleanup()
 
     async def buffer_data_checker(self):
         """
@@ -2865,6 +2873,7 @@ class ChatGPTTelegramBot:
             application = ApplicationBuilder() \
                 .token(self.config['token']) \
                 .post_init(self.post_init) \
+                .post_shutdown(self._post_shutdown) \
                 .concurrent_updates(True) \
                 .local_mode(True) \
                 .base_url('http://localhost:8081/bot') \
@@ -2872,8 +2881,10 @@ class ChatGPTTelegramBot:
 
             self.application = application
             self.openai.bot = application.bot
-            loop.create_task(self.buffer_data_checker())
-            loop.create_task(self.start_reminder_checker(self.openai.plugin_manager))
+            self._background_tasks = [
+                application.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
+                application.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
+            ]
 
             application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
