@@ -403,7 +403,9 @@ def get_reply_to_message_id(config, update: Update):
     :return: Message id of the message to reply to, or None if quoting is disabled
     """
     if config['enable_quoting'] or is_group_chat(update):
-        return update.message.message_id
+        message = update.message or (update.callback_query.message if update.callback_query else None) or update.effective_message
+        if message:
+            return message.message_id
     return None
 
 def is_direct_result(response: any) -> bool:
@@ -511,6 +513,11 @@ async def handle_direct_result(config, update: Update, response: any):
     add_value = result.get('add_value', None)
     logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}, add_value: {str(add_value)[:200]}")
 
+    message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+    if not message:
+        logging.error("No message available to send direct result")
+        return
+
     common_args = {
         'message_thread_id': get_thread_id(update),
         'reply_to_message_id': get_reply_to_message_id(config, update),
@@ -518,27 +525,27 @@ async def handle_direct_result(config, update: Update, response: any):
 
     if kind == 'photo':
         if format == 'url':
-            await update.effective_message.reply_photo(**common_args, photo=value)
+            await message.reply_photo(**common_args, photo=value)
         elif format == 'path':
             try:
                 if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
                     # Пробуем отправить как документ
-                    await update.effective_message.reply_document(**common_args, document=open(value, 'rb'))
+                    await message.reply_document(**common_args, document=open(value, 'rb'))
                 else:
                     # Пробуем отправить как фото
-                    await update.effective_message.reply_photo(**common_args, photo=value)
+                    await message.reply_photo(**common_args, photo=value)
             except Exception as e:
                 logging.error(f"Error handling photo: {e}")
                 # Проверяем и изменяем размеры изображения при необходимости
                 photo_file, photo_format = resize_image_if_needed(value)
-                await update.effective_message.reply_photo(**common_args, photo=photo_file)
+                await message.reply_photo(**common_args, photo=photo_file)
     elif kind == 'gif' or kind == 'file':
         if format == 'url':
-            await update.effective_message.reply_document(**common_args, document=value)
+            await message.reply_document(**common_args, document=value)
         if format == 'path':
-            await update.effective_message.reply_document(**common_args, document=open(value, 'rb'))
+            await message.reply_document(**common_args, document=open(value, 'rb'))
     elif kind == 'dice':
-        await update.effective_message.reply_dice(**common_args, emoji=value)
+        await message.reply_dice(**common_args, emoji=value)
 
     if add_value or kind == 'text':
         # Split long messages into chunks
@@ -562,7 +569,7 @@ async def handle_direct_result(config, update: Update, response: any):
                 # Only reply to original message for first chunk
                 reply_to = get_reply_to_message_id(config, update) if i == 0 else None
                 try:
-                    await update.effective_message.reply_text(
+                    await message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=reply_to,
                         text=chunk,
@@ -575,7 +582,7 @@ async def handle_direct_result(config, update: Update, response: any):
                         try:
                             # Экранируем специальные символы для markdown
                             escaped_chunk = escape_markdown(chunk, exclude_code_blocks=False)
-                            await update.effective_message.reply_text(
+                            await message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=reply_to,
                                 text=escaped_chunk,
@@ -583,7 +590,7 @@ async def handle_direct_result(config, update: Update, response: any):
                             )
                         except Exception:
                             # Если все еще не получается, отправляем без форматирования
-                            await update.effective_message.reply_text(
+                            await message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=reply_to,
                                 text=chunk,
@@ -591,7 +598,7 @@ async def handle_direct_result(config, update: Update, response: any):
                             )
                     else:
                         # Для других BadRequest ошибок просто убираем форматирование
-                        await update.effective_message.reply_text(
+                        await message.reply_text(
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=reply_to,
                             text=chunk,
@@ -600,7 +607,7 @@ async def handle_direct_result(config, update: Update, response: any):
                 except Exception as e:
                     logging.error(f"Unexpected error in handle_direct_result: {e}")
                     # В случае любой другой ошибки отправляем без форматирования
-                    await update.effective_message.reply_text(
+                    await message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=reply_to,
                         text=chunk,
