@@ -7,7 +7,10 @@ import time
 from typing import Dict, List
 import faiss
 import numpy as np
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from .plugin import Plugin
 import asyncio

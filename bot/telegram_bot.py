@@ -2153,7 +2153,11 @@ class ChatGPTTelegramBot:
 
         bot_language = self.config['bot_language']
         plugin_commands = self.openai.plugin_manager.build_bot_commands()["plugin_commands"]
-        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(plugin_commands)}
+        menu_entries = [
+            cmd for cmd in plugin_commands
+            if cmd.get("add_to_menu") and cmd.get("command") and cmd.get("description")
+        ]
+        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(menu_entries)}
         if not self.plugin_command_index:
             await update.message.reply_text(localized_text('plugins_menu_no_plugins', bot_language))
             return

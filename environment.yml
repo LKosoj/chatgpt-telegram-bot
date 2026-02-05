@@ -26,11 +26,14 @@ dependencies:
   - accelerate
   - faiss-gpu
   - langchain
+  - langchain-community
+  - langchain-text-splitters
   #- pytorch
   - pip
   - pip:
       - wolframalpha
       - duckduckgo_search
+      - docling
       #- torch
       - pyswisseph
       - openai-whisper

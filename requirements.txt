@@ -26,6 +26,9 @@ opencv-python
 faiss-gpu
 langchain>=0.2.0
 langchain-openai>=0.1.0
+langchain-text-splitters>=0.2.0
+langchain-community>=0.2.0
+docling
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch>=2.1.0
 torchvision>=0.16.0
