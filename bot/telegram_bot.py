@@ -2072,6 +2072,7 @@ class ChatGPTTelegramBot:
         """Обработчик команд плагинов"""
         try:
             if update.message is None and update.callback_query and update.callback_query.message:
+                update = Update.de_json(update.to_dict(), context.bot)
                 update.message = update.callback_query.message
             message = update.effective_message or (update.callback_query.message if update.callback_query else None)
             # Проверяем права доступа
