@@ -453,7 +453,8 @@ class TextDocumentQAPlugin(Plugin):
             self.last_chat_id = chat_id  # Сохраняем chat_id для последующего использования
             
             # Запускаем задачу очистки при первом вызове execute
-            await self.initialize()
+            if hasattr(self, "initialize_async"):
+                await self.initialize_async()
             
             if function_name == "list_documents":
                 logging.info("Начинаем получение списка документов")
