@@ -236,10 +236,20 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
     if config['allowed_user_ids'] == '*':
         return True
 
-    user_id = update.inline_query.from_user.id if is_inline else update.message.from_user.id
+    if is_inline:
+        user = update.inline_query.from_user
+    elif update.message:
+        user = update.message.from_user
+    elif update.callback_query:
+        user = update.callback_query.from_user
+    else:
+        user = update.effective_user
+    user_id = user.id if user else None
+    if user_id is None:
+        return False
     if is_admin(config, user_id):
         return True
-    name = update.inline_query.from_user.name if is_inline else update.message.from_user.name
+    name = user.name if user else "unknown"
     allowed_user_ids = config['allowed_user_ids'].split(',')
     # Check if user is allowed
     if str(user_id) in allowed_user_ids:
