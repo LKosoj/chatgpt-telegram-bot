@@ -1994,6 +1994,11 @@ class ChatGPTTelegramBot:
             self.group_commands,
             scope=BotCommandScopeAllGroupChats()
         )
+        if not self._background_tasks:
+            self._background_tasks = [
+                application.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
+                application.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
+            ]
 
         # Регистрируем команды от плагинов
         build = self.openai.plugin_manager.build_bot_commands()
@@ -2881,10 +2886,7 @@ class ChatGPTTelegramBot:
 
             self.application = application
             self.openai.bot = application.bot
-            self._background_tasks = [
-                application.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
-                application.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
-            ]
+            self._background_tasks = []
 
             application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
