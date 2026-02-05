@@ -11,6 +11,7 @@ import httpx
 
 # Импортируем класс плагина
 from bot.plugins.mcp_server import MCPServerPlugin
+from bot.i18n import localized_text
 
 
 @pytest.fixture
@@ -26,6 +27,7 @@ def mcp_plugin():
         
         # Создаем экземпляр плагина
         plugin = MCPServerPlugin()
+        plugin.openai = MagicMock(config={"bot_language": "ru"})
         
         # Возвращаем экземпляр и имя временного файла
         yield plugin
@@ -94,7 +96,7 @@ async def test_register_server_unauthorized(mcp_plugin, mock_env_vars):
     
     # Проверяем отказ в доступе
     assert 'error' in result
-    assert 'доступно только администраторам' in result['error']
+    assert localized_text('mcp_register_admin_only', 'ru') in result['error']
 
 
 @pytest.mark.asyncio
@@ -161,7 +163,7 @@ async def test_remove_server_unauthorized(mcp_plugin, mock_env_vars):
     
     # Проверяем отказ в доступе
     assert 'error' in result
-    assert 'доступно только администраторам' in result['error']
+    assert localized_text('mcp_remove_admin_only', 'ru') in result['error']
     assert "test_server" in mcp_plugin.servers
 
 
@@ -280,15 +282,15 @@ async def test_handle_mcp_servers_command(mcp_plugin, mock_env_vars):
     
     # Проверка текста
     text = result["text"]
-    assert "Зарегистрированные MCP серверы" in text
+    assert localized_text('mcp_list_title', 'ru') in text
     assert "**test_server**" in text  # Проверяем форматирование жирным
     assert "`http://example.com`" in text  # Проверяем форматирование кода
     assert "Test server" in text
     
     # Для администратора должны быть инструкции по управлению
-    assert "**Управление серверами**" in text
-    assert "Для добавления: `" in text
-    assert "Для удаления: `" in text
+    assert localized_text('mcp_admin_section_title', 'ru') in text
+    assert localized_text('mcp_admin_add_http', 'ru').split(':')[0] in text
+    assert localized_text('mcp_admin_remove', 'ru').split(':')[0] in text
     
     # Тест отказа в доступе неавторизованному пользователю
     update.effective_user.id = 999  # Не в списке разрешенных пользователей
@@ -298,7 +300,7 @@ async def test_handle_mcp_servers_command(mcp_plugin, mock_env_vars):
     assert isinstance(result, dict)
     assert "text" in result
     assert "parse_mode" in result
-    assert "У вас нет доступа" in result["text"]
+    assert localized_text('mcp_access_denied', 'ru') in result["text"]
 
 
 @pytest.mark.asyncio

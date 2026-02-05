@@ -83,7 +83,7 @@ class DDGWebSearchPlugin(Plugin):
                         await asyncio.sleep(delay)
                     else:
                         logger.error(f"Превышено максимальное количество попыток ({self.max_retries}) из-за rate limit")
-                        raise Exception(f"DuckDuckGo rate limit: превышено максимальное количество попыток поиска. Попробуйте позже.")
+                        raise Exception(self.t("ddg_web_search_rate_limit"))
                 else:
                     # Если это не rate limit ошибка, пробрасываем её дальше
                     raise e
@@ -96,14 +96,14 @@ class DDGWebSearchPlugin(Plugin):
             region = kwargs.get('region', 'wt-wt')
             
             if not query:
-                return {"error": "Запрос не может быть пустым"}
+                return {"error": self.t("ddg_web_search_empty_query")}
             
             logger.info(f"Выполняется поиск DuckDuckGo для запроса: {query}, регион: {region}")
             
             results = await self._search_with_retry(query, region, helper.config['proxy_web'])
             
             if not results or len(results) == 0:
-                return {"Result": "Не найдено результатов поиска DuckDuckGo"}
+                return {"Result": self.t("ddg_web_search_no_results")}
 
             def to_metadata(result: Dict) -> Dict[str, str]:
                 return {

@@ -144,7 +144,7 @@ class TaskManagementPlugin(Plugin):
             
             return {
                 "success": True,
-                "message": f"Task created successfully with ID: {task_id}",
+                "message": self.t("task_management_created", task_id=task_id),
                 "task": task
             }
 
@@ -152,7 +152,7 @@ class TaskManagementPlugin(Plugin):
             user_tasks = self.tasks.get(user_id, {})
             
             if not user_tasks:
-                return {"message": "No tasks found"}
+                return {"message": self.t("task_management_no_tasks")}
             
             # Apply filters
             filtered_tasks = user_tasks.values()
@@ -167,24 +167,24 @@ class TaskManagementPlugin(Plugin):
             tasks_list = []
             for task in filtered_tasks:
                 task_info = [
-                    f"📋 Task ID: {task['id']}",
-                    f"📌 Title: {task['title']}",
-                    f"📝 Description: {task['description']}" if task['description'] else "",
-                    f"🎯 Priority: {task['priority'].upper()}",
-                    f"📊 Status: {task['status'].replace('_', ' ').title()}",
-                    f"⏰ Deadline: {task['deadline']}" if task['deadline'] else "",
-                    f"🏷️ Tags: {', '.join(task['tags'])}" if task['tags'] else ""
+                    self.t("task_management_task_id_label", task_id=task['id']),
+                    self.t("task_management_title_label", title=task['title']),
+                    self.t("task_management_description_label", description=task['description']) if task['description'] else "",
+                    self.t("task_management_priority_label", priority=task['priority'].upper()),
+                    self.t("task_management_status_label", status=task['status'].replace('_', ' ').title()),
+                    self.t("task_management_deadline_label", deadline=task['deadline']) if task['deadline'] else "",
+                    self.t("task_management_tags_label", tags=', '.join(task['tags'])) if task['tags'] else ""
                 ]
                 tasks_list.append("\n".join(filter(None, task_info)))
 
             return {
-                "message": "Your tasks:\n\n" + "\n\n".join(tasks_list)
+                "message": self.t("task_management_list_title") + "\n\n" + "\n\n".join(tasks_list)
             }
 
         elif function_name == "update_task":
             task_id = kwargs["task_id"]
             if user_id not in self.tasks or task_id not in self.tasks[user_id]:
-                return {"error": "Task not found"}
+                return {"error": self.t("task_management_not_found")}
 
             task = self.tasks[user_id][task_id]
             
@@ -201,8 +201,8 @@ class TaskManagementPlugin(Plugin):
 
             return {
                 "success": True,
-                "message": f"Task {task_id} updated successfully",
+                "message": self.t("task_management_updated", task_id=task_id),
                 "task": task
             }
 
-        return {"error": "Unknown function"}
+        return {"error": self.t("task_management_unknown_function")}

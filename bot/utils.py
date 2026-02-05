@@ -13,6 +13,7 @@ import uuid
 import telegram
 from telegram import Message, MessageEntity, Update, ChatMember, constants
 from telegram.ext import CallbackContext, ContextTypes
+from .i18n import localized_text
 
 from .usage_tracker import UsageTracker
 from .html_utils import HTMLVisualizer
@@ -720,7 +721,7 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
         reply_to_message_id=get_reply_to_message_id(config, update),
         document=response_file,
         filename=filename,
-        caption="Полный ответ:",
+        caption=localized_text("full_response_caption", config.get("bot_language", "en")),
         parse_mode=constants.ParseMode.HTML
     )
     
@@ -729,4 +730,3 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
         os.remove(output_path)
     except Exception as e:
         logging.warning(f"Не удалось удалить временный файл {output_path}: {e}")
-

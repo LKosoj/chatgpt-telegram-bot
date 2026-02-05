@@ -70,7 +70,7 @@ class TextSummarizerPlugin(Plugin):
         try:
             yandex_token = helper.config["yandex_api_token"]
             if not yandex_token:
-                return {"error": "Токен Яндекс API не настроен"}
+                return {"error": self.t("text_summarizer_token_missing")}
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(

@@ -202,7 +202,7 @@ class AskYourPDFPlugin(Plugin):
             if function_name == "upload_pdf":
                 file_path = kwargs.get('file_path')
                 if not file_path or not os.path.exists(file_path):
-                    return {"error": "Файл не найден"}
+                    return {"error": self.t("ask_your_pdf_file_not_found")}
 
                 # Сохраняем путь к файлу для дальнейшего использования
                 return {
@@ -210,7 +210,10 @@ class AskYourPDFPlugin(Plugin):
                         "kind": "file", 
                         "format": "path", 
                         "value": file_path,
-                        "message": f"PDF файл загружен: {os.path.basename(file_path)}"
+                        "message": self.t(
+                            "ask_your_pdf_file_uploaded",
+                            filename=os.path.basename(file_path)
+                        )
                     }
                 }
 
@@ -219,7 +222,7 @@ class AskYourPDFPlugin(Plugin):
                 query = kwargs.get('query', 'Краткое содержание документа')
                 
                 if not file_path or not os.path.exists(file_path):
-                    return {"error": "Файл не найден"}
+                    return {"error": self.t("ask_your_pdf_file_not_found")}
 
                 # Генерация хэша с учетом изменений файла
                 file_hash = self.generate_file_hash(file_path)
@@ -241,4 +244,4 @@ class AskYourPDFPlugin(Plugin):
                 return result
 
         except Exception as e:
-            return {"error": f"Ошибка при работе с PDF: {str(e)}"}
+            return {"error": self.t("ask_your_pdf_error", error=str(e))}

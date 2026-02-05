@@ -583,4 +583,4 @@ class ChiefPlugin(Plugin):
                 }
                 
         except Exception as e:
-            return {"error": f"Ошибка при обработке запроса: {str(e)}"}
+            return {"error": self.t("chief_request_error", error=str(e))}

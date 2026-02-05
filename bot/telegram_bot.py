@@ -27,8 +27,9 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file
-from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, localized_text, O_MODELS, GPT_ALL_MODELS,\
+from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, O_MODELS, GPT_ALL_MODELS,\
               ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA, MOONSHOTAI, QWEN, GPT_5_MODELS
+from .i18n import localized_text
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
@@ -72,7 +73,7 @@ class ChatGPTTelegramBot:
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
-            BotCommand(command='plugins', description='Меню плагинов'),
+            BotCommand(command='plugins', description=localized_text('plugins_description', bot_language)),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -95,6 +96,7 @@ class ChatGPTTelegramBot:
         self.application = None
         # Убираем повторную инициализацию Database
         self.plugin_command_index = {}
+        self.plugin_menu_entries = []
         self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
 
     def get_chat_modes(self):
@@ -147,40 +149,15 @@ class ChatGPTTelegramBot:
         bot_language = self.config['bot_language']
         #tool_list = "\n".join([f"- {tool['name']}" for tool in TOOLS])
         help_text = (
-                localized_text('help_text', bot_language)[0] +
-                '\n\n' +
-                '\n'.join(commands_description) +
-                '\n\n' +
-                localized_text('help_text', bot_language)[1] +
-                '\n\n' +
-                localized_text('help_text', bot_language)[2] +
-                '\n\n' +
-                '🌐 Ты можешь попросить дать транскрипцию видео с youtube, указав адрес с видео (например, https://youtu.be/dQw4w9WgXcQ)' +
-                '\n\n' +
-                '🔄 Ты можешь автомтатически опимизировать промт, пример вызова: "Помоги написать план путешествия. Используй Prompt Perfect"' +
-                '\n\n' +
-                '🌐 Ты можешь попросить перевести текст на любой язык.' +
-                '\n\n' +
-                '🌍 Ты можешь указать адрес конкретной страницы в интернете и попросить перевести ее на любой язык' +
-                '\n\n' +
-                '🎨 Ты можешь попросить нарисовать картинку по твоему запросу' +
-                '\n\n' +
-                '📝 Ты можешь попросить саммари страницы в интернете. Если добавить - переведи ее в речь, получишь саммари в голосовом сообщении' +
-                '\n\n' +
-                '⏰ Ты можешь попросить установить напоминание на любое время. Так же можешь попросить показать напоминания и удалить напоминание по ID' +
-                '\n\n' +
-                '📚 Ты можешь загрузить текстовый документ (.txt, .docx, .pdf, .rtf, .doc) и задавать вопросы по его содержимому, используя команду /ask_question. ' +
-                'Для удаления документа используй команду /delete_document' +
-                '\n\n' +
-                '📊 Ты можешь попросить нарисовать диаграмму по твоему запросу: Нарисуй Mind map для изучения машинного обучения.\n' +
-                'Поддерживаемые типы диаграмм:\n' + 
-                '🧠 Mind map (интеллект-карта)\n' +
-                '📅 Gantt chart (диаграмма Ганта)\n' + 
-                '📈 Flowchart (блок-схема)\n' + 
-                '⏳ Project timeline (временная шкала проекта)\n' + 
-                '📊 Infographic (инфографика)\n' + 
-                '👥 Org chart (организационная схема)\n' + 
-                '⚙️ Process diagram (диаграмма процесса)'
+            localized_text('help_text', bot_language)[0]
+            + '\n\n'
+            + '\n'.join(commands_description)
+            + '\n\n'
+            + localized_text('help_text', bot_language)[1]
+            + '\n\n'
+            + localized_text('help_text', bot_language)[2]
+            + '\n\n'
+            + localized_text('help_extra', bot_language)
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
@@ -201,6 +178,7 @@ class ChatGPTTelegramBot:
         user_id = update.message.from_user.id
         if user_id not in self.usage:
             self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+        bot_language = self.config['bot_language']
 
         # Получаем информацию о сессиях пользователя
         sessions = self.db.list_user_sessions(user_id)
@@ -210,14 +188,20 @@ class ChatGPTTelegramBot:
         text_current_session = ""
         if active_session:
             text_current_session = (
-                f"*Активная сессия*:\n"
-                f"📝 Название: {active_session['session_name']}\n"
-                f"💬 Сообщений: {active_session['message_count']}\n"
+                localized_text('stats_active_session', bot_language) + "\n"
+                + localized_text('stats_session_name', bot_language).format(
+                    session_name=active_session['session_name']
+                ) + "\n"
+                + localized_text('stats_session_messages', bot_language).format(
+                    message_count=active_session['message_count']
+                ) + "\n"
             )
             
             # Добавляем информацию о модели сессии
             if active_session.get('model',''):
-                text_current_session += f"🤖 Модель: {active_session.get('model','')}\n"
+                text_current_session += localized_text('stats_session_model', bot_language).format(
+                    model=active_session.get('model', '')
+                ) + "\n"
             
             # Добавляем информацию о режиме
             if active_session['context'].get('messages'):
@@ -231,16 +215,25 @@ class ChatGPTTelegramBot:
                     
                     for mode_key, mode_data in chat_modes.items():
                         if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
-                            text_current_session += f"💫 Режим: {mode_data.get('name', mode_key)}\n"
+                            text_current_session += localized_text('stats_session_mode', bot_language).format(
+                                mode=mode_data.get('name', mode_key)
+                            ) + "\n"
                             break
             
-            text_current_session += f"🎲 Температура: {active_session['temperature']}\n"
-            text_current_session += f"📊 Макс. токенов: {active_session['max_tokens_percent']}%\n"
+            text_current_session += localized_text('stats_session_temperature', bot_language).format(
+                temperature=active_session['temperature']
+            ) + "\n"
+            text_current_session += localized_text('stats_session_max_tokens', bot_language).format(
+                max_tokens_percent=active_session['max_tokens_percent']
+            ) + "\n"
             text_current_session += "----------------------------\n"
 
         # Формируем текст о всех сессиях
         text_all_sessions = (
-            f"*Всего сессий*: {len(sessions)}/{self.config.get('max_sessions', 5)}\n"
+            localized_text('stats_sessions_total', bot_language).format(
+                current=len(sessions),
+                maximum=self.config.get('max_sessions', 5)
+            ) + "\n"
             "----------------------------\n"
         )
 
@@ -255,7 +248,6 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         chat_messages, chat_token_length = self.openai.get_conversation_stats(chat_id)
         remaining_budget = get_remaining_budget(self.config, self.usage, update)
-        bot_language = self.config['bot_language']
 
         text_current_conversation = (
             f"*{localized_text('stats_conversation', bot_language)[0]}*:\n"
@@ -390,7 +382,9 @@ class ChatGPTTelegramBot:
         # Проверяем права доступа для callback_query
         allowed_user_ids = self.config['allowed_user_ids'].split(',')
         if str(user_id) not in allowed_user_ids and 'guests' not in self.config and not is_admin(self.config, user_id):
-            await query.edit_message_text(text="У вас нет доступа к этой команде.")
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
             return
             
         data = query.data
@@ -428,7 +422,9 @@ class ChatGPTTelegramBot:
             elif value == "Qwen":
                 models = QWEN
             else:
-                await query.edit_message_text("Неизвестная группа моделей")
+                await query.edit_message_text(
+                    localized_text('model_group_unknown', self.config['bot_language'])
+                )
                 return
                 
             for model in models:
@@ -440,14 +436,16 @@ class ChatGPTTelegramBot:
                 )])
                 
             keyboard.append([InlineKeyboardButton(
-                text="🔙  Назад к группам",
+                text=localized_text('model_back_to_groups', self.config['bot_language']),
                 callback_data="modelback:back"
             )])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text=f"Выберите модель из группы {value}:\n" +
-                     (f"\nАктивная сессия: {active_session['session_name']}" if active_session else ""),
+                text=localized_text('model_choose_from_group', self.config['bot_language']).format(group=value)
+                + (("\n" + localized_text('model_active_session', self.config['bot_language']).format(
+                    session_name=active_session['session_name']
+                )) if active_session else ""),
                 reply_markup=reply_markup
             )
             
@@ -483,21 +481,25 @@ class ChatGPTTelegramBot:
                 )])
                 
             keyboard.append([InlineKeyboardButton(
-                text="🔙  Назад к сессиям",
+                text=localized_text('session_back_to_sessions', self.config['bot_language']),
                 callback_data="session:back"
             )])
                 
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             # Формируем информацию о текущих настройках
-            settings_info = f"Текущая модель: {current_model}\n"
+            settings_info = localized_text('current_model_label', self.config['bot_language']).format(
+                model=current_model
+            ) + "\n"
             if active_session:
-                settings_info += f"\nАктивная сессия: {active_session['session_name']}\n"
+                settings_info += "\n" + localized_text('model_active_session', self.config['bot_language']).format(
+                    session_name=active_session['session_name']
+                ) + "\n"
             else:
-                settings_info += "\nНет активной сессии"
+                settings_info += "\n" + localized_text('session_none', self.config['bot_language'])
             
             await query.edit_message_text(
-                text=f"{settings_info}\n\nВыберите группу моделей:",
+                text=f"{settings_info}\n\n" + localized_text('model_choose_group', self.config['bot_language']),
                 reply_markup=reply_markup
             )
 
@@ -520,7 +522,9 @@ class ChatGPTTelegramBot:
             # Проверяем права доступа для callback_query
             allowed_user_ids = self.config['allowed_user_ids'].split(',')
             if str(user_id) not in allowed_user_ids and 'guests' not in self.config and not is_admin(self.config, user_id):
-                await update.callback_query.edit_message_text(text="У вас нет доступа к этой команде.")
+                await update.callback_query.edit_message_text(
+                    text=localized_text('access_denied_command', self.config['bot_language'])
+                )
                 return
         elif update.message:
             user_id = update.message.from_user.id
@@ -534,7 +538,7 @@ class ChatGPTTelegramBot:
         
         if error:
             # Сброс из-за ошибки
-            message_text = 'Ошибка. Сбрасываю контекст...'
+            message_text = localized_text('reset_error', self.config['bot_language'])
             if is_callback:
                 await update.callback_query.edit_message_text(text=message_text)
             else:
@@ -556,14 +560,14 @@ class ChatGPTTelegramBot:
             active_session = next((s for s in sessions if s['is_active']), None)
             if active_session:
                 preview_button = InlineKeyboardButton(
-                    "👀 Просмотр активной сессии", 
+                    localized_text('session_preview_active', self.config['bot_language']),
                     callback_data=f"session:preview:{active_session['session_id']}"
                 )
                 keyboard.append([preview_button])
    
             # Добавляем кнопку создания новой сессии
             keyboard.append([InlineKeyboardButton(
-                text="🆕 Создать новую сессию",
+                text=localized_text('session_new', self.config['bot_language']),
                 callback_data="session:new"
             )])
             
@@ -609,41 +613,47 @@ class ChatGPTTelegramBot:
             
             # Добавляем разделитель
             keyboard.append([InlineKeyboardButton(
-                text="📝 Изменить режим текущей сессии",
+                text=localized_text('session_change_mode', self.config['bot_language']),
                 callback_data="session:change_mode"
             )])
 
             # Добавляем кнопку для изменения модели
             keyboard.append([InlineKeyboardButton(
-                text="🤖 Изменить модель текущей сессии",
+                text=localized_text('session_change_model', self.config['bot_language']),
                 callback_data="session:change_model"
             )])
 
             # Добавляем кнопку экспорта сессий
             keyboard.append([InlineKeyboardButton(
-                text="📤 Экспорт сессий",
+                text=localized_text('session_export', self.config['bot_language']),
                 callback_data="session:export"
             )])
 
             # Добавляем кнопку закрытия меню
             keyboard.append([InlineKeyboardButton(
-                text="❌ Закрыть меню",
+                text=localized_text('session_close_menu', self.config['bot_language']),
                 callback_data="session:close"
             )])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             # Формируем текст сообщения
-            message_text = "🔄 Управление сессиями\n\n"
+            message_text = localized_text('session_management_title', self.config['bot_language']) + "\n\n"
             if sessions:
                 active_session = next((s for s in sessions if s['is_active']), None)
                 if active_session:
-                    message_text += f"Активная сессия: {active_session['session_name']}\n"
-                    message_text += f"Сообщений: {active_session['message_count']}\n"
+                    message_text += localized_text('session_active_label', self.config['bot_language']).format(
+                        session_name=active_session['session_name']
+                    ) + "\n"
+                    message_text += localized_text('session_messages_label', self.config['bot_language']).format(
+                        message_count=active_session['message_count']
+                    ) + "\n"
                     
                     # Добавляем информацию о модели сессии
                     current_model = active_session.get('model', '')
-                    message_text += f"Модель: {current_model}\n"
+                    message_text += localized_text('session_model_label', self.config['bot_language']).format(
+                        model=current_model
+                    ) + "\n"
                     
                     # Добавляем информацию о режиме активной сессии
                     if active_session['context'].get('messages'):
@@ -654,12 +664,17 @@ class ChatGPTTelegramBot:
                         if last_system_message:
                             for mode_key, mode_data in chat_modes.items():
                                 if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
-                                    message_text += f"Текущий режим: {mode_data.get('name', mode_key)}\n"
+                                    message_text += localized_text('session_mode_label', self.config['bot_language']).format(
+                                        mode=mode_data.get('name', mode_key)
+                                    ) + "\n"
                                     break
                                     
-                message_text += f"\nВсего сессий: {len(sessions)}/{self.config.get('max_sessions', 5)}"
+                message_text += "\n" + localized_text('stats_sessions_total', self.config['bot_language']).format(
+                    current=len(sessions),
+                    maximum=self.config.get('max_sessions', 5)
+                )
             else:
-                message_text += "У вас пока нет активных сессий"
+                message_text += localized_text('session_no_active', self.config['bot_language'])
 
             # Отправляем или редактируем сообщение в зависимости от типа обновления
             try:
@@ -680,7 +695,7 @@ class ChatGPTTelegramBot:
             
         except Exception as e:
             logger.error(f"Error in reset: {str(e)}", exc_info=True)
-            error_text = "Произошла ошибка при управлении сессиями. Пожалуйста, попробуйте еще раз через несколько секунд."
+            error_text = localized_text('session_management_error', self.config['bot_language'])
             if is_callback:
                 try:
                     await update.callback_query.edit_message_text(text=error_text)
@@ -721,7 +736,7 @@ class ChatGPTTelegramBot:
                 # Показываем режимы выбранной группы
                 keyboard = []
                 for mode_key, mode_data in chat_modes.items():
-                    if mode_data.get('group', 'Другое') == value:
+                    if mode_data.get('group', localized_text('session_group_other', self.config['bot_language'])) == value:
                         keyboard.append([InlineKeyboardButton(
                             text=mode_data.get('name', mode_key),
                             callback_data=f"prompt:{mode_key}"
@@ -729,13 +744,13 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="🔙  Назад к группам",
+                    text=localized_text('prompt_back_to_groups', self.config['bot_language']),
                     callback_data="promptback:main"
                 )])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    text=f"Выберите режим из группы {value}:",
+                    text=localized_text('prompt_choose_from_group', self.config['bot_language']).format(group=value),
                     reply_markup=reply_markup
                 )
                 
@@ -743,7 +758,7 @@ class ChatGPTTelegramBot:
                 # Возвращаемся к списку групп
                 mode_groups = {}
                 for mode_key, mode_data in chat_modes.items():
-                    group = mode_data.get('group', 'Другое')
+                    group = mode_data.get('group', localized_text('session_group_other', self.config['bot_language']))
                     if group not in mode_groups:
                         mode_groups[group] = []
                     mode_groups[group].append((mode_key, mode_data))
@@ -758,13 +773,13 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку возврата к сессиям
                 keyboard.append([InlineKeyboardButton(
-                    text="🔙  Назад к сессиям",
+                    text=localized_text('session_back_to_sessions', self.config['bot_language']),
                     callback_data="session:back"
                 )])
 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    text="Выберите группу режимов:",
+                    text=localized_text('prompt_choose_group', self.config['bot_language']),
                     reply_markup=reply_markup
                 )
                 
@@ -816,18 +831,18 @@ class ChatGPTTelegramBot:
                     await self.reset(update, context)
                 else:
                     await query.edit_message_text(
-                        text="Произошла ошибка при выборе режима. Попробуйте еще раз."
+                        text=localized_text('prompt_select_error', self.config['bot_language'])
                     )
             else:
                 # Обработка неизвестных callback-данных
                 logger.warning(f"Неизвестный callback: {query.data}")
                 await query.edit_message_text(
-                    text="Произошла ошибка. Пожалуйста, попробуйте снова."
+                    text=localized_text('generic_error_try_again', self.config['bot_language'])
                 )
         except Exception as e:
             logger.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
             await query.edit_message_text(
-                text=f"Произошла ошибка: {str(e)}"
+                text=localized_text('error_with_details', self.config['bot_language']).format(error=str(e))
             )
 
     async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -839,7 +854,7 @@ class ChatGPTTelegramBot:
                           'tried to restart the bot but is not admin')
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
-                text="Эта команда доступна только администраторам бота."
+                text=localized_text('restart_admin_only', self.config['bot_language'])
             )
             return
 
@@ -848,7 +863,7 @@ class ChatGPTTelegramBot:
         
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
-            text="Перезапуск бота..."
+            text=localized_text('restart_in_progress', self.config['bot_language'])
         )
 
         # Очищаем все задачи и закрываем соединения
@@ -1376,10 +1391,10 @@ class ChatGPTTelegramBot:
             await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
         else:
             # If no caption, just acknowledge receipt of image
-            await update.effective_message.reply_text(
-                message_thread_id=get_thread_id(update),
-                text="Изображение получено. Теперь вы можете попросить меня его обработать или анимировать."
-            )        
+                            await update.effective_message.reply_text(
+                                message_thread_id=get_thread_id(update),
+                                text=localized_text('image_received', self.config['bot_language'])
+                            )
 
     async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1972,7 +1987,13 @@ class ChatGPTTelegramBot:
         build = self.openai.plugin_manager.build_bot_commands()
         plugin_commands = build["plugin_commands"]
         # Команды плагинов теперь доступны через /plugins меню
-        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(plugin_commands)}
+        self.plugin_menu_entries = [
+            cmd for cmd in plugin_commands
+            if cmd.get("add_to_menu") and cmd.get("command") and cmd.get("description")
+        ]
+        self.plugin_command_index = {
+            str(i): cmd for i, cmd in enumerate(self.plugin_menu_entries)
+        }
         for cmd in plugin_commands:
             # Регистрируем обработчик callback_query если он есть
             if 'callback_query_handler' in cmd and 'callback_pattern' in cmd:
@@ -2076,8 +2097,14 @@ class ChatGPTTelegramBot:
             # Если команда требует аргументы, но они не предоставлены
             if cmd.get('args') and not args:
                 await update.effective_message.reply_text(
-                    f"Использование: /{cmd['command']} {cmd.get('args', '')}\n"
-                    f"Описание: {cmd['description']}"
+                    localized_text('plugins_menu_usage', self.config['bot_language']).format(
+                        command=cmd['command'],
+                        args=cmd.get('args', '')
+                    )
+                    + "\n"
+                    + localized_text('plugins_menu_description_label', self.config['bot_language']).format(
+                        description=cmd.get('description', '')
+                    )
                 )
                 return
 
@@ -2097,7 +2124,11 @@ class ChatGPTTelegramBot:
             if is_direct_result(result):
                 await handle_direct_result(self.config, update, result)
             elif isinstance(result, dict) and 'error' in result:
-                await update.effective_message.reply_text(f"Ошибка: {result['error']}")
+                await update.effective_message.reply_text(
+                    localized_text('error_with_details', self.config['bot_language']).format(
+                        error=result['error']
+                    )
+                )
             elif isinstance(result, dict) and "text" in result and "parse_mode" in result:
                 await update.effective_message.reply_text(
                     text=result["text"],
@@ -2108,7 +2139,11 @@ class ChatGPTTelegramBot:
 
         except Exception as e:
             logger.error(f"Ошибка при обработке команды плагина: {e}")
-            await update.effective_message.reply_text(f"Произошла ошибка при выполнении команды: {str(e)}")
+            await update.effective_message.reply_text(
+                localized_text('plugin_command_error', self.config['bot_language']).format(
+                    error=str(e)
+                )
+            )
 
     async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает меню плагинов с командами."""
@@ -2116,14 +2151,18 @@ class ChatGPTTelegramBot:
             await self.send_disallowed_message(update, context)
             return
 
+        bot_language = self.config['bot_language']
         plugin_commands = self.openai.plugin_manager.build_bot_commands()["plugin_commands"]
         self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(plugin_commands)}
         if not self.plugin_command_index:
-            await update.message.reply_text("Нет доступных плагинов.")
+            await update.message.reply_text(localized_text('plugins_menu_no_plugins', bot_language))
             return
 
         reply_markup = self._build_plugins_menu(page=0)
-        await update.message.reply_text("Меню плагинов:", reply_markup=reply_markup)
+        await update.message.reply_text(
+            localized_text('plugins_menu_title', bot_language),
+            reply_markup=reply_markup
+        )
 
     async def handle_plugin_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик выбора команды из меню плагинов."""
@@ -2133,6 +2172,7 @@ class ChatGPTTelegramBot:
         data = query.data.split(":")
         if len(data) < 2:
             return
+        bot_language = self.config['bot_language']
         action = data[1]
         if action == "page" and len(data) == 3:
             try:
@@ -2140,7 +2180,31 @@ class ChatGPTTelegramBot:
             except ValueError:
                 return
             reply_markup = self._build_plugins_menu(page=page)
-            await query.edit_message_text("Меню плагинов:", reply_markup=reply_markup)
+            await query.edit_message_text(
+                localized_text('plugins_menu_title', bot_language),
+                reply_markup=reply_markup
+            )
+            return
+
+        if action == "input" and len(data) == 3:
+            cmd_id = data[2]
+            cmd = self.plugin_command_index.get(cmd_id)
+            if not cmd:
+                await query.edit_message_text(
+                    localized_text('plugins_menu_command_unavailable', bot_language)
+                )
+                return
+            prompt_message = await query.message.reply_text(
+                localized_text('plugins_menu_enter_params_prompt', bot_language).format(
+                    command=cmd['command'],
+                    args=cmd.get('args', '')
+                ),
+                reply_markup=ForceReply(selective=True)
+            )
+            context.user_data["plugin_menu_pending"] = {
+                "cmd_id": cmd_id,
+                "prompt_message_id": prompt_message.message_id,
+            }
             return
 
         if action != "cmd" or len(data) != 3:
@@ -2148,15 +2212,36 @@ class ChatGPTTelegramBot:
         cmd_id = data[2]
         cmd = self.plugin_command_index.get(cmd_id)
         if not cmd:
-            await query.edit_message_text("Команда больше недоступна.")
+            await query.edit_message_text(
+                localized_text('plugins_menu_command_unavailable', bot_language)
+            )
             return
 
         if cmd.get("args"):
             back_page = self._get_page_for_command_id(cmd_id)
-            keyboard = [[InlineKeyboardButton("Назад", callback_data=f"pluginmenu:page:{back_page}")]]
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        localized_text('plugins_menu_enter_params', bot_language),
+                        callback_data=f"pluginmenu:input:{cmd_id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        localized_text('plugins_menu_back', bot_language),
+                        callback_data=f"pluginmenu:page:{back_page}"
+                    )
+                ],
+            ]
             await query.edit_message_text(
-                f"Использование: /{cmd['command']} {cmd.get('args', '')}\n"
-                f"Описание: {cmd.get('description', '')}",
+                localized_text('plugins_menu_usage', bot_language).format(
+                    command=cmd['command'],
+                    args=cmd.get('args', '')
+                )
+                + "\n"
+                + localized_text('plugins_menu_description_label', bot_language).format(
+                    description=cmd.get('description', '')
+                ),
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
@@ -2165,7 +2250,30 @@ class ChatGPTTelegramBot:
             await self.handle_plugin_command(update, context, cmd)
         except Exception as e:
             logger.error(f"Ошибка при выполнении команды из меню: {e}")
-            await query.edit_message_text(f"Произошла ошибка: {str(e)}")
+            await query.edit_message_text(
+                localized_text('plugins_menu_error', bot_language).format(error=str(e))
+            )
+
+    async def handle_plugin_menu_args_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик ответов на запрос параметров команд плагинов."""
+        pending = context.user_data.get("plugin_menu_pending")
+        if not pending or not update.message or not update.message.reply_to_message:
+            return
+
+        if update.message.reply_to_message.message_id != pending.get("prompt_message_id"):
+            return
+
+        cmd = self.plugin_command_index.get(pending.get("cmd_id"))
+        if not cmd:
+            await update.effective_message.reply_text(
+                localized_text('plugins_menu_command_unavailable', self.config['bot_language'])
+            )
+            context.user_data.pop("plugin_menu_pending", None)
+            return
+
+        context.args = update.message.text.split() if update.message.text else []
+        context.user_data.pop("plugin_menu_pending", None)
+        await self.handle_plugin_command(update, context, cmd)
 
     def _build_plugins_menu(self, page: int = 0) -> InlineKeyboardMarkup:
         items = list(self.plugin_command_index.items())
@@ -2321,8 +2429,9 @@ class ChatGPTTelegramBot:
             # Проверяем сначала MIME-тип, потом расширение
             if document.mime_type not in supported_mimes and file_extension not in supported_extensions:
                 await update.message.reply_text(
-                    "Пожалуйста, загрузите текстовый документ в одном из следующих форматов:\n" +
-                    ", ".join(supported_extensions)
+                    localized_text('document_unsupported_format', self.config['bot_language']).format(
+                        formats=", ".join(supported_extensions)
+                    )
                 )
                 logger.warning(f"Файл отклонен: неподдерживаемый формат {document.mime_type} / {file_extension}")
                 return
@@ -2339,7 +2448,7 @@ class ChatGPTTelegramBot:
                 logger.error("Плагин text_document_qa не найден")
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
-                    text="Document processing is not available. The plugin is not enabled."
+                    text=localized_text('document_processing_unavailable', self.config['bot_language'])
                 )
                 return
 
@@ -2357,7 +2466,11 @@ class ChatGPTTelegramBot:
             # Обрабатываем результат
             if isinstance(result, dict) and "error" in result:
                 logger.error(f"Ошибка от плагина: {result['error']}")
-                await update.message.reply_text(f"Ошибка: {result['error']}")
+                await update.message.reply_text(
+                    localized_text('error_with_details', self.config['bot_language']).format(
+                        error=result['error']
+                    )
+                )
             else:
                 try:
                     logger.info("Файл успешно обработан, отправляем результат")
@@ -2367,7 +2480,9 @@ class ChatGPTTelegramBot:
                     await update.message.reply_text(str(result))
 
         except Exception as e:
-            error_text = f"Произошла ошибка при обработке документа: {str(e)}"
+            error_text = localized_text('document_processing_error', self.config['bot_language']).format(
+                error=str(e)
+            )
             logger.error(error_text)
             await update.message.reply_text(error_text)
 
@@ -2390,7 +2505,9 @@ class ChatGPTTelegramBot:
             # Получаем детали сессии
             session = self.db.get_session_details(user_id, session_id)
             if not session:
-                await query.edit_message_text("❌ Сессия не найдена.")
+                await query.edit_message_text(
+                    localized_text('session_not_found', self.config['bot_language'])
+                )
                 return
 
             # Получаем все сообщения сессии
@@ -2405,7 +2522,9 @@ class ChatGPTTelegramBot:
             context_messages = context_messages.get('messages', [])
 
             # Формируем preview
-            preview_text = f"🔍 Превью сессии: {session['session_name']}\n\n"
+            preview_text = localized_text('session_preview_title', self.config['bot_language']).format(
+                session_name=session['session_name']
+            ) + "\n\n"
             for msg in context_messages:
                 role = "🤖" if msg['role'] == 'assistant' or msg['role'] == 'system' else "👤"
                 if len(msg['content']) > 200:
@@ -2413,12 +2532,19 @@ class ChatGPTTelegramBot:
                 else:
                     preview_text += f"{role} {msg['content']}\n"
 
-            preview_text += f"\n📊 Всего сообщений: {session['message_count']}"
-            preview_text += f"\n🕒 Создана: {session['created_at']}"
+            preview_text += "\n" + localized_text(
+                'session_preview_total_messages', self.config['bot_language']
+            ).format(count=session['message_count'])
+            preview_text += "\n" + localized_text(
+                'session_preview_created_at', self.config['bot_language']
+            ).format(created_at=session['created_at'])
 
             # Добавляем inline-кнопки для возврата
             keyboard = [
-                [InlineKeyboardButton("🔙 Назад к сессиям", callback_data="session:back")]
+                [InlineKeyboardButton(
+                    localized_text('session_back_to_sessions_label', self.config['bot_language']),
+                    callback_data="session:back"
+                )]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -2445,7 +2571,7 @@ class ChatGPTTelegramBot:
                 
                 if not session_id:
                     await query.edit_message_text(
-                        text="Не удалось создать новую сессию. Попробуйте позже."
+                        text=localized_text('session_create_failed', self.config['bot_language'])
                     )
                     return
                 
@@ -2488,7 +2614,7 @@ class ChatGPTTelegramBot:
                 # Группируем режимы по group
                 mode_groups = {}
                 for mode_key, mode_data in chat_modes.items():
-                    group = mode_data.get('group', 'Другое')
+                    group = mode_data.get('group', localized_text('session_group_other', self.config['bot_language']))
                     if group not in mode_groups:
                         mode_groups[group] = []
                     mode_groups[group].append((mode_key, mode_data))
@@ -2502,13 +2628,13 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="🔙  Назад к сессиям",
+                    text=localized_text('session_back_to_sessions', self.config['bot_language']),
                     callback_data="session:back"
                 )])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    text="Выберите группу режимов для текущей сессии:",
+                    text=localized_text('session_choose_mode_group', self.config['bot_language']),
                     reply_markup=reply_markup
                 )
                 
@@ -2537,7 +2663,7 @@ class ChatGPTTelegramBot:
                 
                 # Добавляем кнопку "Назад"
                 keyboard.append([InlineKeyboardButton(
-                    text="🔙  Назад к сессиям",
+                    text=localized_text('session_back_to_sessions', self.config['bot_language']),
                     callback_data="session:back"
                 )])
 
@@ -2550,9 +2676,11 @@ class ChatGPTTelegramBot:
                 message_text = ""
                 if active_session:
                     session_model = active_session.get('model', '')
-                    message_text += f"\nМодель активной сессии '{active_session['session_name']}': {session_model}"
+                    message_text += "\n" + localized_text(
+                        'session_active_model', self.config['bot_language']
+                    ).format(session_name=active_session['session_name'], model=session_model)
                 
-                message_text += "\n\nВыберите группу моделей:"
+                message_text += "\n\n" + localized_text('model_choose_group', self.config['bot_language'])
                 
                 await query.edit_message_text(
                     text=message_text,
@@ -2574,23 +2702,29 @@ class ChatGPTTelegramBot:
                             await query.message.reply_document(
                                 document=file, 
                                 filename=os.path.basename(filepath),
-                                caption="📦 Экспорт сессий завершен"
+                                caption=localized_text('session_export_done', self.config['bot_language'])
                             )
                         
                         # Удаляем файл после отправки
                         os.remove(filepath)
                     else:
-                        await query.edit_message_text("❌ Не удалось экспортировать сессии")
+                        await query.edit_message_text(
+                            localized_text('session_export_failed', self.config['bot_language'])
+                        )
                 except Exception as e:
                     logger.error(f"Ошибка экспорта сессий: {e}")
-                    await query.edit_message_text("❌ Произошла ошибка при экспорте сессий")
+                    await query.edit_message_text(
+                        localized_text('session_export_error', self.config['bot_language'])
+                    )
                 
                 # Возвращаемся к списку сессий
                 await self.reset(update, context)
         except Exception as e:
             logger.error(f'Error in handle_session_callback: {e}', exc_info=True)
             await query.edit_message_text(
-                text=f"Произошла ошибка: {str(e)}"
+                text=localized_text('error_with_details', self.config['bot_language']).format(
+                    error=str(e)
+                )
             )
 
     def run(self):
@@ -2674,6 +2808,14 @@ class ChatGPTTelegramBot:
             application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
                 constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
             ]))
+
+            application.add_handler(
+                MessageHandler(
+                    filters.REPLY & filters.TEXT,
+                    self.handle_plugin_menu_args_reply,
+                    block=False
+                )
+            )
 
             # Регистрируем глобальный обработчик текстовых сообщений после всех остальных обработчиков
             application.add_handler(MessageHandler(

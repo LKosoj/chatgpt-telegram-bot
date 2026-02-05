@@ -435,11 +435,11 @@ class MCPServerPlugin(Plugin):
         try:
             # Проверяем права доступа
             if not self.is_admin(user_id):
-                return {"error": "Регистрация MCP серверов доступна только администраторам"}
+                return {"error": self.t("mcp_register_admin_only")}
             
             # Проверяем, что сервер еще не зарегистрирован
             if server_name in self.servers:
-                return {"error": f"Сервер с именем {server_name} уже зарегистрирован"}
+                return {"error": self.t("mcp_server_already_registered", server_name=server_name)}
             
             # Определяем тип транспорта
             transport_type = kwargs.get("transport", "http").lower()
@@ -447,7 +447,7 @@ class MCPServerPlugin(Plugin):
             if transport_type == "stdio":
                 # Проверяем обязательные параметры для stdio транспорта
                 if "command" not in kwargs:
-                    return {"error": "Для stdio транспорта необходимо указать команду запуска сервера"}
+                    return {"error": self.t("mcp_stdio_command_required")}
                 
                 # Создаем конфигурацию сервера
                 self.servers[server_name] = {
@@ -464,7 +464,7 @@ class MCPServerPlugin(Plugin):
                 if not session:
                     # Удаляем сервер из конфигурации, если не удалось подключиться
                     del self.servers[server_name]
-                    return {"error": f"Не удалось подключиться к серверу {server_name} через stdio транспорт"}
+                    return {"error": self.t("mcp_stdio_connect_failed", server_name=server_name)}
                 
                 # Получаем список инструментов
                 tools_data = await self._fetch_stdio_tools(session)
@@ -472,7 +472,7 @@ class MCPServerPlugin(Plugin):
                 if not tools_data:
                     # Удаляем сервер из конфигурации, если не удалось получить инструменты
                     del self.servers[server_name]
-                    return {"error": f"Не удалось получить инструменты с сервера {server_name}"}
+                    return {"error": self.t("mcp_tools_fetch_failed", server_name=server_name)}
                 
                 # Сохраняем инструменты в конфигурации
                 self.servers[server_name]["tools"] = tools_data
@@ -480,13 +480,13 @@ class MCPServerPlugin(Plugin):
             else:
                 # Для HTTP транспорта
                 if "base_url" not in kwargs:
-                    return {"error": "Для HTTP транспорта необходимо указать базовый URL сервера"}
+                    return {"error": self.t("mcp_http_url_required")}
                 
                 # Получаем список инструментов от MCP сервера через HTTP
                 tools_data = await self._fetch_server_tools(kwargs["base_url"], kwargs.get("api_key"))
                 
                 if not tools_data:
-                    return {"error": f"Не удалось получить инструменты с сервера {kwargs['base_url']}"}
+                    return {"error": self.t("mcp_http_tools_fetch_failed", base_url=kwargs["base_url"])}
                 
                 # Сохраняем конфигурацию сервера
                 self.servers[server_name] = {
@@ -504,7 +504,7 @@ class MCPServerPlugin(Plugin):
             
             return {
                 "success": True,
-                "message": f"Сервер {server_name} успешно зарегистрирован",
+                "message": self.t("mcp_server_registered", server_name=server_name),
                 "transport": transport_type,
                 "tools_count": len(self.servers[server_name]["tools"]),
                 "tools": tool_names
@@ -546,10 +546,10 @@ class MCPServerPlugin(Plugin):
         """
         # Проверяем права доступа
         if not self.is_admin(user_id):
-            return {"error": "Удаление MCP серверов доступно только администраторам"}
+            return {"error": self.t("mcp_remove_admin_only")}
             
         if server_name not in self.servers:
-            return {"error": f"Сервер {server_name} не найден"}
+            return {"error": self.t("mcp_server_not_found", server_name=server_name)}
         
         del self.servers[server_name]
         
@@ -558,7 +558,7 @@ class MCPServerPlugin(Plugin):
         
         return {
             "success": True,
-            "message": f"Сервер {server_name} успешно удален"
+            "message": self.t("mcp_server_removed", server_name=server_name)
         }
 
     async def call_mcp_function(self, server_name: str, function_name: str, **kwargs) -> Dict:
@@ -571,7 +571,7 @@ class MCPServerPlugin(Plugin):
         :return: Результат выполнения функции
         """
         if server_name not in self.servers:
-            return {"error": f"Сервер {server_name} не найден"}
+            return {"error": self.t("mcp_server_not_found", server_name=server_name)}
         
         server_config = self.servers[server_name]
         
@@ -584,7 +584,7 @@ class MCPServerPlugin(Plugin):
                 # Получаем или создаем сессию
                 session = await self._get_or_create_session(server_name)
                 if not session:
-                    return {"error": f"Не удалось подключиться к серверу {server_name}"}
+                    return {"error": self.t("mcp_connect_failed", server_name=server_name)}
                 
                 # Вызываем инструмент
                 result = await session.call_tool(function_name, arguments=kwargs)
@@ -627,7 +627,13 @@ class MCPServerPlugin(Plugin):
                     
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP ошибка при вызове функции {function_name} на сервере {server_name}: {e}")
-                return {"error": f"Ошибка HTTP {e.response.status_code}: {e.response.text}"}
+                return {
+                    "error": self.t(
+                        "mcp_http_error",
+                        status_code=e.response.status_code,
+                        response_text=e.response.text
+                    )
+                }
             except Exception as e:
                 logger.error(f"Ошибка при вызове функции {function_name} на сервере {server_name}: {str(e)}")
                 return {"error": str(e)}
@@ -643,32 +649,35 @@ class MCPServerPlugin(Plugin):
         is_allowed = self.is_user_allowed(user_id)
         
         if not is_allowed:
-            return {"text": "У вас нет доступа к использованию MCP серверов.", "parse_mode": "Markdown"}
+            return {"text": self.t("mcp_access_denied"), "parse_mode": "Markdown"}
         
         servers_info = await self.list_servers()
         servers = servers_info.get("servers", [])
         
         if not servers:
             if not is_admin:
-                return {"text": "Управление MCP серверами доступно только администраторам.", "parse_mode": "Markdown"}
+                return {"text": self.t("mcp_admin_only"), "parse_mode": "Markdown"}
         
-        result = "Зарегистрированные MCP серверы:\n\n"
+        result = self.t("mcp_list_title") + "\n\n"
         for server in servers:
             result += f"• **{server['name']}**\n"
-            result += f"  Транспорт: {server.get('transport', 'http')}\n"
+            result += self.t("mcp_transport_label", transport=server.get('transport', 'http')) + "\n"
             if server.get('transport') == 'stdio':
-                result += f"  Команда: `{server.get('command', '')} {' '.join(server.get('args', []))}`\n"
+                result += self.t(
+                    "mcp_command_label",
+                    command=f"{server.get('command', '')} {' '.join(server.get('args', []))}".strip()
+                ) + "\n"
             else:
-                result += f"  URL: `{server.get('base_url', '')}`\n"
+                result += self.t("mcp_url_label", url=server.get('base_url', '')) + "\n"
             if server.get("description"):
-                result += f"  Описание: {server['description']}\n"
-            result += f"  Инструментов: {server['tools_count']}\n\n"
+                result += self.t("mcp_description_label", description=server['description']) + "\n"
+            result += self.t("mcp_tools_count_label", count=server['tools_count']) + "\n\n"
         
         if is_admin:
-            result += "\n**Управление серверами** (только для администраторов):\n"
-            result += "• Для добавления HTTP: `Зарегистрируй MCP сервер с именем example, URL http://example.com`\n"
-            result += "• Для добавления Stdio: `Зарегистрируй MCP сервер с именем example, транспорт stdio, команда python, аргументы [\"examples/mcp_stdio_server.py\"]`\n"
-            result += "• Для удаления: `Удали MCP сервер example`"
+            result += "\n" + self.t("mcp_admin_section_title") + "\n"
+            result += self.t("mcp_admin_add_http") + "\n"
+            result += self.t("mcp_admin_add_stdio") + "\n"
+            result += self.t("mcp_admin_remove")
         
         return {"text": result, "parse_mode": "Markdown"}
 
@@ -717,7 +726,7 @@ class MCPServerPlugin(Plugin):
             # возвращаем ошибку авторизации
             if user_id is None:
                 if function_name in ["register_mcp_server", "remove_mcp_server"]:
-                    return {"error": "Необходимо указать ID пользователя для управления MCP серверами"}
+                    return {"error": self.t("mcp_user_id_required")}
                 
                 # Если это не функция управления, но нужно проверить доступ, 
                 # получаем user_id из helper, если он доступен
@@ -727,7 +736,7 @@ class MCPServerPlugin(Plugin):
             # Функции управления серверами
             if function_name == "register_mcp_server":
                 if not user_id or not self.is_admin(user_id):
-                    return {"error": "Управление MCP серверами доступно только администраторам"}
+                    return {"error": self.t("mcp_manage_admin_only")}
                 return await self.register_server(**kwargs)
                 
             elif function_name == "list_mcp_servers":
@@ -735,12 +744,12 @@ class MCPServerPlugin(Plugin):
                 
             elif function_name == "remove_mcp_server":
                 if not user_id or not self.is_admin(user_id):
-                    return {"error": "Управление MCP серверами доступно только администраторам"}
+                    return {"error": self.t("mcp_manage_admin_only")}
                 return await self.remove_server(**kwargs)
             
             # Проверка прав доступа для использования инструментов MCP серверов
             if user_id and not self.is_user_allowed(user_id):
-                return {"error": "У вас нет доступа к использованию MCP серверов"}
+                return {"error": self.t("mcp_access_denied")}
             
             # Проверяем, является ли это вызовом функции MCP сервера
             for server_name, server_config in self.servers.items():
@@ -757,7 +766,7 @@ class MCPServerPlugin(Plugin):
                     # Вызываем функцию на сервере с отфильтрованными параметрами
                     return await self.call_mcp_function(server_name, original_function_name, **filtered_kwargs)
             
-            return {"error": f"Функция {function_name} не найдена"}
+            return {"error": self.t("mcp_function_not_found", function_name=function_name)}
         
         except Exception as e:
             logger.error(f"Ошибка при выполнении функции {function_name}: {str(e)}")
@@ -770,7 +779,7 @@ class MCPServerPlugin(Plugin):
         return [
             {
                 "command": "mcp_servers",
-                "description": "Управление MCP серверами",
+                "description": self.t("mcp_servers_command_description"),
                 "handler": self.handle_mcp_servers_command
             }
         ]

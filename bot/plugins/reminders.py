@@ -80,15 +80,15 @@ class RemindersPlugin(Plugin):
         return [
             {
                 "command": "set_reminder",
-                "description": "Установить напоминание на определенное время",
+                "description": self.t("reminders_command_set_description"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "set_reminder"},
-                "args": "<time> <message>",
+                "args": self.t("reminders_args_set"),
                 "plugin_name": "reminders",
             },
             {
                 "command": "list_reminders",
-                "description": "Показать список активных напоминаний",
+                "description": self.t("reminders_command_list_description"),
                 "handler": self.handle_prompt_constructor,
                 "handler_kwargs": {},
                 "plugin_name": "reminders",
@@ -96,8 +96,8 @@ class RemindersPlugin(Plugin):
             },
             {
                 "command": "delete_reminder",
-                "description": "Удалить напоминание",
-                "args": "<reminder_id>",
+                "description": self.t("reminders_command_delete_description"),
+                "args": self.t("reminders_args_delete"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "delete_reminder"},
                 "plugin_name": "reminders"
@@ -120,7 +120,7 @@ class RemindersPlugin(Plugin):
 
         if not user_reminders:
             await message.reply_text(
-                "У вас нет активных напоминаний.",
+                self.t("reminders_none"),
                 parse_mode='Markdown'
             )
             return               
@@ -135,25 +135,29 @@ class RemindersPlugin(Plugin):
             # Создаем ряд из двух кнопок для каждого напоминания
             keyboard.append([
                 InlineKeyboardButton(
-                    text=f"📅 {formatted_time} 📝 {r['message']}",
+                    text=self.t(
+                        "reminders_button_label",
+                        time=formatted_time,
+                        message=r['message']
+                    ),
                     callback_data=f"reminder:view:{r_id}"
                 ),
                 InlineKeyboardButton(
-                    text="❌ Удалить",
+                    text=self.t("reminders_delete_button"),
                     callback_data=f"reminder:delete:{r_id}"
                 )
             ])
         
         # Добавляем кнопку закрытия
         keyboard.append([
-            InlineKeyboardButton("❌ Закрыть", callback_data="reminder:close_menu:")
+            InlineKeyboardButton(self.t("reminders_close_menu"), callback_data="reminder:close_menu:")
         ])
 
         # Создаем разметку с кнопками
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await message.reply_text(
-            "Ваши напоминания:",
+            self.t("reminders_title"),
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -224,7 +228,7 @@ class RemindersPlugin(Plugin):
         if reminder["integration"] == "telegram":
             await helper.send_message(
                 chat_id=reminder["user_id"],
-                text=f"🔔 Напоминание:\n{reminder['message']}",
+                text=self.t("reminders_notification", message=reminder['message']),
                 reply_to_message_id=reminder.get("reply_to_message_id")
             )
         # Здесь можно добавить другие интеграции (email, slack)
@@ -259,7 +263,7 @@ class RemindersPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"Напоминание установлено на {kwargs['time']}"
+                    "value": self.t("reminders_set_at", time=kwargs['time'])
                 }
             }
 
@@ -275,23 +279,23 @@ class RemindersPlugin(Plugin):
                 if not self.reminders[user_id]:
                     del self.reminders[user_id]
                 self.save_reminders()
-                return {
-                    "direct_result": {
-                        "kind": "text",
-                        "format": "markdown",
-                        "value": f"Напоминание {reminder_id} удалено"
-                    }
-                }                
+            return {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": self.t("reminders_deleted", reminder_id=reminder_id)
+                }
+            }                
             
             return {
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": "Напоминание не найдено"
+                    "value": self.t("reminders_not_found")
                 }
             }                
 
-        return {"error": "Unknown function"}
+        return {"error": self.t("reminders_unknown_function")}
 
     async def handle_reminder_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик callback-запросов от кнопок напоминаний"""
@@ -302,7 +306,7 @@ class RemindersPlugin(Plugin):
             
             # Обработка закрытия меню
             if action == "reminder" and command == "close_menu":
-                await query.answer("Меню закрыто")
+                await query.answer(self.t("reminders_menu_closed"))
                 await query.message.delete()
                 return
 
@@ -317,13 +321,17 @@ class RemindersPlugin(Plugin):
                     
                     # Показываем детали напоминания во всплывающем окне
                     await query.answer(
-                        text=f"📅 {formatted_time}\n📝 {reminder['message']}",
+                        text=self.t(
+                            "reminders_popup_details",
+                            time=formatted_time,
+                            message=reminder['message']
+                        ),
                         show_alert=True,
                         cache_time=0
                     )
                     return
                 else:
-                    await query.answer("Напоминание не найдено", show_alert=True)
+                    await query.answer(self.t("reminders_not_found"), show_alert=True)
                     return
 
             if action == "reminder" and command == "delete":
@@ -349,27 +357,31 @@ class RemindersPlugin(Plugin):
                             # Создаем ряд из двух кнопок для каждого напоминания
                             keyboard.append([
                                 InlineKeyboardButton(
-                                    text=f"📅 {formatted_time} 📝 {r['message']}",
+                                    text=self.t(
+                                        "reminders_button_label",
+                                        time=formatted_time,
+                                        message=r['message']
+                                    ),
                                     callback_data=f"reminder:view:{r_id}"
                                 ),
                                 InlineKeyboardButton(
-                                    text="❌ Удалить",
+                                    text=self.t("reminders_delete_button"),
                                     callback_data=f"reminder:delete:{r_id}"
                                 ),
                             ])
                         
                         # Добавляем кнопку закрытия
                         keyboard.append([
-                            InlineKeyboardButton("❌ Закрыть", callback_data="reminder:close_menu:")
+                            InlineKeyboardButton(self.t("reminders_close_menu"), callback_data="reminder:close_menu:")
                         ])
                         await query.edit_message_text(
-                            text="Ваши напоминания:",
+                            text=self.t("reminders_title"),
                             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
                             parse_mode='markdown'
                         )
                     else:
                         await query.edit_message_text(
-                            text="У вас нет активных напоминаний.",
+                            text=self.t("reminders_none"),
                             parse_mode='markdown'
                         )
                     
@@ -378,6 +390,6 @@ class RemindersPlugin(Plugin):
         except Exception as e:
             logging.error(f"Ошибка при обработке callback запроса: {e}")
             await query.edit_message_text(
-                text=f"Произошла ошибка при удалении напоминания: {str(e)}",
+                text=self.t("reminders_delete_error", error=str(e)),
                 parse_mode='markdown'
             )

@@ -375,7 +375,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 "result": "\n".join(analysis_text)
             }
 
-        return {"error": "Unknown function"}
+        return {"error": self.t("conversation_analytics_unknown_function")}
     def _extract_technical_terms(self, messages: List[Dict]) -> List[str]:
             """Извлекает технические термины из сообщений"""
             technical_terms = set()

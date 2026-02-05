@@ -251,7 +251,7 @@ class StableDiffusionPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": "Генерация изображения добавлена в очередь",
+                    "value": self.t("sd_queue_added"),
                 }
             }
 
@@ -268,11 +268,9 @@ class StableDiffusionPlugin(Plugin):
             try:
                 status_message = await self.bot.send_message(
                     chat_id=task.chat_id,
-                    text=(
-                        "🎨 Начинаю генерацию изображения...\n\n"
-                        f"🎯 Промпт: {task.prompt}\n"
-                        "⏳ Статус: в очереди на обработку\n\n"
-                        "Это может занять некоторое время. Я сообщу, когда изображение будет готово."
+                    text=self.t(
+                        "sd_start_message",
+                        prompt=task.prompt
                     )
                 )
                 if status_message:
@@ -304,18 +302,18 @@ class StableDiffusionPlugin(Plugin):
                 if current_task.status == TaskStatus.PROCESSING:
                     try:
                         await status_message.edit_text(
-                            "🎨 Генерирую изображение...\n\n"
-                            f"🎯 Промпт: {current_task.prompt}\n"
-                            f"⏳ Статус: генерация\n"
-                            f"⌛️ Прошло времени: {elapsed_minutes:.1f} мин.\n\n"
-                            "Пожалуйста, подождите..."
+                            self.t(
+                                "sd_processing_message",
+                                prompt=current_task.prompt,
+                                elapsed_minutes=f"{elapsed_minutes:.1f}"
+                            )
                         )
                     except Exception as e:
                         logger.warning(f"Could not update status message: {e}")
 
                 elif elapsed_minutes >= TIMEOUT_MINUTES:
                     current_task.status = TaskStatus.FAILED
-                    current_task.error = "Превышено время ожидания"
+                    current_task.error = self.t("sd_timeout_error")
                     break
 
             current_task = self.active_tasks.get(task.task_id)
@@ -326,9 +324,11 @@ class StableDiffusionPlugin(Plugin):
 
                 try:
                     await status_message.edit_text(
-                        "✅ Изображение успешно создано!\n\n"
-                        f"🎯 Промпт: {current_task.prompt}\n"
-                        f"⌛️ Время создания: {elapsed_minutes:.1f} мин."
+                        self.t(
+                            "sd_completed_message",
+                            prompt=current_task.prompt,
+                            elapsed_minutes=f"{elapsed_minutes:.1f}"
+                        )
                     )
 
                     # Отправка изображения
@@ -336,7 +336,10 @@ class StableDiffusionPlugin(Plugin):
                         await self.bot.send_photo(
                             chat_id=task.chat_id,
                             photo=image_file,
-                            caption=f"🎨 Изображение по промпту: {self._truncate_prompt(current_task.prompt)}"
+                            caption=self.t(
+                                "sd_caption",
+                                prompt=self._truncate_prompt(current_task.prompt)
+                            )
                         )
                 except Exception as e:
                     logger.error(f"Error sending result: {e}")
@@ -350,13 +353,15 @@ class StableDiffusionPlugin(Plugin):
                         logger.error(f"Error deleting temporary file: {e}")
 
             elif current_task.status == TaskStatus.FAILED:
-                error_message = current_task.error or "Неизвестная ошибка"
+                error_message = current_task.error or self.t("sd_unknown_error")
                 try:
                     await status_message.edit_text(
-                        "❌ Не удалось создать изображение\n\n"
-                        f"🎯 Промпт: {current_task.prompt}\n"
-                        f"❗️ Ошибка: {error_message}\n"
-                        f"⌛️ Прошло времени: {elapsed_minutes:.1f} мин."
+                        self.t(
+                            "sd_failed_message",
+                            prompt=current_task.prompt,
+                            error=error_message,
+                            elapsed_minutes=f"{elapsed_minutes:.1f}"
+                        )
                     )
                 except Exception as e:
                     logger.warning(f"Could not update error message: {e}")
@@ -386,4 +391,3 @@ class StableDiffusionPlugin(Plugin):
         if len(prompt) <= max_length:
             return prompt
         return prompt[:max_length] + "..."
-

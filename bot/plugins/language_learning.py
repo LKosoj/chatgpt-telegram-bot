@@ -162,7 +162,7 @@ class LanguageLearningPlugin(Plugin):
             exercise_type = kwargs.get('exercise_type', 'vocabulary')
             
             if language not in self.supported_languages:
-                return {"error": f"Language {language} is not supported"}
+                return {"error": self.t("language_learning_not_supported", language=language)}
 
             # Get the exercise topic
             topic = self.get_exercise_prompt(language, level, exercise_type)
@@ -234,4 +234,4 @@ class LanguageLearningPlugin(Plugin):
                 }
             }
 
-        return {"error": "Unknown function"}
+        return {"error": self.t("language_learning_unknown_function")}

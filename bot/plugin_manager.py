@@ -434,7 +434,7 @@ class PluginManager:
         normalized = dict(cmd)
         normalized["command"] = command
         normalized.setdefault("handler_kwargs", {})
-        normalized.setdefault("add_to_menu", False)
+        normalized.setdefault("add_to_menu", True)
         normalized["plugin_name"] = plugin_name
         return normalized
 

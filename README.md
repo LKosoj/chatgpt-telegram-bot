@@ -161,9 +161,9 @@ Check out the [official API reference](https://platform.openai.com/docs/api-refe
 
 Notes:
 - Plugin function names are now namespaced as `<plugin_id>.<function>`, e.g. `deepl.translate` or `ddg_translate.translate`.
-- Plugin commands are no longer shown individually in Telegram menu. Only `/plugins` (description: "Меню плагинов") is shown and opens the inline plugins menu.
+- Plugin commands are no longer shown individually in Telegram menu. Only `/plugins` is shown and opens the inline plugins menu (description is localized via `translations.json`).
 - The inline plugins menu is paginated (see `PLUGIN_MENU_PAGE_SIZE`).
-- Commands that require arguments open a small submenu showing usage and a “Назад” button.
+- Commands that require arguments open a small submenu with usage plus a prompt to enter parameters.
 
 #### Available plugins
 | Name                      | Description                                                                                                                                         | Required environment variable(s)                                     | Dependency          |

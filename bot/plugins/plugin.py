@@ -1,5 +1,6 @@
 from abc import abstractmethod, ABC
 from typing import Any, Dict, Optional, List
+from ..i18n import localized_text
 
 
 class Plugin(ABC):
@@ -27,6 +28,17 @@ class Plugin(ABC):
     def close(self) -> None:
         """Optional lifecycle hook for plugin shutdown."""
         return None
+
+    def get_bot_language(self) -> str:
+        if getattr(self, "openai", None) and getattr(self.openai, "config", None):
+            return self.openai.config.get("bot_language", "en")
+        return "en"
+
+    def t(self, key: str, **kwargs: Any) -> str:
+        text = localized_text(key, self.get_bot_language())
+        if kwargs:
+            return text.format(**kwargs)
+        return text
 
     @abstractmethod
     def get_source_name(self) -> str:

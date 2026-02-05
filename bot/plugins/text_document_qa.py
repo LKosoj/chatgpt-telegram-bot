@@ -80,7 +80,7 @@ class TextDocumentQAPlugin(Plugin):
         return [
             {
                 "command": "list_documents",
-                "description": "Показать список всех ваших документов",
+                "description": self.t("text_doc_command_list_description"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "list_documents"},
                 "plugin_name": "text_document_qa",
@@ -88,16 +88,16 @@ class TextDocumentQAPlugin(Plugin):
             },
             {
                 "command": "ask_question",
-                "description": "Задать вопрос по документу",
-                "args": "<document_id> <вопрос>",
+                "description": self.t("text_doc_command_ask_description"),
+                "args": self.t("text_doc_args_ask"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "ask_question"},
                 "plugin_name": "text_document_qa"
             },
             {
                 "command": "delete_document",
-                "description": "Удалить документ",
-                "args": "<document_id>",
+                "description": self.t("text_doc_command_delete_description"),
+                "args": self.t("text_doc_args_delete"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "delete_document"},
                 "plugin_name": "text_document_qa"
@@ -251,11 +251,11 @@ class TextDocumentQAPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"⚠️ *Предупреждение об удалении документа*\n\n"
-                            f"Документ '*{file_name}*' будет автоматически удален через 24 часа.\n"
-                            f"ID документа: `{doc_id}`\n\n"
-                            f"Чтобы сохранить документ, просто обратитесь к нему с помощью команды:\n"
-                            f"`/ask_question {doc_id} ваш_вопрос`"
+                    "value": self.t(
+                        "text_doc_deletion_warning",
+                        file_name=file_name,
+                        doc_id=doc_id
+                    )
                 }
             }
             
@@ -453,23 +453,23 @@ class TextDocumentQAPlugin(Plugin):
                         "direct_result": {
                             "kind": "text",
                             "format": "markdown",
-                            "value": "У вас пока нет загруженных документов."
+                            "value": self.t("text_doc_no_documents")
                         }
                     }
                 
                 # Формируем красивый список документов
-                docs_list = ["Ваши документы:"]
+                docs_list = [self.t("text_doc_list_title")]
                 for doc in documents:
-                    docs_list.append(f"\n📄 *{doc['file_name']}*")
-                    docs_list.append(f"  • ID: `{doc['doc_id']}`")
-                    docs_list.append(f"  • Загружен: {doc['created_at']}")
+                    docs_list.append(self.t("text_doc_list_item_name", file_name=doc['file_name']))
+                    docs_list.append(self.t("text_doc_list_item_id", doc_id=doc['doc_id']))
+                    docs_list.append(self.t("text_doc_list_item_created", created_at=doc['created_at']))
                     if 'summary' in doc:
-                        docs_list.append(f"  • Описание: _{doc['summary']}_")
-                    docs_list.append(f"  • Команды:")
-                    docs_list.append(f"    `/ask_question {doc['doc_id']} ваш_вопрос` - задать вопрос")
-                    docs_list.append(f"    `/delete_document {doc['doc_id']}` - удалить документ")
+                        docs_list.append(self.t("text_doc_list_item_summary", summary=doc['summary']))
+                    docs_list.append(self.t("text_doc_list_item_commands"))
+                    docs_list.append(self.t("text_doc_list_item_command_ask", doc_id=doc['doc_id']))
+                    docs_list.append(self.t("text_doc_list_item_command_delete", doc_id=doc['doc_id']))
                 
-                docs_list.append("\nДля просмотра списка документов используйте команду `/list_documents`")
+                docs_list.append(self.t("text_doc_list_footer"))
                 
                 return {
                     "direct_result": {
@@ -484,7 +484,7 @@ class TextDocumentQAPlugin(Plugin):
                 file_name = kwargs.get('file_name')
                 
                 if not file_content:
-                    return {"error": "Содержимое файла не предоставлено"}
+                    return {"error": self.t("text_doc_file_content_missing")}
 
                 # Создаем временный ID для отслеживания прогресса
                 temp_id = hashlib.md5(str(time.time()).encode()).hexdigest()
@@ -497,7 +497,11 @@ class TextDocumentQAPlugin(Plugin):
                     "direct_result": {
                         "kind": "text",
                         "format": "markdown",
-                        "value": f"Начата обработка документа '{file_name}'.\nВременный ID: `{temp_id}`\n\nВы можете продолжать общение с ботом, пока документ обрабатывается.\nПо завершении обработки вы получите ID документа для дальнейшей работы."
+                        "value": self.t(
+                            "text_doc_processing_started",
+                            file_name=file_name,
+                            temp_id=temp_id
+                        )
                     }
                 }
 
@@ -506,11 +510,11 @@ class TextDocumentQAPlugin(Plugin):
                 query = kwargs.get('query')
 
                 if doc_id not in self.document_indices:
-                    return {"error": "Документ не найден"}
+                    return {"error": self.t("text_doc_not_found")}
 
                 # Проверяем права доступа
                 if not await self._check_document_access(doc_id, chat_id):
-                    return {"error": "У вас нет доступа к этому документу"}
+                    return {"error": self.t("text_doc_access_denied")}
 
                 # Обновляем время последнего доступа
                 await self._update_last_access(doc_id)
@@ -563,11 +567,11 @@ class TextDocumentQAPlugin(Plugin):
                 doc_id = kwargs.get('document_id')
                 
                 if doc_id not in self.document_indices:
-                    return {"error": "Документ не найден"}
+                    return {"error": self.t("text_doc_not_found")}
 
                 # Проверяем права доступа
                 if not await self._check_document_access(doc_id, chat_id):
-                    return {"error": "У вас нет доступа к этому документу"}
+                    return {"error": self.t("text_doc_access_denied")}
 
                 # Удаляем все файлы документа
                 await self._delete_document_files(doc_id)
@@ -576,13 +580,13 @@ class TextDocumentQAPlugin(Plugin):
                     "direct_result": {
                         "kind": "text",
                         "format": "markdown",
-                        "value": "Документ успешно удален"
+                        "value": self.t("text_doc_deleted")
                     }
                 }
 
         except Exception as e:
             logging.error(f"Ошибка в TextDocumentQAPlugin: {str(e)}")
-            return {"error": f"Произошла ошибка: {str(e)}"} 
+            return {"error": self.t("text_doc_generic_error", error=str(e))}
 
     async def _process_document(self, file_content: bytes, file_name: str, temp_id: str, chat_id: str, update=None):
         """Асинхронная обработка документа"""
@@ -626,13 +630,12 @@ class TextDocumentQAPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"Документ '*{file_name}*' успешно обработан.\n"
-                            f"📝 Краткое описание: _{summary_response}_\n\n"
-                            f"📝 Доступные команды:\n"
-                            f"• `/ask_question {doc_id} ваш_вопрос` - задать вопрос по документу\n"
-                            f"• `/delete_document {doc_id}` - удалить документ\n"
-                            f"• `/list_documents` - показать список всех ваших документов\n\n"
-                            f"Обратите внимание: документ будет автоматически удален через 30 дней после последнего обращения к нему."
+                    "value": self.t(
+                        "text_doc_processed_message",
+                        file_name=file_name,
+                        summary=summary_response,
+                        doc_id=doc_id
+                    )
                 }
             }
             await handle_direct_result(self.config, update, response)
@@ -643,7 +646,7 @@ class TextDocumentQAPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": f"Ошибка при обработке документа '{file_name}': {str(e)}"
+                    "value": self.t("text_doc_processing_error", file_name=file_name, error=str(e))
                 }
             }
             await handle_direct_result(self.config, update, error_response)

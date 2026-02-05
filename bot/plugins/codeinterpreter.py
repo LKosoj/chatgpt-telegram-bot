@@ -278,7 +278,7 @@ class CodeInterpreterPlugin(Plugin):
             if not isinstance(code, str):
                 if code is None:
                     logging.error("Получен пустой код (None)")
-                    return {"error": "Получен пустой код (None)"}
+                    return {"error": self.t("codeinterpreter_empty_code_none")}
                 code = str(code)
             
             # Remove any leading/trailing whitespace
@@ -286,23 +286,23 @@ class CodeInterpreterPlugin(Plugin):
             
             if not code:
                 logging.error("Получен пустой код")
-                return {"error": "Получен пустой код"}
+                return {"error": self.t("codeinterpreter_empty_code")}
                 
             ast.parse(code)
             return {"status": True}
             
         except SyntaxError as e:
             logging.error(f"Синтаксическая ошибка: {e}")
-            return {"error": f"Синтаксическая ошибка: {e}"}
+            return {"error": self.t("codeinterpreter_syntax_error", error=str(e))}
         except ValueError as e:
             logging.error(f"Ошибка значения при анализе кода: {e}")
-            return {"error": f"Ошибка значения при анализе кода: {e}"}
+            return {"error": self.t("codeinterpreter_value_error", error=str(e))}
         except TypeError as e:
             logging.error(f"Ошибка типа при анализе кода: {e}")
-            return {"error": f"Ошибка типа при анализе кода: {e}"}
+            return {"error": self.t("codeinterpreter_type_error", error=str(e))}
         except Exception as e:
             logging.error(f"Неожиданная ошибка при анализе кода: {e}")
-            return {"error": f"Неожиданная ошибка при анализе кода: {e}"}
+            return {"error": self.t("codeinterpreter_unexpected_error", error=str(e))}
 
     @async_handle_exceptions
     async def debug_code(self, code, error_message, add_prompt, session_id):
