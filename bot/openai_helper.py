@@ -919,7 +919,9 @@ class OpenAIHelper:
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
         model_to_use = self.get_current_model(user_id)
 
-        if model_to_use in (ANTHROPIC):
+        # Some providers either don't support (or inconsistently support) the legacy "function" role.
+        # For those, we inject tool results as regular user text so the model reliably sees them.
+        if model_to_use in (ANTHROPIC + DEEPSEEK):
             function_result = f"Function {function_name} returned: {content}"
             self.conversations[chat_id].append({"role": "user", "content": function_result})
         elif model_to_use in (MISTRALAI + MOONSHOTAI):
