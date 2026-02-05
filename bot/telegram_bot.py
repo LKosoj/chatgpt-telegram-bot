@@ -1996,8 +1996,8 @@ class ChatGPTTelegramBot:
         )
         if not self._background_tasks:
             self._background_tasks = [
-                application.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
-                application.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
+                asyncio.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
+                asyncio.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
             ]
 
         # Регистрируем команды от плагинов
