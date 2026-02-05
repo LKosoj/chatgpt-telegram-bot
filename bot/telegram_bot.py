@@ -1926,8 +1926,16 @@ class ChatGPTTelegramBot:
         :param is_inline: Boolean flag for inline queries
         :return: Boolean indicating if the user is allowed to use the bot
         """
-        name = update.inline_query.from_user.name if is_inline else update.message.from_user.name
-        user_id = update.inline_query.from_user.id if is_inline else update.message.from_user.id
+        if is_inline and update.inline_query:
+            user = update.inline_query.from_user
+        elif update.message:
+            user = update.message.from_user
+        elif update.callback_query:
+            user = update.callback_query.from_user
+        else:
+            user = update.effective_user
+        name = user.name if user else "unknown"
+        user_id = user.id if user else None
 
         if not await is_allowed(self.config, update, context, is_inline=is_inline):
             logger.warning(f'User {name} (id: {user_id}) is not allowed to use the bot')
@@ -1947,12 +1955,13 @@ class ChatGPTTelegramBot:
         if not is_inline:
             #chat_id = update.effective_chat.id
             #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
-            await update.effective_message.reply_text(
-                message_thread_id=get_thread_id(update),
-                text=self.disallowed_message,
-                #parse_mode=parse_mode,
-                disable_web_page_preview=True
-            )
+            message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+            if message:
+                await message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text=self.disallowed_message,
+                    disable_web_page_preview=True
+                )
         else:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.disallowed_message)
@@ -1964,11 +1973,12 @@ class ChatGPTTelegramBot:
         if not is_inline:
             #chat_id = update.effective_chat.id
             #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
-            await update.effective_message.reply_text(
-                message_thread_id=get_thread_id(update),
-                text=self.budget_limit_message,
-                #parse_mode=parse_mode
-            )
+            message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+            if message:
+                await message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text=self.budget_limit_message,
+                )
         else:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
