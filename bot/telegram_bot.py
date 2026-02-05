@@ -2071,6 +2071,8 @@ class ChatGPTTelegramBot:
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
         try:
+            if update.message is None and update.callback_query and update.callback_query.message:
+                update.message = update.callback_query.message
             message = update.effective_message or (update.callback_query.message if update.callback_query else None)
             # Проверяем права доступа
             if not await is_allowed(self.config, update, context):
