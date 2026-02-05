@@ -157,9 +157,13 @@ Check out the [official API reference](https://platform.openai.com/docs/api-refe
 | `SHOW_PLUGINS_USED`               | Whether to show which plugins were used for a response                                                                                           | `false`                             |
 | `PLUGIN_STORAGE_ROOT`             | Root directory for plugin persistent data (defaults to `bot/config`)                                                                              | -                                   |
 | `PLUGIN_STRICT_VALIDATION`        | Fail fast on missing/invalid plugins or function name collisions                                                                                 | `false`                             |
+| `PLUGIN_MENU_PAGE_SIZE`           | Inline plugins menu page size (commands are shown under `/plugins`)                                                                               | `8`                                 |
 
 Notes:
 - Plugin function names are now namespaced as `<plugin_id>.<function>`, e.g. `deepl.translate` or `ddg_translate.translate`.
+- Plugin commands are no longer shown individually in Telegram menu. Only `/plugins` (description: "Меню плагинов") is shown and opens the inline plugins menu.
+- The inline plugins menu is paginated (see `PLUGIN_MENU_PAGE_SIZE`).
+- Commands that require arguments open a small submenu showing usage and a “Назад” button.
 
 #### Available plugins
 | Name                      | Description                                                                                                                                         | Required environment variable(s)                                     | Dependency          |
