@@ -236,12 +236,12 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
     if config['allowed_user_ids'] == '*':
         return True
 
-    if is_inline:
+    if is_inline and update.inline_query:
         user = update.inline_query.from_user
-    elif update.message:
-        user = update.message.from_user
     elif update.callback_query:
         user = update.callback_query.from_user
+    elif update.message:
+        user = update.message.from_user
     else:
         user = update.effective_user
     user_id = user.id if user else None
@@ -332,10 +332,10 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
 
     if is_inline and update.inline_query:
         user = update.inline_query.from_user
-    elif update.message:
-        user = update.message.from_user
     elif update.callback_query:
         user = update.callback_query.from_user
+    elif update.message:
+        user = update.message.from_user
     else:
         user = update.effective_user
     user_id = user.id if user else None

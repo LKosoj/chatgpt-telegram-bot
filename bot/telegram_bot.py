@@ -1928,10 +1928,10 @@ class ChatGPTTelegramBot:
         """
         if is_inline and update.inline_query:
             user = update.inline_query.from_user
-        elif update.message:
-            user = update.message.from_user
         elif update.callback_query:
             user = update.callback_query.from_user
+        elif update.message:
+            user = update.message.from_user
         else:
             user = update.effective_user
         name = user.name if user else "unknown"
