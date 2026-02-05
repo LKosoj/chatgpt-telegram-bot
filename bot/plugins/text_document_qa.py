@@ -11,7 +11,10 @@ try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+try:
+    from langchain_community.docstore.document import Document
+except ImportError:
+    from langchain.docstore.document import Document
 from .plugin import Plugin
 import asyncio
 from docling.document_converter import DocumentConverter
