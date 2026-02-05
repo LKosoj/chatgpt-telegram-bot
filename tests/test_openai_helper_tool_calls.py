@@ -1,5 +1,6 @@
 import types
 import pytest
+import json
 
 pytest.importorskip("tiktoken")
 
@@ -17,11 +18,13 @@ class DummyDB:
 class DummyPluginManager:
     def __init__(self, responses):
         self.responses = responses
+        self.calls = []
 
     def filter_allowed_plugins(self, allowed_plugins):
         return allowed_plugins
 
     async def call_function(self, name, helper, arguments):
+        self.calls.append((name, arguments))
         return self.responses[name]
 
     def get_functions_specs(self, helper, model_to_use, allowed_plugins):
@@ -44,20 +47,21 @@ class FakeToolCall:
 
 
 class FakeMessage:
-    def __init__(self, tool_calls=None):
+    def __init__(self, tool_calls=None, content=""):
         self.tool_calls = tool_calls
+        self.content = content
 
 
 class FakeChoice:
-    def __init__(self, tool_calls=None):
-        self.message = FakeMessage(tool_calls=tool_calls)
+    def __init__(self, tool_calls=None, content=""):
+        self.message = FakeMessage(tool_calls=tool_calls, content=content)
         self.delta = None
         self.finish_reason = None
 
 
 class FakeResponse:
-    def __init__(self, tool_calls=None):
-        self.choices = [FakeChoice(tool_calls=tool_calls)]
+    def __init__(self, tool_calls=None, content=""):
+        self.choices = [FakeChoice(tool_calls=tool_calls, content=content)]
 
 
 def _make_helper(plugin_manager):
@@ -144,3 +148,28 @@ async def test_parallel_tool_calls_direct_result_short_circuit():
     assert helper.client.calls == 0
     assert set(tools_used) == {"p1.do", "p2.do"}
     assert out["direct_result"]["value"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_legacy_tool_request_in_content_is_executed():
+    responses = {
+        "p1.do": {"result": "ok1"},
+    }
+    pm = DummyPluginManager(responses)
+    helper = _make_helper(pm)
+    response = FakeResponse(
+        tool_calls=None,
+        content='```json\n{"tool_name":"p1.do","x":1}\n```',
+    )
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 1
+    assert set(tools_used) == {"p1.do"}
+    assert pm.calls and pm.calls[0][0] == "p1.do"
+    sent_args = json.loads(pm.calls[0][1])
+    assert sent_args["x"] == 1
+    assert sent_args["chat_id"] == 1
+    assert sent_args["user_id"] == 1

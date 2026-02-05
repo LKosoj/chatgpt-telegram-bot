@@ -10,6 +10,36 @@ from .utils import is_direct_result, escape_markdown
 
 logger = logging.getLogger(__name__)
 
+def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
+    """
+    Backwards-compatible parsing for legacy prompts that ask the model to output JSON like:
+      {"tool_name": "<tool>", ...args }
+
+    Returns (tool_name, arguments_json_str) or None.
+    """
+    if not content or not isinstance(content, str):
+        return None
+    s = content.strip()
+    start = s.find("{")
+    end = s.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        return None
+    blob = s[start : end + 1]
+    try:
+        obj = json.loads(blob)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    tool_name = obj.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+    args = {k: v for k, v in obj.items() if k != "tool_name"}
+    try:
+        return tool_name.strip(), json.dumps(args, ensure_ascii=False)
+    except Exception:
+        return None
+
 
 async def handle_function_call(helper, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All'], user_id=None):
     tool_calls = []
@@ -46,16 +76,22 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
         else:
             if len(response.choices) > 0:
                 first_choice = response.choices[0]
-                logger.info("found tool calls")
                 logger.info(f"first_choice = {first_choice}")
                 if first_choice.message.tool_calls:
+                    logger.info("found tool calls")
                     for tc in first_choice.message.tool_calls:
                         tool_calls.append({
                             "name": tc.function.name or "",
                             "arguments": tc.function.arguments or "",
                         })
                 else:
-                    return response, tools_used
+                    legacy = _extract_legacy_tool_request(getattr(first_choice.message, "content", None))
+                    if legacy:
+                        tool_name, arguments = legacy
+                        logger.info("found legacy tool request in assistant content")
+                        tool_calls.append({"name": tool_name, "arguments": arguments})
+                    else:
+                        return response, tools_used
             else:
                 return response, tools_used
 
