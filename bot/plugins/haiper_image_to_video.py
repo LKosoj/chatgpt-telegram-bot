@@ -520,8 +520,12 @@ class HaiperImageToVideoPlugin(Plugin):
             logger.error(f"Error processing video task: {e}")
             raise
 
-    def initialize(self, helper):
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         """Инициализация плагина"""
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        helper = openai
+        if not helper:
+            return
         self.haiper_token = helper.api_key
         self.headers = {
             "Authorization": f"Bearer {self.haiper_token}",
