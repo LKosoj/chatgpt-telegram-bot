@@ -2071,12 +2071,10 @@ class ChatGPTTelegramBot:
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
         try:
-            if update.message is None and update.callback_query and update.callback_query.message:
-                update = Update.de_json(update.to_dict(), context.bot)
-                update.message = update.callback_query.message
-            message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+            update_for_handler = self._wrap_update_with_message(update)
+            message = update_for_handler.effective_message or (update_for_handler.callback_query.message if update_for_handler.callback_query else None)
             # Проверяем права доступа
-            if not await is_allowed(self.config, update, context):
+            if not await is_allowed(self.config, update_for_handler, context):
                 await self.send_disallowed_message(update, context)
                 return
 
@@ -2096,7 +2094,7 @@ class ChatGPTTelegramBot:
 
             if is_telegram_handler:
                 # Для обработчиков команд Telegram
-                result = await handler(update, context)
+                result = await handler(update_for_handler, context)
                 if result:  # Если обработчик что-то вернул
                     if isinstance(result, dict) and "text" in result and "parse_mode" in result:
                         if message:
@@ -2129,8 +2127,8 @@ class ChatGPTTelegramBot:
                 return
 
             # Добавляем chat_id и аргументы в kwargs
-            kwargs['chat_id'] = str(update.effective_chat.id)
-            kwargs['update'] = update
+            kwargs['chat_id'] = str(update_for_handler.effective_chat.id)
+            kwargs['update'] = update_for_handler
             kwargs['function_name'] = cmd['handler_kwargs'].get('function_name')  # Берем из handler_kwargs
             if cmd.get('args'):
                 kwargs['query'] = ' '.join(args)
@@ -2142,7 +2140,7 @@ class ChatGPTTelegramBot:
             
             # Обрабатываем результат
             if is_direct_result(result):
-                await handle_direct_result(self.config, update, result)
+                await handle_direct_result(self.config, update_for_handler, result)
             elif isinstance(result, dict) and 'error' in result:
                 if message:
                     await message.reply_text(
@@ -2169,6 +2167,23 @@ class ChatGPTTelegramBot:
                         error=str(e)
                     )
                 )
+
+    def _wrap_update_with_message(self, update: Update) -> Update:
+        if update.message or not update.callback_query or not update.callback_query.message:
+            return update
+
+        class _UpdateProxy:
+            __slots__ = ("_update", "message")
+            def __init__(self, original, message):
+                self._update = original
+                self.message = message
+            def __getattr__(self, name):
+                return getattr(self._update, name)
+            @property
+            def effective_message(self):
+                return self._update.effective_message or self.message
+
+        return _UpdateProxy(update, update.callback_query.message)
 
     async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает меню плагинов с командами."""
