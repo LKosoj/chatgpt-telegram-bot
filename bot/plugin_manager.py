@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List
+import difflib
 
 from .plugins.plugin import Plugin
 from .model_constants import GOOGLE as GOOGLE_MODELS
@@ -292,11 +293,44 @@ class PluginManager:
         if not self.enabled_plugins:
             return
         missing = [p for p in self.enabled_plugins if p and p not in self.plugins]
-        if missing:
-            msg = f"Enabled plugins not found: {missing}"
-            if self.strict_validation:
-                raise ValueError(msg)
-            logger.error(msg)
+        if not missing:
+            return
+
+        available_files = self._get_available_plugin_files()
+        failed_to_load = [p for p in missing if p in available_files]
+        unknown = [p for p in missing if p not in available_files]
+
+        messages = []
+        if failed_to_load:
+            messages.append(f"Enabled plugins failed to load: {failed_to_load}")
+        if unknown:
+            suggestions = {
+                name: self._suggest_plugin_names(name, available_files)
+                for name in unknown
+            }
+            messages.append(
+                "Enabled plugins not found: "
+                f"{unknown}. Suggestions: {suggestions}"
+            )
+
+        msg = " | ".join(messages)
+        if self.strict_validation:
+            raise ValueError(msg)
+        logger.error(msg)
+
+    def _get_available_plugin_files(self) -> list[str]:
+        plugins_path = Path(self.plugins_directory)
+        excluded_files = {'__init__.py', 'plugin.py'}
+        return [
+            p.stem
+            for p in plugins_path.glob("*.py")
+            if p.name not in excluded_files
+        ]
+
+    def _suggest_plugin_names(self, name: str, candidates: list[str]) -> list[str]:
+        if not name or not candidates:
+            return []
+        return difflib.get_close_matches(name, candidates, n=3, cutoff=0.6)
 
     def filter_allowed_plugins(self, allowed_plugins: List[str] | None) -> List[str]:
         if not allowed_plugins or allowed_plugins == ['None']:

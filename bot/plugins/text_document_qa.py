@@ -77,6 +77,12 @@ class TextDocumentQAPlugin(Plugin):
             os.makedirs(self.metadata_dir, exist_ok=True)
             self.document_indices = {}
             self._load_existing_indices()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and not self.cleanup_task:
+            self.cleanup_task = loop.create_task(self._cleanup_loop())
 
     def get_source_name(self) -> str:
         return "TextDocumentQA"
@@ -215,7 +221,7 @@ class TextDocumentQAPlugin(Plugin):
             logging.error(f"Ошибка при создании индекса: {str(e)}")
             raise
 
-    async def initialize(self):
+    async def initialize_async(self):
         """Асинхронная инициализация плагина"""
         if not self.cleanup_task:
             self.cleanup_task = asyncio.create_task(self._cleanup_loop())

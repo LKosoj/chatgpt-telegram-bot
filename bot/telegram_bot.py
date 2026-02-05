@@ -2005,8 +2005,11 @@ class ChatGPTTelegramBot:
                 continue
                 
             # Регистрируем обычную команду
+            command_name = cmd.get('command')
+            if not command_name:
+                continue
             handler = CommandHandler(
-                cmd['command'],
+                command_name,
                 lambda update, context, cmd=cmd: self.handle_plugin_command(update, context, cmd),
                 filters=filters.COMMAND
             )
@@ -2098,7 +2101,7 @@ class ChatGPTTelegramBot:
             if cmd.get('args') and not args:
                 await update.effective_message.reply_text(
                     localized_text('plugins_menu_usage', self.config['bot_language']).format(
-                        command=cmd['command'],
+                        command=cmd.get('command') or cmd.get('name') or '',
                         args=cmd.get('args', '')
                     )
                     + "\n"
@@ -2222,7 +2225,7 @@ class ChatGPTTelegramBot:
                 return
             prompt_message = await query.message.reply_text(
                 localized_text('plugins_menu_enter_params_prompt', bot_language).format(
-                    command=cmd['command'],
+                    command=cmd.get('command') or cmd.get('name') or '',
                     args=cmd.get('args', '')
                 ),
                 reply_markup=ForceReply(selective=True)
@@ -2263,7 +2266,7 @@ class ChatGPTTelegramBot:
             ]
             await query.edit_message_text(
                 localized_text('plugins_menu_usage', bot_language).format(
-                    command=cmd['command'],
+                    command=cmd.get('command') or cmd.get('name') or '',
                     args=cmd.get('args', '')
                 )
                 + "\n"
@@ -2327,7 +2330,8 @@ class ChatGPTTelegramBot:
                 ])
         else:
             for idx, cmd in items[start:end]:
-                title = f"/{cmd['command']} — {cmd.get('description', '')}"
+                cmd_name = cmd.get('command') or cmd.get('name') or ''
+                title = f"/{cmd_name} — {cmd.get('description', '')}"
                 keyboard.append([
                     InlineKeyboardButton(
                         title,
