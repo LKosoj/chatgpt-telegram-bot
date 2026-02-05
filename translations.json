@@ -453,7 +453,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "ar": {
     "help_description": "عرض رسالة المساعدة",
@@ -909,7 +911,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "de": {
     "help_description": "Zeige die Hilfenachricht",
@@ -1365,7 +1369,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "es": {
     "help_description": "Muestra el mensaje de ayuda",
@@ -1821,7 +1827,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "fa": {
     "help_description": "نمایش پیغام راهنما",
@@ -2277,7 +2285,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "fi": {
     "help_description": "Näytä ohjeet",
@@ -2733,7 +2743,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "he": {
     "help_description": "הצג הודעת עזרה",
@@ -3189,7 +3201,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "id": {
     "help_description": "Menampilkan pesan bantuan",
@@ -3645,7 +3659,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "it": {
     "help_description": "Mostra il messaggio di aiuto",
@@ -4101,7 +4117,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "ms": {
     "help_description": "Lihat Mesej Bantuan",
@@ -4557,7 +4575,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "nl": {
     "help_description": "Toon uitleg",
@@ -5013,7 +5033,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "pl": {
     "help_description": "Pokaż wiadomości pomocnicze",
@@ -5469,7 +5491,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "pt-br": {
     "help_description": "Mostra a mensagem de ajuda",
@@ -5925,7 +5949,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "ru": {
     "help_description": "Показать справочное сообщение",
@@ -6381,7 +6407,9 @@
     "haiper_missing_image_file_id": "Не передан file_id изображения",
     "haiper_task_not_found": "Задача не найдена в списке активных задач",
     "haiper_video_url_missing": "URL видео не найден в ответе API",
-    "haiper_video_download_failed": "Не удалось скачать видео. Статус: {status}"
+    "haiper_video_download_failed": "Не удалось скачать видео. Статус: {status}",
+    "plugins_menu_plugins_title": "Плагины",
+    "plugins_menu_plugin_title": "Плагин: {plugin}"
   },
   "tr": {
     "help_description": "Yardım mesajını göster",
@@ -6837,7 +6865,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "uk": {
     "help_description": "Показати повідомлення допомоги",
@@ -7293,7 +7323,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "uz": {
     "help_description": "Yordam xabarini ko'rsatish",
@@ -7749,7 +7781,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "vi": {
     "help_description": "Hiển thị trợ giúp",
@@ -8205,7 +8239,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "zh-cn": {
     "help_description": "显示帮助信息",
@@ -8661,7 +8697,9 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   },
   "zh-tw": {
     "help_description": "顯示幫助訊息",
@@ -9117,6 +9155,8 @@
     "haiper_missing_image_file_id": "No image file_id provided",
     "haiper_task_not_found": "Task not found in active tasks list",
     "haiper_video_url_missing": "Video URL not found in API response",
-    "haiper_video_download_failed": "Failed to download video. Status: {status}"
+    "haiper_video_download_failed": "Failed to download video. Status: {status}",
+    "plugins_menu_plugins_title": "Plugins",
+    "plugins_menu_plugin_title": "Plugin: {plugin}"
   }
 }

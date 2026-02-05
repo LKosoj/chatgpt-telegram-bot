@@ -2051,7 +2051,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
         application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
         application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
-        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
+        application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
         application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
         application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
 
@@ -2157,14 +2157,14 @@ class ChatGPTTelegramBot:
             cmd for cmd in plugin_commands
             if cmd.get("add_to_menu") and cmd.get("command") and cmd.get("description")
         ]
-        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(menu_entries)}
-        if not self.plugin_command_index:
+        self.plugin_menu_entries = menu_entries
+        if not self.plugin_menu_entries:
             await update.message.reply_text(localized_text('plugins_menu_no_plugins', bot_language))
             return
 
-        reply_markup = self._build_plugins_menu(page=0)
+        reply_markup = self._build_plugins_menu(page=0, plugin=None)
         await update.message.reply_text(
-            localized_text('plugins_menu_title', bot_language),
+            localized_text('plugins_menu_plugins_title', bot_language),
             reply_markup=reply_markup
         )
 
@@ -2178,21 +2178,43 @@ class ChatGPTTelegramBot:
             return
         bot_language = self.config['bot_language']
         action = data[1]
-        if action == "page" and len(data) == 3:
+        if action == "page" and len(data) == 4:
+            scope = data[2]
             try:
-                page = int(data[2])
+                page = int(data[3])
             except ValueError:
                 return
-            reply_markup = self._build_plugins_menu(page=page)
+            if scope == "root":
+                reply_markup = self._build_plugins_menu(page=page, plugin=None)
+                await query.edit_message_text(
+                    localized_text('plugins_menu_plugins_title', bot_language),
+                    reply_markup=reply_markup
+                )
+            else:
+                reply_markup = self._build_plugins_menu(page=page, plugin=scope)
+                await query.edit_message_text(
+                    localized_text('plugins_menu_plugin_title', bot_language).format(
+                        plugin=self._format_plugin_title(scope)
+                    ),
+                    reply_markup=reply_markup
+                )
+            return
+
+        if action == "plugin" and len(data) == 3:
+            plugin_name = data[2]
+            reply_markup = self._build_plugins_menu(page=0, plugin=plugin_name)
             await query.edit_message_text(
-                localized_text('plugins_menu_title', bot_language),
+                localized_text('plugins_menu_plugin_title', bot_language).format(
+                    plugin=self._format_plugin_title(plugin_name)
+                ),
                 reply_markup=reply_markup
             )
             return
 
-        if action == "input" and len(data) == 3:
-            cmd_id = data[2]
-            cmd = self.plugin_command_index.get(cmd_id)
+        if action == "input" and len(data) == 4:
+            plugin_name = data[2]
+            cmd_id = data[3]
+            cmd = self._get_plugin_command(plugin_name, cmd_id)
             if not cmd:
                 await query.edit_message_text(
                     localized_text('plugins_menu_command_unavailable', bot_language)
@@ -2206,15 +2228,17 @@ class ChatGPTTelegramBot:
                 reply_markup=ForceReply(selective=True)
             )
             context.user_data["plugin_menu_pending"] = {
+                "plugin": plugin_name,
                 "cmd_id": cmd_id,
                 "prompt_message_id": prompt_message.message_id,
             }
             return
 
-        if action != "cmd" or len(data) != 3:
+        if action != "cmd" or len(data) != 4:
             return
-        cmd_id = data[2]
-        cmd = self.plugin_command_index.get(cmd_id)
+        plugin_name = data[2]
+        cmd_id = data[3]
+        cmd = self._get_plugin_command(plugin_name, cmd_id)
         if not cmd:
             await query.edit_message_text(
                 localized_text('plugins_menu_command_unavailable', bot_language)
@@ -2227,13 +2251,13 @@ class ChatGPTTelegramBot:
                 [
                     InlineKeyboardButton(
                         localized_text('plugins_menu_enter_params', bot_language),
-                        callback_data=f"pluginmenu:input:{cmd_id}"
+                        callback_data=f"pluginmenu:input:{plugin_name}:{cmd_id}"
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         localized_text('plugins_menu_back', bot_language),
-                        callback_data=f"pluginmenu:page:{back_page}"
+                        callback_data=f"pluginmenu:page:{plugin_name}:{back_page}"
                     )
                 ],
             ]
@@ -2267,7 +2291,8 @@ class ChatGPTTelegramBot:
         if update.message.reply_to_message.message_id != pending.get("prompt_message_id"):
             return
 
-        cmd = self.plugin_command_index.get(pending.get("cmd_id"))
+        plugin_name = pending.get("plugin")
+        cmd = self._get_plugin_command(plugin_name, pending.get("cmd_id")) if plugin_name else None
         if not cmd:
             await update.effective_message.reply_text(
                 localized_text('plugins_menu_command_unavailable', self.config['bot_language'])
@@ -2279,8 +2304,11 @@ class ChatGPTTelegramBot:
         context.user_data.pop("plugin_menu_pending", None)
         await self.handle_plugin_command(update, context, cmd)
 
-    def _build_plugins_menu(self, page: int = 0) -> InlineKeyboardMarkup:
-        items = list(self.plugin_command_index.items())
+    def _build_plugins_menu(self, page: int = 0, plugin: str | None = None) -> InlineKeyboardMarkup:
+        if plugin is None:
+            items = list(self._get_plugins_list())
+        else:
+            items = list(self._get_plugin_commands(plugin))
         page_size = max(1, self.plugin_menu_page_size)
         total_pages = (len(items) + page_size - 1) // page_size
         page = max(0, min(page, total_pages - 1))
@@ -2288,18 +2316,66 @@ class ChatGPTTelegramBot:
         end = start + page_size
 
         keyboard = []
-        for idx, cmd in items[start:end]:
-            title = f"/{cmd['command']} — {cmd.get('description', '')}"
-            keyboard.append([InlineKeyboardButton(title, callback_data=f"pluginmenu:cmd:{idx}")])
+        if plugin is None:
+            for plugin_name in items[start:end]:
+                title = self._format_plugin_title(plugin_name)
+                keyboard.append([
+                    InlineKeyboardButton(
+                        title,
+                        callback_data=f"pluginmenu:plugin:{plugin_name}"
+                    )
+                ])
+        else:
+            for idx, cmd in items[start:end]:
+                title = f"/{cmd['command']} — {cmd.get('description', '')}"
+                keyboard.append([
+                    InlineKeyboardButton(
+                        title,
+                        callback_data=f"pluginmenu:cmd:{plugin}:{idx}"
+                    )
+                ])
 
         nav_row = []
         if page > 0:
-            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"pluginmenu:page:{page-1}"))
+            scope = "root" if plugin is None else plugin
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"pluginmenu:page:{scope}:{page-1}"))
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"pluginmenu:page:{page+1}"))
+            scope = "root" if plugin is None else plugin
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"pluginmenu:page:{scope}:{page+1}"))
+        if plugin is not None:
+            nav_row.append(InlineKeyboardButton(
+                localized_text('plugins_menu_back', self.config['bot_language']),
+                callback_data="pluginmenu:page:root:0"
+            ))
         if nav_row:
             keyboard.append(nav_row)
         return InlineKeyboardMarkup(keyboard)
+
+    def _get_plugins_list(self) -> list[str]:
+        return sorted({cmd.get("plugin_name") for cmd in self.plugin_menu_entries if cmd.get("plugin_name")})
+
+    def _get_plugin_commands(self, plugin_name: str) -> list[tuple[str, dict]]:
+        commands = [
+            cmd for cmd in self.plugin_menu_entries
+            if cmd.get("plugin_name") == plugin_name
+        ]
+        return [(str(i), cmd) for i, cmd in enumerate(commands)]
+
+    def _get_plugin_command(self, plugin_name: str, cmd_id: str) -> dict | None:
+        try:
+            idx = int(cmd_id)
+        except ValueError:
+            return None
+        commands = [
+            cmd for cmd in self.plugin_menu_entries
+            if cmd.get("plugin_name") == plugin_name
+        ]
+        if 0 <= idx < len(commands):
+            return commands[idx]
+        return None
+
+    def _format_plugin_title(self, plugin_name: str) -> str:
+        return plugin_name.replace("_", " ").strip()
 
     def _get_page_for_command_id(self, cmd_id: str) -> int:
         try:
