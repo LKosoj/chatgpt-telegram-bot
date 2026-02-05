@@ -2061,6 +2061,7 @@ class ChatGPTTelegramBot:
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
         try:
+            message = update.effective_message or (update.callback_query.message if update.callback_query else None)
             # Проверяем права доступа
             if not await is_allowed(self.config, update, context):
                 await self.send_disallowed_message(update, context)
@@ -2085,12 +2086,14 @@ class ChatGPTTelegramBot:
                 result = await handler(update, context)
                 if result:  # Если обработчик что-то вернул
                     if isinstance(result, dict) and "text" in result and "parse_mode" in result:
-                        await update.effective_message.reply_text(
-                            text=result["text"],
-                            parse_mode=result["parse_mode"]
-                        )
+                        if message:
+                            await message.reply_text(
+                                text=result["text"],
+                                parse_mode=result["parse_mode"]
+                            )
                     else:
-                        await update.effective_message.reply_text(str(result))
+                        if message:
+                            await message.reply_text(str(result))
                 return
 
             # Для обработчиков функций плагина
@@ -2099,16 +2102,17 @@ class ChatGPTTelegramBot:
             
             # Если команда требует аргументы, но они не предоставлены
             if cmd.get('args') and not args:
-                await update.effective_message.reply_text(
-                    localized_text('plugins_menu_usage', self.config['bot_language']).format(
-                        command=cmd.get('command') or cmd.get('name') or '',
-                        args=cmd.get('args', '')
+                if message:
+                    await message.reply_text(
+                        localized_text('plugins_menu_usage', self.config['bot_language']).format(
+                            command=cmd.get('command') or cmd.get('name') or '',
+                            args=cmd.get('args', '')
+                        )
+                        + "\n"
+                        + localized_text('plugins_menu_description_label', self.config['bot_language']).format(
+                            description=cmd.get('description', '')
+                        )
                     )
-                    + "\n"
-                    + localized_text('plugins_menu_description_label', self.config['bot_language']).format(
-                        description=cmd.get('description', '')
-                    )
-                )
                 return
 
             # Добавляем chat_id и аргументы в kwargs
@@ -2127,26 +2131,31 @@ class ChatGPTTelegramBot:
             if is_direct_result(result):
                 await handle_direct_result(self.config, update, result)
             elif isinstance(result, dict) and 'error' in result:
-                await update.effective_message.reply_text(
-                    localized_text('error_with_details', self.config['bot_language']).format(
-                        error=result['error']
+                if message:
+                    await message.reply_text(
+                        localized_text('error_with_details', self.config['bot_language']).format(
+                            error=result['error']
+                        )
                     )
-                )
             elif isinstance(result, dict) and "text" in result and "parse_mode" in result:
-                await update.effective_message.reply_text(
-                    text=result["text"],
-                    parse_mode=result["parse_mode"]
-                )
+                if message:
+                    await message.reply_text(
+                        text=result["text"],
+                        parse_mode=result["parse_mode"]
+                    )
             elif result:
-                await update.effective_message.reply_text(str(result))
+                if message:
+                    await message.reply_text(str(result))
 
         except Exception as e:
             logger.error(f"Ошибка при обработке команды плагина: {e}")
-            await update.effective_message.reply_text(
-                localized_text('plugin_command_error', self.config['bot_language']).format(
-                    error=str(e)
+            message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+            if message:
+                await message.reply_text(
+                    localized_text('plugin_command_error', self.config['bot_language']).format(
+                        error=str(e)
+                    )
                 )
-            )
 
     async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает меню плагинов с командами."""
