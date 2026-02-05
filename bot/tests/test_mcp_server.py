@@ -1,6 +1,8 @@
 import os
 import json
 import pytest
+
+pytest.importorskip("mcp")
 import tempfile
 import asyncio
 from pathlib import Path

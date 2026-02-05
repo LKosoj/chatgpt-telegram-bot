@@ -2,54 +2,41 @@ import importlib
 import inspect
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .plugins.plugin import Plugin
+from .model_constants import GOOGLE as GOOGLE_MODELS
+from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
-GOOGLE = ("google/gemini-flash-1.5-8b",)
 
 class PluginManager:
-    _instance = None  # Add singleton instance tracker
-
-    def __new__(cls, config, plugins_directory="bot/plugins"):
-        if cls._instance is None:
-            logger.info("Creating new PluginManager instance")  # Debug line
-            cls._instance = super().__new__(cls)
-            cls._instance.plugins = {}
-            cls._instance.plugin_instances = {}  # Кеш инстансов плагинов
-            cls._instance.plugins_directory = plugins_directory
-            cls._instance.enabled_plugins = config.get('plugins', [])  # Initialize enabled_plugins here
-            cls._instance.openai = None  # Добавляем ссылку на openai
-
-        else:
-            logger.info("Reusing existing PluginManager instance")  # Debug line
-        return cls._instance
 
     def __init__(self, config, plugins_directory="plugins"):
-        # Обновляем enabled_plugins при каждой инициализации
-        self.enabled_plugins = config.get('plugins', [])
-        if not hasattr(self, 'plugins'):
-            self.plugins = {}
-        if not hasattr(self, 'plugin_instances'):
-            self.plugin_instances = {}
-        if not hasattr(self, 'openai'):
-            self.openai = None
-        # Получаем абсолютный путь относительно текущей директории
+        self.plugins = {}
+        self.plugin_instances = {}
+        self.openai = None
+        self.bot = None
+        self.enabled_plugins = [p for p in (config.get('plugins', []) or []) if p]
+        self.strict_validation = str(os.getenv("PLUGIN_STRICT_VALIDATION", "false")).lower() == "true"
+        self.storage_root = os.getenv("PLUGIN_STORAGE_ROOT")
+        if not self.storage_root:
+            self.storage_root = str((Path(__file__).parent / "config").resolve())
+        os.makedirs(self.storage_root, exist_ok=True)
+
         current_dir = Path(__file__).parent
         self.plugins_directory = current_dir / plugins_directory
 
-        # Всегда вызываем load_plugins при инициализации
         self.load_plugins()
 
     def set_openai(self, openai):
         """Устанавливает ссылку на openai и обновляет все существующие инстансы плагинов"""
         self.openai = openai
-        # Обновляем openai во всех существующих инстансах
+        self.bot = getattr(openai, "bot", None)
         for instance in self.plugin_instances.values():
-            instance.openai = openai
-            instance.bot = openai.bot
+            instance.initialize(openai=openai, bot=self.bot, storage_root=self.storage_root)
 
     def load_plugins(self):
         """Загружает все плагины из указанной директории."""
@@ -60,13 +47,16 @@ class PluginManager:
         plugins_path = Path(self.plugins_directory)
         excluded_files = {'__init__.py', 'plugin.py'}
 
-        for plugin_file in plugins_path.glob("*.py"):
+        for plugin_file in sorted(plugins_path.glob("*.py")):
             if plugin_file.name not in excluded_files:
                 plugin_name = plugin_file.stem
-                if plugin_name in self.enabled_plugins:
-                    plugin_module = self.load_plugin_module(plugin_name)
-                    if plugin_module:
-                        self.register_plugin(plugin_name, plugin_module)
+                if self.enabled_plugins and plugin_name not in self.enabled_plugins:
+                    continue
+                plugin_module = self.load_plugin_module(plugin_name)
+                if plugin_module:
+                    self.register_plugin(plugin_name, plugin_module)
+
+        self._validate_enabled_plugins()
 
     def load_plugin_module(self, plugin_name):
         """Загружает модуль плагина по имени."""
@@ -151,16 +141,21 @@ class PluginManager:
                 if not plugin_instance:
                     continue
 
-                specs = plugin_instance.get_spec()
+                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
                 for spec in specs:
                     if spec and spec.get('name') not in seen_functions:
                         seen_functions.add(spec.get('name'))
                         all_specs.append(spec)
+                    elif spec:
+                        msg = f"Duplicate function name detected: {spec.get('name')} in {plugin_name}"
+                        if self.strict_validation:
+                            raise ValueError(msg)
+                        logger.warning(msg)
             except Exception as e:
                 logger.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
 
-        if model_to_use in (GOOGLE):
+        if model_to_use in GOOGLE_MODELS:
             return {"function_declarations": all_specs}
         return [{"type": "function", "function": spec} for spec in all_specs]
 
@@ -176,8 +171,15 @@ class PluginManager:
             logger.debug(f"Пытаемся разобрать аргументы функции {function_name}: {arguments}")
             parsed_args = json.loads(arguments)
 
+            spec = self.get_spec_by_function_name(function_name)
+            if spec:
+                errors = validate_function_args(spec, parsed_args)
+                if errors:
+                    return json.dumps({'error': f'Invalid args for {function_name}: {errors}'}, ensure_ascii=False)
+
             logger.debug(f"Вызываем функцию {function_name} с аргументами: {parsed_args}")
-            result = await plugin.execute(function_name, helper, **parsed_args)
+            base_name = function_name.split(".", 1)[-1]
+            result = await plugin.execute(base_name, helper, **parsed_args)
 
             logger.debug(f"Результат выполнения функции {function_name}: {result}")
             return json.dumps(result, default=str, ensure_ascii=False)
@@ -200,16 +202,35 @@ class PluginManager:
             return ''
         return plugin.get_source_name()
 
+    def get_spec_by_function_name(self, function_name):
+        plugin = self.__get_plugin_by_function_name(function_name)
+        if not plugin:
+            return None
+        specs = self._normalize_specs(plugin.get_spec(), plugin)
+        for spec in specs:
+            if spec.get("name") == function_name:
+                return spec
+        return None
+
     def __get_plugin_by_function_name(self, function_name):
         """
         Находит плагин по имени функции
         """
+        if "." in function_name:
+            prefix = function_name.split(".", 1)[0]
+            for plugin_name in self.plugins.keys():
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                if plugin_instance.get_function_prefix() == prefix:
+                    return plugin_instance
+
         for plugin_name, plugin_class in self.plugins.items():
             plugin_instance = self.get_plugin(plugin_name)
             if not plugin_instance:
                 continue
 
-            specs = plugin_instance.get_spec()
+            specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
             if any(spec.get('name') == function_name for spec in specs):
                 return plugin_instance
 
@@ -225,22 +246,70 @@ class PluginManager:
         # Проверяем кеш инстансов
         if plugin_name in self.plugin_instances:
             instance = self.plugin_instances[plugin_name]
-            # Убеждаемся, что у инстанса есть openai
             if not hasattr(instance, 'openai') or not instance.openai:
-                instance.openai = self.openai
-                instance.bot = self.openai.bot
+                instance.initialize(openai=self.openai, bot=self.bot, storage_root=self.storage_root)
+            if not getattr(instance, "plugin_id", None):
+                instance.plugin_id = plugin_name
+            if not getattr(instance, "function_prefix", None):
+                instance.function_prefix = instance.plugin_id
             return instance
 
         # Если инстанса нет в кеше, создаем новый
         plugin_class = self.plugins.get(plugin_name)
         if plugin_class:
             instance = plugin_class()
-            if self.openai:
-                instance.openai = self.openai
-                instance.bot = self.openai.bot
+            if not getattr(instance, "plugin_id", None):
+                instance.plugin_id = plugin_name
+            if not getattr(instance, "function_prefix", None):
+                instance.function_prefix = instance.plugin_id
+            if self.openai or self.storage_root:
+                instance.initialize(openai=self.openai, bot=self.bot, storage_root=self.storage_root)
             self.plugin_instances[plugin_name] = instance
             return instance
         return None
+
+    def close_all(self):
+        for instance in self.plugin_instances.values():
+            try:
+                instance.close()
+            except Exception as exc:
+                logger.warning(f"Error closing plugin {instance}: {exc}")
+
+    def _normalize_specs(self, specs: List[Dict], plugin_instance: Plugin) -> List[Dict]:
+        normalized = []
+        prefix = plugin_instance.get_function_prefix()
+        for spec in specs:
+            if not spec or "name" not in spec:
+                continue
+            name = spec["name"]
+            if "." not in name:
+                spec = dict(spec)
+                spec["name"] = f"{prefix}.{name}"
+            normalized.append(spec)
+        return normalized
+
+    def _validate_enabled_plugins(self):
+        if not self.enabled_plugins:
+            return
+        missing = [p for p in self.enabled_plugins if p and p not in self.plugins]
+        if missing:
+            msg = f"Enabled plugins not found: {missing}"
+            if self.strict_validation:
+                raise ValueError(msg)
+            logger.error(msg)
+
+    def filter_allowed_plugins(self, allowed_plugins: List[str] | None) -> List[str]:
+        if not allowed_plugins or allowed_plugins == ['None']:
+            return []
+        if allowed_plugins == ['All']:
+            return ['All']
+        missing = [p for p in allowed_plugins if p not in self.plugins]
+        if missing:
+            msg = f"Allowed plugins not found: {missing}"
+            if self.strict_validation:
+                raise ValueError(msg)
+            logger.error(msg)
+        return [p for p in allowed_plugins if p in self.plugins]
 
     def get_all_plugin_descriptions(self) -> list[str]:
         """Get all plugin descriptions from their get_spec methods."""
@@ -255,7 +324,7 @@ class PluginManager:
                     continue
 
                 # Get specs from the plugin
-                specs = plugin_instance.get_spec()
+                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
 
                 # Extract descriptions from each spec
                 for spec in specs:
@@ -281,7 +350,7 @@ class PluginManager:
             plugin_instance = self.get_plugin(plugin_name)
             if not plugin_instance:
                 return None
-            return plugin_instance.get_spec()
+            return self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
         except:
             return None
 
@@ -290,22 +359,84 @@ class PluginManager:
         return plugin_name in self.plugins
 
     def get_plugin_commands(self) -> List[Dict]:
-        """Возвращает список всех команд от всех плагинов"""
+        """Возвращает список всех команд от всех плагинов с базовой валидацией."""
         commands = []
+        seen_commands = set()
         for plugin_name in self.plugins.keys():
             try:
                 plugin_instance = self.get_plugin(plugin_name)
                 if not plugin_instance:
                     continue
 
-                plugin_commands = plugin_instance.get_commands()
-                # Добавляем имя плагина в каждую команду
+                plugin_commands = plugin_instance.get_commands() or []
                 for cmd in plugin_commands:
-                    cmd['plugin_name'] = plugin_name
-                commands.extend(plugin_commands)
+                    normalized = self._validate_and_normalize_command(cmd, plugin_name)
+                    if not normalized:
+                        continue
+                    if normalized.get("command"):
+                        if normalized["command"] in seen_commands:
+                            logger.error(
+                                f"Duplicate plugin command '{normalized['command']}' from {plugin_name}"
+                            )
+                            continue
+                        seen_commands.add(normalized["command"])
+                    commands.append(normalized)
             except Exception as e:
                 logger.error(f"Ошибка при получении команд плагина {plugin_name}: {e}")
         return commands
+
+    def build_bot_commands(self) -> Dict[str, List[Dict]]:
+        """
+        Build plugin command registrations and menu entries.
+        Returns:
+          - plugin_commands: validated command dicts (for handlers)
+          - menu_entries: list of dicts with command/description for menus
+        """
+        plugin_commands = self.get_plugin_commands()
+        menu_entries = []
+        for cmd in plugin_commands:
+            if cmd.get("add_to_menu") and cmd.get("command") and cmd.get("description"):
+                menu_entries.append({
+                    "command": cmd["command"],
+                    "description": cmd["description"],
+                })
+        return {"plugin_commands": plugin_commands, "menu_entries": menu_entries}
+
+    def _validate_and_normalize_command(self, cmd: Dict, plugin_name: str) -> Dict | None:
+        if not isinstance(cmd, dict):
+            logger.error(f"Invalid command definition from {plugin_name}: not a dict")
+            return None
+
+        if cmd.get("callback_query_handler") and cmd.get("callback_pattern"):
+            cmd = dict(cmd)
+            cmd["plugin_name"] = plugin_name
+            cmd.setdefault("handler_kwargs", {})
+            return cmd
+
+        command = cmd.get("command")
+        description = cmd.get("description")
+        handler = cmd.get("handler")
+        if not command or not description or not handler:
+            logger.error(f"Invalid command definition from {plugin_name}: {cmd}")
+            return None
+
+        if isinstance(command, str) and command.startswith("/"):
+            command = command[1:]
+
+        if not isinstance(command, str) or " " in command:
+            logger.error(f"Invalid command name from {plugin_name}: {command}")
+            return None
+
+        if not callable(handler):
+            logger.error(f"Invalid handler for command '{command}' from {plugin_name}")
+            return None
+
+        normalized = dict(cmd)
+        normalized["command"] = command
+        normalized.setdefault("handler_kwargs", {})
+        normalized.setdefault("add_to_menu", False)
+        normalized["plugin_name"] = plugin_name
+        return normalized
 
     def get_message_handlers(self) -> List[Dict]:
         """Возвращает список обработчиков сообщений от всех плагинов."""
@@ -313,6 +444,9 @@ class PluginManager:
         for plugin_name in self.plugins.keys():
             plugin_instance = self.get_plugin(plugin_name)
             if plugin_instance:
-                handlers.extend(plugin_instance.get_message_handlers())
+                plugin_handlers = plugin_instance.get_message_handlers()
+                for handler in plugin_handlers:
+                    if 'plugin_name' not in handler:
+                        handler['plugin_name'] = plugin_name
+                handlers.extend(plugin_handlers)
         return handlers
-

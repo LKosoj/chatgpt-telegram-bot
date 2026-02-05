@@ -29,6 +29,16 @@ class AskYourPDFPlugin(Plugin):
         # Инициализация метаданных кэша
         self._init_cache_metadata()
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.temp_dir = os.path.join(storage_root, 'temp_pdfs')
+            self.cache_dir = os.path.join(storage_root, 'pdf_cache')
+            self.cache_metadata_path = os.path.join(self.cache_dir, 'cache_metadata.json')
+            os.makedirs(self.temp_dir, exist_ok=True)
+            os.makedirs(self.cache_dir, exist_ok=True)
+            self._init_cache_metadata()
+
     def get_source_name(self) -> str:
         return "AskYourPDF"
 

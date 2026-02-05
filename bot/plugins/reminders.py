@@ -158,6 +158,12 @@ class RemindersPlugin(Plugin):
             parse_mode='Markdown'
         )
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.reminders_file = os.path.join(storage_root, "reminders.json")
+            self.load_reminders()
+
     def load_reminders(self) -> None:
         """Загружает напоминания из файла хранения"""
         try:

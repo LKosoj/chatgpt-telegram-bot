@@ -60,6 +60,18 @@ class TextDocumentQAPlugin(Plugin):
         self.processing_tasks = {}
         self.config = {'enable_quoting': False}
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.docs_dir = os.path.join(storage_root, 'text_documents')
+            self.index_dir = os.path.join(storage_root, 'vector_indices')
+            self.metadata_dir = os.path.join(storage_root, 'document_metadata')
+            os.makedirs(self.docs_dir, exist_ok=True)
+            os.makedirs(self.index_dir, exist_ok=True)
+            os.makedirs(self.metadata_dir, exist_ok=True)
+            self.document_indices = {}
+            self._load_existing_indices()
+
     def get_source_name(self) -> str:
         return "TextDocumentQA"
 

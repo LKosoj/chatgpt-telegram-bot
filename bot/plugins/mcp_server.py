@@ -33,6 +33,13 @@ class MCPServerPlugin(Plugin):
         self.allowed_users = self._get_allowed_users()
         self.sessions = {}  # Словарь для хранения активных сессий
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            os.makedirs(storage_root, exist_ok=True)
+            self.config_path = Path(storage_root) / "mcp_servers.json"
+            self.load_servers_config()
+
     def _get_config_path(self) -> Path:
         """Получает путь к файлу конфигурации MCP серверов"""
         # Используем директорию бота для хранения конфигурации

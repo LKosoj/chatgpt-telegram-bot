@@ -155,6 +155,11 @@ Check out the [official API reference](https://platform.openai.com/docs/api-refe
 | `FUNCTIONS_MAX_CONSECUTIVE_CALLS` | Maximum number of back-to-back function calls to be made by the model in a single response, before displaying a user-facing message              | `10`                                |
 | `PLUGINS`                         | List of plugins to enable (see below for a full list), e.g: `PLUGINS=wolfram,weather`                                                            | -                                   |
 | `SHOW_PLUGINS_USED`               | Whether to show which plugins were used for a response                                                                                           | `false`                             |
+| `PLUGIN_STORAGE_ROOT`             | Root directory for plugin persistent data (defaults to `bot/config`)                                                                              | -                                   |
+| `PLUGIN_STRICT_VALIDATION`        | Fail fast on missing/invalid plugins or function name collisions                                                                                 | `false`                             |
+
+Notes:
+- Plugin function names are now namespaced as `<plugin_id>.<function>`, e.g. `deepl.translate` or `ddg_translate.translate`.
 
 #### Available plugins
 | Name                      | Description                                                                                                                                         | Required environment variable(s)                                     | Dependency          |
@@ -169,7 +174,7 @@ Check out the [official API reference](https://platform.openai.com/docs/api-refe
 | `worldtimeapi`            | Get latest world time (powered by [WorldTimeAPI](https://worldtimeapi.org/)) - by [@noriellecruz](https://github.com/noriellecruz)                  | `WORLDTIME_DEFAULT_TIMEZONE`                                         |                     |
 | `dice`                    | Send a dice in the chat!                                                                                                                            | -                                                                    |                     |
 | `youtube_audio_extractor` | Extract audio from YouTube videos                                                                                                                   | -                                                                    | `pytube`            |
-| `deepl_translate`         | Translate text to any language (powered by [DeepL](https://deepl.com)) - by [@LedyBacer](https://github.com/LedyBacer)                              | `DEEPL_API_KEY`                                                      |                     |
+| `deepl`                   | Translate text to any language (powered by [DeepL](https://deepl.com)) - by [@LedyBacer](https://github.com/LedyBacer)                              | `DEEPL_API_KEY`                                                      |                     |
 | `gtts_text_to_speech`     | Text to speech (powered by Google Translate APIs)                                                                                                   | -                                                                    | `gtts`              |
 | `whois`                   | Query the whois domain database - by [@jnaskali](https://github.com/jnaskali)                                                                       | -                                                                    | `whois`             |
 | `webshot`                 | Screenshot a website from a given url or domain name - by [@noriellecruz](https://github.com/noriellecruz)                                          | -                                                                    |                     |

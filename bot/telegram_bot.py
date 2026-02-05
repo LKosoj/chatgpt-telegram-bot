@@ -72,6 +72,7 @@ class ChatGPTTelegramBot:
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
+            BotCommand(command='plugins', description='Меню плагинов'),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -93,6 +94,8 @@ class ChatGPTTelegramBot:
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
         self.application = None
         # Убираем повторную инициализацию Database
+        self.plugin_command_index = {}
+        self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
 
     def get_chat_modes(self):
         """
@@ -1642,7 +1645,7 @@ class ChatGPTTelegramBot:
                     response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id, user_id=user_id)
 
                     if is_direct_result(response):
-                        analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
+                        analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
                         if analytics_plugin:
                             message_data = {
                                 'text': prompt,
@@ -1690,7 +1693,7 @@ class ChatGPTTelegramBot:
                 request_id = f"{chat_id}_{message_id}"
                 self.openai.message_ids.pop(request_id, None)
 
-            analytics_plugin = self.openai.plugin_manager.get_plugin('ConversationAnalytics')
+            analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
             if analytics_plugin:
                 message_data = {
                     'text': prompt,
@@ -1966,7 +1969,10 @@ class ChatGPTTelegramBot:
         )
 
         # Регистрируем команды от плагинов
-        plugin_commands = self.openai.plugin_manager.get_plugin_commands()
+        build = self.openai.plugin_manager.build_bot_commands()
+        plugin_commands = build["plugin_commands"]
+        # Команды плагинов теперь доступны через /plugins меню
+        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(plugin_commands)}
         for cmd in plugin_commands:
             # Регистрируем обработчик callback_query если он есть
             if 'callback_query_handler' in cmd and 'callback_pattern' in cmd:
@@ -1984,12 +1990,6 @@ class ChatGPTTelegramBot:
                 filters=filters.COMMAND
             )
             application.add_handler(handler)
-            # Добавляем команду в список команд бота только если add_to_menu=True
-            if cmd.get('add_to_menu', False):
-                self.commands.append(BotCommand(
-                    command=cmd['command'],
-                    description=cmd['description']
-                ))
 
         # Регистрируем обработчики сообщений от плагинов
         for handler_config in self.openai.plugin_manager.get_message_handlers():
@@ -2004,8 +2004,15 @@ class ChatGPTTelegramBot:
                     continue
             elif 'filters' in handler_config:
                 # Если указаны фильтры, создаем MessageHandler
+                filter_obj = handler_config['filters']
+                if isinstance(filter_obj, str):
+                    key = filter_obj.replace("filters.", "").strip()
+                    filter_obj = getattr(filters, key, None)
+                if filter_obj is None:
+                    logger.error(f"Invalid filter in plugin handler config: {handler_config.get('filters')}")
+                    continue
                 handler = MessageHandler(
-                    eval(handler_config['filters']),  # Преобразуем строку фильтра в объект
+                    filter_obj,
                     lambda update, context, h=handler_config: self.handle_plugin_command(
                         update, context, {"handler": h['handler'], **h['handler_kwargs']}
                     )
@@ -2014,11 +2021,8 @@ class ChatGPTTelegramBot:
         
         # Обновляем команды бота
         await application.bot.set_my_commands(self.commands)
-        # Добавляем в групповые команды только те плагины, у которых add_to_menu=True
         await application.bot.set_my_commands(
-            self.group_commands + [BotCommand(cmd['command'], cmd['description']) 
-                                 for cmd in plugin_commands 
-                                 if 'command' in cmd and cmd.get('add_to_menu', False)],
+            self.group_commands,
             scope=BotCommandScopeAllGroupChats()
         )
 
@@ -2027,6 +2031,8 @@ class ChatGPTTelegramBot:
         application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
         application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query))
+        application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
+        application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
 
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
@@ -2055,12 +2061,12 @@ class ChatGPTTelegramBot:
                 result = await handler(update, context)
                 if result:  # Если обработчик что-то вернул
                     if isinstance(result, dict) and "text" in result and "parse_mode" in result:
-                        await update.message.reply_text(
+                        await update.effective_message.reply_text(
                             text=result["text"],
                             parse_mode=result["parse_mode"]
                         )
                     else:
-                        await update.message.reply_text(str(result))
+                        await update.effective_message.reply_text(str(result))
                 return
 
             # Для обработчиков функций плагина
@@ -2069,7 +2075,7 @@ class ChatGPTTelegramBot:
             
             # Если команда требует аргументы, но они не предоставлены
             if cmd.get('args') and not args:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     f"Использование: /{cmd['command']} {cmd.get('args', '')}\n"
                     f"Описание: {cmd['description']}"
                 )
@@ -2091,18 +2097,105 @@ class ChatGPTTelegramBot:
             if is_direct_result(result):
                 await handle_direct_result(self.config, update, result)
             elif isinstance(result, dict) and 'error' in result:
-                await update.message.reply_text(f"Ошибка: {result['error']}")
+                await update.effective_message.reply_text(f"Ошибка: {result['error']}")
             elif isinstance(result, dict) and "text" in result and "parse_mode" in result:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     text=result["text"],
                     parse_mode=result["parse_mode"]
                 )
             elif result:
-                await update.message.reply_text(str(result))
+                await update.effective_message.reply_text(str(result))
 
         except Exception as e:
             logger.error(f"Ошибка при обработке команды плагина: {e}")
-            await update.message.reply_text(f"Произошла ошибка при выполнении команды: {str(e)}")
+            await update.effective_message.reply_text(f"Произошла ошибка при выполнении команды: {str(e)}")
+
+    async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает меню плагинов с командами."""
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        plugin_commands = self.openai.plugin_manager.build_bot_commands()["plugin_commands"]
+        self.plugin_command_index = {str(i): cmd for i, cmd in enumerate(plugin_commands)}
+        if not self.plugin_command_index:
+            await update.message.reply_text("Нет доступных плагинов.")
+            return
+
+        reply_markup = self._build_plugins_menu(page=0)
+        await update.message.reply_text("Меню плагинов:", reply_markup=reply_markup)
+
+    async def handle_plugin_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик выбора команды из меню плагинов."""
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data.split(":")
+        if len(data) < 2:
+            return
+        action = data[1]
+        if action == "page" and len(data) == 3:
+            try:
+                page = int(data[2])
+            except ValueError:
+                return
+            reply_markup = self._build_plugins_menu(page=page)
+            await query.edit_message_text("Меню плагинов:", reply_markup=reply_markup)
+            return
+
+        if action != "cmd" or len(data) != 3:
+            return
+        cmd_id = data[2]
+        cmd = self.plugin_command_index.get(cmd_id)
+        if not cmd:
+            await query.edit_message_text("Команда больше недоступна.")
+            return
+
+        if cmd.get("args"):
+            back_page = self._get_page_for_command_id(cmd_id)
+            keyboard = [[InlineKeyboardButton("Назад", callback_data=f"pluginmenu:page:{back_page}")]]
+            await query.edit_message_text(
+                f"Использование: /{cmd['command']} {cmd.get('args', '')}\n"
+                f"Описание: {cmd.get('description', '')}",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        try:
+            await self.handle_plugin_command(update, context, cmd)
+        except Exception as e:
+            logger.error(f"Ошибка при выполнении команды из меню: {e}")
+            await query.edit_message_text(f"Произошла ошибка: {str(e)}")
+
+    def _build_plugins_menu(self, page: int = 0) -> InlineKeyboardMarkup:
+        items = list(self.plugin_command_index.items())
+        page_size = max(1, self.plugin_menu_page_size)
+        total_pages = (len(items) + page_size - 1) // page_size
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = start + page_size
+
+        keyboard = []
+        for idx, cmd in items[start:end]:
+            title = f"/{cmd['command']} — {cmd.get('description', '')}"
+            keyboard.append([InlineKeyboardButton(title, callback_data=f"pluginmenu:cmd:{idx}")])
+
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"pluginmenu:page:{page-1}"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"pluginmenu:page:{page+1}"))
+        if nav_row:
+            keyboard.append(nav_row)
+        return InlineKeyboardMarkup(keyboard)
+
+    def _get_page_for_command_id(self, cmd_id: str) -> int:
+        try:
+            idx = int(cmd_id)
+        except ValueError:
+            return 0
+        page_size = max(1, self.plugin_menu_page_size)
+        return idx // page_size
 
     async def cleanup(self):
         """
@@ -2153,6 +2246,8 @@ class ChatGPTTelegramBot:
             # Close any open resources
             if hasattr(self, 'openai'):
                 await self.openai.close()
+            if hasattr(self.openai, 'plugin_manager'):
+                self.openai.plugin_manager.close_all()
 
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")

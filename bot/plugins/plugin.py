@@ -7,6 +7,27 @@ class Plugin(ABC):
     A plugin interface which can be used to create plugins for the ChatGPT API.
     """
 
+    plugin_id: str | None = None
+    function_prefix: str | None = None
+
+    def get_plugin_id(self) -> str:
+        """Return stable plugin id (defaults to class name if not set)."""
+        return self.plugin_id or self.__class__.__name__
+
+    def get_function_prefix(self) -> str:
+        """Return function namespace prefix (defaults to plugin_id)."""
+        return self.function_prefix or self.get_plugin_id()
+
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        """Optional lifecycle hook for plugin initialization."""
+        self.openai = openai
+        self.bot = bot
+        self.storage_root = storage_root
+
+    def close(self) -> None:
+        """Optional lifecycle hook for plugin shutdown."""
+        return None
+
     @abstractmethod
     def get_source_name(self) -> str:
         """

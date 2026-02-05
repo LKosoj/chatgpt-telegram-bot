@@ -240,7 +240,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 "handler_kwargs": {}
             },
             {
-                "filters": "filters.PHOTO",
+                "filters": filters.PHOTO,
                 "handler": self.handle_photo_message,
                 "handler_kwargs": {}
             }

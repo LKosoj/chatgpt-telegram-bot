@@ -14,6 +14,12 @@ class TaskManagementPlugin(Plugin):
         self.tasks_file = os.path.join(os.path.dirname(__file__), "tasks.json")
         self.load_tasks()
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.tasks_file = os.path.join(storage_root, "tasks.json")
+            self.load_tasks()
+
     def get_source_name(self) -> str:
         return "TaskManagement"
 

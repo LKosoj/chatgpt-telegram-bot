@@ -26,6 +26,14 @@ class LanguageLearningPlugin(Plugin):
         os.makedirs(self.exercises_dir, exist_ok=True)
         self.load_progress()
 
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.exercises_dir = os.path.join(storage_root, 'language_data')
+            self.users_progress_file = os.path.join(storage_root, 'language_progress.json')
+            os.makedirs(self.exercises_dir, exist_ok=True)
+            self.load_progress()
+
     def get_source_name(self) -> str:
         return "LanguageLearning"
 

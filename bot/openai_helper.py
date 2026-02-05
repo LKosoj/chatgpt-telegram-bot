@@ -2,6 +2,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime as dt
 
@@ -23,25 +24,28 @@ from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_t
 from .utils import is_direct_result, encode_image, decode_image, escape_markdown
 from .plugin_manager import PluginManager
 from .database import Database
+from .model_constants import (
+    GPT_4_VISION_MODELS,
+    GPT_4O_MODELS,
+    GPT_5_MODELS,
+    O_MODELS,
+    ANTHROPIC,
+    GOOGLE,
+    MISTRALAI,
+    DEEPSEEK,
+    LLAMA,
+    PERPLEXITY,
+    MOONSHOTAI,
+    QWEN,
+    GPT_ALL_MODELS,
+)
+from .chat_modes_registry import ChatModesRegistry
+from .validation import validate_openai_config
+from .openai_tool_handler import handle_function_call
 
 logger = logging.getLogger(__name__)
 
-# Models can be found here: https://platform.openai.com/docs/models/overview
-# Models gpt-3.5-turbo-0613 and  gpt-3.5-turbo-16k-0613 will be deprecated on June 13, 2024
-GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
-GPT_4O_MODELS = ("openai/gpt-4.1-nano","openai/gpt-4.1-mini", "openai/gpt-4.1")
-GPT_5_MODELS = ("openai/gpt-5-mini","openai/gpt-5-chat")
-O_MODELS = ("openai/o1", "openai/o1-preview","openai/o1-mini", "openai/o3-mini","openai/o3-mini-high")
-ANTHROPIC = ("anthropic/claude-3-5-haiku","anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b","google/gemini-pro-1.5-online","google/gemini-2.5-flash-lite","google/gemini-2.5-flash","google/gemini-2.5-pro")
-MISTRALAI = ("mistralai/mistral-medium-3",)
-DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured","deepseek/deepseek-r1-alt",)
-LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
-PERPLEXITY = ("perplexity/sonar-online",)
-MOONSHOTAI = ("moonshotai/kimi-k2",)
-QWEN = ("qwen/qwen3-235b-a22b-07-25", "qwen/qwen3-next-80b-a3b")
-GPT_ALL_MODELS = GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS\
-    + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS
+ 
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -142,6 +146,7 @@ class OpenAIHelper:
             openai.api_base = config['openai_base']
         self.api_key = config['api_key']
         self.client = openai.AsyncOpenAI(api_key=config['api_key'], http_client=http_client, timeout=300.0, max_retries=3)
+        validate_openai_config(config)
         self.config = config
         self.plugin_manager = plugin_manager
         self.db = db
@@ -153,6 +158,9 @@ class OpenAIHelper:
         self.message_ids: Dict[int, List] = {}
         self.last_image_file_ids = {}
         self.bot = None
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.chat_modes_registry = ChatModesRegistry(os.path.join(current_dir, 'chat_modes.yml'))
+        self.chat_modes_registry.validate_tools(self.plugin_manager)
 
         # Set default values for optional configuration
         self.config.setdefault('temperature', 0.7)
@@ -437,17 +445,12 @@ class OpenAIHelper:
                     )
                 logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
                 
-                # Загружаем режимы из файла
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-                with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                    chat_modes = yaml.safe_load(file)
-                
                 # Ищем режим по имени
                 mode_key = mode_name.strip().lower()
-                if mode_key in chat_modes:
+                mode_data = self.chat_modes_registry.get_mode_by_key(mode_key)
+                if mode_data:
                     # Обновляем системное сообщение
-                    new_system_prompt = chat_modes[mode_key].get('prompt_start', '')
+                    new_system_prompt = mode_data.get('prompt_start', '')
                     if new_system_prompt:
                         # Проверяем, что история не пуста
                         if not self.conversations[chat_id]:
@@ -562,25 +565,15 @@ class OpenAIHelper:
                                 None
                             )
                     
-                    # Загружаем режимы из файла
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-                    
-                    with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                        chat_modes = yaml.safe_load(file)
-                    
-                    # Ищем текущий режим по системному сообщению
                     current_mode = None
-                    if system_message:  # Проверяем, что system_message не None
-                        for mode_key, mode_data in chat_modes.items():
-                            if mode_data.get('prompt_start', '').strip() == system_message.get('content', '').strip():
-                                current_mode = mode_data
-                                break
+                    if system_message:
+                        current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get('content', ''))
                     
                     # Получаем список разрешенных плагинов из режима
                     if current_mode and 'tools' in current_mode:
                         allowed_plugins = current_mode['tools']
                 
+                allowed_plugins = self.plugin_manager.filter_allowed_plugins(allowed_plugins)
                 # Получаем спецификации функций с учетом разрешенных плагинов
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
@@ -620,109 +613,13 @@ class OpenAIHelper:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All'], user_id=None):
-        tool_name = ''
-        arguments = ''
-        try:
-            if stream:
-                try:
-                    async for item in response:
-                        if not item.choices:
-                            continue
-                        if len(item.choices) > 0:
-                            first_choice = item.choices[0]
-                            if first_choice.delta and first_choice.delta.tool_calls:
-                                #Additional logging
-                                logger.info("found tool calls")
+        return await handle_function_call(self, chat_id, response, stream, times, tools_used, allowed_plugins, user_id)
 
-                                if first_choice.delta.tool_calls[0].function.name:
-                                    tool_name += first_choice.delta.tool_calls[0].function.name
-                                if first_choice.delta.tool_calls[0].function.arguments:
-                                    arguments += first_choice.delta.tool_calls[0].function.arguments
-                            elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':
-                                break
-                            else:
-                                return response, tools_used
-                        else:
-                            return response, tools_used
-                except openai.APIError as e:
-                    logger.error(f"API Error in function call streaming: {e}")
-                    return response, tools_used
-            else:
-                if len(response.choices) > 0:
-                    first_choice = response.choices[0]
-                    #Additional logging
-                    logger.info("found tool calls")
-                    logger.info(f"first_choice = {first_choice}")
-                    if first_choice.message.tool_calls:
-                        if first_choice.message.tool_calls[0].function.name:
-                            tool_name += first_choice.message.tool_calls[0].function.name
-                        if first_choice.message.tool_calls[0].function.arguments:
-                            arguments += first_choice.message.tool_calls[0].function.arguments
-                    else:
-                        return response, tools_used
-                else:
-                    return response, tools_used
-            logger.info(f'Calling tool {tool_name} with arguments {arguments}')
-            
-            # Добавляем chat_id в аргументы
-            try:
-                args = json.loads(arguments)
-                args['chat_id'] = chat_id
-                
-                # Используем переданный user_id или chat_id как fallback для личных сообщений
-                if user_id is not None:
-                    args['user_id'] = user_id
-                else:
-                    # Если не передан user_id, используем chat_id как fallback для личных сообщений
-                    args['user_id'] = chat_id
-                
-                arguments = json.dumps(args, ensure_ascii=False)
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse arguments JSON: {arguments}")
-                return response, tools_used
-            
-            self.user_id = user_id
-            model_to_use = self.get_current_model(user_id)
+    def _add_function_call_to_history(self, chat_id: int, function_name: str, content: str) -> None:
+        self.__add_function_call_to_history(chat_id=chat_id, function_name=function_name, content=content)
 
-            tool_response = await self.plugin_manager.call_function(tool_name, self, arguments)
-            logger.info(f'Function {tool_name} response: {tool_response}')
-
-            if tool_name not in tools_used:
-                tools_used += (tool_name,)
-
-            if is_direct_result(tool_response):
-                self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name,
-                                                    content=json.dumps({'result': 'Done, the content has been sent'
-                                                                    'to the user.'}))
-                return tool_response, tools_used
-
-            self.__add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
-
-            # Получаем активную сессию для пользователя
-            sessions = self.db.list_user_sessions(user_id, is_active=1)
-            active_session = next((s for s in sessions if s['is_active']), None)
-            session_id = active_session['session_id'] if active_session else None
-            max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
-
-            logger.info(f'Function {tool_name} arguments: {arguments} messages: {self.conversations[chat_id]} session_id: {session_id}')
-
-            tools=self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
-
-            response = await self.client.chat.completions.create(
-                model=model_to_use,
-                messages=self.conversations[chat_id],
-                tools=tools,
-                tool_choice='auto' if times < self.config['functions_max_consecutive_calls'] else 'none',
-                max_tokens=self.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
-                stream=stream,
-                extra_headers={ "X-Title": "tgBot" },
-            )
-            return await self.__handle_function_call(chat_id, response, stream, times + 1, tools_used, allowed_plugins, user_id)
-        except Exception as e:
-            logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
-            bot_language = self.config['bot_language']
-            error_message = escape_markdown(str(e))
-            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
+    def _localized_text(self, key, bot_language):
+        return localized_text(key, bot_language)
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """
@@ -1423,16 +1320,8 @@ class OpenAIHelper:
         
         return int(max_generation_tokens)
 
-    @lru_cache(maxsize=256)
     def get_all_modes(self):
-        # Получаем все режимы из chat_modes.yml
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(current_dir, 'chat_modes.yml')
-        with open(config_path, 'r') as file:
-            modes = yaml.safe_load(file)
-            return [f"name: {mode_key}, welcome_message: {mode_data['welcome_message']}" 
-                   for mode_key, mode_data in modes.items() 
-                   if isinstance(mode_data, dict) and 'welcome_message' in mode_data]
+        return self.chat_modes_registry.get_all_modes_list()
 
     async def close(self):
         """

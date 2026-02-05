@@ -1,6 +1,6 @@
 # Список доступных tools:
 # All, None,
-# ddg_web_search,wolfram,web_research,deepl_translate,ddg_image_search,gtts_text_to_speech,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,codeinterpreter
+# ddg_web_search,wolfram,web_research,deepl,ddg_image_search,gtts_text_to_speech,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,codeinterpreter
 
 assistant:
   name: 👩🏼‍🎓 Ассистент по общим вопросам
@@ -177,7 +177,7 @@ travel_guide:
     - auto_tts
     - youtube_transcript
     - text_document_qa
-    - deepl_translate
+    - deepl
     - reminders
 
 content_creator:
@@ -580,7 +580,7 @@ chief_assistant:
     - ddg_web_search
     - gtts_text_to_speech
     - auto_tts
-    - deepl_translate
+    - deepl
     - reminders
 code_assistant:
   name: 👩🏼‍💻 Code Assistant
@@ -659,7 +659,7 @@ code_assistant:
     - web_research
     - ddg_web_search
     - website_content
-    - github_analyses
+    - github_analysis
     - show_me_diagrams
     - gtts_text_to_speech
     - auto_tts
@@ -742,7 +742,7 @@ sql_assistant:
     - web_research
     - ddg_web_search
     - website_content
-    - github_analyses
+    - github_analysis
     - show_me_diagrams
     - text_document_qa
     - codeinterpreter
@@ -845,7 +845,7 @@ english_tutor:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - deepl_translate
+    - deepl
     - gtts_text_to_speech
     - auto_tts
     - reminders
@@ -1014,7 +1014,7 @@ movie_expert:
     - prompt_perfect
     - gtts_text_to_speech
     - auto_tts
-    - deepl_translate
+    - deepl
     - reminders
 
 code_interpreter:
@@ -1468,7 +1468,7 @@ meta_writer:
     - ddg_web_search
     - website_content
     - prompt_perfect
-    - deepl_translate
+    - deepl
     - gtts_text_to_speech
     - auto_tts
     - show_me_diagrams

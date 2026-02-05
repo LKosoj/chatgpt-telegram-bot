@@ -1,6 +1,7 @@
 #conversation_analytics.py
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
 from collections import defaultdict
@@ -16,6 +17,14 @@ class ConversationAnalyticsPlugin(Plugin):
         os.makedirs(self.analytics_dir, exist_ok=True)
         self.analytics_file = os.path.join(self.analytics_dir, 'conversation_stats.json')
         self.conversation_stats = self.load_stats()
+
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if storage_root:
+            self.analytics_dir = os.path.join(storage_root, 'conversation_analytics')
+            os.makedirs(self.analytics_dir, exist_ok=True)
+            self.analytics_file = os.path.join(self.analytics_dir, 'conversation_stats.json')
+            self.conversation_stats = self.load_stats()
 
     def get_source_name(self) -> str:
         return "ConversationAnalytics"

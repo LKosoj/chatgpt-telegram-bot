@@ -27,7 +27,8 @@ class Database:
                 instance = super(Database, cls).__new__(cls)
                 # Используем путь к текущему файлу для создания базы данных
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                instance.db_path = os.path.join(current_dir, 'user_data.db')
+                instance.db_path = os.getenv("DB_PATH") or os.path.join(current_dir, 'user_data.db')
+                instance._op_lock = threading.RLock()
                 cls._instance = instance
                 instance.init_db()
             return cls._instance
@@ -44,11 +45,21 @@ class Database:
         """
         if not hasattr(self._local, 'connection'):
             with self._connection_lock:
-                self._local.connection = sqlite3.connect(self.db_path)
+                timeout = float(os.getenv("SQLITE_TIMEOUT", "5.0"))
+                self._local.connection = sqlite3.connect(self.db_path, timeout=timeout)
                 self._local.connection.row_factory = sqlite3.Row
+                self._local.connection.execute("PRAGMA foreign_keys = ON")
+                journal_mode = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
+                try:
+                    self._local.connection.execute(f"PRAGMA journal_mode = {journal_mode}")
+                except sqlite3.Error:
+                    self._local.connection.execute("PRAGMA journal_mode = WAL")
+                busy_timeout = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+                self._local.connection.execute(f"PRAGMA busy_timeout = {busy_timeout}")
         
         try:
-            yield self._local.connection
+            with self._op_lock:
+                yield self._local.connection
         except Exception as e:
             self._local.connection.rollback()
             raise
@@ -187,32 +198,21 @@ class Database:
     def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100, session_id: str = None, openai_helper = None) -> None:
         """Сохранение контекста разговора с поддержкой сессий"""
         try:
+            context_json = json.dumps(context, ensure_ascii=False)
+
+            if not session_id:
+                session_id = self.get_active_session_id(user_id)
+            if not session_id:
+                logger.info(f"Создаем новую сессию для пользователя {user_id}")
+                session_id = self.create_session(user_id, openai_helper=openai_helper)
+                if not session_id:
+                    raise ValueError(f"Не удалось создать сессию для пользователя {user_id}")
+
+            # Считаем количество пользовательских сообщений в сессии
+            message_count = len([msg for msg in context.get('messages', []) if msg.get('role') == 'user'])
+
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                context_json = json.dumps(context, ensure_ascii=False)
-                
-                # Проверяем наличие активной сессии
-                cursor.execute('''
-                    SELECT session_id FROM conversation_context 
-                    WHERE user_id = ? AND is_active = 1
-                ''', (user_id,))
-                result = cursor.fetchone()
-                
-                # Если нет активной сессии, создаем новую
-                if not result and not session_id:
-                    logger.info(f"Создаем новую сессию для пользователя {user_id}")
-                    session_id = self.create_session(user_id, openai_helper=openai_helper)
-                    if not session_id:
-                        raise ValueError(f"Не удалось создать сессию для пользователя {user_id}")
-                elif not session_id and result:
-                    session_id = result[0]
-                
-                # Если сессия всё ещё не определена, вызываем исключение
-                if not session_id:
-                    raise ValueError(f"Не удалось определить сессию для пользователя {user_id}")
-                
-                # Считаем количество пользовательских сообщений в сессии
-                message_count = len([msg for msg in context.get('messages', []) if msg.get('role') == 'user'])
 
                 # Обновляем существующую сессию
                 cursor.execute('''
@@ -225,10 +225,6 @@ class Database:
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND session_id = ?
                 ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
-                
-                if cursor.rowcount == 0:
-                    logger.info(f"cursor.rowcount: {cursor.rowcount}")
-
 
                 # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
@@ -236,38 +232,37 @@ class Database:
                     cursor.execute('''
                         INSERT INTO conversation_context 
                         (user_id, session_id, context, parse_mode, temperature, max_tokens_percent, is_active, message_count)
-                        VALUES (?, ?, ?, ?, ?, ?, 1, 1)
-                    ''', (user_id, session_id, context_json, parse_mode, temperature, max_tokens_percent))
+                        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                    ''', (user_id, session_id, context_json, parse_mode, temperature, max_tokens_percent, message_count))
 
-                # Если имя сессии = ... меняем его
                 cursor.execute('''
                     SELECT session_name FROM conversation_context WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
                 result = cursor.fetchone()
+                session_name_current = result[0] if result else None
 
-                if result and result[0] == "...":
-                    # Ищем первое сообщение пользователя
-                    user_message = next(
-                        (msg['content'] for msg in context.get('messages', []) 
-                         if msg.get('role') == 'user'), 
-                        None
-                    )
-                    # Если сообщение найдено, генерируем название
-                    if user_message and openai_helper:
-                        if len(user_message) > 20:
-                            session_name, _ = openai_helper.ask_sync(
-                                f"Создай короткое название (до 20 символов) для чата на основе сообщения: {user_message}\nВыведи только ОДНО название, без кавычек и никаких дополнительных символов.",
-                                user_id,
-                                "Ты специалист по созданию коротких и точных названий для чатов."
-                            )
-                            logger.info(f"!!!!!!!!Название сессии: {session_name}")
-                        else:
-                            session_name = user_message[:20]
-                        session_name = session_name.strip()[:20]
+            if session_name_current == "...":
+                user_message = next(
+                    (msg['content'] for msg in context.get('messages', []) 
+                     if msg.get('role') == 'user'), 
+                    None
+                )
+                if user_message and openai_helper:
+                    if len(user_message) > 20:
+                        session_name, _ = openai_helper.ask_sync(
+                            f"Создай короткое название (до 20 символов) для чата на основе сообщения: {user_message}\nВыведи только ОДНО название, без кавычек и никаких дополнительных символов.",
+                            user_id,
+                            "Ты специалист по созданию коротких и точных названий для чатов."
+                        )
+                        logger.info(f"!!!!!!!!Название сессии: {session_name}")
                     else:
-                        # Если сообщение не найдено, используем стандартное название
-                        session_name = "..."
-                    
+                        session_name = user_message[:20]
+                    session_name = session_name.strip()[:20]
+                else:
+                    session_name = "..."
+
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
                     cursor.execute('''
                         UPDATE conversation_context SET session_name = ? WHERE user_id = ? AND session_id = ?
                     ''', (session_name, user_id, session_id))
@@ -456,7 +451,7 @@ class Database:
             logger.error(f"Ошибка при подсчете сессий пользователя: {e}")
             return 0
 
-    def delete_oldest_session(self, user_id: int) -> bool:
+    def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
         """
         Удаление самых старых сессий пользователя до достижения лимита
         
@@ -466,24 +461,38 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                
-                # Максимальное количество сессий
-                max_sessions=os.getenv('MAX_SESSIONS', 5)
-                
-                # SQL-запрос для удаления старых сессий
+
+                if max_sessions is None:
+                    max_sessions = int(os.getenv('MAX_SESSIONS', 5))
+                else:
+                    max_sessions = int(max_sessions)
+
+                cursor.execute("SELECT COUNT(*) FROM conversation_context WHERE user_id = ?", (user_id,))
+                total = cursor.fetchone()[0]
+                if total < max_sessions:
+                    return True
+
+                to_delete = total - (max_sessions - 1)
+                if to_delete <= 0:
+                    return True
+
                 cursor.execute("""
-                    DELETE FROM conversation_context 
-                    WHERE user_id = ? AND session_id IN (
-                        SELECT session_id 
-                        FROM conversation_context 
-                        WHERE user_id = ? 
-                        ORDER BY created_at ASC 
-                        LIMIT MAX(0, (
-                            (SELECT COUNT(*) FROM conversation_context WHERE user_id = ?) - (? - 1)
-                        ))
-                    )
-                """, (user_id, user_id, user_id, max_sessions))
-                
+                    SELECT session_id 
+                    FROM conversation_context 
+                    WHERE user_id = ? 
+                    ORDER BY created_at ASC 
+                    LIMIT ?
+                """, (user_id, to_delete))
+                session_ids = [row[0] for row in cursor.fetchall()]
+                if not session_ids:
+                    return True
+
+                placeholders = ",".join("?" for _ in session_ids)
+                cursor.execute(
+                    f"DELETE FROM conversation_context WHERE user_id = ? AND session_id IN ({placeholders})",
+                    (user_id, *session_ids)
+                )
+
                 return True
         
         except sqlite3.Error as e:
@@ -536,7 +545,7 @@ class Database:
         """
         try:
             # Удаляем старые сессии
-            self.delete_oldest_session(user_id)
+            self.delete_oldest_session(user_id, max_sessions=max_sessions)
             
             # Получаем данные из активной сессии
             sessions = self.list_user_sessions(user_id, 1)
@@ -790,7 +799,7 @@ class Database:
                          session_id, session_name, is_active, message_count, created_at, updated_at)
                         SELECT 
                             user_id, 
-                            COALESCE(context, '[]'),
+                            COALESCE(context, '{"messages": []}'),
                             COALESCE(parse_mode, 'HTML'),
                             COALESCE(temperature, 0.8),
                             COALESCE(max_tokens_percent, 100),
