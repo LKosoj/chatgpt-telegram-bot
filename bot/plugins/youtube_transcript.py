@@ -132,35 +132,59 @@ class YoutubeTranscriptPlugin(Plugin):
             except CouldNotRetrieveTranscript:
                 return {'error': 'Не удалось получить транскрипт для этого видео'}
             
-            # Попытка получить транскрипт на предпочитаемых языках
-            transcript = None
-            
-            # Сначала пробуем получить вручную созданные субтитры
-            try:
-                # Попробуем русский, затем английский
-                transcript = transcript_list.find_manually_created_transcript(['ru', 'en'])
-            except NoTranscriptFound:
-                # Если не нашли вручную созданные, берем автогенерированные
-                try:
-                    transcript = transcript_list.find_generated_transcript(['ru', 'en'])
-                except NoTranscriptFound:
-                    # Если все еще не нашли, берем любой доступный
-                    try:
-                        transcript = transcript_list.find_transcript(['ru', 'en'])
-                    except NoTranscriptFound:
-                        # Берем первый доступный транскрипт
-                        try:
-                            transcript = next(iter(transcript_list))
-                        except StopIteration:
-                            return {'error': 'Не найдено ни одного доступного транскрипта'}
-            
-            # Получаем данные транскрипта
-            if transcript:
-                # Получаем данные транскрипта
-                fetched_transcript = await self._retry_fetch_transcript(
-                    transcript,
-                    video_id
+            # Формируем кандидатов с приоритетом языков и типа субтитров.
+            transcript_candidates = []
+            seen_candidates = set()
+
+            def add_candidate(candidate) -> None:
+                candidate_key = (
+                    candidate.language_code,
+                    bool(candidate.is_generated)
                 )
+                if candidate_key not in seen_candidates:
+                    seen_candidates.add(candidate_key)
+                    transcript_candidates.append(candidate)
+
+            for finder in (
+                transcript_list.find_manually_created_transcript,
+                transcript_list.find_generated_transcript,
+                transcript_list.find_transcript,
+            ):
+                try:
+                    add_candidate(finder(['ru', 'en']))
+                except NoTranscriptFound:
+                    continue
+
+            # Добавляем все остальные треки как последний fallback.
+            for candidate in transcript_list:
+                add_candidate(candidate)
+
+            if not transcript_candidates:
+                return {'error': 'Не найдено ни одного доступного транскрипта'}
+
+            transcript = None
+            fetched_transcript = None
+            for candidate in transcript_candidates:
+                try:
+                    fetched_transcript = await self._retry_fetch_transcript(
+                        candidate,
+                        video_id
+                    )
+                    transcript = candidate
+                    break
+                except ParseError as error:
+                    logger.warning(
+                        'youtube_transcript candidate failed, trying next: '
+                        'video_id=%s lang=%s generated=%s error=%s',
+                        video_id,
+                        candidate.language_code,
+                        candidate.is_generated,
+                        str(error)
+                    )
+                    continue
+
+            # Получаем данные транскрипта
+            if transcript and fetched_transcript:
                 decoded_transcript = ""
                 
                 # Итерируем по объекту FetchedTranscript
@@ -176,7 +200,12 @@ class YoutubeTranscriptPlugin(Plugin):
                     "model_response": f"{lang_info}\n\nТранскрипт:\n{decoded_transcript.strip()}"
                 }
             else:
-                return {'error': 'Не удалось получить транскрипт'}
+                return {
+                    'error': (
+                        'Не удалось получить читаемый транскрипт ни для одного '
+                        'доступного языка (включая fallback на английский).'
+                    )
+                }
                 
         except TranscriptsDisabled:
             return {'error': 'Субтитры отключены для этого видео'}
