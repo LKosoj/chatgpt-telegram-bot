@@ -1,5 +1,8 @@
+import asyncio
 import json
+import logging
 from typing import Dict
+from xml.etree.ElementTree import ParseError
 
 from youtube_transcript_api import (
     YouTubeTranscriptApi,
@@ -12,6 +15,8 @@ from youtube_transcript_api import (
 )
 
 from .plugin import Plugin
+
+logger = logging.getLogger(__name__)
 
 
 class YoutubeTranscriptPlugin(Plugin):
@@ -40,6 +45,70 @@ class YoutubeTranscriptPlugin(Plugin):
             }
         ]
 
+    async def _retry_list_transcripts(self, api: YouTubeTranscriptApi, video_id: str):
+        """
+        Retry list() to mitigate temporary empty/blocked responses from YouTube.
+        """
+        last_error = None
+        for attempt in range(3):
+            try:
+                result = api.list(video_id)
+                if attempt > 0:
+                    logger.info(
+                        'youtube_transcript list recovered after retry: '
+                        'video_id=%s attempt=%s',
+                        video_id,
+                        attempt + 1
+                    )
+                return result
+            except ParseError as error:
+                last_error = error
+                logger.warning(
+                    'youtube_transcript list parse error: video_id=%s '
+                    'attempt=%s error=%s',
+                    video_id,
+                    attempt + 1,
+                    str(error)
+                )
+                if attempt < 2:
+                    await asyncio.sleep(1.0 + attempt)
+                continue
+        raise last_error if last_error else CouldNotRetrieveTranscript()
+
+    async def _retry_fetch_transcript(self, transcript, video_id: str):
+        """
+        Retry fetch() to mitigate temporary empty transcript XML responses.
+        """
+        last_error = None
+        for attempt in range(3):
+            try:
+                result = transcript.fetch()
+                if attempt > 0:
+                    logger.info(
+                        'youtube_transcript fetch recovered after retry: '
+                        'video_id=%s attempt=%s lang=%s generated=%s',
+                        video_id,
+                        attempt + 1,
+                        transcript.language_code,
+                        transcript.is_generated
+                    )
+                return result
+            except ParseError as error:
+                last_error = error
+                logger.warning(
+                    'youtube_transcript fetch parse error: video_id=%s '
+                    'attempt=%s lang=%s generated=%s error=%s',
+                    video_id,
+                    attempt + 1,
+                    transcript.language_code,
+                    transcript.is_generated,
+                    str(error)
+                )
+                if attempt < 2:
+                    await asyncio.sleep(1.0 + attempt)
+                continue
+        raise last_error if last_error else CouldNotRetrieveTranscript()
+
     async def execute(self, function_name, helper, **kwargs) -> Dict:
         try:
             video_id = kwargs.get('video_id')
@@ -51,7 +120,7 @@ class YoutubeTranscriptPlugin(Plugin):
             
             # Попытка получить список доступных транскриптов
             try:
-                transcript_list = api.list(video_id)
+                transcript_list = await self._retry_list_transcripts(api, video_id)
             except TranscriptsDisabled:
                 return {'error': 'Субтитры отключены для этого видео'}
             except VideoUnavailable:
@@ -88,7 +157,10 @@ class YoutubeTranscriptPlugin(Plugin):
             # Получаем данные транскрипта
             if transcript:
                 # Получаем данные транскрипта
-                fetched_transcript = transcript.fetch()
+                fetched_transcript = await self._retry_fetch_transcript(
+                    transcript,
+                    video_id
+                )
                 decoded_transcript = ""
                 
                 # Итерируем по объекту FetchedTranscript
@@ -116,5 +188,13 @@ class YoutubeTranscriptPlugin(Plugin):
             return {'error': 'IP-адрес заблокирован YouTube. Попробуйте использовать VPN'}
         except CouldNotRetrieveTranscript:
             return {'error': 'Не удалось получить транскрипт для этого видео'}
+        except ParseError:
+            return {
+                'error': (
+                    'YouTube вернул пустой/некорректный ответ для субтитров. '
+                    'Обычно это временный лимит или блокировка IP, '
+                    'попробуйте позже.'
+                )
+            }
         except Exception as e:
             return {'error': f'Произошла неожиданная ошибка: {type(e).__name__}: {str(e)}'}
