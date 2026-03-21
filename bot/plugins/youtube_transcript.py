@@ -156,16 +156,41 @@ class YoutubeTranscriptPlugin(Plugin):
                     continue
 
             # Добавляем все остальные треки как последний fallback.
+            available_tracks = []
             for candidate in transcript_list:
+                available_tracks.append(
+                    f'{candidate.language_code}:{int(candidate.is_generated)}'
+                )
                 add_candidate(candidate)
 
             if not transcript_candidates:
                 return {'error': 'Не найдено ни одного доступного транскрипта'}
 
+            logger.info(
+                'youtube_transcript available tracks: video_id=%s tracks=%s',
+                video_id,
+                ','.join(available_tracks) if available_tracks else 'none'
+            )
+            logger.info(
+                'youtube_transcript candidate queue: video_id=%s queue=%s',
+                video_id,
+                ','.join(
+                    f'{candidate.language_code}:{int(candidate.is_generated)}'
+                    for candidate in transcript_candidates
+                )
+            )
+
             transcript = None
             fetched_transcript = None
             for candidate in transcript_candidates:
                 try:
+                    logger.info(
+                        'youtube_transcript trying candidate: '
+                        'video_id=%s lang=%s generated=%s',
+                        video_id,
+                        candidate.language_code,
+                        candidate.is_generated
+                    )
                     fetched_transcript = await self._retry_fetch_transcript(
                         candidate,
                         video_id
