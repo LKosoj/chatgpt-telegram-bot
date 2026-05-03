@@ -123,3 +123,12 @@ Scope: Validation, caching, strict typing; OpenAIHelper modularization; chat_mod
 - Step 4 completed.
 - Step 5 completed (pytest: 8 passed, 2 skipped).
 - Step 6 completed.
+
+<!-- CODEBASE_MAPPER_GRAPH:START -->
+## Codebase Mapper Graph
+- Use `/.cli-proxy/.codebase_map/INDEX.md` as the entrypoint for project instructions.
+- Load only relevant files under `/.cli-proxy/.codebase_map/nodes/*.md`.
+- If code changes affect an area, update `Last reviewed` in the relevant node.
+- If update fails, run targeted repair (`update-node`/`repair`).
+- Graph root: `/srv/git_projects/chatgpt-telegram-bot/.cli-proxy/.codebase_map`
+<!-- CODEBASE_MAPPER_GRAPH:END -->
