@@ -1,128 +1,144 @@
-# Refactor Plan Log
+# Agent Instructions
 
-Date: 2026-02-05
-Scope: Full plugin system refactor, tests included. Breaking changes allowed.
+These instructions are project-specific. Apply them together with any higher-level agent
+rules from the current session.
 
-## Plan (strict order)
-1. Baseline audit: inventory plugin IDs/functions/commands/handlers, identify collisions and mismatches; document current plugin registry behavior and model/tool formats.
-2. Define new plugin contract and registry rules: explicit plugin_id, function namespace, unique function names, lifecycle hooks, storage locations; update docs.
-3. Refactor PluginManager + plugin interface to enforce IDs, validate config/chat modes, resolve tools format per model, support multiple tool calls; remove singleton; add safe handler registration.
-4. Refactor plugins to conform (rename functions, update specs, update chat_modes.yml), fix ConversationAnalytics usage, fix ddg/deepl translate collision, normalize plugin names in code.
-5. Testing: add unit tests for plugin registry, collisions, chat_modes validation, tool call routing, multi-tool handling; update existing tests; run test suite.
-6. Stabilize and document: update README/SESSIONS if needed, add migration notes for breaking changes.
+## Working Rules
 
-## Status
-- Step 1: completed
-- Step 2: completed
-- Step 3: completed
-- Step 4: completed
-- Step 5: completed
-- Step 6: completed
+- Before non-trivial edits, state assumptions, success criteria, and a short verification plan.
+- Keep changes surgical. Do not refactor adjacent code, reformat unrelated files, or remove
+  unrelated dead code.
+- Prefer the existing project style over new abstractions. Add abstractions only when they
+  remove real duplication or match an established local pattern.
+- Use `rg`/`rg --files` for repository search.
+- Check `git status --short` before editing and do not revert unrelated user changes.
+- Do not make runtime claims from memory. Verify the concrete function or method in code and
+  cite `file:line` when explaining behavior.
+- Do not call external services during verification unless the task explicitly requires it.
 
-## Audit Findings (Step 1)
-- Duplicate function names in plugins: `translate` in `ddg_translate.py` and `deepl.py`.
-- `chat_modes.yml` references missing tools: `deepl_translate`, `github_analyses` (typo), and omits many existing plugins.
-- `ConversationAnalytics` referenced by name in `telegram_bot.py`, but plugin key is `conversation_analytics`.
-- Plugin registry uses a singleton and clears/reloads on init; path defaults differ between `__new__` and `__init__`.
-- Tool format differs for Google models; lists are inconsistent between `plugin_manager.py` and `openai_helper.py`.
-- `post_init` uses `eval` for message handler filters.
+## Project Shape
 
-## Status Updates
-- Step 1 completed.
-- Step 2 in progress.
+- Runtime is a Python Telegram bot. The process entrypoint is `bot/__main__.py`.
+- Required runtime env vars are `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY`; startup exits when
+  either is missing (`bot/__main__.py:22`).
+- Startup creates `PluginManager`, `Database`, `OpenAIHelper`, then `ChatGPTTelegramBot`
+  (`bot/__main__.py:121`).
+- Telegram polling is owned by `ChatGPTTelegramBot.run()` in `bot/telegram_bot.py`; the current
+  builder enables concurrent updates, local Telegram Bot API mode, and
+  `http://localhost:8081/bot` as base URL (`bot/telegram_bot.py:2878`).
+- Main request flow:
+  - Telegram update handling lives mostly in `bot/telegram_bot.py`.
+  - OpenAI-compatible chat/image/audio/vision access is in `bot/openai_helper.py`.
+  - Tool-call extraction and plugin execution are in `bot/openai_tool_handler.py`.
+  - Plugin discovery, tool specs, command metadata, and argument validation are in
+    `bot/plugin_manager.py`.
+  - SQLite persistence is in `bot/database.py`.
+  - Chat mode loading and tool validation are in `bot/chat_modes_registry.py` plus
+    `bot/chat_modes.yml`.
+- `requirements.txt` is the primary dependency list. `environment.yml` is an alternate Conda
+  environment and must not be treated as an exact mirror.
 
-## Contract Summary (Step 2)
-- Plugins have `plugin_id` (default: file name) and `function_prefix` (default: plugin_id).
-- Function specs are namespaced as `<function_prefix>.<name>` unless already namespaced.
-- Plugins can implement `initialize(openai, bot, storage_root)` and `close()`.
-- Storage root defaults to `bot/config` or `PLUGIN_STORAGE_ROOT`.
-- Tool calls are executed in parallel and results aggregated; any `direct_result` short-circuits.
-- Safe handler registration: remove `eval`, allow filter objects or `filters.X` strings only.
+## Codebase Map Workflow
 
-## Status Updates
-- Step 2 completed.
-- Step 3 in progress.
-- Step 3 completed.
-- Step 4 in progress.
-- Step 4 completed.
-- Step 5 completed (pytest: 2 passed, 2 skipped).
-- Step 6 in progress.
-- Step 6 completed.
+Before edits, use the generated map as the entrypoint:
 
-# DB Refactor Plan Log
-Date: 2026-02-05
-Scope: Fix DB layer issues with tests.
+1. Read `.cli-proxy/.codebase_map/INDEX.md`.
+2. Open only the relevant node files under `.cli-proxy/.codebase_map/nodes/*.md`.
+3. Inspect the real source files before changing behavior.
+4. If a change touches a mapped area, update the relevant node metadata, especially
+   `Last reviewed`.
+5. If map repair is needed, run the targeted `update-node`/`repair` workflow documented by
+   the map tooling.
 
-## Plan (strict order)
-1. Audit DB access patterns and concurrency usage in codebase; list critical paths and expected invariants.
-2. Design DB fixes: connection handling, WAL/busy_timeout, foreign_keys, session counting logic, message_count correctness, session creation flow; document decisions.
-3. Implement DB fixes and migrations (if needed) with minimal behavior changes; add safety guards.
-4. Add unit tests for DB invariants: message_count, session creation/deletion limits, concurrency safety (smoke), and migration path.
-5. Run tests and update AGENTS.md with DB refactor status and notes.
+Current map routing covers `bot/**`, `tests/**`, `examples/**`, and selected root config/data
+files. A pure `AGENTS.md` edit has no mapped node unless routing is updated later.
 
-## Status
-- Step 1: in progress
-- Step 2: pending
-- Step 3: pending
-- Step 4: pending
-- Step 5: pending
+## Plugin And Tool Rules
 
-## DB Audit Findings (Step 1)
-- SQLite connection is per-thread but used concurrently by async tasks; no async lock, potential re-entrancy issues.
-- `save_conversation_context` calculates `message_count` but inserts `1` on new rows.
-- `create_session` ignores `max_sessions` argument; `delete_oldest_session` uses env var string.
-- Long-running call to `openai_helper.ask_sync` happens inside DB transaction.
-- Foreign keys not enabled; no WAL/busy_timeout settings.
-- Migration uses `context = '[]'` which mismatches `{messages: []}` expected format.
+- Plugins subclass `bot.plugins.plugin.Plugin` and implement `get_source_name()`,
+  `get_spec()`, and async `execute(function_name, helper, **kwargs)`
+  (`bot/plugins/plugin.py:43`).
+- Stable plugin identity is `plugin_id`; tool namespace is `function_prefix`, defaulting to
+  `plugin_id` (`bot/plugins/plugin.py:11`, `bot/plugins/plugin.py:18`).
+- `PluginManager` loads plugin modules from `bot/plugins/*.py`, excluding `__init__.py` and
+  `plugin.py`, and honors the comma-separated `PLUGINS` allow-list from startup config
+  (`bot/plugin_manager.py:48`, `bot/plugin_manager.py:54`).
+- Function specs must be unique after namespacing. Unqualified spec names are normalized to
+  `<function_prefix>.<name>` (`bot/plugin_manager.py:279`).
+- Duplicate function names are invalid. With `PLUGIN_STRICT_VALIDATION=true`, duplicates raise;
+  otherwise they are logged and skipped (`bot/plugin_manager.py:150`).
+- Tool arguments are JSON-decoded and validated against the function spec before plugin
+  execution (`bot/plugin_manager.py:171`, `bot/validation.py:28`).
+- Tool calls may arrive in batches and are executed with `asyncio.gather`; `chat_id` and
+  `user_id` are injected into arguments before execution (`bot/openai_tool_handler.py:111`,
+  `bot/openai_tool_handler.py:120`).
+- A plugin response marked as a direct result short-circuits model re-entry
+  (`bot/openai_tool_handler.py:130`, `bot/openai_tool_handler.py:144`).
+- Google model tool specs use `{"function_declarations": specs}` while other models receive
+  OpenAI-style `{"type": "function", "function": spec}` entries
+  (`bot/plugin_manager.py:159`).
 
-## DB Status Updates
-- Step 1 completed.
-- Step 2 in progress.
+## Chat Modes
 
-## DB Design Decisions (Step 2)
-- Use `threading.RLock` to serialize DB operations in async contexts.
-- Enable `PRAGMA foreign_keys=ON`, `journal_mode=WAL`, and `busy_timeout` for stability.
-- Fix `message_count` persistence on insert.
-- Respect `max_sessions` parameter and enforce numeric conversion.
-- Move any long-running operations out of DB transaction boundaries.
-- Migration uses `{"messages": []}` context default.
+- Chat modes are defined in `bot/chat_modes.yml` and loaded through `ChatModesRegistry`.
+- `OpenAIHelper` constructs the registry and validates mode tool references during init
+  (`bot/openai_helper.py:137`).
+- Missing tool references in `chat_modes.yml` are logged by `validate_tools()`
+  (`bot/chat_modes_registry.py:62`).
+- During request preparation, the active mode can restrict allowed plugins via its `tools`
+  field; absent mode tooling defaults to `['All']` (`bot/openai_helper.py:520`).
+- When editing chat modes, keep plugin names aligned with loaded plugin module names, not
+  human-readable descriptions.
 
-## DB Status Updates
-- Step 2 completed.
-- Step 3 in progress.
+## Telegram Handler Rules
 
-## DB Status Updates
-- Step 3 completed.
-- Step 4 completed.
-- Step 5 completed (pytest: 6 passed, 2 skipped).
+- Plugin commands are normalized through `PluginManager.get_plugin_commands()` and registered
+  in `post_init()` as command handlers or callback handlers (`bot/plugin_manager.py:395`,
+  `bot/telegram_bot.py:2003`).
+- Plugin command names must not include spaces; a leading `/` is stripped during normalization
+  (`bot/plugin_manager.py:450`).
+- Plugin message handlers can provide a ready handler object or a `filters.X` string/object.
+  Invalid filters are logged and skipped (`bot/telegram_bot.py:2035`,
+  `bot/telegram_bot.py:2911`).
+- Do not reintroduce `eval` for handler filters.
 
-# Code Health Refactor Plan Log
-Date: 2026-02-05
-Scope: Validation, caching, strict typing; OpenAIHelper modularization; chat_modes tool startup errors. Public method names preserved.
+## Database Rules
 
-## Plan (strict order)
-1. Audit OpenAIHelper responsibilities and identify extraction targets (config validation, tool handling, history, chat mode loading/cache).
-2. Design module boundaries and interfaces; keep OpenAIHelper public methods as thin facades.
-3. Implement: add chat_modes cache/validator with strict logging for missing tools; move tool-call logic and history management into helper modules; add typed dataclasses for configs.
-4. Add validation utilities (JSON schema for plugin args, config typing), and update plugin manager to use them; add startup log errors for invalid tools per chat mode.
-5. Add tests for chat_modes validation, tool error logging, and OpenAIHelper facade behavior; run test suite.
-6. Update AGENTS.md with plan/status and any migration notes.
+- `Database` is a singleton with thread-local SQLite connections and an operation `RLock`
+  (`bot/database.py:18`, `bot/database.py:31`).
+- New SQLite connections enable foreign keys, WAL by default, and `busy_timeout`
+  (`bot/database.py:46`).
+- `conversation_context.context` is JSON shaped as `{"messages": [...]}`; do not migrate or
+  seed it as a bare list (`bot/database.py:570`).
+- `save_conversation_context()` persists `message_count` as the number of user-role messages
+  (`bot/database.py:198`, `bot/database.py:211`).
+- Session creation enforces `max_sessions` through `delete_oldest_session()`
+  (`bot/database.py:528`, `bot/database.py:547`).
+- Keep long-running OpenAI calls outside active DB transactions. Existing session-name
+  generation intentionally leaves the DB context before calling `openai_helper.ask_sync`
+  (`bot/database.py:244`).
 
-## Status
-- Step 1: in progress
-- Step 2: pending
-- Step 3: pending
-- Step 4: pending
-- Step 5: pending
-- Step 6: pending
+## Testing And Verification
 
-# Code Health Refactor Status Updates
-- Step 1 completed.
-- Step 2 completed.
-- Step 3 completed.
-- Step 4 completed.
-- Step 5 completed (pytest: 8 passed, 2 skipped).
-- Step 6 completed.
+- Pytest is configured in `pytest.ini` with `asyncio_mode = auto`.
+- Main top-level tests live under `tests/`; MCP-specific tests live under `bot/tests/`.
+- Prefer targeted tests for touched behavior:
+  - plugin registry/specs/commands: `tests/test_plugin_manager.py`,
+    `tests/test_plugin_commands.py`, `tests/test_plugin_arg_validation.py`
+  - tool-call routing: `tests/test_openai_helper_tool_calls.py`
+  - chat mode validation: `tests/test_chat_modes_registry.py`
+  - SQLite sessions/context: `tests/test_database.py`
+  - MCP plugin behavior: `bot/tests/test_mcp_server.py`
+- For narrow documentation-only edits, inspect the rendered Markdown or run no tests and state
+  that no runtime tests were needed.
+
+## Documentation Rules
+
+- Keep `AGENTS.md` as active project instructions, not a refactor diary.
+- Put historical plans, migration notes, or large task logs in a separate dated document when
+  they are needed.
+- If README/runtime docs disagree with code, verify the code first and either update the docs
+  or call out the mismatch.
 
 <!-- CODEBASE_MAPPER_GRAPH:START -->
 ## Codebase Mapper Graph
