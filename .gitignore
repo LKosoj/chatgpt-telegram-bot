@@ -19,3 +19,4 @@ bot/user_data.db
 /.vscode
 # SpecStory explanation file
 .specstory/.what-is-this.md
+.cli-proxy/
