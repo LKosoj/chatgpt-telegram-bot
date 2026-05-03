@@ -3,6 +3,14 @@ import os
 
 from dotenv import load_dotenv
 
+from .model_constants import (
+    LLMGATEWAY_BIG_CONTEXT_MODEL,
+    LLMGATEWAY_HIGH_MODEL,
+    LLMGATEWAY_IMAGE_GENERATION_MODEL,
+    LLMGATEWAY_LIGHT_MODEL,
+    LLMGATEWAY_TRANSCRIPTION_MODEL,
+    LLMGATEWAY_TTS_MODEL,
+)
 from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from .telegram_bot import ChatGPTTelegramBot
@@ -27,12 +35,15 @@ def main():
         exit(1)
 
     # Setup configurations
-    model = os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo')
+    model = os.environ.get('OPENAI_MODEL', LLMGATEWAY_HIGH_MODEL)
     functions_available = are_functions_available(model=model)
     max_tokens_default = default_max_tokens(model=model)
+    api_key = os.environ['OPENAI_API_KEY']
+    hindsight_base_url = os.environ.get('HINDSIGHT_BASE_URL', '')
+    hindsight_api_token = os.environ.get('HINDSIGHT_API_TOKEN', '')
     openai_config = {
         'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
-        'api_key': os.environ['OPENAI_API_KEY'],
+        'api_key': api_key,
         'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
         'stream': os.environ.get('STREAM', 'true').lower() == 'true',
         'proxy': os.environ.get('PROXY', None) or os.environ.get('OPENAI_PROXY', None),
@@ -43,7 +54,7 @@ def main():
         'max_tokens': int(os.environ.get('MAX_TOKENS', max_tokens_default)),
         'n_choices': int(os.environ.get('N_CHOICES', 1)),
         'temperature': float(os.environ.get('TEMPERATURE', 1.0)),
-        'image_model': os.environ.get('IMAGE_MODEL', 'dall-e-2'),
+        'image_model': os.environ.get('IMAGE_MODEL', LLMGATEWAY_IMAGE_GENERATION_MODEL),
         'image_quality': os.environ.get('IMAGE_QUALITY', 'standard'),
         'image_style': os.environ.get('IMAGE_STYLE', 'vivid'),
         'image_size': os.environ.get('IMAGE_SIZE', '512x512'),
@@ -56,16 +67,32 @@ def main():
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
         'show_plugins_used': os.environ.get('SHOW_PLUGINS_USED', 'false').lower() == 'true',
         'whisper_prompt': os.environ.get('WHISPER_PROMPT', ''),
-        'vision_model': os.environ.get('VISION_MODEL', 'gpt-4-vision-preview'),
+        'vision_model': os.environ.get('VISION_MODEL', LLMGATEWAY_BIG_CONTEXT_MODEL),
         'enable_vision_follow_up_questions': os.environ.get('ENABLE_VISION_FOLLOW_UP_QUESTIONS', 'true').lower() == 'true',
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
         'vision_detail': os.environ.get('VISION_DETAIL', 'auto'),
         'vision_max_tokens': int(os.environ.get('VISION_MAX_TOKENS', '300')),
-        'tts_model': os.environ.get('TTS_MODEL', 'tts-1'),
-        'tts_voice': os.environ.get('TTS_VOICE', 'alloy'),
+        'tts_model': os.environ.get('TTS_MODEL', LLMGATEWAY_TTS_MODEL),
+        'tts_voice': os.environ.get('TTS_VOICE', 'Kseniya'),
+        'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
+        'transcription_model': os.environ.get('TRANSCRIPTION_MODEL', LLMGATEWAY_TRANSCRIPTION_MODEL),
         'yandex_api_token': os.environ.get('YANDEX_API_TOKEN', ''),
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
-        'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', ''),
+        'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', LLMGATEWAY_BIG_CONTEXT_MODEL),
+        'light_model': os.environ.get('LIGHT_MODEL', LLMGATEWAY_LIGHT_MODEL),
+        'hindsight_enabled': bool(hindsight_base_url and hindsight_api_token),
+        'hindsight_base_url': hindsight_base_url,
+        'hindsight_api_token': hindsight_api_token,
+        'hindsight_namespace': os.environ.get('HINDSIGHT_NAMESPACE', 'default'),
+        'hindsight_bank_prefix': os.environ.get('HINDSIGHT_BANK_PREFIX', 'telegram-'),
+        'hindsight_auto_recall': os.environ.get('HINDSIGHT_AUTO_RECALL', 'true').lower() == 'true',
+        'hindsight_auto_save': os.environ.get('HINDSIGHT_AUTO_SAVE', 'true').lower() == 'true',
+        'hindsight_recall_budget': os.environ.get('HINDSIGHT_RECALL_BUDGET', 'mid'),
+        'hindsight_recall_max_tokens': int(os.environ.get('HINDSIGHT_RECALL_MAX_TOKENS', '4096')),
+        'hindsight_memory_types': os.environ.get('HINDSIGHT_MEMORY_TYPES', 'world,experience'),
+        'hindsight_async_store': os.environ.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true',
+        'hindsight_timeout': float(os.environ.get('HINDSIGHT_TIMEOUT', '30')),
+        'hindsight_max_auto_save_items': int(os.environ.get('HINDSIGHT_MAX_AUTO_SAVE_ITEMS', '5')),
     }
 
     if openai_config['enable_functions'] and not functions_available:
@@ -81,7 +108,7 @@ def main():
 
     telegram_config = {
         'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
-        'api_key': os.environ['OPENAI_API_KEY'],
+        'api_key': api_key,
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
@@ -104,7 +131,8 @@ def main():
         'image_prices': [float(i) for i in os.environ.get('IMAGE_PRICES', "0.016,0.018,0.02").split(",")],
         'vision_token_price': float(os.environ.get('VISION_TOKEN_PRICE', '0.01')),
         'image_receive_mode': os.environ.get('IMAGE_FORMAT', "photo"),
-        'tts_model': os.environ.get('TTS_MODEL', 'tts-1'),
+        'tts_model': os.environ.get('TTS_MODEL', LLMGATEWAY_TTS_MODEL),
+        'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'tts_prices': [float(i) for i in os.environ.get('TTS_PRICES', "0.015,0.030").split(",")],
         'transcription_price': float(os.environ.get('TRANSCRIPTION_PRICE', 0.006)),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),

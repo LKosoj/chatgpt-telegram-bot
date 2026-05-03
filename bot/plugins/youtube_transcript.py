@@ -1,18 +1,5 @@
-import asyncio
-import json
 import logging
 from typing import Dict
-from xml.etree.ElementTree import ParseError
-
-from youtube_transcript_api import (
-    YouTubeTranscriptApi,
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    VideoUnavailable,
-    CouldNotRetrieveTranscript,
-    RequestBlocked,
-    IpBlocked
-)
 
 from .plugin import Plugin
 
@@ -21,23 +8,23 @@ logger = logging.getLogger(__name__)
 
 class YoutubeTranscriptPlugin(Plugin):
     """
-    A plugin to query text from YouTube video transcripts
+    A plugin to query YouTube transcripts through LLMGateway web_read.
     """
 
     def get_source_name(self) -> str:
-        return 'YouTube Transcript'
+        return 'LLMGateway YouTube Transcript'
 
     def get_spec(self) -> [Dict]:
         return [
             {
                 'name': 'youtube_video_transcript',
-                'description': 'Get the transcript of a YouTube video for a given YouTube address',
+                'description': 'Get the transcript of a YouTube video through LLMGateway web_read',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'video_id': {
                             'type': 'string',
-                            'description': 'YouTube video ID. For example, for the video https://youtu.be/dQw4w9WgXcQ, the video ID is dQw4w9WgXcQ',
+                            'description': 'YouTube video ID or a full YouTube URL',
                         }
                     },
                     'required': ['video_id'],
@@ -45,210 +32,22 @@ class YoutubeTranscriptPlugin(Plugin):
             }
         ]
 
-    async def _retry_list_transcripts(self, api: YouTubeTranscriptApi, video_id: str):
-        """
-        Retry list() to mitigate temporary empty/blocked responses from YouTube.
-        """
-        last_error = None
-        for attempt in range(3):
-            try:
-                result = api.list(video_id)
-                if attempt > 0:
-                    logger.info(
-                        'youtube_transcript list recovered after retry: '
-                        'video_id=%s attempt=%s',
-                        video_id,
-                        attempt + 1
-                    )
-                return result
-            except ParseError as error:
-                last_error = error
-                logger.warning(
-                    'youtube_transcript list parse error: video_id=%s '
-                    'attempt=%s error=%s',
-                    video_id,
-                    attempt + 1,
-                    str(error)
-                )
-                if attempt < 2:
-                    await asyncio.sleep(1.0 + attempt)
-                continue
-        raise last_error if last_error else CouldNotRetrieveTranscript()
-
-    async def _retry_fetch_transcript(self, transcript, video_id: str):
-        """
-        Retry fetch() to mitigate temporary empty transcript XML responses.
-        """
-        last_error = None
-        for attempt in range(3):
-            try:
-                result = transcript.fetch()
-                if attempt > 0:
-                    logger.info(
-                        'youtube_transcript fetch recovered after retry: '
-                        'video_id=%s attempt=%s lang=%s generated=%s',
-                        video_id,
-                        attempt + 1,
-                        transcript.language_code,
-                        transcript.is_generated
-                    )
-                return result
-            except ParseError as error:
-                last_error = error
-                logger.warning(
-                    'youtube_transcript fetch parse error: video_id=%s '
-                    'attempt=%s lang=%s generated=%s error=%s',
-                    video_id,
-                    attempt + 1,
-                    transcript.language_code,
-                    transcript.is_generated,
-                    str(error)
-                )
-                if attempt < 2:
-                    await asyncio.sleep(1.0 + attempt)
-                continue
-        raise last_error if last_error else CouldNotRetrieveTranscript()
-
     async def execute(self, function_name, helper, **kwargs) -> Dict:
         try:
-            video_id = kwargs.get('video_id')
+            video_id = (kwargs.get('video_id') or '').strip()
             if not video_id:
                 return {'error': 'Video ID not provided'}
 
-            # Создаем экземпляр API (версия 1.2.3+)
-            api = YouTubeTranscriptApi()
-            
-            # Попытка получить список доступных транскриптов
-            try:
-                transcript_list = await self._retry_list_transcripts(api, video_id)
-            except TranscriptsDisabled:
-                return {'error': 'Субтитры отключены для этого видео'}
-            except VideoUnavailable:
-                return {'error': 'Видео недоступно или не существует'}
-            except RequestBlocked:
-                return {'error': 'Запрос заблокирован YouTube. Попробуйте позже'}
-            except IpBlocked:
-                return {'error': 'IP-адрес заблокирован YouTube. Попробуйте использовать VPN'}
-            except CouldNotRetrieveTranscript:
-                return {'error': 'Не удалось получить транскрипт для этого видео'}
-            
-            # Формируем кандидатов с приоритетом языков и типа субтитров.
-            transcript_candidates = []
-            seen_candidates = set()
+            url = video_id if video_id.startswith(('http://', 'https://')) else f'https://www.youtube.com/watch?v={video_id}'
+            data = await helper.gateway_client.web_read(url)
+            content = data.get('content', '').strip()
+            if not content:
+                return {'error': 'LLMGateway did not return a transcript for this YouTube video'}
 
-            def add_candidate(candidate) -> None:
-                candidate_key = (
-                    candidate.language_code,
-                    bool(candidate.is_generated)
-                )
-                if candidate_key not in seen_candidates:
-                    seen_candidates.add(candidate_key)
-                    transcript_candidates.append(candidate)
-
-            for finder in (
-                transcript_list.find_manually_created_transcript,
-                transcript_list.find_generated_transcript,
-                transcript_list.find_transcript,
-            ):
-                try:
-                    add_candidate(finder(['ru', 'en']))
-                except NoTranscriptFound:
-                    continue
-
-            # Добавляем все остальные треки как последний fallback.
-            available_tracks = []
-            for candidate in transcript_list:
-                available_tracks.append(
-                    f'{candidate.language_code}:{int(candidate.is_generated)}'
-                )
-                add_candidate(candidate)
-
-            if not transcript_candidates:
-                return {'error': 'Не найдено ни одного доступного транскрипта'}
-
-            logger.info(
-                'youtube_transcript available tracks: video_id=%s tracks=%s',
-                video_id,
-                ','.join(available_tracks) if available_tracks else 'none'
-            )
-            logger.info(
-                'youtube_transcript candidate queue: video_id=%s queue=%s',
-                video_id,
-                ','.join(
-                    f'{candidate.language_code}:{int(candidate.is_generated)}'
-                    for candidate in transcript_candidates
-                )
-            )
-
-            transcript = None
-            fetched_transcript = None
-            for candidate in transcript_candidates:
-                try:
-                    logger.info(
-                        'youtube_transcript trying candidate: '
-                        'video_id=%s lang=%s generated=%s',
-                        video_id,
-                        candidate.language_code,
-                        candidate.is_generated
-                    )
-                    fetched_transcript = await self._retry_fetch_transcript(
-                        candidate,
-                        video_id
-                    )
-                    transcript = candidate
-                    break
-                except ParseError as error:
-                    logger.warning(
-                        'youtube_transcript candidate failed, trying next: '
-                        'video_id=%s lang=%s generated=%s error=%s',
-                        video_id,
-                        candidate.language_code,
-                        candidate.is_generated,
-                        str(error)
-                    )
-                    continue
-
-            # Получаем данные транскрипта
-            if transcript and fetched_transcript:
-                decoded_transcript = ""
-                
-                # Итерируем по объекту FetchedTranscript
-                # В версии 1.2.3+ каждый элемент - это FetchedTranscriptSnippet с атрибутами text, start, duration
-                for snippet in fetched_transcript:
-                    decoded_transcript += " " + snippet.text
-                
-                # Информация о полученном транскрипте
-                lang_info = f"Язык: {transcript.language}, "
-                lang_info += "Автогенерированный" if transcript.is_generated else "Ручной"
-                
-                return {
-                    "model_response": f"{lang_info}\n\nТранскрипт:\n{decoded_transcript.strip()}"
-                }
-            else:
-                return {
-                    'error': (
-                        'Не удалось получить читаемый транскрипт ни для одного '
-                        'доступного языка (включая fallback на английский).'
-                    )
-                }
-                
-        except TranscriptsDisabled:
-            return {'error': 'Субтитры отключены для этого видео'}
-        except VideoUnavailable:
-            return {'error': 'Видео недоступно или не существует'}
-        except RequestBlocked:
-            return {'error': 'Запрос заблокирован YouTube. Попробуйте позже'}
-        except IpBlocked:
-            return {'error': 'IP-адрес заблокирован YouTube. Попробуйте использовать VPN'}
-        except CouldNotRetrieveTranscript:
-            return {'error': 'Не удалось получить транскрипт для этого видео'}
-        except ParseError:
+            title = data.get('title') or url
+            logger.info("LLMGateway returned YouTube transcript for %s", url)
             return {
-                'error': (
-                    'YouTube вернул пустой/некорректный ответ для субтитров. '
-                    'Обычно это временный лимит или блокировка IP, '
-                    'попробуйте позже.'
-                )
+                "model_response": f"Видео: {title}\n\nТранскрипт:\n{content}"
             }
         except Exception as e:
             return {'error': f'Произошла неожиданная ошибка: {type(e).__name__}: {str(e)}'}

@@ -7,6 +7,7 @@ from openai import OpenAI
 from typing import Dict
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
+from ..model_constants import LLMGATEWAY_HIGH_MODEL
 from .plugin import Plugin
 
 #logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,11 +18,12 @@ class GitHubCodeAnalysisPlugin(Plugin):
 
     def __init__(self):
         openai_base = os.environ.get('OPENAI_BASE_URL', '')
-        if openai_base != '' :
-            OpenAI.api_base = openai_base
         openai_api_key = os.environ['OPENAI_API_KEY']
-        self.client = OpenAI(api_key=openai_api_key)
-        self.model = "google/gemini-2.0-flash-001"
+        client_kwargs = {"api_key": openai_api_key}
+        if openai_base:
+            client_kwargs["base_url"] = openai_base
+        self.client = OpenAI(**client_kwargs)
+        self.model = LLMGATEWAY_HIGH_MODEL
         self.max_tokens = int(os.environ.get('MAX_TOKENS', 1000))
         self.temperature = float(os.environ.get('TEMPERATURE', 1.0))
 

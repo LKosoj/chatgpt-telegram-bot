@@ -23,6 +23,7 @@ import uuid
 import re
 import importlib
 import shutil
+from ..model_constants import LLMGATEWAY_HIGH_MODEL
 from .plugin import Plugin
 from urllib.parse import urlparse
 
@@ -84,8 +85,18 @@ class CodeInterpreterPlugin(Plugin):
         super().__init__()
         self.api_key = os.getenv('OPENAI_API_KEY')
         http_client = httpx.AsyncClient()
-        openai.api_base = 'https://api.vsegpt.ru/v1'
-        self.client = openai.AsyncOpenAI(api_key=self.api_key, http_client=http_client, timeout=300.0, max_retries=3)
+        openai_base = os.getenv('OPENAI_BASE_URL', '')
+        if openai_base:
+            openai.api_base = openai_base
+        client_kwargs = {
+            "api_key": self.api_key,
+            "http_client": http_client,
+            "timeout": 300.0,
+            "max_retries": 3,
+        }
+        if openai_base:
+            client_kwargs["base_url"] = openai_base
+        self.client = openai.AsyncOpenAI(**client_kwargs)
 
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 120
@@ -222,7 +233,7 @@ class CodeInterpreterPlugin(Plugin):
         #print(f"enhanced_prompt: {enhanced_prompt}")
         try:
             response = await self.client.chat.completions.create(
-                model="openai/o3-mini",
+                model=LLMGATEWAY_HIGH_MODEL,
                 messages=[
                     {"role": "system", "content": "Ты - самый опытный Python разработчик, который может написать код для решения любых задач. Ты можешь использовать необходимые библиотеки для решения задач. Все комментарии должны быть на русском языке, это важно! Все графики должны быть в формате png. Все текстовые сообщения должны быть на русском языке, это важно! Включай traceback в код, это важно! Используй logging.error(f'Error message: {str(e)}', exc_info=True) для вывода ошибок в код, это важно!"},
                     {"role": "user", "content": enhanced_prompt}
@@ -551,7 +562,7 @@ class CodeInterpreterPlugin(Plugin):
         """Генерирует объяснение для заданного кода."""
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLMGATEWAY_HIGH_MODEL,
                 messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}],
                 max_tokens=55000,
                 extra_headers={ "X-Title": "tgBot" },

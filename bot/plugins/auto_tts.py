@@ -29,7 +29,8 @@ class AutoTextToSpeech(Plugin):
     async def execute(self, function_name, helper, **kwargs) -> Dict:
         try:
             bytes, text_length = await helper.generate_speech(text=kwargs['text'])
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.opus') as temp_file:
+            suffix = "." + helper.config.get('tts_response_format', 'wav')
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 temp_file.write(bytes.getvalue())
                 temp_file_path = temp_file.name
         except Exception as e:

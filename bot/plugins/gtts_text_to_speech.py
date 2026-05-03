@@ -1,44 +1,53 @@
-import datetime
+import logging
+import tempfile
 from typing import Dict
 
-from gtts import gTTS
-
 from .plugin import Plugin
+
+logger = logging.getLogger(__name__)
 
 
 class GTTSTextToSpeech(Plugin):
     """
-    A plugin to convert text to speech using Google Translate's Text to Speech API
+    Backward-compatible text-to-speech plugin backed by LLMGateway.
     """
 
     def get_source_name(self) -> str:
-        return "gTTS"
+        return "LLMGateway TTS"
 
     def get_spec(self) -> [Dict]:
         return [{
             "name": "google_translate_text_to_speech",
-            "description": "Translate text to speech using Google Translate's Text to Speech API",
+            "description": "Convert text to speech through LLMGateway Silero TTS",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "The text to translate to speech"},
+                    "text": {"type": "string", "description": "The text to convert to speech"},
                     "lang": {
-                        "type": "string", "description": "The language of the text to translate to speech."
-                                                         "Infer this from the language of the text.",
+                        "type": "string",
+                        "description": "Language hint for backward compatibility. The configured gateway voice is used.",
                     },
                 },
-                "required": ["text","lang"],
+                "required": ["text"],
             },
         }]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        tts = gTTS(kwargs['text'], lang=kwargs.get('lang', 'ru'))
-        output = f'gtts_{datetime.datetime.now().timestamp()}.mp3'
-        tts.save(output)
+        try:
+            speech_file, _text_length = await helper.generate_speech(text=kwargs['text'])
+            suffix = "." + helper.config.get('tts_response_format', 'wav')
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(speech_file.getvalue())
+                temp_file_path = temp_file.name
+            speech_file.close()
+        except Exception as e:
+            logger.exception(e)
+            return {"result": "Exception: " + str(e)}
+
         return {
             'direct_result': {
                 'kind': 'file',
                 'format': 'path',
-                'value': output
+                'value': temp_file_path
             }
         }

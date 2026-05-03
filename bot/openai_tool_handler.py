@@ -155,7 +155,7 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
 
         response = await helper.client.chat.completions.create(
             model=model_to_use,
-            messages=helper.conversations[chat_id],
+            messages=helper._messages_with_hindsight_context(chat_id),
             tools=tools,
             tool_choice='auto' if times < helper.config['functions_max_consecutive_calls'] else 'none',
             max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),

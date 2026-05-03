@@ -199,9 +199,17 @@ class UsageTracker:
 
     # tts usage functions:
 
+    def _tts_price_for_model(self, tts_model, tts_prices):
+        tts_models = ['tts-1', 'tts-1-hd', 'llmgateway/silero-tts']
+        prices = list(tts_prices)
+        if not prices:
+            return 0
+        if tts_model in tts_models and tts_models.index(tts_model) < len(prices):
+            return prices[tts_models.index(tts_model)]
+        return prices[0]
+
     def add_tts_request(self, text_length, tts_model, tts_prices):
-        tts_models = ['tts-1', 'tts-1-hd']
-        price = tts_prices[tts_models.index(tts_model)]
+        price = self._tts_price_for_model(tts_model, tts_prices)
         today = date.today()
         tts_price = round(text_length * price / 1000, 2)
         self.add_current_costs(tts_price)
@@ -230,17 +238,16 @@ class UsageTracker:
         :return: total amount of characters converted to speech per day and per month
         """
 
-        tts_models = ['tts-1', 'tts-1-hd']
         today = date.today()
         characters_day = 0
-        for tts_model in tts_models:
+        for tts_model in self.usage["usage_history"]["tts_characters"]:
             if tts_model in self.usage["usage_history"]["tts_characters"] and \
                 str(today) in self.usage["usage_history"]["tts_characters"][tts_model]:
                 characters_day += self.usage["usage_history"]["tts_characters"][tts_model][str(today)]
 
         month = str(today)[:7]  # year-month as string
         characters_month = 0
-        for tts_model in tts_models:
+        for tts_model in self.usage["usage_history"]["tts_characters"]:
             if tts_model in self.usage["usage_history"]["tts_characters"]: 
                 for today, characters in self.usage["usage_history"]["tts_characters"][tts_model].items():
                     if today.startswith(month):
@@ -357,9 +364,11 @@ class UsageTracker:
         total_vision_tokens = sum(self.usage['usage_history']['vision_tokens'].values())
         vision_cost = round(total_vision_tokens * vision_token_price / 1000, 2)
 
-        total_characters = [sum(tts_model.values()) for tts_model in self.usage['usage_history']['tts_characters'].values()]
         tts_prices_list = [float(x) for x in tts_prices.split(',')]
-        tts_cost = round(sum([count * price / 1000 for count, price in zip(total_characters, tts_prices_list)]), 2)
+        tts_cost = round(sum(
+            sum(model_usage.values()) * self._tts_price_for_model(tts_model, tts_prices_list) / 1000
+            for tts_model, model_usage in self.usage['usage_history']['tts_characters'].items()
+        ), 2)
 
         all_time_cost = token_cost + transcription_cost + image_cost + vision_cost + tts_cost
         return all_time_cost

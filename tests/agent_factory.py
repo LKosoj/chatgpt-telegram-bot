@@ -9,34 +9,33 @@ import re
 from requests.exceptions import RequestException
 
 model_search = OpenAIServerModel(
-    model_id="google/gemini-2.0-flash-001",
-    api_base="https://api.vsegpt.ru/v1", # Leave this blank to query OpenAI servers.
-    api_key=os.getenv("OPENAI_API_KEY"), # Switch to the API key for the server you're targeting.
+    model_id="llmgateway/big_context",
+    api_base="http://89.124.76.219:9000/v1",
+    api_key=os.getenv("OPENAI_API_KEY"),
     max_tokens=650000,
     extra_headers={ "X-Title": "CAgent" },
 )
 
 model_lite = OpenAIServerModel(
-    model_id="openai/gpt-4o-mini",
-    api_base="https://api.vsegpt.ru/v1", # Leave this blank to query OpenAI servers.
-    api_key=os.getenv("OPENAI_API_KEY"), # Switch to the API key for the server you're targeting.
+    model_id="llmgateway/light_model",
+    api_base="http://89.124.76.219:9000/v1",
+    api_key=os.getenv("OPENAI_API_KEY"),
     max_tokens=20000,
     extra_headers={ "X-Title": "CAgent" },
 )
 
 model_code = OpenAIServerModel(
-    model_id="openai/o3-mini",
-    api_base="https://api.vsegpt.ru/v1", # Leave this blank to query OpenAI servers.
-    api_key=os.getenv("OPENAI_API_KEY"), # Switch to the API key for the server you're targeting.
+    model_id="llmgateway/high",
+    api_base="http://89.124.76.219:9000/v1",
+    api_key=os.getenv("OPENAI_API_KEY"),
     max_tokens=20000,
     extra_headers={ "X-Title": "CAgent" },
 )
 
 model_hard = OpenAIServerModel(
-    #model_id="openai/o3-mini",
-    model_id="openai/o3-mini-high",
-    api_base="https://api.vsegpt.ru/v1", # Leave this blank to query OpenAI servers.
-    api_key=os.getenv("OPENAI_API_KEY"), # Switch to the API key for the server you're targeting.
+    model_id="llmgateway/high",
+    api_base="http://89.124.76.219:9000/v1",
+    api_key=os.getenv("OPENAI_API_KEY"),
     max_tokens=20000,
     extra_headers={ "X-Title": "CAgent" },
 )

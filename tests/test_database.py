@@ -9,7 +9,7 @@ from bot.database import Database
 
 class DummyOpenAI:
     def __init__(self):
-        self.config = {"model": "openai/gpt-4.1"}
+        self.config = {"model": "llmgateway/high"}
 
     def ask_sync(self, *args, **kwargs):
         return ("ShortName", None)

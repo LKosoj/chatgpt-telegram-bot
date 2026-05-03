@@ -12,6 +12,8 @@ from functools import lru_cache
 from datetime import datetime
 import yaml
 
+from .model_constants import LLMGATEWAY_HIGH_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -586,7 +588,7 @@ class Database:
                         session_id, 
                         "...", 
                         datetime.now(),
-                        openai_helper.config['model'] if openai_helper else 'deepseek/deepseek-chat-0324-alt-structured'
+                        openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
                     ))
                     
                     logger.info(f"Создана первая сессия {session_id} для пользователя {user_id}")
@@ -638,7 +640,7 @@ class Database:
                         session_id, 
                         final_session_name, 
                         datetime.now(),
-                        openai_helper.config['model'] if openai_helper else 'deepseek/deepseek-chat-0324-alt-structured'
+                        openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
                     ))
                     
                     return session_id

@@ -1,8 +1,8 @@
 openai:
-  model: "anthropic/claude-3-5-haiku"
-  base_url: "https://api.vsegpt.ru/v1"
+  model: "llmgateway/high"
+  base_url: "http://89.124.76.219:9000/v1"
   temperature: 0
-  max_tokens: 20000
+  max_tokens: 200000
   request_timeout: 200
 
 agents:
@@ -29,10 +29,15 @@ agents:
     max_iterations: 10
     max_execution_time: 200
     tools:
-      - plugin: task_management
-        function: create_plan
-        name: CreatePlan
-        description: "Создание структурированного плана"
+      - plugin: agent_tools
+        function: manage_plan_tasks
+        name: ManagePlanTasks
+        description: "Создание, просмотр и обновление списка шагов плана"
+
+      - plugin: agent_tools
+        function: ask_telegram_user
+        name: AskTelegramUser
+        description: "Уточнение требований у пользователя через Telegram"
 
 database:
   path: "research.db"

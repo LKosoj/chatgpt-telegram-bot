@@ -31,7 +31,7 @@ def test_namespacing_and_collision(tmp_path):
     _write_plugin(plugin_dir / "ddg_translate.py", "DDGTranslatePlugin", "translate")
 
     pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
-    specs = pm.get_functions_specs(helper=None, model_to_use="openai/gpt-4.1", allowed_plugins=["All"])
+    specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
     names = [s["function"]["name"] for s in specs]
     assert "deepl.translate" in names
     assert "ddg_translate.translate" in names

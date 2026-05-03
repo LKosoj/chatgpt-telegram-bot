@@ -27,13 +27,11 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file
-from .openai_helper import  GPT_4_VISION_MODELS, GPT_4O_MODELS, OpenAIHelper, O_MODELS, GPT_ALL_MODELS,\
-              ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY, LLAMA, MOONSHOTAI, QWEN, GPT_5_MODELS
+from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .i18n import localized_text
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
-import assemblyai as aai
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -374,137 +372,6 @@ class ChatGPTTelegramBot:
 
         await self.prompt(update=update, context=context)
 
-    async def handle_model_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        
-        user_id = query.from_user.id
-        chat_id = query.message.chat_id
-        
-        # Проверяем права доступа для callback_query
-        allowed_user_ids = self.config['allowed_user_ids'].split(',')
-        if str(user_id) not in allowed_user_ids and 'guests' not in self.config and not is_admin(self.config, user_id):
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
-            return
-            
-        data = query.data
-        action, value = data.split(":", 1)
-        
-        # Получаем текущую модель пользователя
-        current_model = self.openai.get_current_model(user_id)
-        
-        # Получаем активную сессию пользователя
-        sessions = self.db.list_user_sessions(user_id, is_active=1)
-        active_session = next((s for s in sessions if s['is_active']), None)
-        
-        if action == "modelgroup":
-            keyboard = []
-            if value == "GPT-4O":
-                models = GPT_4O_MODELS
-            elif value == "GPT-5":
-                models = GPT_5_MODELS
-            elif value == "O MODELS":
-                models = O_MODELS
-            elif value == "Anthropic":
-                models = ANTHROPIC
-            elif value == "Google":
-                models = GOOGLE
-            elif value == "Mistral":
-                models = MISTRALAI
-            elif value == "Deepseek":
-                models = DEEPSEEK
-            elif value == "Perplexity":
-                models = PERPLEXITY
-            elif value == "Llama":
-                models = LLAMA
-            elif value == "Moonshotai":
-                models = MOONSHOTAI
-            elif value == "Qwen":
-                models = QWEN
-            else:
-                await query.edit_message_text(
-                    localized_text('model_group_unknown', self.config['bot_language'])
-                )
-                return
-                
-            for model in models:
-                # Добавляем информацию о текущей модели сессии
-                is_session_model = active_session and active_session.get('model', '') == model
-                keyboard.append([InlineKeyboardButton(
-                    text=f"{'✓ ' if model == current_model else ''}{'🔵 ' if is_session_model else ''}{model}",
-                    callback_data=f"model:{model}"
-                )])
-                
-            keyboard.append([InlineKeyboardButton(
-                text=localized_text('model_back_to_groups', self.config['bot_language']),
-                callback_data="modelback:back"
-            )])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text=localized_text('model_choose_from_group', self.config['bot_language']).format(group=value)
-                + (("\n" + localized_text('model_active_session', self.config['bot_language']).format(
-                    session_name=active_session['session_name']
-                )) if active_session else ""),
-                reply_markup=reply_markup
-            )
-            
-        elif action == "model":
-            model = value
-            # Сохраняем выбранную модель
-            self.db.save_user_model(user_id, model)
-                                    
-            # Возвращаемся в главное меню сессий
-            await self.reset(update, context)
-            
-        elif action == "modelback":
-            # Возврат к списку групп
-            keyboard = []
-            model_groups = [
-                ("GPT-4O", GPT_4O_MODELS),
-                ("GPT-5", GPT_5_MODELS),
-                ("O MODELS", O_MODELS),
-                ("Anthropic", ANTHROPIC),
-                ("Google", GOOGLE),
-                ("Mistral", MISTRALAI),
-                ("Deepseek", DEEPSEEK),
-                ("Perplexity", PERPLEXITY),
-                ("Llama", LLAMA),
-                ("Moonshotai", MOONSHOTAI),
-                ("Qwen", QWEN)
-            ]
-            
-            for group_name, _ in model_groups:
-                keyboard.append([InlineKeyboardButton(
-                    text=group_name,
-                    callback_data=f"modelgroup:{group_name}"
-                )])
-                
-            keyboard.append([InlineKeyboardButton(
-                text=localized_text('session_back_to_sessions', self.config['bot_language']),
-                callback_data="session:back"
-            )])
-                
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # Формируем информацию о текущих настройках
-            settings_info = localized_text('current_model_label', self.config['bot_language']).format(
-                model=current_model
-            ) + "\n"
-            if active_session:
-                settings_info += "\n" + localized_text('model_active_session', self.config['bot_language']).format(
-                    session_name=active_session['session_name']
-                ) + "\n"
-            else:
-                settings_info += "\n" + localized_text('session_none', self.config['bot_language'])
-            
-            await query.edit_message_text(
-                text=f"{settings_info}\n\n" + localized_text('model_choose_group', self.config['bot_language']),
-                reply_markup=reply_markup
-            )
-
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error: bool = False):
         """
         Сброс контекста разговора и управление сессиями
@@ -619,12 +486,6 @@ class ChatGPTTelegramBot:
                 callback_data="session:change_mode"
             )])
 
-            # Добавляем кнопку для изменения модели
-            keyboard.append([InlineKeyboardButton(
-                text=localized_text('session_change_model', self.config['bot_language']),
-                callback_data="session:change_model"
-            )])
-
             # Добавляем кнопку экспорта сессий
             keyboard.append([InlineKeyboardButton(
                 text=localized_text('session_export', self.config['bot_language']),
@@ -652,7 +513,7 @@ class ChatGPTTelegramBot:
                     ) + "\n"
                     
                     # Добавляем информацию о модели сессии
-                    current_model = active_session.get('model', '')
+                    current_model = self.openai.get_current_model(user_id)
                     message_text += localized_text('session_model_label', self.config['bot_language']).format(
                         model=current_model
                     ) + "\n"
@@ -975,10 +836,21 @@ class ChatGPTTelegramBot:
             try:
                 speech_file, text_length = await self.openai.generate_speech(text=tts_query)
 
-                await update.effective_message.reply_voice(
-                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                    voice=speech_file
-                )
+                audio_format = self.openai.config.get('tts_response_format', 'wav')
+                reply_args = {
+                    'reply_to_message_id': get_reply_to_message_id(self.config, update),
+                }
+                if audio_format == 'opus':
+                    await update.effective_message.reply_voice(
+                        **reply_args,
+                        voice=speech_file
+                    )
+                else:
+                    await update.effective_message.reply_audio(
+                        **reply_args,
+                        audio=speech_file,
+                        filename=f"speech.{audio_format}"
+                    )
                 speech_file.close()
                 # add image request to users usage tracker
                 user_id = update.message.from_user.id
@@ -1088,20 +960,7 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
             try:
-                transcript = ''
-                transcription_price = 0
-                if self.config['assemblyai_api_key']:
-                    aai.settings.api_key = self.config['assemblyai_api_key']
-                    config = aai.TranscriptionConfig(speaker_labels=True, language_code="ru")
-                    transcriber = aai.Transcriber()
-                    transcript = transcriber.transcribe(file_path_mp3, config=config)
-                    transcript_text = ''
-                    for utterance in transcript.utterances:
-                        transcript_text += f"Speaker {utterance.speaker}: {utterance.text}\n"                    
-                    transcript = transcript_text
-                    transcription_price = len(transcript_text) * 0.001
-                else:
-                    transcript = await self.openai.transcribe(file_path_mp3)
+                transcript = await self.openai.transcribe(file_path_mp3)
 
                 transcription_price = self.config['transcription_price']
                 self.usage[user_id].add_transcription_seconds(audio_track.duration_seconds, transcription_price)
@@ -2068,7 +1927,6 @@ class ChatGPTTelegramBot:
         )
 
         # Регистрируем стандартные обработчики callback_query
-        application.add_handler(CallbackQueryHandler(self.handle_model_callback, pattern="^model|modelgroup|modelback"))
         application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
         application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
@@ -2730,6 +2588,7 @@ class ChatGPTTelegramBot:
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
+                await self.openai.finalize_hindsight_session_memory(user_id, session_id)
                 self.db.delete_session(user_id, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
                 session_id = self.db.get_active_session_id(user_id)
@@ -2773,53 +2632,8 @@ class ChatGPTTelegramBot:
                 )
                 
             elif action == "change_model":
-                # Создаем кнопки для каждой группы моделей
-                keyboard = []
-                model_groups = [
-                    ("GPT-4O", GPT_4O_MODELS),
-                    ("GPT-5", GPT_5_MODELS),
-                    ("O MODELS", O_MODELS),
-                    ("Anthropic", ANTHROPIC),
-                    ("Google", GOOGLE),
-                    ("Mistral", MISTRALAI),
-                    ("Deepseek", DEEPSEEK),
-                    ("Perplexity", PERPLEXITY),
-                    ("Llama", LLAMA),
-                    ("Moonshotai", MOONSHOTAI),
-                    ("Qwen", QWEN)
-                ]
-
-                for group_name, _ in model_groups:
-                    keyboard.append([InlineKeyboardButton(
-                        text=group_name,
-                        callback_data=f"modelgroup:{group_name}"
-                    )])
-                
-                # Добавляем кнопку "Назад"
-                keyboard.append([InlineKeyboardButton(
-                    text=localized_text('session_back_to_sessions', self.config['bot_language']),
-                    callback_data="session:back"
-                )])
-
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                # Получаем активную сессию
-                sessions = self.db.list_user_sessions(user_id, is_active=1)
-                active_session = next((s for s in sessions if s['is_active']), None)
-                
-                message_text = ""
-                if active_session:
-                    session_model = active_session.get('model', '')
-                    message_text += "\n" + localized_text(
-                        'session_active_model', self.config['bot_language']
-                    ).format(session_name=active_session['session_name'], model=session_model)
-                
-                message_text += "\n\n" + localized_text('model_choose_group', self.config['bot_language'])
-                
-                await query.edit_message_text(
-                    text=message_text,
-                    reply_markup=reply_markup
-                )
+                logger.info("Model switching callback ignored because model selection is disabled.")
+                await self.reset(update, context)
                 
             elif action == "back":
                 # Возвращаемся к списку сессий

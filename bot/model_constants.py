@@ -1,21 +1,37 @@
 from __future__ import annotations
 
-# Models can be found here: https://platform.openai.com/docs/models/overview
-GPT_4_VISION_MODELS = ("gpt-4-vision-preview",)
-GPT_4O_MODELS = ("openai/gpt-4.1-nano", "openai/gpt-4.1-mini", "openai/gpt-4.1")
-GPT_5_MODELS = ("openai/gpt-5-mini", "openai/gpt-5-chat")
-O_MODELS = ("openai/o1", "openai/o1-preview", "openai/o1-mini", "openai/o3-mini", "openai/o3-mini-high")
-ANTHROPIC = ("anthropic/claude-3-5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-thinking-high")
-GOOGLE = ("google/gemini-flash-1.5-8b", "google/gemini-pro-1.5-online", "google/gemini-2.5-flash-lite",
-          "google/gemini-2.5-flash", "google/gemini-2.5-pro")
-MISTRALAI = ("mistralai/mistral-medium-3",)
-DEEPSEEK = ("deepseek/deepseek-chat-0324-alt-structured", "deepseek/deepseek-r1-alt",)
-LLAMA = ("meta-llama/llama-4-maverick", "meta-llama/llama-4-scout")
-PERPLEXITY = ("perplexity/sonar-online",)
-MOONSHOTAI = ("moonshotai/kimi-k2",)
-QWEN = ("qwen/qwen3-235b-a22b-07-25", "qwen/qwen3-next-80b-a3b")
+LLMGATEWAY_HIGH_MODEL = "llmgateway/high"
+LLMGATEWAY_LIGHT_MODEL = "llmgateway/light_model"
+LLMGATEWAY_BIG_CONTEXT_MODEL = "llmgateway/big_context"
 
-GPT_ALL_MODELS = (
-    GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI +
-    DEEPSEEK + PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS
+LLMGATEWAY_CHAT_MODELS = (
+    LLMGATEWAY_HIGH_MODEL,
+    LLMGATEWAY_LIGHT_MODEL,
+    LLMGATEWAY_BIG_CONTEXT_MODEL,
 )
+
+LLMGATEWAY_IMAGE_GENERATION_MODEL = "llmgateway/ai-klein-generation"
+LLMGATEWAY_IMAGE_EDIT_MODEL = "llmgateway/ai-klein-edit"
+LLMGATEWAY_WEB_SEARCH_MODEL = "llmgateway/web-search"
+LLMGATEWAY_WEB_READ_MODEL = "llmgateway/web-read"
+LLMGATEWAY_WEB_RESEARCH_MODEL = "llmgateway/web-research"
+LLMGATEWAY_WEB_DEEP_RESEARCH_MODEL = "llmgateway/web-deep-research"
+LLMGATEWAY_TTS_MODEL = "llmgateway/silero-tts"
+LLMGATEWAY_TRANSCRIPTION_MODEL = "llmgateway/whisper-large-v3"
+
+# Provider groups are kept for compatibility with older helper/Telegram checks.
+# Model switching now exposes only the llmgateway chat models above.
+GPT_4_VISION_MODELS = ()
+GPT_4O_MODELS = ()
+GPT_5_MODELS = ()
+O_MODELS = ()
+ANTHROPIC = ()
+GOOGLE = ()
+MISTRALAI = ()
+DEEPSEEK = ()
+LLAMA = ()
+PERPLEXITY = ()
+MOONSHOTAI = ()
+QWEN = ()
+
+GPT_ALL_MODELS = LLMGATEWAY_CHAT_MODELS

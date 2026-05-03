@@ -3,7 +3,8 @@ import datetime
 import logging
 import os
 import asyncio
-from typing import Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional
 from datetime import datetime as dt
 
 import tiktoken
@@ -25,6 +26,13 @@ from .utils import is_direct_result, encode_image, decode_image, escape_markdown
 from .plugin_manager import PluginManager
 from .database import Database
 from .model_constants import (
+    LLMGATEWAY_BIG_CONTEXT_MODEL,
+    LLMGATEWAY_CHAT_MODELS,
+    LLMGATEWAY_HIGH_MODEL,
+    LLMGATEWAY_IMAGE_GENERATION_MODEL,
+    LLMGATEWAY_LIGHT_MODEL,
+    LLMGATEWAY_TRANSCRIPTION_MODEL,
+    LLMGATEWAY_TTS_MODEL,
     GPT_4_VISION_MODELS,
     GPT_4O_MODELS,
     GPT_5_MODELS,
@@ -37,8 +45,9 @@ from .model_constants import (
     PERPLEXITY,
     MOONSHOTAI,
     QWEN,
-    GPT_ALL_MODELS,
 )
+from .llm_gateway_client import LLMGatewayClient, extract_image_result
+from .hindsight_client import HindsightClient, format_recall_results
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
@@ -46,7 +55,28 @@ from .i18n import localized_text
 
 logger = logging.getLogger(__name__)
 
- 
+HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
+
+HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
+Long-term memory recalled for this Telegram user:
+{{memory}}
+
+Use this only as background context when it is relevant. If the current user message
+contradicts this memory, prefer the current message. Do not mention Hindsight or memory
+retrieval unless the user asks about it."""
+
+HINDSIGHT_EXTRACTOR_PROMPT = """Extract durable memories from the Telegram conversation.
+Return only JSON in this exact shape:
+{"items":[{"content":"...","context":"...","tags":["..."]}]}
+
+Save only facts that are likely useful in future conversations with the same user:
+- stable user preferences, identity details, goals, projects, constraints, decisions, and explicit "remember this" facts;
+- important project facts or agreements that should survive across sessions.
+
+Do not save passwords, API keys, tokens, secrets, credentials, private auth data, one-off commands,
+temporary logs, generic chit-chat, or facts that are already contradicted inside the exchange.
+If there is nothing worth saving, return {"items":[]}."""
+
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -55,33 +85,13 @@ def default_max_tokens(model: str = None) -> int:
     :param model: The model name
     :return: The default number of max tokens
     """
-    base = 1200
-    if model in GPT_4_VISION_MODELS:
-        return 4096
-    elif model in GPT_4O_MODELS:
-        return 1000000
-    elif model in O_MODELS:
-        return 100000
-    elif model in ANTHROPIC:
-        return 180000
-    elif model in MISTRALAI:
-        return 100000
-    elif model in GOOGLE:
-        return 900000
-    elif model in DEEPSEEK:
-        return 128000
-    elif model in PERPLEXITY:
-        return 100000
-    elif model in LLAMA:
-        return 300000
-    elif model in MOONSHOTAI:
-        return 128000
-    elif model in GPT_5_MODELS:
-        return 128000
-    elif model in QWEN:
-        return 131072  # Qwen models typically support 128K context
-    else:
-        return base * 2
+    if model == LLMGATEWAY_BIG_CONTEXT_MODEL:
+        return 1_000_000
+    if model == LLMGATEWAY_LIGHT_MODEL:
+        return 128_000
+    if model == LLMGATEWAY_HIGH_MODEL:
+        return 200_000
+    return 200_000
 
 
 @lru_cache(maxsize=128)
@@ -89,18 +99,7 @@ def are_functions_available(model: str) -> bool:
     """
     Whether the given model supports functions
     """
-    # Deprecated models
-    if model in ("gpt-3.5-turbo-0301", "gpt-4-0314", "gpt-4-32k-0314"):
-        return False
-    # Stable models will be updated to support functions on June 27, 2023
-    if model in ("gpt-3.5-turbo", "gpt-3.5-turbo-1106", "gpt-4", "gpt-4-32k","gpt-4-1106-preview","gpt-4-0125-preview","gpt-4-turbo-preview"):
-        return datetime.date.today() > datetime.date(2023, 6, 27)
-    # Models gpt-3.5-turbo-0613 and  gpt-3.5-turbo-16k-0613 will be deprecated on June 13, 2024
-    if model in ("gpt-3.5-turbo-0613", "gpt-3.5-turbo-16k-0613"):
-        return datetime.date.today() < datetime.date(2024, 6, 13)
-    if model == 'gpt-4-vision-preview':
-        return False
-    return True
+    return model in LLMGATEWAY_CHAT_MODELS
 
 
 class OpenAIHelper:
@@ -121,7 +120,16 @@ class OpenAIHelper:
         if config['openai_base'] != '' :
             openai.api_base = config['openai_base']
         self.api_key = config['api_key']
-        self.client = openai.AsyncOpenAI(api_key=config['api_key'], http_client=http_client, timeout=300.0, max_retries=3)
+        client_kwargs = {
+            "api_key": config["api_key"],
+            "http_client": http_client,
+            "timeout": 300.0,
+            "max_retries": 3,
+        }
+        if config["openai_base"]:
+            client_kwargs["base_url"] = config["openai_base"]
+        self.client = openai.AsyncOpenAI(**client_kwargs)
+        self.gateway_client = LLMGatewayClient(config.get("openai_base", ""), config["api_key"])
         validate_openai_config(config)
         self.config = config
         self.plugin_manager = plugin_manager
@@ -144,6 +152,36 @@ class OpenAIHelper:
         self.config.setdefault('frequency_penalty', 0.0)
         self.config.setdefault('vision_detail', 'auto')
         self.config.setdefault('n_choices', 1)
+        self.config.setdefault('light_model', LLMGATEWAY_LIGHT_MODEL)
+        self.config.setdefault('big_model_to_use', LLMGATEWAY_BIG_CONTEXT_MODEL)
+        self.config.setdefault('tts_model', LLMGATEWAY_TTS_MODEL)
+        self.config.setdefault('tts_voice', 'Kseniya')
+        self.config.setdefault('tts_response_format', 'wav')
+        self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
+        self.config.setdefault('hindsight_base_url', '')
+        self.config.setdefault('hindsight_api_token', '')
+        self.config['hindsight_enabled'] = bool(
+            self.config.get('hindsight_base_url')
+            and self.config.get('hindsight_api_token')
+        )
+        self.config.setdefault('hindsight_auto_recall', True)
+        self.config.setdefault('hindsight_auto_save', True)
+        self.config.setdefault('hindsight_namespace', 'default')
+        self.config.setdefault('hindsight_bank_prefix', 'telegram-')
+        self.config.setdefault('hindsight_recall_budget', 'mid')
+        self.config.setdefault('hindsight_recall_max_tokens', 4096)
+        self.config.setdefault('hindsight_memory_types', 'world,experience')
+        self.config.setdefault('hindsight_async_store', True)
+        self.config.setdefault('hindsight_timeout', 30.0)
+        self.config.setdefault('hindsight_max_auto_save_items', 5)
+        self.hindsight_client = None
+        if self.config['hindsight_enabled']:
+            self.hindsight_client = HindsightClient(
+                self.config.get('hindsight_base_url', ''),
+                self.config.get('hindsight_api_token', ''),
+                namespace=self.config.get('hindsight_namespace', 'default'),
+                timeout=float(self.config.get('hindsight_timeout', 30.0)),
+            )
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
@@ -185,8 +223,7 @@ class OpenAIHelper:
             if model:
                 model_to_use = model
             else:
-                # Получаем модель с учетом приоритетов
-                model_to_use = self.get_current_model(user_id)
+                model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
             logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
@@ -233,6 +270,7 @@ class OpenAIHelper:
                 chat_id, 
                 query, 
                 session_id=session_id,
+                user_id=user_id,
                 **kwargs
             )
             
@@ -318,7 +356,8 @@ class OpenAIHelper:
                     chat_id, 
                     query, 
                     stream=True, 
-                    session_id=session_id
+                    session_id=session_id,
+                    user_id=user_id
                 )
             except Exception as e:
                 logger.error(f'Error getting chat response: {str(e)}')
@@ -411,7 +450,7 @@ class OpenAIHelper:
 
             # Проверяем, является ли это первым сообщением в сессии, если да, то определяем режим работы
             user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
-            model_to_use = self.config['big_model_to_use'] if self.config['big_model_to_use'] else self.config['model']
+            model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
             if len(user_messages) == 0 and self.config['auto_chat_modes']:
                 mode_name, _ = self.ask_sync(
                         f"Определи режим работы для сообщения, верни только название режима. Сообщение: ^{query}^. Доступные режимы: ^{self.get_all_modes()}^. Если ни один режим не подходит, верни 'assistant'.",
@@ -448,12 +487,24 @@ class OpenAIHelper:
                             self
                         )
             
+            memory_user_id = kwargs.get('user_id') or chat_id
+            if len(user_messages) == 0:
+                await self._prepare_hindsight_session_memory_context(
+                    chat_id,
+                    memory_user_id,
+                    query,
+                    parse_mode,
+                    temperature,
+                    max_tokens_percent,
+                    session_id,
+                )
+
             self.last_updated[chat_id] = datetime.datetime.now()
 
             self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.get_current_model(user_id)
+            model_to_use = self.get_current_model(memory_user_id or user_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
@@ -487,7 +538,7 @@ class OpenAIHelper:
 
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
-                'messages': self.conversations[chat_id],
+                'messages': self._messages_with_hindsight_context(chat_id),
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': max_tokens,
@@ -557,8 +608,11 @@ class OpenAIHelper:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
-            c = json.dumps(common_args, ensure_ascii=False)
-            logger.info(f"common_args = {c}")
+            log_args = {
+                key: (f"<{len(value)} messages>" if key == "messages" and isinstance(value, list) else value)
+                for key, value in common_args.items()
+            }
+            logger.info(f"common_args = {json.dumps(log_args, ensure_ascii=False)}")
             response = await self.client.chat.completions.create(**common_args)
             
             if stream:
@@ -605,15 +659,18 @@ class OpenAIHelper:
         """
         bot_language = self.config['bot_language']
         try:
-            response = await self.client.images.generate(
-                prompt=prompt,
-                n=1,
-                model=self.config['image_model'],
-                quality=self.config['image_quality'],
-                style=self.config['image_style'],
-                size=self.config['image_size'],
-                extra_headers={ "X-Title": "tgBot" },
-            )
+            image_args = {
+                "prompt": prompt,
+                "n": 1,
+                "model": self.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+                "size": self.config["image_size"],
+                "extra_headers": { "X-Title": "tgBot" },
+            }
+            if not str(image_args["model"]).startswith("llmgateway/"):
+                image_args["quality"] = self.config["image_quality"]
+                image_args["style"] = self.config["image_style"]
+
+            response = await self.client.images.generate(**image_args)
 
             if len(response.data) == 0:
                 logger.error(f'No response from GPT: {str(response)}')
@@ -622,7 +679,8 @@ class OpenAIHelper:
                     f"⚠️\n{localized_text('try_again', bot_language)}."
                 )
 
-            return response.data[0].url, self.config['image_size']
+            image_value, _image_format = extract_image_result(response)
+            return image_value, self.config['image_size']
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
@@ -638,7 +696,8 @@ class OpenAIHelper:
                 model=self.config['tts_model'],
                 voice=self.config['tts_voice'],
                 input=text,
-                response_format='opus'
+                response_format=self.config.get('tts_response_format', 'wav'),
+                extra_headers={ "X-Title": "tgBot" },
             )
 
             temp_file = io.BytesIO()
@@ -661,7 +720,7 @@ class OpenAIHelper:
             with open(filename, "rb") as audio:
                 prompt_text = self.config['whisper_prompt']
                 result = await self.client.audio.transcriptions.create(
-                    model="stt-openai/whisper-1", 
+                    model=self.config.get('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL),
                     file=audio, 
                     prompt=prompt_text,
                     response_format="text",
@@ -860,6 +919,252 @@ class OpenAIHelper:
 
         yield answer, tokens_used
 
+    def is_hindsight_enabled(self) -> bool:
+        return bool(
+            self.config.get('hindsight_enabled')
+            and self.config.get('hindsight_api_token')
+            and self.hindsight_client
+            and self.hindsight_client.enabled
+        )
+
+    def get_hindsight_bank_id(self, user_id: int | str) -> str:
+        return f"{self.config.get('hindsight_bank_prefix', 'telegram-')}{user_id}"
+
+    def _hindsight_memory_types(self) -> list[str]:
+        value = self.config.get('hindsight_memory_types', 'world,experience')
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(',') if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return ['world', 'experience']
+
+    async def _prepare_hindsight_session_memory_context(
+        self,
+        chat_id: int,
+        user_id: int | str,
+        query: str,
+        parse_mode: str,
+        temperature: float,
+        max_tokens_percent: int,
+        session_id: str | None,
+    ) -> None:
+        if not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_recall', True):
+            return
+        if not query or not str(query).strip():
+            return
+        if self._has_hindsight_memory_context(self.conversations.get(chat_id, [])):
+            return
+
+        try:
+            bank_id = self.get_hindsight_bank_id(user_id)
+            data = await self.hindsight_client.recall(
+                bank_id,
+                query,
+                budget=self.config.get('hindsight_recall_budget', 'mid'),
+                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
+                memory_types=self._hindsight_memory_types(),
+                trace=False,
+            )
+            memory = format_recall_results(data)
+            if memory:
+                self._insert_hindsight_memory_context(chat_id, memory)
+                self.db.save_conversation_context(
+                    chat_id,
+                    {'messages': self.conversations[chat_id]},
+                    parse_mode,
+                    temperature,
+                    max_tokens_percent,
+                    session_id,
+                    self
+                )
+                logger.info("Hindsight recalled memory for bank %s", bank_id)
+        except Exception as e:
+            logger.warning("Hindsight recall failed for chat_id=%s: %s", chat_id, e)
+
+    def _has_hindsight_memory_context(self, messages: list[dict[str, Any]]) -> bool:
+        return any(
+            msg.get("role") == "system"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].startswith(HINDSIGHT_MEMORY_MARKER)
+            for msg in messages
+        )
+
+    def _insert_hindsight_memory_context(self, chat_id: int, memory: str) -> None:
+        memory_message = {
+            "role": "system",
+            "content": HINDSIGHT_CONTEXT_PROMPT.format(memory=memory),
+        }
+        messages = self.conversations[chat_id]
+        if messages and messages[0].get("role") == "system":
+            messages.insert(1, memory_message)
+        else:
+            messages.insert(0, memory_message)
+
+    def _messages_with_hindsight_context(self, chat_id: int) -> list[dict[str, Any]]:
+        return self.conversations[chat_id]
+
+    async def finalize_hindsight_session_memory(self, user_id: int, session_id: str | None) -> int:
+        if not session_id or not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_save', True):
+            return 0
+
+        try:
+            context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self)
+            messages = context.get('messages', []) if isinstance(context, dict) else []
+            transcript = self._session_transcript_for_hindsight(messages)
+            if not transcript:
+                return 0
+
+            items = await self._extract_hindsight_memory_items(transcript)
+            if not items:
+                return 0
+
+            await self._retain_hindsight_items(
+                user_id=user_id,
+                chat_id=user_id,
+                session_id=session_id,
+                items=items,
+                mode="session_close",
+                document_id=f"telegram-{user_id}-{session_id}-final",
+            )
+            return len(items)
+        except Exception as e:
+            logger.warning("Hindsight session finalize failed for user_id=%s session_id=%s: %s", user_id, session_id, e)
+            return 0
+
+    def _session_transcript_for_hindsight(self, messages: list[dict[str, Any]]) -> str:
+        lines = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "system":
+                continue
+            if isinstance(content, list):
+                text = json.dumps(content, ensure_ascii=False)
+            else:
+                text = str(content or "")
+            text = text.strip()
+            if not text:
+                continue
+            lines.append(f"{role}: {text}")
+        return "\n\n".join(lines)
+
+    async def _retain_hindsight_items(
+        self,
+        chat_id: int,
+        user_id: int,
+        items: list[dict[str, Any]],
+        session_id: str | None,
+        mode: str,
+        document_id: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        bank_id = self.get_hindsight_bank_id(user_id)
+        normalized = []
+        for item in items:
+            tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+            tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+            for tag in ("telegram", "auto_memory", f"user:{user_id}"):
+                if tag not in tags:
+                    tags.append(tag)
+
+            normalized.append({
+                "content": item["content"],
+                "context": item.get("context") or "Auto-extracted from a Telegram bot conversation.",
+                "document_id": document_id or f"telegram-{user_id}-{session_id or chat_id}-{uuid.uuid4().hex}",
+                "timestamp": now,
+                "tags": tags,
+                "metadata": {
+                    "source": "telegram_bot",
+                    "chat_id": str(chat_id),
+                    "user_id": str(user_id),
+                    "session_id": str(session_id or ""),
+                    "mode": mode,
+                },
+            })
+
+        await self.hindsight_client.retain_memories(
+            bank_id,
+            normalized,
+            async_store=bool(self.config.get('hindsight_async_store', True)),
+        )
+        logger.info("Saved %s Hindsight memory item(s) to bank %s", len(normalized), bank_id)
+
+    async def _extract_hindsight_memory_items(self, transcript: str) -> list[dict[str, Any]]:
+        messages = [
+            {"role": "system", "content": HINDSIGHT_EXTRACTOR_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "<session_transcript>\n"
+                    f"{transcript}\n"
+                    "</session_transcript>"
+                ),
+            },
+        ]
+        response = await self.client.chat.completions.create(
+            model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            messages=messages,
+            temperature=0.0,
+            max_tokens=1200,
+            stream=False,
+            extra_headers={ "X-Title": "tgBot" },
+        )
+        content = response.choices[0].message.content or ""
+        return self._parse_hindsight_memory_items(content)
+
+    def _parse_hindsight_memory_items(self, content: str) -> list[dict[str, Any]]:
+        text = (content or "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+
+        raw_items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(raw_items, list):
+            return []
+
+        max_items = int(self.config.get('hindsight_max_auto_save_items', 5))
+        items = []
+        for item in raw_items[:max_items]:
+            if not isinstance(item, dict):
+                continue
+            content_text = str(item.get("content") or "").strip()
+            if not content_text or self._looks_sensitive_memory(content_text):
+                continue
+            parsed = {
+                "content": content_text[:2000],
+                "context": str(item.get("context") or "").strip()[:500],
+            }
+            tags = item.get("tags")
+            if isinstance(tags, list):
+                parsed["tags"] = [str(tag).strip()[:80] for tag in tags if str(tag).strip()]
+            items.append(parsed)
+        return items
+
+    def _looks_sensitive_memory(self, content: str) -> bool:
+        lowered = content.lower()
+        sensitive_markers = (
+            "api key",
+            "api_key",
+            "bearer ",
+            "password",
+            "secret",
+            "token",
+            "credential",
+            "пароль",
+            "секрет",
+            "токен",
+            "ключ api",
+            "sk-",
+            "ai-serv-",
+        )
+        return any(marker in lowered for marker in sensitive_markers)
+
     def reset_chat_history(self, chat_id, content='', session_id=None):
         """
         Resets the conversation history.
@@ -927,7 +1232,7 @@ class OpenAIHelper:
         elif model_to_use in (MISTRALAI + MOONSHOTAI):
             # Mistral и Moonshot используют роль "tool" вместо "function"
             self.conversations[chat_id].append({"role": "tool", "name": function_name, "content": content})
-        elif model_to_use in (O_MODELS + GPT_4O_MODELS):
+        elif model_to_use in (O_MODELS + GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS):
             # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
             # The 'function' role is no longer supported in OpenAI API as of 2025
             function_result = f"Function {function_name} returned: {content}"
@@ -1048,7 +1353,8 @@ class OpenAIHelper:
         supported_models = (
             GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
             ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
-            PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS
+            PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS +
+            LLMGATEWAY_CHAT_MODELS
         )
         if model in supported_models:
             tokens_per_message = 3
@@ -1249,10 +1555,13 @@ class OpenAIHelper:
             sessions = self.db.list_user_sessions(user_id, is_active=1)
             active_session = next((s for s in sessions if s['is_active']), None)
             
-            # Проверяем модель в сессии
-            if active_session and active_session.get('model', ''):
-                logger.info(f"Модель из активной сессии: {active_session.get('model', '')}")
-                return active_session.get('model', '')
+            # Проверяем модель в сессии, но используем только разрешенные llmgateway модели.
+            session_model = active_session.get('model', '') if active_session else ''
+            if session_model in LLMGATEWAY_CHAT_MODELS:
+                logger.info(f"Модель из активной сессии: {session_model}")
+                return session_model
+            if session_model:
+                logger.info(f"Игнорируем неподдерживаемую модель из сессии: {session_model}")
                             
         # Возвращаем модель по умолчанию
         logger.info(f"Модель по умолчанию: {self.config['model']}")
@@ -1315,5 +1624,11 @@ class OpenAIHelper:
             if hasattr(self, 'client') and self.client:
                 await self.client.close()
                 logger.info("OpenAI client closed successfully")
+            if hasattr(self, 'gateway_client') and self.gateway_client:
+                await self.gateway_client.close()
+                logger.info("LLMGateway client closed successfully")
+            if hasattr(self, 'hindsight_client') and self.hindsight_client:
+                await self.hindsight_client.close()
+                logger.info("Hindsight client closed successfully")
         except Exception as e:
             logger.error(f"Error closing OpenAI client: {e}")
