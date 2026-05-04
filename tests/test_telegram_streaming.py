@@ -45,8 +45,8 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
-from bot import telegram_bot
-from bot.telegram_bot import ChatGPTTelegramBot
+from bot import telegram_bot  # noqa: E402
+from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -117,6 +117,7 @@ class FakeUpdate:
         self.message = message
         self.effective_message = message
         self.effective_chat = SimpleNamespace(id=message.chat_id, type="private")
+        self.effective_user = message.from_user
 
 
 def _make_context():

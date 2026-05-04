@@ -15,7 +15,7 @@ from functools import lru_cache
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle
-from telegram import InputTextMessageContent, BotCommand
+from telegram import InputTextMessageContent, BotCommand, ForceReply
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
     filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext
@@ -32,6 +32,7 @@ from .i18n import localized_text
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
+from .conversation_key import get_conversation_key
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -91,6 +92,8 @@ class ChatGPTTelegramBot:
         self.inline_queries_cache = {}
         self._inline_cache_cleanup_time = 0  # Время последней очистки кеша
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
+        self._conversation_locks = {}
+        self._conversation_locks_guard = asyncio.Lock()
         self.application = None
         # Убираем повторную инициализацию Database
         self.plugin_command_index = {}
@@ -1638,6 +1641,25 @@ class ChatGPTTelegramBot:
                     self.message_buffer[chat_id]['processing'] = False
                     
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        conversation_key = get_conversation_key(update)
+        conversation_lock = await self._get_conversation_lock(conversation_key)
+        async with conversation_lock:
+            return await self._process_message_locked(prompt, update, context)
+
+    async def _get_conversation_lock(self, conversation_key: int) -> asyncio.Lock:
+        if not hasattr(self, '_conversation_locks'):
+            self._conversation_locks = {}
+        if not hasattr(self, '_conversation_locks_guard'):
+            self._conversation_locks_guard = asyncio.Lock()
+
+        async with self._conversation_locks_guard:
+            lock = self._conversation_locks.get(conversation_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._conversation_locks[conversation_key] = lock
+            return lock
+
+    async def _process_message_locked(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Обрабатывает полное сообщение
         """

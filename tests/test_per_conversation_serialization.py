@@ -122,6 +122,7 @@ class FakeUpdate:
         self.message = message
         self.effective_message = message
         self.effective_chat = SimpleNamespace(id=message.chat_id, type="private")
+        self.effective_user = message.from_user
         self.callback_query = None
 
 
@@ -155,10 +156,6 @@ async def _run_without_indicator(update, context, coroutine, chat_action, is_inl
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="process_message has no per-conversation lock yet",
-)
 async def test_same_conversation_key_updates_are_serialized(monkeypatch):
     monkeypatch.setattr(telegram_bot, "wrap_with_indicator", _run_without_indicator)
     bot, db, _openai = _make_bot()
