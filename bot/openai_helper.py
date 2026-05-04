@@ -69,12 +69,24 @@ HINDSIGHT_EXTRACTOR_PROMPT = """Extract durable memories from the Telegram conve
 Return only JSON in this exact shape:
 {"items":[{"content":"...","context":"...","tags":["..."]}]}
 
-Save only facts that are likely useful in future conversations with the same user:
-- stable user preferences, identity details, goals, projects, constraints, decisions, and explicit "remember this" facts;
+Save only facts that are clearly durable and likely useful in future conversations with the same user:
+- explicit "remember this" facts;
+- stable user preferences, identity details, long-term goals, ongoing projects, durable constraints, and decisions;
 - important project facts or agreements that should survive across sessions.
 
-Do not save passwords, API keys, tokens, secrets, credentials, private auth data, one-off commands,
-temporary logs, generic chit-chat, or facts that are already contradicted inside the exchange.
+Do not infer preferences from weak signals. For example, do not save "user prefers Russian"
+only because the conversation is in Russian; save it only if the user explicitly says it or clearly corrects the assistant.
+
+Do not save one-off tasks or transient requests: image generation/editing requests, uploaded-image descriptions,
+audio/transcription requests, web searches, debugging logs, single SQL questions, generic chit-chat, or temporary commands.
+Do not save passwords, API keys, tokens, secrets, credentials, private auth data, or facts contradicted inside the exchange.
+
+Examples to reject:
+- User asked to draw or edit a cat with a hat.
+- User asked what is shown in an uploaded image.
+- User asked one isolated technical question and got an answer.
+
+When in doubt, save nothing.
 If there is nothing worth saving, return {"items":[]}."""
 
 REPLY_INTENT_CLASSIFIER_PROMPT = """Classify a Telegram user's reply intent.
@@ -1208,12 +1220,16 @@ class OpenAIHelper:
             model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
             messages=messages,
             temperature=0.0,
-            max_tokens=1200,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
             stream=False,
             extra_headers={ "X-Title": "tgBot" },
         )
         content = response.choices[0].message.content or ""
-        return self._parse_hindsight_memory_items(content)
+        items = self._parse_hindsight_memory_items(content)
+        if not items:
+            logger.info("Hindsight extractor returned no memory items. content_preview=%r", content[:300])
+        return items
 
     def _parse_hindsight_memory_items(self, content: str) -> list[dict[str, Any]]:
         text = (content or "").strip()

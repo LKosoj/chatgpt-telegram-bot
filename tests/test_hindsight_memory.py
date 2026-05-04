@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("tiktoken")
 
 from bot.hindsight_client import HindsightClient, format_recall_results
-from bot.openai_helper import OpenAIHelper
+from bot.openai_helper import HINDSIGHT_EXTRACTOR_PROMPT, OpenAIHelper
 from bot.plugins.hindsight_memory import HindsightMemoryPlugin
 from bot.telegram_bot import ChatGPTTelegramBot
 
@@ -244,6 +244,12 @@ def test_hindsight_is_disabled_without_token():
     assert helper.is_hindsight_enabled() is False
 
 
+def test_hindsight_extractor_prompt_rejects_transient_tasks():
+    assert "Do not infer preferences from weak signals" in HINDSIGHT_EXTRACTOR_PROMPT
+    assert "image generation/editing requests" in HINDSIGHT_EXTRACTOR_PROMPT
+    assert "When in doubt, save nothing" in HINDSIGHT_EXTRACTOR_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_finalize_hindsight_session_memory_saves_extracted_items():
     helper = make_helper()
@@ -269,6 +275,8 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
     saved_count = await helper.finalize_hindsight_session_memory(123, "session-1")
 
     assert saved_count == 1
+    assert helper.fake_completions.calls[0]["response_format"] == {"type": "json_object"}
+    assert helper.fake_completions.calls[0]["max_tokens"] == 4000
     assert helper.hindsight_client.retained[0][0] == "telegram-123"
     item = helper.hindsight_client.retained[0][1][0]
     assert item["content"] == "User prefers concise Python examples."
