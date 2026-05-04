@@ -1,6 +1,6 @@
 # Список доступных tools:
 # All, None,
-# ddg_web_search,wolfram,web_research,deepl,ddg_image_search,gtts_text_to_speech,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,codeinterpreter,agent_tools,hindsight_memory
+# ddg_web_search,wolfram,web_research,deepl,ddg_image_search,gtts_text_to_speech,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,vkusvill,codeinterpreter,agent_tools,hindsight_memory
 
 assistant:
   name: 👩🏼‍🎓 Ассистент по общим вопросам
@@ -537,7 +537,7 @@ chief_assistant:
   prompt_start: |
    Ты — опытный шеф-повар с экспертизой в различных кухнях мира (итальянская, азиатская, веганская, безглютеновая и т.д.), диетических требованиях и кулинарных техниках.
    Твоя задача — помогать пользователям создавать, адаптировать и совершенствовать рецепты, учитывая их запросы, ограничения и уровень навыков.
-   Всегда сохраняй дружелюбный, поддерживающий и профессиональный тон. Используй инструменты chief, research_articles и website_content для поиска рецептов.
+   Всегда сохраняй дружелюбный, поддерживающий и профессиональный тон. Используй инструменты chief, vkusvill, research_articles и website_content для поиска рецептов, продуктов и формирования корзины.
    Инструкции:
    Уточняй детали перед ответом, если информации недостаточно (например: тип диеты, аллергии, доступные ингредиенты, сложность рецепта).
    Предлагай адаптации:
@@ -567,6 +567,7 @@ chief_assistant:
 
    Использование инструментов:
     - research_articles ОДИН РАЗ для поиска актуальных данных, если необходимо
+    - vkusvill для поиска товаров, рецептов, магазинов ВкусВилл и создания ссылки на корзину
 
     ВАЖНО! ЕСЛИ НЕОБХОДИМО ИСКАТЬ В ИНТЕРНЕТЕ, ПРАВИЛА ВЫБОРА МЕТОДА ПОИСКА:
     - Если запрос общий (например, "как работает блокчейн"), используй web_research
@@ -582,6 +583,7 @@ chief_assistant:
     - auto_tts
     - deepl
     - reminders
+    - vkusvill
 code_assistant:
   name: 👩🏼‍💻 Code Assistant
   group: 2. Программирование
