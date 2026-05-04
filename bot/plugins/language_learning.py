@@ -1,11 +1,14 @@
 #language_learning.py
 import os
 import json
+import logging
 import random
 from datetime import datetime
 from typing import Dict, List
 
 from .plugin import Plugin
+
+logger = logging.getLogger(__name__)
 
 class LanguageLearningPlugin(Plugin):
     """
@@ -94,6 +97,16 @@ class LanguageLearningPlugin(Plugin):
         """Save user progress to file"""
         with open(self.users_progress_file, 'w', encoding='utf-8') as f:
             json.dump(self.users_progress, f, ensure_ascii=False, indent=2)
+
+    def _get_owner_user_id(self, helper, kwargs) -> str:
+        request_context = kwargs.get("request_context")
+        if request_context is not None and request_context.user_id is not None:
+            return str(request_context.user_id)
+        if kwargs.get("user_id") is not None:
+            return str(kwargs["user_id"])
+
+        logger.warning("Deprecated language_learning owner fallback to helper.user_id")
+        return str(helper.user_id)
 
     def get_exercise_prompt(self, language: str, level: str, exercise_type: str) -> str:
         """Generate exercise prompt based on parameters"""
@@ -191,7 +204,7 @@ class LanguageLearningPlugin(Plugin):
             }
 
         elif function_name == "track_progress":
-            user_id = str(helper.user_id)
+            user_id = self._get_owner_user_id(helper, kwargs)
             language = kwargs.get('language').lower()
             completed = kwargs.get('completed_exercise')
             

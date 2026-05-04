@@ -60,10 +60,10 @@ class FakeResponse:
 
 
 class RacingPluginManager:
-    def __init__(self, task_plugin, language_plugin=None):
-        self.plugins = {
-            "task_management.create_task": task_plugin,
-        }
+    def __init__(self, task_plugin=None, language_plugin=None):
+        self.plugins = {}
+        if task_plugin is not None:
+            self.plugins["task_management.create_task"] = task_plugin
         if language_plugin is not None:
             self.plugins["language_learning.track_progress"] = language_plugin
         self.first_call_started = asyncio.Event()
@@ -189,6 +189,42 @@ async def test_concurrent_task_calls_keep_owners_separate(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_language_progress_calls_keep_owners_separate(tmp_path):
+    language_plugin = LanguageLearningPlugin()
+    language_plugin.initialize(storage_root=str(tmp_path))
+    plugin_manager = RacingPluginManager(language_plugin=language_plugin)
+    helper = SharedHelper(plugin_manager)
+
+    first = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=1001,
+        response=FakeResponse(
+            "language_learning.track_progress",
+            {"language": "english", "completed_exercise": True},
+        ),
+        allowed_plugins=["All"],
+        user_id=101,
+    ))
+    await plugin_manager.first_call_started.wait()
+    second = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=1002,
+        response=FakeResponse(
+            "language_learning.track_progress",
+            {"language": "english", "completed_exercise": True},
+        ),
+        allowed_plugins=["All"],
+        user_id=202,
+    ))
+
+    await asyncio.gather(first, second)
+
+    assert set(language_plugin.users_progress) == {"101", "202"}
+    assert language_plugin.users_progress["101"]["english"]["exercises_completed"] == 1
+    assert language_plugin.users_progress["202"]["english"]["exercises_completed"] == 1
+
+
+@pytest.mark.asyncio
 async def test_task_management_uses_request_context_user_id(tmp_path):
     plugin = TaskManagementPlugin()
     plugin.initialize(storage_root=str(tmp_path))
@@ -241,6 +277,61 @@ async def test_task_management_legacy_helper_user_id_fallback(tmp_path, caplog):
 
     assert set(plugin.tasks) == {"303"}
     assert "Deprecated task_management owner fallback to helper.user_id" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_language_learning_uses_request_context_user_id(tmp_path):
+    plugin = LanguageLearningPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=999)
+    request_context = RequestContext(chat_id=555, user_id=101, message_id=123)
+
+    await plugin.execute(
+        "track_progress",
+        helper,
+        language="english",
+        completed_exercise=True,
+        request_context=request_context,
+    )
+
+    assert set(plugin.users_progress) == {"101"}
+    assert plugin.users_progress["101"]["english"]["exercises_completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_language_learning_uses_explicit_user_id_without_request_context(tmp_path):
+    plugin = LanguageLearningPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=999)
+
+    await plugin.execute(
+        "track_progress",
+        helper,
+        language="english",
+        completed_exercise=True,
+        user_id=202,
+    )
+
+    assert set(plugin.users_progress) == {"202"}
+    assert plugin.users_progress["202"]["english"]["exercises_completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_language_learning_legacy_helper_user_id_fallback(tmp_path, caplog):
+    plugin = LanguageLearningPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=303)
+
+    with caplog.at_level(logging.WARNING):
+        await plugin.execute(
+            "track_progress",
+            helper,
+            language="english",
+            completed_exercise=True,
+        )
+
+    assert set(plugin.users_progress) == {"303"}
+    assert "Deprecated language_learning owner fallback to helper.user_id" in caplog.text
 
 
 @pytest.mark.asyncio
