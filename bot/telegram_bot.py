@@ -101,6 +101,7 @@ class ChatGPTTelegramBot:
         self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
         self._background_tasks = []
         self._cleanup_called = False
+        self._plugin_message_handlers_registered = False
 
     def get_chat_modes(self):
         """
@@ -2153,6 +2154,64 @@ class ChatGPTTelegramBot:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
 
+    def _register_plugin_message_handlers(
+        self,
+        application: Application,
+        source: str,
+    ):
+        if getattr(self, "_plugin_message_handlers_registered", False):
+            logger.info(
+                "Plugin message handlers already registered; skipping %s",
+                source,
+            )
+            return
+
+        message_handlers = self.openai.plugin_manager.get_message_handlers()
+        for handler_config in message_handlers:
+            if 'handler' in handler_config and 'filters' not in handler_config:
+                handler = handler_config['handler']
+                try:
+                    application.add_handler(handler)
+                    logger.info(
+                        "Successfully added handler in %s: %s",
+                        source,
+                        type(handler).__name__,
+                    )
+                except TypeError as e:
+                    logger.error(
+                        "Invalid handler type %s in %s: %s",
+                        type(handler).__name__,
+                        source,
+                        e,
+                    )
+                    continue
+            elif 'filters' in handler_config:
+                filter_obj = handler_config['filters']
+                if isinstance(filter_obj, str):
+                    key = filter_obj.replace("filters.", "").strip()
+                    filter_obj = getattr(filters, key, None)
+                if filter_obj is None:
+                    logger.error(
+                        "Invalid filter in plugin handler config: %s",
+                        handler_config.get('filters'),
+                    )
+                    continue
+
+                def plugin_message_handler(update, context, h=handler_config):
+                    return self.handle_plugin_command(
+                        update,
+                        context,
+                        {"handler": h['handler'], **h['handler_kwargs']},
+                    )
+
+                handler = MessageHandler(
+                    filter_obj,
+                    plugin_message_handler,
+                )
+                application.add_handler(handler)
+
+        self._plugin_message_handlers_registered = True
+
     async def post_init(self, application: Application):
         """
         Post initialization hook for the bot.
@@ -2200,34 +2259,8 @@ class ChatGPTTelegramBot:
             )
             application.add_handler(handler)
 
-        # Регистрируем обработчики сообщений от плагинов
-        for handler_config in self.openai.plugin_manager.get_message_handlers():
-            if 'handler' in handler_config and 'filters' not in handler_config:
-                # Если handler уже является готовым обработчиком (например, ConversationHandler)
-                handler = handler_config['handler']
-                try:
-                    application.add_handler(handler)
-                    logger.info(f"Successfully added handler in post_init: {type(handler).__name__}")
-                except TypeError as e:
-                    logger.error(f"Invalid handler type {type(handler).__name__} in post_init: {e}")
-                    continue
-            elif 'filters' in handler_config:
-                # Если указаны фильтры, создаем MessageHandler
-                filter_obj = handler_config['filters']
-                if isinstance(filter_obj, str):
-                    key = filter_obj.replace("filters.", "").strip()
-                    filter_obj = getattr(filters, key, None)
-                if filter_obj is None:
-                    logger.error(f"Invalid filter in plugin handler config: {handler_config.get('filters')}")
-                    continue
-                handler = MessageHandler(
-                    filter_obj,
-                    lambda update, context, h=handler_config: self.handle_plugin_command(
-                        update, context, {"handler": h['handler'], **h['handler_kwargs']}
-                    )
-                )
-                application.add_handler(handler)
-        
+        self._register_plugin_message_handlers(application, "post_init")
+
         # Обновляем команды бота
         await application.bot.set_my_commands(self.commands)
         await application.bot.set_my_commands(
@@ -3022,6 +3055,7 @@ class ChatGPTTelegramBot:
             self.application = application
             self.openai.bot = application.bot
             self._background_tasks = []
+            self._plugin_message_handlers_registered = False
 
             application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
@@ -3043,34 +3077,7 @@ class ChatGPTTelegramBot:
                 filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
                 self.transcribe))
 
-            # Регистрируем обработчики сообщений от плагинов
-            for handler_config in self.openai.plugin_manager.get_message_handlers():
-                if 'handler' in handler_config and 'filters' not in handler_config:
-                    # Если handler уже является готовым обработчиком (например, ConversationHandler)
-                    handler = handler_config['handler']
-                    # Проверяем, что это действительно валидный обработчик
-                    try:
-                        application.add_handler(handler)
-                        logger.info(f"Successfully added handler: {type(handler).__name__}")
-                    except TypeError as e:
-                        logger.error(f"Invalid handler type {type(handler).__name__}: {e}")
-                        continue
-                elif 'filters' in handler_config:
-                    # Если указаны фильтры, создаем MessageHandler
-                    filter_obj = handler_config['filters']
-                    if isinstance(filter_obj, str):
-                        key = filter_obj.replace("filters.", "").strip()
-                        filter_obj = getattr(filters, key, None)
-                    if filter_obj is None:
-                        logger.error(f"Invalid filter in plugin handler config: {handler_config.get('filters')}")
-                        continue
-                    handler = MessageHandler(
-                        filter_obj,
-                        lambda update, context, h=handler_config: self.handle_plugin_command(
-                            update, context, {"handler": h['handler'], **h['handler_kwargs']}
-                        )
-                    )
-                    application.add_handler(handler)
+            self._register_plugin_message_handlers(application, "run")
 
             application.add_handler(MessageHandler(
                 filters.Document.TXT |

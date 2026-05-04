@@ -172,13 +172,6 @@ def _make_bot(message_handlers):
     return bot, plugin_manager
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Plugin message handlers are currently registered in run() "
-        "and post_init()."
-    ),
-)
 def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
     monkeypatch,
 ):
@@ -194,7 +187,7 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
             "handler_kwargs": {},
         },
     ]
-    bot, _ = _make_bot(message_handlers)
+    bot, plugin_manager = _make_bot(message_handlers)
     application = FakeApplication()
     application.owner = bot
     monkeypatch.setattr(
@@ -215,7 +208,8 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
         for handler in application.handlers
         if (
             isinstance(handler, MessageHandler)
-            and getattr(handler.callback, "__name__", None) == "<lambda>"
+            and getattr(handler.callback, "__name__", None)
+            == "plugin_message_handler"
         )
     ]
     plugin_indexes = [
@@ -236,7 +230,49 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
 
     assert (
         application.run_polling_calls,
+        plugin_manager.get_message_handlers_calls,
         ready_handler_count,
         len(generated_plugin_handlers),
         order_is_preserved,
-    ) == (1, 1, 1, True)
+    ) == (1, 1, 1, 1, True)
+
+
+@pytest.mark.asyncio
+async def test_post_init_guard_skips_plugin_message_handlers_on_second_call():
+    ready_handler = MessageHandler(
+        filters.Document.ALL,
+        plugin_message_callback,
+    )
+    message_handlers = [
+        {"handler": ready_handler},
+        {
+            "filters": filters.TEXT,
+            "handler": plugin_message_callback,
+            "handler_kwargs": {},
+        },
+    ]
+    bot, plugin_manager = _make_bot(message_handlers)
+    bot._background_tasks = [object()]
+    application = FakeApplication()
+
+    await bot.post_init(application)
+    await bot.post_init(application)
+
+    generated_plugin_handlers = [
+        handler
+        for handler in application.handlers
+        if (
+            isinstance(handler, MessageHandler)
+            and getattr(handler.callback, "__name__", None)
+            == "plugin_message_handler"
+        )
+    ]
+    ready_handler_count = sum(
+        handler is ready_handler for handler in application.handlers
+    )
+
+    assert (
+        plugin_manager.get_message_handlers_calls,
+        ready_handler_count,
+        len(generated_plugin_handlers),
+    ) == (1, 1, 1)
