@@ -52,15 +52,6 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
-STREAMING_BUG_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Current streaming path unpacks 3 values from a 5-value "
-        "Database.get_conversation_context() result and silently continues."
-    ),
-)
-
-
 class FakePluginManager:
     def get_plugin(self, name):
         return None
@@ -157,7 +148,6 @@ def _make_bot(chunks, conversation_context):
 
 
 @pytest.mark.asyncio
-@STREAMING_BUG_XFAIL
 async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
     edit_message = AsyncMock()
     monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
@@ -182,7 +172,29 @@ async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
 
 
 @pytest.mark.asyncio
-@STREAMING_BUG_XFAIL
+async def test_streaming_falls_back_to_html_when_parse_mode_is_none(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "1"),
+        ],
+        conversation_context=({"messages": []}, None, 0.8, 80, "session-1"),
+    )
+    update = FakeUpdate(FakeMessage())
+
+    await bot.process_message("hello", update, _make_context())
+
+    assert len(update.effective_message.reply_text_calls) == 1
+    assert (
+        update.effective_message.reply_text_calls[0]["parse_mode"]
+        == telegram_bot.constants.ParseMode.HTML
+    )
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_streaming_reply_text_failure_is_logged_and_does_not_retry_each_chunk(
     monkeypatch,
     caplog,

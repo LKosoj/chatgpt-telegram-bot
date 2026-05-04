@@ -1753,16 +1753,27 @@ class ChatGPTTelegramBot:
                             if sent_message is not None:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
                                                                 message_id=sent_message.message_id)
-                            # Получаем parse_mode из контекста
-                            chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
+                            _, parse_mode, _, _, _ = self.db.get_conversation_context(chat_id) or (
+                                None, None, None, None, None
+                            )
+                            parse_mode = parse_mode or constants.ParseMode.HTML
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
                                 text=content,
                                 parse_mode=parse_mode
                             )
-                        except:
-                            continue
+                        except Exception:
+                            logger.error("Failed to send initial streaming message", exc_info=True)
+                            try:
+                                await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                    text=localized_text('chat_fail', self.config['bot_language'])
+                                )
+                            except Exception:
+                                logger.error("Failed to send streaming error message", exc_info=True)
+                            break
 
                     elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
                         prev = content
