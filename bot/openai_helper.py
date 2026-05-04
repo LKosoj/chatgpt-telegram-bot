@@ -100,7 +100,7 @@ def default_max_tokens(model: str = None) -> int:
     if model == LLMGATEWAY_LIGHT_MODEL:
         return 128_000
     if model == LLMGATEWAY_HIGH_MODEL:
-        return 200_000
+        return 256_000
     return 200_000
 
 
@@ -823,20 +823,18 @@ class OpenAIHelper:
                     self.conversations[chat_id] = saved_context['messages']
 
             self.last_updated[chat_id] = datetime.datetime.now()
+            history_content = self._vision_history_content(content)
 
             if self.config['enable_vision_follow_up_questions']:
                 self.conversations_vision[chat_id] = True
-                self.__add_to_history(chat_id, role="user", content=content)
+                self.__add_to_history(chat_id, role="user", content=history_content)
             else:
-                for message in content:
-                    if message['type'] == 'text':
-                        query = message['text']
-                        break
-                self.__add_to_history(chat_id, role="user", content=query)
+                self.__add_to_history(chat_id, role="user", content=history_content)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
-            token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > default_max_tokens()
+            vision_model = self.config['vision_model']
+            token_count = self.__count_tokens(self.conversations[chat_id], vision_model)
+            exceeded_max_tokens = token_count + self.config['vision_max_tokens'] > default_max_tokens(vision_model)
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -856,7 +854,7 @@ class OpenAIHelper:
             message = {'role':'user', 'content':content}
 
             common_args = {
-                'model': self.config['vision_model'],
+                'model': vision_model,
                 'messages': self.conversations[chat_id][:-1] + [message],
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
@@ -890,6 +888,15 @@ class OpenAIHelper:
             logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
+
+    @staticmethod
+    def _vision_history_content(content: list) -> str:
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                text_parts.append(str(item.get('text', '')))
+        text = ' '.join(part.strip() for part in text_parts if part and part.strip())
+        return text or "[image]"
 
 
     async def interpret_image(self, chat_id, fileobj, prompt=None):
@@ -1657,7 +1664,7 @@ class OpenAIHelper:
             500,  # Минимальное количество токенов для генерации
             min(
                 total_max_tokens - current_tokens - reserved_tokens,  # Оставшиеся токены
-                total_max_tokens // 3  # Не более трети от общего количества
+                total_max_tokens // 2  # Не более половины от общего количества
             )
         )
         

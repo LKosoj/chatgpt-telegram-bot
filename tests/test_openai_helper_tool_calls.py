@@ -4,7 +4,7 @@ import json
 
 pytest.importorskip("tiktoken")
 
-from bot.openai_helper import OpenAIHelper
+from bot.openai_helper import OpenAIHelper, default_max_tokens
 
 
 class DummyDB:
@@ -109,6 +109,19 @@ def _make_helper(plugin_manager):
     helper.client = DummyClient()
     helper.conversations[1] = []
     return helper
+
+
+def test_high_model_default_context_is_256k():
+    assert default_max_tokens("llmgateway/high") == 256_000
+
+
+def test_vision_history_content_keeps_only_text():
+    content = [
+        {"type": "text", "text": "что на этой картинке?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+    ]
+
+    assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
 
 
 @pytest.mark.asyncio
