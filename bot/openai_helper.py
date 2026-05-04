@@ -502,6 +502,38 @@ class OpenAIHelper:
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
+    def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None):
+        saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+        allowed_plugins = ['All']
+
+        if saved_context and 'messages' in saved_context:
+            system_message = next(
+                (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
+                None
+            )
+
+            if not system_message:
+                logger.warning(
+                    f'System message not found in context for chat_id {chat_id}, '
+                    f'session {session_id}. Resetting session.'
+                )
+                self.reset_chat_history(chat_id, '', session_id)
+                saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+                if saved_context and 'messages' in saved_context:
+                    system_message = next(
+                        (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
+                        None
+                    )
+
+            current_mode = None
+            if system_message:
+                current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get('content', ''))
+
+            if current_mode and 'tools' in current_mode:
+                allowed_plugins = current_mode['tools']
+
+        return self.plugin_manager.filter_allowed_plugins(allowed_plugins)
+
     @retry(
         reraise=True,
         retry=retry_if_exception_type(openai.RateLimitError),
@@ -658,39 +690,7 @@ class OpenAIHelper:
                 })
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                # Получаем текущий режим из контекста
-                saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
-                allowed_plugins = ['All']  # По умолчанию разрешены все плагины
-                
-                if saved_context and 'messages' in saved_context:
-                    system_message = next(
-                        (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
-                        None
-                    )
-                    
-                    # Если системное сообщение отсутствует, контекст поврежден - сбрасываем сессию
-                    if not system_message:
-                        logger.warning(f'System message not found in context for chat_id {chat_id}, session {session_id}. Resetting session.')
-                        # Сброс истории чата с пустым содержимым (будет использован режим по умолчанию)
-                        self.reset_chat_history(chat_id, '', session_id)
-                        # После сброса получаем новый контекст
-                        saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
-                        if saved_context and 'messages' in saved_context:
-                            system_message = next(
-                                (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
-                                None
-                            )
-                    
-                    current_mode = None
-                    if system_message:
-                        current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get('content', ''))
-                    
-                    # Получаем список разрешенных плагинов из режима
-                    if current_mode and 'tools' in current_mode:
-                        allowed_plugins = current_mode['tools']
-                
-                allowed_plugins = self.plugin_manager.filter_allowed_plugins(allowed_plugins)
-                # Получаем спецификации функций с учетом разрешенных плагинов
+                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
                 if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):

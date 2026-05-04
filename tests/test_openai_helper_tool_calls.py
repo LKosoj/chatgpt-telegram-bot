@@ -199,6 +199,59 @@ def test_vision_history_content_keeps_only_text():
     assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
 
 
+def test_resolve_allowed_plugins_returns_mode_tools():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "weather-only"},
+        ],
+    }
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, db=DummyDB(saved_context))
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: {"tools": ["weather"]},
+    )
+
+    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["weather"]
+    assert pm.filtered[-1] == ["weather"]
+
+
+def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "plain"},
+        ],
+    }
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, db=DummyDB(saved_context))
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["All"]
+    assert pm.filtered[-1] == ["All"]
+
+
+@pytest.mark.asyncio
+async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
+    monkeypatch.setattr(
+        helper,
+        "resolve_allowed_plugins",
+        lambda chat_id, session_id=None: ["weather"],
+    )
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    )
+
+    assert answer == "done"
+    assert total_tokens == 3
+    assert pm.spec_calls == [["weather"]]
+
+
 @pytest.mark.asyncio
 async def test_parallel_tool_calls_no_direct_result():
     responses = {
