@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-def _load_ask_your_pdf_module(monkeypatch, extracted_text="Extracted PDF text"):
+def _load_ask_your_pdf_module(
+    monkeypatch,
+    extracted_text="Extracted PDF text",
+):
     fake_pypdf2 = types.ModuleType("PyPDF2")
 
     class FakePage:
@@ -46,7 +49,9 @@ def _plugin(tmp_path, module):
 
 
 def _helper(answer="PDF analysis result"):
-    return SimpleNamespace(get_chat_response=AsyncMock(return_value=(answer, 123)))
+    return SimpleNamespace(
+        get_chat_response=AsyncMock(return_value=(answer, 123)),
+    )
 
 
 def _helper_prompt(helper):
@@ -57,12 +62,14 @@ def _helper_prompt(helper):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="ask_your_pdf.analyze_pdf does not yet extract text or define analysis_prompt/result",
-)
-async def test_analyze_pdf_happy_path_extracts_text_and_returns_result(monkeypatch, tmp_path):
-    module = _load_ask_your_pdf_module(monkeypatch, extracted_text="Extracted PDF text")
+async def test_analyze_pdf_happy_path_extracts_text_and_returns_result(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_ask_your_pdf_module(
+        monkeypatch,
+        extracted_text="Extracted PDF text",
+    )
     plugin = _plugin(tmp_path, module)
     pdf_path = _create_pdf(tmp_path / "source.pdf")
     helper = _helper()
@@ -85,7 +92,10 @@ async def test_analyze_pdf_happy_path_extracts_text_and_returns_result(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_analyze_pdf_cache_hit_returns_cached_result_without_helper(monkeypatch, tmp_path):
+async def test_analyze_pdf_cache_hit_returns_cached_result_without_helper(
+    monkeypatch,
+    tmp_path,
+):
     module = _load_ask_your_pdf_module(monkeypatch)
     plugin = _plugin(tmp_path, module)
     pdf_path = _create_pdf(tmp_path / "cached.pdf")
@@ -107,7 +117,10 @@ async def test_analyze_pdf_cache_hit_returns_cached_result_without_helper(monkey
 
 
 @pytest.mark.asyncio
-async def test_analyze_pdf_missing_file_returns_controlled_error_without_helper(monkeypatch, tmp_path):
+async def test_analyze_pdf_missing_file_returns_error_without_helper(
+    monkeypatch,
+    tmp_path,
+):
     module = _load_ask_your_pdf_module(monkeypatch)
     plugin = _plugin(tmp_path, module)
     helper = _helper()
@@ -124,13 +137,75 @@ async def test_analyze_pdf_missing_file_returns_controlled_error_without_helper(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="ask_your_pdf.analyze_pdf does not yet truncate extracted text before helper calls",
-)
-async def test_analyze_pdf_truncates_oversized_extracted_text(monkeypatch, tmp_path):
+async def test_analyze_pdf_falls_back_to_textract_when_pypdf2_has_no_text(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_ask_your_pdf_module(monkeypatch)
+    plugin = _plugin(tmp_path, module)
+    pdf_path = _create_pdf(tmp_path / "fallback.pdf")
+    helper = _helper()
+    monkeypatch.setattr(
+        plugin,
+        "_extract_text_with_pypdf2",
+        lambda file_path: "",
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_extract_text_with_textract",
+        lambda file_path: "Textract fallback text",
+    )
+
+    result = await plugin.execute(
+        "analyze_pdf",
+        helper,
+        file_path=str(pdf_path),
+        query="Use fallback extractor",
+    )
+
+    assert result["result"] == "PDF analysis result"
+    prompt = _helper_prompt(helper)
+    assert "Textract fallback text" in prompt
+
+
+@pytest.mark.asyncio
+async def test_analyze_pdf_error_when_text_cannot_be_extracted(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_ask_your_pdf_module(monkeypatch)
+    plugin = _plugin(tmp_path, module)
+    pdf_path = _create_pdf(tmp_path / "empty.pdf")
+    helper = _helper()
+    monkeypatch.setattr(
+        plugin,
+        "_extract_text_with_pypdf2",
+        lambda file_path: "",
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_extract_text_with_textract",
+        lambda file_path: "",
+    )
+
+    result = await plugin.execute(
+        "analyze_pdf",
+        helper,
+        file_path=str(pdf_path),
+        query="Analyze empty extraction",
+    )
+
+    assert "Could not extract text from PDF" in result["error"]
+    helper.get_chat_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_pdf_truncates_oversized_text(monkeypatch, tmp_path):
     extracted_text = "BEGIN " + ("x" * 120000) + " SENTINEL_AFTER_LIMIT"
-    module = _load_ask_your_pdf_module(monkeypatch, extracted_text=extracted_text)
+    module = _load_ask_your_pdf_module(
+        monkeypatch,
+        extracted_text=extracted_text,
+    )
     plugin = _plugin(tmp_path, module)
     pdf_path = _create_pdf(tmp_path / "large.pdf")
     helper = _helper()
@@ -151,11 +226,10 @@ async def test_analyze_pdf_truncates_oversized_extracted_text(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="ask_your_pdf.upload_pdf currently accepts arbitrary existing paths",
-)
-async def test_upload_pdf_rejects_path_outside_plugin_storage(monkeypatch, tmp_path):
+async def test_upload_pdf_rejects_path_outside_plugin_storage(
+    monkeypatch,
+    tmp_path,
+):
     module = _load_ask_your_pdf_module(monkeypatch)
     storage_root = tmp_path / "plugin-storage"
     plugin = _plugin(storage_root, module)
