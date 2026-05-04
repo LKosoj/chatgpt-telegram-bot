@@ -156,10 +156,6 @@ def _private_update(data):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="group prompt selection still uses actor user_id for session DB lookup",
-)
 @pytest.mark.asyncio
 async def test_group_prompt_selection_uses_group_conversation_key_for_session_db():
     bot = _make_bot(active_sessions=[])
@@ -178,10 +174,6 @@ async def test_group_prompt_selection_uses_group_conversation_key_for_session_db
     assert -100123 in bot.openai.conversations
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="group session switch still uses actor user_id instead of group conversation_key",
-)
 @pytest.mark.asyncio
 async def test_group_session_switch_uses_group_conversation_key():
     bot = _make_bot()
@@ -194,10 +186,6 @@ async def test_group_session_switch_uses_group_conversation_key():
     assert bot.openai.conversations[-100123] == [{"role": "user", "content": "group history"}]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="group session delete still uses actor user_id instead of group conversation_key",
-)
 @pytest.mark.asyncio
 async def test_group_session_delete_uses_group_conversation_key():
     bot = _make_bot()

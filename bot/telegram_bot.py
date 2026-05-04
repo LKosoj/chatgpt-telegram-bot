@@ -623,20 +623,16 @@ class ChatGPTTelegramBot:
             logger.warning("reset called without effective_chat (likely inline query)")
             return
             
-        chat_id = update.effective_chat.id
         is_callback = bool(update.callback_query)
-        user_id = None
         
         # Получаем информацию о пользователе из callback_query или message
         if is_callback:
-            user_id = update.callback_query.from_user.id
             if not await is_allowed(self.config, update, context):
                 await update.callback_query.edit_message_text(
                     text=localized_text('access_denied_command', self.config['bot_language'])
                 )
                 return
         elif update.message:
-            user_id = update.message.from_user.id
             # Для обычных сообщений используем стандартную проверку
             if not await is_allowed(self.config, update, context):
                 await self.send_disallowed_message(update, context)
@@ -658,8 +654,9 @@ class ChatGPTTelegramBot:
             return
 
         try:
-            # Получаем список сессий пользователя
-            sessions = self.db.list_user_sessions(user_id)
+            conversation_key = get_conversation_key(update)
+            # Получаем список сессий текущего conversation key
+            sessions = self.db.list_user_sessions(conversation_key)
             
             # Используем кешированные режимы для определения имен режимов
             chat_modes = self.get_chat_modes()
@@ -753,7 +750,7 @@ class ChatGPTTelegramBot:
                     ) + "\n"
                     
                     # Добавляем информацию о модели сессии
-                    current_model = self.openai.get_current_model(user_id)
+                    current_model = self.openai.get_current_model(conversation_key)
                     message_text += localized_text('session_model_label', self.config['bot_language']).format(
                         model=current_model
                     ) + "\n"
@@ -824,8 +821,7 @@ class ChatGPTTelegramBot:
             )
             return
         
-        chat_id = query.message.chat_id
-        user_id = query.from_user.id
+        conversation_key = get_conversation_key(update)
         
         # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
@@ -891,13 +887,13 @@ class ChatGPTTelegramBot:
                 mode = value
                 if mode in chat_modes:
                     # Получаем текущую активную сессию
-                    sessions = self.db.list_user_sessions(user_id, is_active=1)
+                    sessions = self.db.list_user_sessions(conversation_key, is_active=1)
                     active_session = next((s for s in sessions if s['is_active']), None)
                     
                     if not active_session:
                         # Если нет активной сессии, создаем новую
                         session_id = self.db.create_session(
-                            user_id=user_id,
+                            user_id=conversation_key,
                             max_sessions=self.config.get('max_sessions', 5),
                             openai_helper=self.openai
                         )
@@ -906,7 +902,7 @@ class ChatGPTTelegramBot:
                     
                     mode_data = chat_modes[mode]
                     # Получаем текущий контекст сессии
-                    current_context = self.openai.conversations.get(chat_id, [])
+                    current_context = self.openai.conversations.get(conversation_key, [])
                     
                     # Добавляем системное сообщение в начало контекста
                     reset_content = mode_data.get('prompt_start', '')
@@ -919,11 +915,11 @@ class ChatGPTTelegramBot:
                         current_context.insert(0, system_message)
                     
                     # Обновляем контекст в OpenAI и базе данных
-                    self.openai.conversations[chat_id] = current_context
+                    self.openai.conversations[conversation_key] = current_context
                     
                     # Сохраняем настройки режима в базу данных
                     self.db.save_conversation_context(
-                        chat_id, 
+                        conversation_key,
                         {'messages': current_context}, 
                         mode_data.get('parse_mode', 'HTML'),
                         mode_data.get('temperature', self.openai.config['temperature']),
@@ -2811,8 +2807,7 @@ class ChatGPTTelegramBot:
             )
             return
 
-        chat_id = query.message.chat_id
-        user_id = query.from_user.id
+        conversation_key = get_conversation_key(update)
         data = query.data.split(':')
         action = data[1]
 
@@ -2821,7 +2816,7 @@ class ChatGPTTelegramBot:
             session_id = data[2]
             
             # Получаем детали сессии
-            session = self.db.get_session_details(user_id, session_id)
+            session = self.db.get_session_details(conversation_key, session_id)
             if not session:
                 await query.edit_message_text(
                     localized_text('session_not_found', self.config['bot_language'])
@@ -2830,7 +2825,7 @@ class ChatGPTTelegramBot:
 
             # Получаем все сообщения сессии
             context_messages = self.db.get_conversation_context(
-                user_id, 
+                conversation_key,
                 session_id=session_id, 
                 openai_helper=self.openai
             )
@@ -2882,7 +2877,7 @@ class ChatGPTTelegramBot:
             if action == "new":
                 # Создаем новую сессию
                 session_id = self.db.create_session(
-                    user_id=user_id,
+                    user_id=conversation_key,
                     max_sessions=self.config.get('MAX_SESSIONS', 5),
                     openai_helper=self.openai
                 )
@@ -2895,7 +2890,7 @@ class ChatGPTTelegramBot:
                 
                 # Сбрасываем историю чата для новой сессии
                 self.openai.reset_chat_history(
-                    chat_id=user_id,
+                    chat_id=conversation_key,
                     content='',
                     session_id=session_id
                 )
@@ -2904,23 +2899,23 @@ class ChatGPTTelegramBot:
             elif action == "switch":
                 # Переключаемся на выбранную сессию
                 session_id = data[2]
-                self.db.switch_active_session(user_id, session_id)
+                self.db.switch_active_session(conversation_key, session_id)
                 # Загружаем контекст выбранной сессии
-                current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(user_id, session_id)
+                current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(conversation_key, session_id)
                 if current_context and 'messages' in current_context:
-                    self.openai.conversations[user_id] = current_context['messages']
+                    self.openai.conversations[conversation_key] = current_context['messages']
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                self._schedule_hindsight_session_finalize(user_id, session_id)
-                self.db.delete_session(user_id, session_id, openai_helper=self.openai)
+                self._schedule_hindsight_session_finalize(conversation_key, session_id)
+                self.db.delete_session(conversation_key, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
-                session_id = self.db.get_active_session_id(user_id)
-                current_context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self.openai)
+                session_id = self.db.get_active_session_id(conversation_key)
+                current_context, _, _, _, _ = self.db.get_conversation_context(conversation_key, session_id, openai_helper=self.openai)
                 if current_context and 'messages' in current_context:
-                    self.openai.conversations[user_id] = current_context['messages']
+                    self.openai.conversations[conversation_key] = current_context['messages']
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "change_mode":
@@ -2968,7 +2963,7 @@ class ChatGPTTelegramBot:
             elif action == "export":
                 # Экспортируем сессии в YAML
                 try:
-                    filepath = self.db.export_sessions_to_yaml(user_id)
+                    filepath = self.db.export_sessions_to_yaml(conversation_key)
                     
                     if filepath:
                         # Отправляем файл пользователю
