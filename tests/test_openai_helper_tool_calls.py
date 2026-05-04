@@ -1,26 +1,84 @@
-import types
-import pytest
+import importlib.util
 import json
+import sys
+import types
 
-pytest.importorskip("tiktoken")
+import pytest
+
+_INSERTED_MODULES = []
+
+
+def _install_module_if_missing(name, module):
+    if importlib.util.find_spec(name) is None:
+        sys.modules[name] = module
+        _INSERTED_MODULES.append(name)
+
+
+class _FakeEncoding:
+    def encode(self, value):
+        return list(value)
+
+
+_tiktoken = types.ModuleType("tiktoken")
+_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
+_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_install_module_if_missing("tiktoken", _tiktoken)
+
+_markdown2 = types.ModuleType("markdown2")
+_markdown2.markdown = lambda text, *args, **kwargs: text
+_install_module_if_missing("markdown2", _markdown2)
+
+
+def _retry(*args, **kwargs):
+    def decorator(func):
+        return func
+
+    return decorator
+
+
+_tenacity = types.ModuleType("tenacity")
+_tenacity.retry = _retry
+_tenacity.stop_after_attempt = lambda *args, **kwargs: None
+_tenacity.wait_fixed = lambda *args, **kwargs: None
+_tenacity.retry_if_exception_type = lambda *args, **kwargs: None
+_install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import OpenAIHelper, default_max_tokens
 
+for _module_name in _INSERTED_MODULES:
+    sys.modules.pop(_module_name, None)
+
+
+ALLOWLIST_BUG_XFAIL = pytest.mark.xfail(
+    strict=True,
+    reason="Tool-call handling currently executes tools outside the chat-mode allow-list.",
+)
+
 
 class DummyDB:
+    def __init__(self, context=None):
+        self.context = context or {}
+        self.saved_contexts = []
+
     def list_user_sessions(self, user_id, is_active=1):
         return []
 
     def get_conversation_context(self, *args, **kwargs):
-        return {}, None, None, None, None
+        return self.context, None, 0.1, 80, "session-1"
+
+    def save_conversation_context(self, *args, **kwargs):
+        self.saved_contexts.append((args, kwargs))
 
 
 class DummyPluginManager:
     def __init__(self, responses):
         self.responses = responses
         self.calls = []
+        self.spec_calls = []
+        self.filtered = []
 
     def filter_allowed_plugins(self, allowed_plugins):
+        self.filtered.append(list(allowed_plugins or []))
         return allowed_plugins
 
     async def call_function(self, name, helper, arguments):
@@ -28,17 +86,29 @@ class DummyPluginManager:
         return self.responses[name]
 
     def get_functions_specs(self, helper, model_to_use, allowed_plugins):
+        self.spec_calls.append(list(allowed_plugins or []))
         return []
+
+    def get_plugin_source_name(self, function_name):
+        return function_name.split(".", 1)[0]
+
+    def has_plugin(self, plugin_name):
+        return True
 
 
 class DummyClient:
-    def __init__(self):
+    def __init__(self, responses=None):
         self.calls = 0
+        self.create_kwargs = []
+        self.responses = list(responses or [])
         self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
 
     async def _create(self, **kwargs):
         self.calls += 1
-        return FakeResponse(tool_calls=None)
+        self.create_kwargs.append(kwargs)
+        if self.responses:
+            return self.responses.pop(0)
+        return FakeResponse(tool_calls=None, content="done")
 
 
 class FakeToolCall:
@@ -62,9 +132,14 @@ class FakeChoice:
 class FakeResponse:
     def __init__(self, tool_calls=None, content=""):
         self.choices = [FakeChoice(tool_calls=tool_calls, content=content)]
+        self.usage = types.SimpleNamespace(
+            total_tokens=3,
+            prompt_tokens=1,
+            completion_tokens=2,
+        )
 
 
-def _make_helper(plugin_manager):
+def _make_helper(plugin_manager, db=None, client=None):
     config = {
         "openai_base": "",
         "api_key": "test",
@@ -105,8 +180,8 @@ def _make_helper(plugin_manager):
         "big_model_to_use": "llmgateway/big_context",
         "light_model": "llmgateway/light_model",
     }
-    helper = OpenAIHelper(config=config, plugin_manager=plugin_manager, db=DummyDB())
-    helper.client = DummyClient()
+    helper = OpenAIHelper(config=config, plugin_manager=plugin_manager, db=db or DummyDB())
+    helper.client = client or DummyClient()
     helper.conversations[1] = []
     return helper
 
@@ -189,3 +264,82 @@ async def test_legacy_tool_request_in_content_is_executed():
     assert sent_args["x"] == 1
     assert sent_args["chat_id"] == 1
     assert sent_args["user_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_allowed_tool_reentry_uses_original_allowlist():
+    responses = {
+        "weather.get_weather": {"result": "sunny"},
+    }
+    pm = DummyPluginManager(responses)
+    helper = _make_helper(pm)
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("weather.get_weather", "{}"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["weather"], user_id=1
+    )
+
+    assert helper.client.calls == 1
+    assert set(tools_used) == {"weather.get_weather"}
+    assert out.choices[0].message.tool_calls is None
+    assert pm.spec_calls == [["weather"]]
+
+
+@pytest.mark.asyncio
+@ALLOWLIST_BUG_XFAIL
+async def test_mode_restrictions_survive_tool_reentry():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "weather-only"},
+        ],
+    }
+    pm = DummyPluginManager({
+        "task_management.create_task": {"result": "created"},
+    })
+    first_response = FakeResponse(tool_calls=[
+        FakeToolCall("task_management.create_task", "{}"),
+    ])
+    final_response = FakeResponse(tool_calls=None, content="done")
+    helper = _make_helper(
+        pm,
+        db=DummyDB(saved_context),
+        client=DummyClient([first_response, final_response]),
+    )
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: {"tools": ["weather"]},
+    )
+
+    try:
+        await helper.get_chat_response(
+            chat_id=1,
+            query="create a task",
+            user_id=1,
+        )
+    except Exception as exc:
+        assert "task_management.create_task" in str(exc)
+
+    assert pm.calls == []
+    assert pm.spec_calls
+    assert all(call == ["weather"] for call in pm.spec_calls)
+
+
+@pytest.mark.asyncio
+@ALLOWLIST_BUG_XFAIL
+async def test_legacy_tool_request_outside_allowlist_is_rejected():
+    pm = DummyPluginManager({
+        "task_management.create_task": {"result": "created"},
+    })
+    helper = _make_helper(pm)
+    response = FakeResponse(
+        tool_calls=None,
+        content='```json\n{"tool_name":"task_management.create_task","title":"x"}\n```',
+    )
+
+    _out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["weather"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert "task_management.create_task" in tools_used
