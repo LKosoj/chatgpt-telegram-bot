@@ -41,9 +41,11 @@ def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
         return None
 
 
-async def handle_function_call(helper, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All'], user_id=None):
+async def handle_function_call(helper, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None):
     tool_calls = []
     try:
+        if allowed_plugins is None:
+            allowed_plugins = ['All']
         allowed_plugins = helper.plugin_manager.filter_allowed_plugins(allowed_plugins)
         if stream:
             try:

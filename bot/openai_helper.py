@@ -364,7 +364,13 @@ class OpenAIHelper:
             )
             
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
-                response, plugins_used = await self.__handle_function_call(chat_id, response, user_id=user_id)
+                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
+                response, plugins_used = await self.__handle_function_call(
+                    chat_id,
+                    response,
+                    allowed_plugins=allowed_plugins,
+                    user_id=user_id,
+                )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
                     return response, '0'
@@ -455,7 +461,14 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 try:
-                    response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True, user_id=user_id)
+                    allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
+                    response, plugins_used = await self.__handle_function_call(
+                        chat_id,
+                        response,
+                        stream=True,
+                        allowed_plugins=allowed_plugins,
+                        user_id=user_id,
+                    )
                     if is_direct_result(response):
                         yield response, '0'
                         return
@@ -731,7 +744,7 @@ class OpenAIHelper:
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
-    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=['All'], user_id=None):
+    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None):
         return await handle_function_call(self, chat_id, response, stream, times, tools_used, allowed_plugins, user_id)
 
     def _add_function_call_to_history(self, chat_id: int, function_name: str, content: str) -> None:

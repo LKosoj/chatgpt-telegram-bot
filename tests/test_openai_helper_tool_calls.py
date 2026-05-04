@@ -341,6 +341,41 @@ async def test_allowed_tool_reentry_uses_original_allowlist():
 
 
 @pytest.mark.asyncio
+async def test_mode_allowlist_is_passed_to_tool_reentry():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "weather-only"},
+        ],
+    }
+    pm = DummyPluginManager({
+        "weather.get_weather": {"result": "sunny"},
+    })
+    first_response = FakeResponse(tool_calls=[
+        FakeToolCall("weather.get_weather", "{}"),
+    ])
+    final_response = FakeResponse(tool_calls=None, content="done")
+    helper = _make_helper(
+        pm,
+        db=DummyDB(saved_context),
+        client=DummyClient([first_response, final_response]),
+    )
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: {"tools": ["weather"]},
+    )
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="weather",
+        user_id=1,
+    )
+
+    assert answer == "done"
+    assert total_tokens == 3
+    assert pm.calls and pm.calls[0][0] == "weather.get_weather"
+    assert pm.spec_calls == [["weather"], ["weather"]]
+
+
+@pytest.mark.asyncio
 @ALLOWLIST_BUG_XFAIL
 async def test_mode_restrictions_survive_tool_reentry():
     saved_context = {
