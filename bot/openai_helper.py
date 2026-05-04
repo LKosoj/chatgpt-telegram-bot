@@ -220,6 +220,16 @@ class OpenAIHelper:
         )
         content = response.choices[0].message.content or ""
         allowed_intents = {"image_edit", "image_describe", "text_reply"}
+        intent_aliases = {
+            "image_description": "image_describe",
+            "describe_image": "image_describe",
+            "image_question": "image_describe",
+            "vision": "image_describe",
+            "edit_image": "image_edit",
+            "image_modify": "image_edit",
+            "normal_chat": "text_reply",
+            "text": "text_reply",
+        }
         start = content.find("{")
         end = content.rfind("}")
         if start >= 0 and end > start:
@@ -228,12 +238,17 @@ class OpenAIHelper:
                 intent = str(data.get("intent", "")).strip().lower()
                 if intent in allowed_intents:
                     return intent
+                if intent in intent_aliases:
+                    return intent_aliases[intent]
             except json.JSONDecodeError:
                 pass
 
         normalized_content = content.strip().lower()
         for intent in allowed_intents:
             if intent in normalized_content:
+                return intent
+        for alias, intent in intent_aliases.items():
+            if alias in normalized_content:
                 return intent
         return "unknown"
 
@@ -813,6 +828,7 @@ class OpenAIHelper:
         :return: The answer from the model and the number of tokens used
         """
         bot_language = self.config['bot_language']
+        temperature = self.config['temperature']
         try:
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 self.reset_chat_history(chat_id)

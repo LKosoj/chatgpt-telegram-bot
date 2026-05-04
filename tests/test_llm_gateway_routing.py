@@ -107,3 +107,15 @@ async def test_reply_intent_classifier_accepts_plain_label():
     intent = await OpenAIHelper.classify_reply_intent(helper, "что на этой картинке?", "image")
 
     assert intent == "image_describe"
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_classifier_accepts_image_description_alias():
+    pytest.importorskip("tiktoken")
+    from bot.openai_helper import OpenAIHelper
+
+    helper = FakeHelper('{"intent":"image_description"}')
+
+    intent = await OpenAIHelper.classify_reply_intent(helper, "что на этой картинке?", "image")
+
+    assert intent == "image_describe"
