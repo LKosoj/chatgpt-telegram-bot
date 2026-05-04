@@ -114,8 +114,6 @@ async def handle_function_call(
         if not tool_calls:
             return response, tools_used
 
-        if request_context is None:
-            helper.user_id = user_id
         model_to_use = helper.get_current_model(user_id)
 
         prepared = []
@@ -145,13 +143,10 @@ async def handle_function_call(
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
                 errors[tool_name] = json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)
 
-        if request_context is None:
-            tasks = [helper.plugin_manager.call_function(name, helper, args) for name, args in prepared]
-        else:
-            tasks = [
-                helper.plugin_manager.call_function(name, helper, args, request_context=request_context)
-                for name, args in prepared
-            ]
+        tasks = [
+            helper.plugin_manager.call_function(name, helper, args, request_context=request_context)
+            for name, args in prepared
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         direct_result = None

@@ -4,7 +4,7 @@ import logging
 import os
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from datetime import datetime as dt
 
 import tiktoken
@@ -161,9 +161,6 @@ class OpenAIHelper:
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
-        self.user_id = ''
-        self.message_id = ''
-        self.message_ids: Dict[int, List] = {}
         self.last_image_file_ids = {}
         self.bot = None
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -366,9 +363,6 @@ class OpenAIHelper:
                 # The model can now access this through the function calls
                 self.last_image_file_id = self.last_image_file_ids[chat_id]
             plugins_used = ()
-            if request_context is None and request_id and hasattr(self, 'message_ids'):
-                self.message_id = self.message_ids.get(request_id)
-            
             # Вызов с учетом возможного отсутствия session_id
             response = await self.__common_get_chat_response(
                 chat_id, 
@@ -471,9 +465,6 @@ class OpenAIHelper:
             if chat_id not in self.conversations_vision:
                 self.conversations_vision[chat_id] = False
 
-            if request_context is None and request_id and hasattr(self, 'message_ids'):
-                self.message_id = self.message_ids.get(request_id)
-                
             logger.info('Getting chat response from model')
             try:
                 # Вызов с учетом возможного отсутствия session_id

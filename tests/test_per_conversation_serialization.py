@@ -18,9 +18,14 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
+class _FakeEncoding:
+    def encode(self, value):
+        return list(value)
+
+
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: None
-_tiktoken.get_encoding = lambda _name: None
+_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
+_tiktoken.get_encoding = lambda _name: _FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -47,6 +52,7 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot import telegram_bot  # noqa: E402
+from bot.request_context import RequestContext  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
@@ -84,11 +90,13 @@ class DelayedOpenAI:
         self.active_calls = 0
         self.max_parallel_calls = 0
         self.started = asyncio.Event()
+        self.requests = []
 
     def get_current_model(self, user_id):
         return "gpt-test"
 
     async def get_chat_response(self, *, chat_id, query, **kwargs):
+        self.requests.append({"chat_id": chat_id, "query": query, **kwargs})
         self.active_calls += 1
         self.max_parallel_calls = max(self.max_parallel_calls, self.active_calls)
         self.started.set()
@@ -158,7 +166,7 @@ async def _run_without_indicator(update, context, coroutine, chat_action, is_inl
 @pytest.mark.asyncio
 async def test_same_conversation_key_updates_are_serialized(monkeypatch):
     monkeypatch.setattr(telegram_bot, "wrap_with_indicator", _run_without_indicator)
-    bot, db, _openai = _make_bot()
+    bot, db, openai = _make_bot()
     first = FakeUpdate(FakeMessage(chat_id=1234, user_id=42, message_id=1, text="first"))
     second = FakeUpdate(FakeMessage(chat_id=1234, user_id=42, message_id=2, text="second"))
 
@@ -168,6 +176,12 @@ async def test_same_conversation_key_updates_are_serialized(monkeypatch):
     )
 
     assert db.overlaps == []
+    request_contexts = [request["request_context"] for request in openai.requests]
+    assert all(isinstance(context, RequestContext) for context in request_contexts)
+    assert {
+        (context.message_id, context.user_id)
+        for context in request_contexts
+    } == {(1, 42), (2, 42)}
 
 
 @pytest.mark.asyncio

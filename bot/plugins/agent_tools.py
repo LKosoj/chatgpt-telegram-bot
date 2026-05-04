@@ -163,18 +163,18 @@ class AgentToolsPlugin(Plugin):
         except Exception as exc:
             logging.exception("Failed to save agent tasks: %s", exc)
 
-    def _scope_key(self, helper, kwargs: Dict[str, Any]) -> str:
+    def _scope_key(self, kwargs: Dict[str, Any]) -> str:
         chat_id = kwargs.get("chat_id")
         if chat_id is not None:
             return f"chat:{chat_id}"
-        user_id = kwargs.get("user_id") or getattr(helper, "user_id", None)
+        user_id = kwargs.get("user_id")
         if user_id is not None:
             return f"user:{user_id}"
         return "global"
 
     def _manage_plan_tasks(self, helper, **kwargs) -> Dict:
         action = str(kwargs.get("action") or "").strip()
-        scope = self._scope_key(helper, kwargs)
+        scope = self._scope_key(kwargs)
         tasks = self.tasks.setdefault(scope, [])
 
         if action == "add":

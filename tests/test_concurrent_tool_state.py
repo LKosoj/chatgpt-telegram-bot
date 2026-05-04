@@ -1,7 +1,6 @@
 import asyncio
 import importlib.util
 import json
-import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -30,6 +29,16 @@ from bot.request_context import RequestContext
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
+
+
+class ForbiddenLegacyHelper:
+    @property
+    def user_id(self):
+        raise AssertionError("helper.user_id must not be read")
+
+    @property
+    def message_id(self):
+        raise AssertionError("helper.message_id must not be read")
 
 
 class FakeToolCall:
@@ -226,7 +235,7 @@ async def test_concurrent_language_progress_calls_keep_owners_separate(tmp_path)
 async def test_task_management_uses_request_context_user_id(tmp_path):
     plugin = TaskManagementPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=999)
+    helper = ForbiddenLegacyHelper()
     request_context = RequestContext(chat_id=555, user_id=101, message_id=123)
 
     await plugin.execute(
@@ -245,7 +254,7 @@ async def test_task_management_uses_request_context_user_id(tmp_path):
 async def test_task_management_uses_explicit_user_id_without_request_context(tmp_path):
     plugin = TaskManagementPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=999)
+    helper = ForbiddenLegacyHelper()
 
     await plugin.execute(
         "create_task",
@@ -260,28 +269,27 @@ async def test_task_management_uses_explicit_user_id_without_request_context(tmp
 
 
 @pytest.mark.asyncio
-async def test_task_management_legacy_helper_user_id_fallback(tmp_path, caplog):
+async def test_task_management_missing_user_id_returns_controlled_error(tmp_path):
     plugin = TaskManagementPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=303)
+    helper = ForbiddenLegacyHelper()
 
-    with caplog.at_level(logging.WARNING):
-        await plugin.execute(
-            "create_task",
-            helper,
-            title="legacy task",
-            priority="low",
-        )
+    result = await plugin.execute(
+        "create_task",
+        helper,
+        title="missing owner",
+        priority="low",
+    )
 
-    assert set(plugin.tasks) == {"303"}
-    assert "Deprecated task_management owner fallback to helper.user_id" in caplog.text
+    assert result == {"error": "Telegram user_id is required for task management"}
+    assert plugin.tasks == {}
 
 
 @pytest.mark.asyncio
 async def test_language_learning_uses_request_context_user_id(tmp_path):
     plugin = LanguageLearningPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=999)
+    helper = ForbiddenLegacyHelper()
     request_context = RequestContext(chat_id=555, user_id=101, message_id=123)
 
     await plugin.execute(
@@ -300,7 +308,7 @@ async def test_language_learning_uses_request_context_user_id(tmp_path):
 async def test_language_learning_uses_explicit_user_id_without_request_context(tmp_path):
     plugin = LanguageLearningPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=999)
+    helper = ForbiddenLegacyHelper()
 
     await plugin.execute(
         "track_progress",
@@ -315,21 +323,20 @@ async def test_language_learning_uses_explicit_user_id_without_request_context(t
 
 
 @pytest.mark.asyncio
-async def test_language_learning_legacy_helper_user_id_fallback(tmp_path, caplog):
+async def test_language_learning_missing_user_id_returns_controlled_error(tmp_path):
     plugin = LanguageLearningPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=303)
+    helper = ForbiddenLegacyHelper()
 
-    with caplog.at_level(logging.WARNING):
-        await plugin.execute(
-            "track_progress",
-            helper,
-            language="english",
-            completed_exercise=True,
-        )
+    result = await plugin.execute(
+        "track_progress",
+        helper,
+        language="english",
+        completed_exercise=True,
+    )
 
-    assert set(plugin.users_progress) == {"303"}
-    assert "Deprecated language_learning owner fallback to helper.user_id" in caplog.text
+    assert result == {"error": "Telegram user_id is required for language progress tracking"}
+    assert plugin.users_progress == {}
 
 
 @pytest.mark.asyncio
@@ -342,7 +349,7 @@ async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_pa
         message_id=123,
         session_id="session-1",
     )
-    helper = SimpleNamespace(message_id=999)
+    helper = ForbiddenLegacyHelper()
 
     await plugin.execute(
         "set_reminder",
@@ -365,7 +372,6 @@ async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_pat
     plugin.initialize(storage_root=str(tmp_path))
     plugin_manager = RacingPluginManager(reminder_plugin=plugin)
     helper = SharedHelper(plugin_manager)
-    helper.message_id = 999
     first_context = RequestContext(
         chat_id=1001,
         user_id=101,
@@ -422,22 +428,21 @@ async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_reminder_legacy_helper_message_id_fallback(tmp_path, caplog):
+async def test_reminder_uses_explicit_message_id_without_request_context(tmp_path):
     plugin = RemindersPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(message_id=444)
+    helper = ForbiddenLegacyHelper()
 
-    with caplog.at_level(logging.WARNING):
-        await plugin.execute(
-            "set_reminder",
-            helper,
-            chat_id="555",
-            time="2030-01-01 12:30",
-            message="legacy reminder",
-            integration="telegram",
-            current_time="2026-05-04 10:00",
-        )
+    await plugin.execute(
+        "set_reminder",
+        helper,
+        chat_id="555",
+        time="2030-01-01 12:30",
+        message="explicit reminder",
+        integration="telegram",
+        current_time="2026-05-04 10:00",
+        message_id=444,
+    )
 
     reminder = next(iter(plugin.reminders["555"].values()))
-    assert reminder["reply_to_message_id"] == helper.message_id
-    assert "Deprecated reminders reply_to_message_id fallback to helper.message_id" in caplog.text
+    assert reminder["reply_to_message_id"] == 444

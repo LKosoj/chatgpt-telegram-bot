@@ -720,18 +720,16 @@ class MCPServerPlugin(Plugin):
         """
         try:
             # Получаем ID пользователя (может отсутствовать)
+            request_context = kwargs.get("request_context")
             user_id = kwargs.get("user_id")
+            if user_id is None and request_context is not None:
+                user_id = request_context.user_id
             
             # Если user_id отсутствует и это вызов функции управления MCP сервером,
             # возвращаем ошибку авторизации
             if user_id is None:
                 if function_name in ["register_mcp_server", "remove_mcp_server"]:
                     return {"error": self.t("mcp_user_id_required")}
-                
-                # Если это не функция управления, но нужно проверить доступ, 
-                # получаем user_id из helper, если он доступен
-                if helper and hasattr(helper, 'user_id'):
-                    user_id = helper.user_id
             
             # Функции управления серверами
             if function_name == "register_mcp_server":

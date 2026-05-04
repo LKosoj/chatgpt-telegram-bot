@@ -187,6 +187,27 @@ async def test_group_session_switch_uses_group_conversation_key():
 
 
 @pytest.mark.asyncio
+async def test_group_session_new_uses_group_key_and_lowercase_max_sessions_config():
+    bot = _make_bot()
+    bot.config["max_sessions"] = 3
+    bot.config["MAX_SESSIONS"] = 99
+    update = _group_update("session:new")
+
+    await bot.handle_session_callback(update, _make_context())
+
+    bot.db.create_session.assert_called_once_with(
+        user_id=-100123,
+        max_sessions=3,
+        openai_helper=bot.openai,
+    )
+    bot.openai.reset_chat_history.assert_called_once_with(
+        chat_id=-100123,
+        content='',
+        session_id="session-new",
+    )
+
+
+@pytest.mark.asyncio
 async def test_group_session_delete_uses_group_conversation_key():
     bot = _make_bot()
     update = _group_update("session:delete:session-2")

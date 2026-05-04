@@ -3,7 +3,7 @@ import logging
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -17,9 +17,14 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
+class _FakeEncoding:
+    def encode(self, value):
+        return list(value)
+
+
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: None
-_tiktoken.get_encoding = lambda _name: None
+_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
+_tiktoken.get_encoding = lambda _name: _FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -46,6 +51,7 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot import telegram_bot  # noqa: E402
+from bot.request_context import RequestContext  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
@@ -168,6 +174,12 @@ async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
     assert len(update.effective_message.reply_text_calls) == 1
     assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
     assert update.effective_message.reply_text_calls[0]["parse_mode"] == "HTML"
+    request_context = bot.openai.stream_requests[0]["request_context"]
+    assert isinstance(request_context, RequestContext)
+    assert request_context.chat_id == 1234
+    assert request_context.user_id == 42
+    assert request_context.message_id == 7
+    assert request_context.request_id == "1234_7"
     edit_message.assert_awaited()
     assert edit_message.await_args.kwargs["text"] == "Hello world"
 
@@ -193,6 +205,60 @@ async def test_streaming_falls_back_to_html_when_parse_mode_is_none(monkeypatch)
         == telegram_bot.constants.ParseMode.HTML
     )
     edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_text_image_edit_request_uses_normal_chat(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Plain chat response", "1"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["enable_image_generation"] = True
+    bot._is_image_edit_request = Mock(side_effect=AssertionError("text-only edit routing was used"))
+    bot._edit_image_from_context = AsyncMock()
+    update = FakeUpdate(FakeMessage())
+
+    await bot.process_message("отредактируй это изображение", update, _make_context())
+
+    bot._is_image_edit_request.assert_not_called()
+    bot._edit_image_from_context.assert_not_awaited()
+    assert bot.openai.stream_requests[0]["query"] == "отредактируй это изображение"
+
+
+@pytest.mark.asyncio
+async def test_reply_to_image_edit_request_still_edits_image(monkeypatch):
+    async def immediate_wrap(update, context, coroutine, chat_action="", is_inline=False):
+        await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_wrap)
+
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["enable_image_generation"] = True
+    bot._classify_reply_intent = AsyncMock(return_value="image_edit")
+    bot._edit_image_from_context = AsyncMock()
+    message = FakeMessage()
+    message.reply_to_message = SimpleNamespace(
+        photo=[SimpleNamespace(file_id="telegram-image-file")],
+        document=None,
+    )
+    update = FakeUpdate(message)
+
+    await bot.process_message("добавь шапку", update, _make_context())
+
+    bot._edit_image_from_context.assert_awaited_once_with(
+        update,
+        "добавь шапку",
+        "telegram-image-file",
+    )
+    assert bot.openai.stream_requests == []
 
 
 @pytest.mark.asyncio

@@ -81,7 +81,8 @@ def _network_error(module):
 
 def _assert_controlled_error(result, expected_message):
     assert isinstance(result, dict)
-    error = result.get("error") or result.get("Error")
+    assert "Error" not in result
+    error = result.get("error")
     assert error
     assert expected_message in error
 

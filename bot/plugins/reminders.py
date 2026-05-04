@@ -233,13 +233,11 @@ class RemindersPlugin(Plugin):
             )
         # Здесь можно добавить другие интеграции (email, slack)
 
-    def _get_reply_to_message_id(self, helper, kwargs):
+    def _get_reply_to_message_id(self, kwargs):
         request_context = kwargs.get("request_context")
         if request_context is not None:
             return request_context.message_id
-
-        logging.warning("Deprecated reminders reply_to_message_id fallback to helper.message_id")
-        return helper.message_id
+        return kwargs.get("message_id")
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """
@@ -259,7 +257,7 @@ class RemindersPlugin(Plugin):
                 "time": reminder_time.isoformat(),
                 "message": kwargs["message"],
                 "integration": kwargs["integration"],
-                "reply_to_message_id": self._get_reply_to_message_id(helper, kwargs)
+                "reply_to_message_id": self._get_reply_to_message_id(kwargs)
             }
 
             if user_id not in self.reminders:

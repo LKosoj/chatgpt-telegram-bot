@@ -379,7 +379,6 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
     })
     helper = _make_helper(pm)
     helper.conversations[request_context.chat_id] = []
-    helper.user_id = "legacy-user"
     response = FakeResponse(tool_calls=[
         FakeToolCall("p1.do", "{}"),
     ])
@@ -393,7 +392,7 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
         request_context=request_context,
     )
 
-    assert helper.user_id == "legacy-user"
+    assert not hasattr(helper, "user_id")
     assert pm.call_contexts == [request_context]
     assert set(tools_used) == {"p1.do"}
     assert out["direct_result"]["value"] == "ok"
@@ -404,7 +403,7 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
 
 
 @pytest.mark.asyncio
-async def test_get_chat_response_with_request_context_keeps_legacy_message_id_state():
+async def test_get_chat_response_with_request_context_does_not_create_legacy_message_id_state():
     request_context = RequestContext(
         chat_id=77,
         user_id=42,
@@ -417,9 +416,6 @@ async def test_get_chat_response_with_request_context_keeps_legacy_message_id_st
         db=DummyDB({"messages": [{"role": "system", "content": "hi"}]}),
         client=DummyClient([FakeResponse(content="done")]),
     )
-    helper.message_ids["request-1"] = 999
-    helper.message_id = "legacy-message"
-
     answer, total_tokens = await helper.get_chat_response(
         chat_id=999,
         query="hello",
@@ -430,7 +426,8 @@ async def test_get_chat_response_with_request_context_keeps_legacy_message_id_st
 
     assert answer == "done"
     assert total_tokens == 3
-    assert helper.message_id == "legacy-message"
+    assert not hasattr(helper, "message_id")
+    assert not hasattr(helper, "message_ids")
 
 
 @pytest.mark.asyncio

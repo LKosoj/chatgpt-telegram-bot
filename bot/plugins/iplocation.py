@@ -20,13 +20,13 @@ class IpLocationPlugin(Plugin):
                 response.raise_for_status()
             return response.json()
         except httpx.TimeoutException as e:
-            return {"Error": f"IP location request timed out: {e}"}
+            return {"error": f"IP location request timed out: {e}"}
         except httpx.HTTPStatusError as e:
-            return {"Error": f"IP location request failed: {e}"}
+            return {"error": f"IP location request failed: {e}"}
         except httpx.RequestError as e:
-            return {"Error": f"IP location request failed: {e}"}
+            return {"error": f"IP location request failed: {e}"}
         except ValueError as e:
-            return {"Error": f"IP location response JSON parse error: {e}"}
+            return {"error": f"IP location response JSON parse error: {e}"}
 
     def get_spec(self) -> [Dict]:
         return [{
@@ -48,7 +48,7 @@ class IpLocationPlugin(Plugin):
         BASE_URL = "https://api.ip.fm/?ip={}"
         url = BASE_URL.format(ip)
         response_data = await self._get_json(url)
-        if "Error" in response_data:
+        if "error" in response_data:
             return response_data
 
         data = response_data.get('data', {})

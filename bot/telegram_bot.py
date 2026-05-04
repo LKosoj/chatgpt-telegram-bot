@@ -33,6 +33,7 @@ from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
 from .conversation_key import get_conversation_key
+from .request_context import RequestContext
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class ChatGPTTelegramBot:
         self._background_tasks = []
         self._cleanup_called = False
         self._plugin_message_handlers_registered = False
+        self._message_tail_handlers_registered = False
 
     def get_chat_modes(self):
         """
@@ -246,20 +248,6 @@ class ChatGPTTelegramBot:
         )
         return any(marker in prompt for marker in edit_markers)
 
-    def _can_use_last_image_for_edit(self, text: str | None) -> bool:
-        prompt = (text or '').strip().lower()
-        strong_edit_markers = (
-            'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
-            'перерисуй', 'перерисовать', 'нарисуй', 'нарисовать',
-            'edit', 'modify', 'change', 'draw ',
-        )
-        image_reference_markers = (
-            'это изображ', 'эту карт', 'эта карт', 'этот рисун', 'этого кот',
-            'этому', 'этой', 'этому кот', 'ему ', 'ей ', 'на нем', 'на ней',
-            'this image', 'that image', 'this picture', 'it ', 'him ', 'her ',
-        )
-        return any(marker in prompt for marker in strong_edit_markers + image_reference_markers)
-
     def _is_image_description_request(self, text: str | None) -> bool:
         prompt = (text or '').strip().lower()
         if not prompt:
@@ -290,7 +278,13 @@ class ChatGPTTelegramBot:
         active = next((image for image in images if image.get('status') == 'active'), None)
         return (active or images[0]).get('file_id')
 
-    def _image_edit_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -> str | None:
+    def _image_edit_source_file_id(
+        self,
+        update: Update,
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        prompt: str | None = None,
+    ) -> str | None:
         message = update.effective_message
         current_image = self._image_file_id_from_message(message)
         if current_image:
@@ -298,9 +292,7 @@ class ChatGPTTelegramBot:
         replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
         if replied_image:
             return replied_image
-        if not self._can_use_last_image_for_edit(prompt):
-            return None
-        return self._last_saved_image_file_id(user_id, chat_id)
+        return None
 
     def _image_description_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -> str | None:
         message = update.effective_message
@@ -1198,6 +1190,12 @@ class ChatGPTTelegramBot:
             user_id = update.message.from_user.id
             if user_id not in self.usage:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+            request_context = RequestContext(
+                chat_id=chat_id,
+                user_id=user_id,
+                message_id=update.message.message_id,
+                request_id=f"{chat_id}_{update.message.message_id}",
+            )
 
             try:
                 transcript = await self.openai.transcribe(file_path_mp3)
@@ -1234,7 +1232,13 @@ class ChatGPTTelegramBot:
                         }
                     else:
                         kwargs = {}
-                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=transcript, **kwargs)
+                    response, total_tokens = await self.openai.get_chat_response(
+                        chat_id=chat_id,
+                        query=transcript,
+                        user_id=user_id,
+                        request_context=request_context,
+                        **kwargs,
+                    )
 
                     self.usage[user_id].add_chat_tokens(total_tokens, self.config['token_price'])
                     if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
@@ -1312,7 +1316,7 @@ class ChatGPTTelegramBot:
             self.db.save_image(user_id, chat_id, file_id)
 
         if prompt and self.config['enable_image_generation'] and self._is_image_edit_request(prompt):
-            source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
+            source_file_id = self._image_edit_source_file_id(update)
             if source_file_id:
                 async def _edit():
                     await self._edit_image_from_context(update, prompt, source_file_id)
@@ -1666,6 +1670,12 @@ class ChatGPTTelegramBot:
         message_id = update.message.message_id
         self.last_message[chat_id] = prompt
         request_id = f"{chat_id}_{message_id}"
+        request_context = RequestContext(
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+            request_id=request_id,
+        )
             
         logger.info(
             f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
@@ -1690,11 +1700,16 @@ class ChatGPTTelegramBot:
         reply_intent = await self._classify_reply_intent(update, prompt)
         use_legacy_image_routing = reply_intent in (None, "unknown")
 
+        reply_context_kind = self._reply_context_kind(update)
         if self.config['enable_image_generation'] and (
             reply_intent == "image_edit"
-            or (use_legacy_image_routing and self._is_image_edit_request(prompt))
+            or (
+                reply_context_kind == "image"
+                and use_legacy_image_routing
+                and self._is_image_edit_request(prompt)
+            )
         ):
-            source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
+            source_file_id = self._image_edit_source_file_id(update)
             if source_file_id:
                 async def _edit():
                     await self._edit_image_from_context(update, prompt, source_file_id)
@@ -1727,11 +1742,13 @@ class ChatGPTTelegramBot:
                     message_thread_id=get_thread_id(update)
                 )
 
-                # Store message_id in openai object for this request
-                self.openai.message_ids = getattr(self.openai, 'message_ids', {})
-                self.openai.message_ids[request_id] = message_id
-
-                stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt, request_id=request_id, user_id=user_id)
+                stream_response = self.openai.get_chat_response_stream(
+                    chat_id=chat_id,
+                    query=prompt,
+                    request_id=request_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                )
                 i = 0
                 prev = ''
                 sent_message = None
@@ -1825,11 +1842,13 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
-                    # Store message_id in openai object for this request
-                    self.openai.message_ids = getattr(self.openai, 'message_ids', {})
-                    self.openai.message_ids[request_id] = message_id
-
-                    response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt, request_id=request_id, user_id=user_id)
+                    response, total_tokens = await self.openai.get_chat_response(
+                        chat_id=chat_id,
+                        query=prompt,
+                        request_id=request_id,
+                        user_id=user_id,
+                        request_context=request_context,
+                    )
 
                     if is_direct_result(response):
                         analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
@@ -1875,11 +1894,6 @@ class ChatGPTTelegramBot:
                                     raise exception
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
-            # Cleanup the stored message_id after processing is complete
-            if hasattr(self.openai, 'message_ids'):
-                request_id = f"{chat_id}_{message_id}"
-                self.openai.message_ids.pop(request_id, None)
-
             analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
             if analytics_plugin:
                 message_data = {
@@ -1984,10 +1998,16 @@ class ChatGPTTelegramBot:
                     return
 
                 model_to_use = self.openai.get_current_model(user_id)
+                request_context = RequestContext(chat_id=user_id, user_id=user_id)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
-                    stream_response = self.openai.get_chat_response_stream(chat_id=user_id, query=query)
+                    stream_response = self.openai.get_chat_response_stream(
+                        chat_id=user_id,
+                        query=query,
+                        user_id=user_id,
+                        request_context=request_context,
+                    )
                     i = 0
                     prev = ''
                     backoff = 0
@@ -2055,7 +2075,12 @@ class ChatGPTTelegramBot:
                                                             parse_mode=constants.ParseMode.MARKDOWN)
 
                         logger.info(f'Generating response for inline query by {name}')
-                        response, total_tokens = await self.openai.get_chat_response(chat_id=user_id, query=query)
+                        response, total_tokens = await self.openai.get_chat_response(
+                            chat_id=user_id,
+                            query=query,
+                            user_id=user_id,
+                            request_context=request_context,
+                        )
 
                         if is_direct_result(response):
                             cleanup_intermediate_files(response)
@@ -2213,6 +2238,38 @@ class ChatGPTTelegramBot:
 
         self._plugin_message_handlers_registered = True
 
+    def _register_message_tail_handlers(self, application: Application):
+        if getattr(self, "_message_tail_handlers_registered", False):
+            return
+
+        application.add_handler(MessageHandler(
+            filters.Document.TXT |
+            filters.Document.DOC |
+            filters.Document.DOCX |
+            filters.Document.MimeType('application/pdf') |
+            filters.Document.MimeType('application/rtf') |
+            filters.Document.MimeType('text/markdown'),
+            self.handle_document))
+
+        application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
+            constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
+        ]))
+
+        application.add_handler(
+            MessageHandler(
+                filters.REPLY & filters.TEXT,
+                self.handle_plugin_menu_args_reply
+            )
+        )
+
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & ~filters.REPLY,
+            self.prompt
+        ))
+
+        application.add_error_handler(error_handler)
+        self._message_tail_handlers_registered = True
+
     async def post_init(self, application: Application):
         """
         Post initialization hook for the bot.
@@ -2261,6 +2318,7 @@ class ChatGPTTelegramBot:
             application.add_handler(handler)
 
         self._register_plugin_message_handlers(application, "post_init")
+        self._register_message_tail_handlers(application)
 
         # Обновляем команды бота
         await application.bot.set_my_commands(self.commands)
@@ -2912,7 +2970,7 @@ class ChatGPTTelegramBot:
                 # Создаем новую сессию
                 session_id = self.db.create_session(
                     user_id=conversation_key,
-                    max_sessions=self.config.get('MAX_SESSIONS', 5),
+                    max_sessions=self.config.get('max_sessions', 5),
                     openai_helper=self.openai
                 )
                 
@@ -3065,6 +3123,7 @@ class ChatGPTTelegramBot:
             self.openai.bot = application.bot
             self._background_tasks = []
             self._plugin_message_handlers_registered = False
+            self._message_tail_handlers_registered = False
 
             application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
@@ -3085,36 +3144,6 @@ class ChatGPTTelegramBot:
                 filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
                 filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
                 self.transcribe))
-
-            self._register_plugin_message_handlers(application, "run")
-
-            application.add_handler(MessageHandler(
-                filters.Document.TXT |
-                filters.Document.DOC |
-                filters.Document.DOCX |
-                filters.Document.MimeType('application/pdf') |
-                filters.Document.MimeType('application/rtf') |
-                filters.Document.MimeType('text/markdown'),
-                self.handle_document))
-
-            application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
-                constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
-            ]))
-
-            application.add_handler(
-                MessageHandler(
-                    filters.REPLY & filters.TEXT,
-                    self.handle_plugin_menu_args_reply
-                )
-            )
-
-            # Регистрируем глобальный обработчик текстовых сообщений после всех остальных обработчиков
-            application.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND & ~filters.REPLY,
-                self.prompt
-            ))
-
-            application.add_error_handler(error_handler)
 
             application.run_polling()
         finally:
