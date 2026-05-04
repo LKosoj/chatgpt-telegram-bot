@@ -90,6 +90,17 @@ OPENAI_BASE_URL=http://gateway.example/v1
 > project still uses OpenAI-compatible clients, so the legacy environment
 > variable name remains.
 
+Telegram Bot API access defaults to the local endpoint for backward
+compatibility:
+
+```env
+TELEGRAM_LOCAL_MODE=true
+TELEGRAM_BASE_URL=http://localhost:8081/bot
+```
+
+Set `TELEGRAM_LOCAL_MODE=false` to use Telegram's hosted API. In that mode,
+`TELEGRAM_BASE_URL` is not passed to the Telegram application builder.
+
 Recommended gateway model settings:
 
 ```env
