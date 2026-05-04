@@ -2,7 +2,6 @@ import asyncio
 from datetime import datetime
 
 import pytest
-import requests
 
 from bot.plugins import crypto as crypto_module
 from bot.plugins import iplocation as iplocation_module
@@ -24,16 +23,6 @@ class FakeResponse:
 
     def raise_for_status(self):
         return None
-
-
-def _fake_get(calls, payload=None, error=None, json_error=None):
-    def fake_get(url, *args, **kwargs):
-        calls.append(url)
-        if error:
-            raise error
-        return FakeResponse(payload=payload, json_error=json_error)
-
-    return fake_get
 
 
 def _fake_async_client(
@@ -73,31 +62,21 @@ def _patch_get(
     json_error=None,
     delay=0,
 ):
-    if module in (weather_module, crypto_module):
-        monkeypatch.setattr(
-            module.httpx,
-            "AsyncClient",
-            _fake_async_client(
-                calls,
-                payload=payload,
-                error=error,
-                json_error=json_error,
-                delay=delay,
-            ),
-        )
-        return
-
     monkeypatch.setattr(
-        module.requests,
-        "get",
-        _fake_get(calls, payload=payload, error=error, json_error=json_error),
+        module.httpx,
+        "AsyncClient",
+        _fake_async_client(
+            calls,
+            payload=payload,
+            error=error,
+            json_error=json_error,
+            delay=delay,
+        ),
     )
 
 
 def _network_error(module):
-    if module in (weather_module, crypto_module):
-        return module.httpx.TimeoutException("timed out")
-    return requests.Timeout("timed out")
+    return module.httpx.TimeoutException("timed out")
 
 
 def _assert_controlled_error(result, expected_message):
@@ -295,6 +274,23 @@ NON_BLOCKING_CASES = [
         {"asset": "bitcoin"},
         {"data": {"symbol": "BTC", "rateUsd": "60000.00"}},
         id="crypto",
+    ),
+    pytest.param(
+        iplocation_module,
+        IpLocationPlugin,
+        "iplocation",
+        {"ip": "8.8.8.8"},
+        {
+            "data": {
+                "country": "US",
+                "subdivisions": "California",
+                "city": "Mountain View",
+                "asn": 15169,
+                "as_name": "Google LLC",
+                "as_domain": "google.com",
+            }
+        },
+        id="iplocation",
     ),
 ]
 
