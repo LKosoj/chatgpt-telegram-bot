@@ -123,7 +123,7 @@ def make_helper():
         "vision_detail": "auto",
         "vision_max_tokens": 300,
         "tts_model": "llmgateway/silero-tts",
-        "tts_voice": "Kseniya",
+        "tts_voice": "kseniya",
         "tts_response_format": "wav",
         "transcription_model": "llmgateway/whisper-large-v3",
         "yandex_api_token": "",

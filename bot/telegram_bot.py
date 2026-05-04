@@ -124,6 +124,179 @@ class ChatGPTTelegramBot:
         
         return self._chat_modes_cache
 
+    def _image_file_id_from_message(self, message):
+        if not message:
+            return None
+        if getattr(message, 'photo', None):
+            return message.photo[-1].file_id
+        document = getattr(message, 'document', None)
+        if document and document.mime_type and document.mime_type.startswith('image/'):
+            return document.file_id
+        return None
+
+    def _remember_sent_image_messages(self, update: Update, sent_messages) -> None:
+        if not sent_messages:
+            return
+        if not isinstance(sent_messages, (list, tuple)):
+            sent_messages = [sent_messages]
+
+        user = update.effective_user
+        chat = update.effective_chat
+        if not user or not chat:
+            return
+
+        for sent_message in sent_messages:
+            file_id = self._image_file_id_from_message(sent_message)
+            if not file_id:
+                continue
+            try:
+                self.db.save_image(user.id, chat.id, file_id)
+                self.openai.set_last_image_file_id(chat.id, file_id)
+                if user.id != chat.id:
+                    self.openai.set_last_image_file_id(user.id, file_id)
+                logger.info("Stored sent image file_id for user %s chat %s", user.id, chat.id)
+            except Exception:
+                logger.warning("Failed to store sent image file_id for user %s chat %s", user.id, chat.id, exc_info=True)
+
+    async def _handle_direct_result(self, update: Update, response):
+        sent_messages = await handle_direct_result(self.config, update, response)
+        self._remember_sent_image_messages(update, sent_messages)
+
+    def _is_image_edit_request(self, text: str | None) -> bool:
+        prompt = (text or '').strip().lower()
+        if not prompt:
+            return False
+        edit_markers = (
+            'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
+            'добавь', 'добавить', 'убери', 'убрать', 'замени', 'заменить',
+            'дорисуй', 'дорисовать', 'перерисуй', 'перерисовать',
+            'надень', 'одень', 'сделай ему', 'сделай ей', 'сделай им',
+            'edit', 'modify', 'change', 'add ', 'remove ', 'replace', 'put ',
+        )
+        return any(marker in prompt for marker in edit_markers)
+
+    def _can_use_last_image_for_edit(self, text: str | None) -> bool:
+        prompt = (text or '').strip().lower()
+        strong_edit_markers = (
+            'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
+            'перерисуй', 'перерисовать', 'edit', 'modify', 'change',
+        )
+        image_reference_markers = (
+            'это изображ', 'эту карт', 'эта карт', 'этот рисун', 'этого кот',
+            'этому', 'этой', 'этому кот', 'ему ', 'ей ', 'на нем', 'на ней',
+            'this image', 'that image', 'this picture', 'it ', 'him ', 'her ',
+        )
+        return any(marker in prompt for marker in strong_edit_markers + image_reference_markers)
+
+    def _is_image_description_request(self, text: str | None) -> bool:
+        prompt = (text or '').strip().lower()
+        if not prompt:
+            return False
+        description_markers = (
+            'опиши', 'описать', 'что на', 'что изображено', 'что тут',
+            'что здесь', 'что это', 'расскажи про изображение',
+            'разбери изображение', 'проанализируй изображение',
+            'describe', 'what is in', 'what is on', 'what\'s in',
+            'analyze this image', 'analyse this image',
+        )
+        return any(marker in prompt for marker in description_markers)
+
+    def _can_use_last_image_for_description(self, text: str | None) -> bool:
+        prompt = (text or '').strip().lower()
+        last_image_markers = (
+            'опиши', 'описать', 'что на', 'что изображено',
+            'расскажи про изображение', 'разбери изображение',
+            'проанализируй изображение', 'describe', 'what is in',
+            'what is on', 'what\'s in', 'analyze this image', 'analyse this image',
+        )
+        return any(marker in prompt for marker in last_image_markers)
+
+    def _last_saved_image_file_id(self, user_id: int, chat_id: int) -> str | None:
+        images = self.db.get_user_images(user_id, chat_id, limit=5)
+        if not images:
+            return None
+        active = next((image for image in images if image.get('status') == 'active'), None)
+        return (active or images[0]).get('file_id')
+
+    def _image_edit_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -> str | None:
+        message = update.effective_message
+        current_image = self._image_file_id_from_message(message)
+        if current_image:
+            return current_image
+        replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
+        if replied_image:
+            return replied_image
+        if not self._can_use_last_image_for_edit(prompt):
+            return None
+        return self._last_saved_image_file_id(user_id, chat_id)
+
+    def _image_description_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -> str | None:
+        message = update.effective_message
+        current_image = self._image_file_id_from_message(message)
+        if current_image:
+            return current_image
+        replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
+        if replied_image:
+            return replied_image
+        if not self._can_use_last_image_for_description(prompt):
+            return None
+        return self._last_saved_image_file_id(user_id, chat_id)
+
+    async def _telegram_image_as_png(self, file_id: str) -> io.BytesIO:
+        image_bytes = await self.openai.download_file_as_bytes(file_id)
+        temp_file_png = io.BytesIO()
+        Image.open(io.BytesIO(image_bytes)).save(temp_file_png, format='PNG')
+        temp_file_png.seek(0)
+        return temp_file_png
+
+    async def _edit_image_from_context(self, update: Update, prompt: str, file_id: str) -> None:
+        image_value, image_format = await self.openai.edit_telegram_image(prompt, file_id)
+        await self._handle_direct_result(update, {
+            "direct_result": {
+                "kind": "photo",
+                "format": image_format,
+                "value": image_value,
+                "add_value": "Изображение отредактировано через LLMGateway.",
+            }
+        })
+
+    async def _describe_image_from_context(self, update: Update, prompt: str, file_id: str) -> None:
+        bot_language = self.config['bot_language']
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        try:
+            image_file = await self._telegram_image_as_png(file_id)
+            interpretation, total_tokens = await self.openai.interpret_image(chat_id, image_file, prompt=prompt)
+            try:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                    text=interpretation,
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+            except BadRequest:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                    text=interpretation
+                )
+
+            if user_id not in self.usage:
+                self.usage[user_id] = UsageTracker(user_id, update.effective_user.name)
+            vision_token_price = self.config['vision_token_price']
+            self.usage[user_id].add_vision_tokens(total_tokens, vision_token_price)
+            allowed_user_ids = self.config['allowed_user_ids'].split(',')
+            if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
+                self.usage["guests"].add_vision_tokens(total_tokens, vision_token_price)
+        except Exception as e:
+            logger.exception(e)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+
     def cleanup_inline_cache(self):
         """
         Очищает устаревшие записи из кеша inline запросов
@@ -783,18 +956,19 @@ class ChatGPTTelegramBot:
             try:
                 image_url, image_size = await self.openai.generate_image(prompt=image_query)
                 if self.config['image_receive_mode'] == 'photo':
-                    await update.effective_message.reply_photo(
+                    sent_message = await update.effective_message.reply_photo(
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
                         photo=image_url
                     )
                 elif self.config['image_receive_mode'] == 'document':
-                    await update.effective_message.reply_document(
+                    sent_message = await update.effective_message.reply_document(
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
                         document=image_url
                     )
                 else:
                     raise Exception(
                         f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
+                self._remember_sent_image_messages(update, sent_message)
                 # add image request to users usage tracker
                 user_id = update.message.from_user.id
                 self.usage[user_id].add_image_request(image_size, self.config['image_prices'])
@@ -1001,7 +1175,7 @@ class ChatGPTTelegramBot:
                         self.usage["guests"].add_chat_tokens(total_tokens, self.config['token_price'])
 
                     if is_direct_result(response):
-                        return await handle_direct_result(self.config, update, response)
+                        return await self._handle_direct_result(update, response)
                     
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     transcript_output = (
@@ -1048,7 +1222,8 @@ class ChatGPTTelegramBot:
         """
         Interpret image using vision model.
         """
-        if not self.config['enable_vision'] or not await self.check_allowed_and_within_budget(update, context):
+        if not (self.config['enable_vision'] or self.config['enable_image_generation']) \
+                or not await self.check_allowed_and_within_budget(update, context):
             return
 
         chat_id = update.effective_chat.id
@@ -1069,6 +1244,18 @@ class ChatGPTTelegramBot:
             file_id = update.message.document.file_id
             logger.info(f"Storing document file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
+
+        if prompt and self.config['enable_image_generation'] and self._is_image_edit_request(prompt):
+            source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
+            if source_file_id:
+                async def _edit():
+                    await self._edit_image_from_context(update, prompt, source_file_id)
+
+                await wrap_with_indicator(update, context, _edit, constants.ChatAction.UPLOAD_PHOTO)
+                return
+
+        if not self.config['enable_vision']:
+            return
 
         # Only proceed with vision if there's a caption or it's a valid vision request
         if prompt or (is_group_chat(update) and not self.config['ignore_group_vision']):
@@ -1138,7 +1325,7 @@ class ChatGPTTelegramBot:
 
                     async for content, tokens in stream_response:
                         if is_direct_result(content):
-                            return await handle_direct_result(self.config, update, content)
+                            return await self._handle_direct_result(update, content)
 
                         if len(content.strip()) == 0:
                             continue
@@ -1279,7 +1466,9 @@ class ChatGPTTelegramBot:
         if user_images:
             last_image = user_images[0]
             if last_image['status'] == 'active':
-                self.openai.set_last_image_file_id(user_id, last_image['file_id'])  # Changed to use user_id
+                self.openai.set_last_image_file_id(chat_id, last_image['file_id'])
+                if user_id != chat_id:
+                    self.openai.set_last_image_file_id(user_id, last_image['file_id'])
                 logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
 
         async with self.buffer_lock:
@@ -1415,6 +1604,24 @@ class ChatGPTTelegramBot:
                     logger.warning('Message does not start with trigger keyword, ignoring...')
                     return
 
+        if self.config['enable_image_generation'] and self._is_image_edit_request(prompt):
+            source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
+            if source_file_id:
+                async def _edit():
+                    await self._edit_image_from_context(update, prompt, source_file_id)
+
+                await wrap_with_indicator(update, context, _edit, constants.ChatAction.UPLOAD_PHOTO)
+                return
+
+        if self.config['enable_vision'] and self._is_image_description_request(prompt):
+            source_file_id = self._image_description_source_file_id(update, user_id, chat_id, prompt)
+            if source_file_id:
+                async def _describe():
+                    await self._describe_image_from_context(update, prompt, source_file_id)
+
+                await wrap_with_indicator(update, context, _describe, constants.ChatAction.TYPING)
+                return
+
         try:
             total_tokens = 0
 
@@ -1440,7 +1647,7 @@ class ChatGPTTelegramBot:
 
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
-                        return await handle_direct_result(self.config, update, content)
+                        return await self._handle_direct_result(update, content)
 
                     if len(content.strip()) == 0:
                         continue
@@ -1529,7 +1736,7 @@ class ChatGPTTelegramBot:
                                 'user_id': user_id
                             }
                             analytics_plugin.update_stats(str(chat_id), message_data)
-                        return await handle_direct_result(self.config, update, response)
+                        return await self._handle_direct_result(update, response)
 
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     chunks = split_into_chunks(response)
@@ -2005,7 +2212,7 @@ class ChatGPTTelegramBot:
             
             # Обрабатываем результат
             if is_direct_result(result):
-                await handle_direct_result(self.config, update_for_handler, result)
+                await self._handle_direct_result(update_for_handler, result)
             elif isinstance(result, dict) and 'error' in result:
                 if message:
                     await message.reply_text(
@@ -2466,7 +2673,7 @@ class ChatGPTTelegramBot:
             else:
                 try:
                     logger.info("Файл успешно обработан, отправляем результат")
-                    await handle_direct_result(self.config, update, result)
+                    await self._handle_direct_result(update, result)
                 except Exception as e:
                     logger.error(f"Error handling direct result: {e}")
                     await update.message.reply_text(str(result))

@@ -155,7 +155,7 @@ class OpenAIHelper:
         self.config.setdefault('light_model', LLMGATEWAY_LIGHT_MODEL)
         self.config.setdefault('big_model_to_use', LLMGATEWAY_BIG_CONTEXT_MODEL)
         self.config.setdefault('tts_model', LLMGATEWAY_TTS_MODEL)
-        self.config.setdefault('tts_voice', 'Kseniya')
+        self.config.setdefault('tts_voice', 'kseniya')
         self.config.setdefault('tts_response_format', 'wav')
         self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
         self.config.setdefault('hindsight_base_url', '')
@@ -684,6 +684,19 @@ class OpenAIHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
+    async def edit_telegram_image(self, prompt: str, file_id: str) -> tuple[str, str]:
+        """
+        Edits a Telegram image by downloading it and sending it to the LLMGateway image edit model.
+        """
+        bot_language = self.config['bot_language']
+        try:
+            image_bytes = await self.download_file_as_bytes(file_id)
+            image_data_url = encode_image(io.BytesIO(image_bytes))
+            response = await self.gateway_client.image_edit(prompt, [image_data_url])
+            return extract_image_result(response)
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
     async def generate_speech(self, text: str) -> tuple[any, int]:
         """
         Generates an audio from the given text using TTS model.
@@ -694,7 +707,7 @@ class OpenAIHelper:
         try:
             response = await self.client.audio.speech.create(
                 model=self.config['tts_model'],
-                voice=self.config['tts_voice'],
+                voice=str(self.config['tts_voice']).lower(),
                 input=text,
                 response_format=self.config.get('tts_response_format', 'wav'),
                 extra_headers={ "X-Title": "tgBot" },

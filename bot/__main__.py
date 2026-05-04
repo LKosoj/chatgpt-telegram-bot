@@ -73,7 +73,7 @@ def main():
         'vision_detail': os.environ.get('VISION_DETAIL', 'auto'),
         'vision_max_tokens': int(os.environ.get('VISION_MAX_TOKENS', '300')),
         'tts_model': os.environ.get('TTS_MODEL', LLMGATEWAY_TTS_MODEL),
-        'tts_voice': os.environ.get('TTS_VOICE', 'Kseniya'),
+        'tts_voice': os.environ.get('TTS_VOICE', 'kseniya').lower(),
         'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'transcription_model': os.environ.get('TRANSCRIPTION_MODEL', LLMGATEWAY_TRANSCRIPTION_MODEL),
         'yandex_api_token': os.environ.get('YANDEX_API_TOKEN', ''),

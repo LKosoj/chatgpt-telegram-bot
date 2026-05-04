@@ -522,30 +522,31 @@ async def handle_direct_result(config, update: Update, response: any):
         'message_thread_id': get_thread_id(update),
         'reply_to_message_id': get_reply_to_message_id(config, update),
     }
+    sent_messages = []
 
     if kind == 'photo':
         if format == 'url':
-            await message.reply_photo(**common_args, photo=value)
+            sent_messages.append(await message.reply_photo(**common_args, photo=value))
         elif format == 'path':
             try:
                 if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
                     # Пробуем отправить как документ
-                    await message.reply_document(**common_args, document=open(value, 'rb'))
+                    sent_messages.append(await message.reply_document(**common_args, document=open(value, 'rb')))
                 else:
                     # Пробуем отправить как фото
-                    await message.reply_photo(**common_args, photo=value)
+                    sent_messages.append(await message.reply_photo(**common_args, photo=value))
             except Exception as e:
                 logging.error(f"Error handling photo: {e}")
                 # Проверяем и изменяем размеры изображения при необходимости
                 photo_file, photo_format = resize_image_if_needed(value)
-                await message.reply_photo(**common_args, photo=photo_file)
+                sent_messages.append(await message.reply_photo(**common_args, photo=photo_file))
     elif kind == 'gif' or kind == 'file':
         if format == 'url':
-            await message.reply_document(**common_args, document=value)
+            sent_messages.append(await message.reply_document(**common_args, document=value))
         if format == 'path':
-            await message.reply_document(**common_args, document=open(value, 'rb'))
+            sent_messages.append(await message.reply_document(**common_args, document=open(value, 'rb')))
     elif kind == 'dice':
-        await message.reply_dice(**common_args, emoji=value)
+        sent_messages.append(await message.reply_dice(**common_args, emoji=value))
 
     if add_value or kind == 'text':
         # Split long messages into chunks
@@ -569,12 +570,12 @@ async def handle_direct_result(config, update: Update, response: any):
                 # Only reply to original message for first chunk
                 reply_to = get_reply_to_message_id(config, update) if i == 0 else None
                 try:
-                    await message.reply_text(
+                    sent_messages.append(await message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=reply_to,
                         text=chunk,
                         parse_mode=parse_mode
-                    )
+                    ))
                 except telegram.error.BadRequest as e:
                     if "can't parse entities" in str(e).lower():
                         logging.warning(f"Markdown parsing error in handle_direct_result: {e}. Retrying without markdown formatting.")
@@ -582,40 +583,41 @@ async def handle_direct_result(config, update: Update, response: any):
                         try:
                             # Экранируем специальные символы для markdown
                             escaped_chunk = escape_markdown(chunk, exclude_code_blocks=False)
-                            await message.reply_text(
+                            sent_messages.append(await message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=reply_to,
                                 text=escaped_chunk,
                                 parse_mode=parse_mode
-                            )
+                            ))
                         except Exception:
                             # Если все еще не получается, отправляем без форматирования
-                            await message.reply_text(
+                            sent_messages.append(await message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=reply_to,
                                 text=chunk,
                                 parse_mode=None
-                            )
+                            ))
                     else:
                         # Для других BadRequest ошибок просто убираем форматирование
-                        await message.reply_text(
+                        sent_messages.append(await message.reply_text(
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=reply_to,
                             text=chunk,
                             parse_mode=None
-                        )
+                        ))
                 except Exception as e:
                     logging.error(f"Unexpected error in handle_direct_result: {e}")
                     # В случае любой другой ошибки отправляем без форматирования
-                    await message.reply_text(
+                    sent_messages.append(await message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=reply_to,
                         text=chunk,
                         parse_mode=None
-                    )
+                    ))
 
     if format == 'path':
         cleanup_intermediate_files(response)
+    return sent_messages
 
 def cleanup_intermediate_files(response: any):
     """

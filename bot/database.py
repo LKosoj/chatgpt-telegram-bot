@@ -349,7 +349,7 @@ class Database:
             logger.error(f'Error saving user model: {e}', exc_info=True)
             raise
     
-    def save_image(self, user_id: int, chat_id: int, file_id: str, file_path: Optional[str] = None) -> int:
+    def save_image(self, user_id: int, chat_id: int, file_id: str, file_path: Optional[str] = None, status: str = 'active') -> int:
         """Сохранение информации об изображении"""
         try:
             # Генерируем хеш для file_id
@@ -359,9 +359,9 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (user_id, chat_id, file_id, file_id_hash, file_path))
+                    INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path, status)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, chat_id, file_id, file_id_hash, file_path, status))
                 return cursor.lastrowid
         except Exception as e:
             logger.error(f'Error saving image: {e}', exc_info=True)
