@@ -46,3 +46,17 @@ def test_filter_allowed_plugins(tmp_path):
 
     filtered = pm.filter_allowed_plugins(["alpha", "missing"])
     assert filtered == ["alpha"]
+
+
+def test_function_allowlist_uses_plugin_ownership(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    _write_plugin(plugin_dir / "beta.py", "BetaPlugin", "run")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    assert pm.get_plugin_name_by_function_name("alpha.do") == "alpha"
+    assert pm.is_function_allowed("alpha.do", ["alpha"]) is True
+    assert pm.is_function_allowed("beta.run", ["alpha"]) is False
+    assert pm.is_function_allowed("beta.run", ["All"]) is True

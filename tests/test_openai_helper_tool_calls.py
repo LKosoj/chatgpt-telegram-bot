@@ -49,12 +49,6 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
-ALLOWLIST_BUG_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="Tool-call handling currently executes tools outside the chat-mode allow-list.",
-)
-
-
 class DummyDB:
     def __init__(self, context=None):
         self.context = context or {}
@@ -94,6 +88,14 @@ class DummyPluginManager:
 
     def has_plugin(self, plugin_name):
         return True
+
+    def is_function_allowed(self, function_name, allowed_plugins):
+        if allowed_plugins == ["All"]:
+            return True
+        if not allowed_plugins or allowed_plugins == ["None"]:
+            return False
+        plugin_name = function_name.split(".", 1)[0]
+        return plugin_name in allowed_plugins
 
 
 class DummyClient:
@@ -341,6 +343,27 @@ async def test_allowed_tool_reentry_uses_original_allowlist():
 
 
 @pytest.mark.asyncio
+async def test_all_allowlist_allows_any_tool_call():
+    responses = {
+        "task_management.create_task": {"result": "created"},
+    }
+    pm = DummyPluginManager(responses)
+    helper = _make_helper(pm)
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("task_management.create_task", "{}"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 1
+    assert set(tools_used) == {"task_management.create_task"}
+    assert out.choices[0].message.tool_calls is None
+    assert pm.calls and pm.calls[0][0] == "task_management.create_task"
+
+
+@pytest.mark.asyncio
 async def test_mode_allowlist_is_passed_to_tool_reentry():
     saved_context = {
         "messages": [
@@ -376,7 +399,6 @@ async def test_mode_allowlist_is_passed_to_tool_reentry():
 
 
 @pytest.mark.asyncio
-@ALLOWLIST_BUG_XFAIL
 async def test_mode_restrictions_survive_tool_reentry():
     saved_context = {
         "messages": [
@@ -399,22 +421,23 @@ async def test_mode_restrictions_survive_tool_reentry():
         get_mode_by_system_prompt=lambda _content: {"tools": ["weather"]},
     )
 
-    try:
-        await helper.get_chat_response(
-            chat_id=1,
-            query="create a task",
-            user_id=1,
-        )
-    except Exception as exc:
-        assert "task_management.create_task" in str(exc)
+    await helper.get_chat_response(
+        chat_id=1,
+        query="create a task",
+        user_id=1,
+    )
 
     assert pm.calls == []
     assert pm.spec_calls
     assert all(call == ["weather"] for call in pm.spec_calls)
+    assert any(
+        "task_management.create_task" in message.get("content", "")
+        and "not allowed in the current chat mode" in message.get("content", "")
+        for message in helper.conversations[1]
+    )
 
 
 @pytest.mark.asyncio
-@ALLOWLIST_BUG_XFAIL
 async def test_legacy_tool_request_outside_allowlist_is_rejected():
     pm = DummyPluginManager({
         "task_management.create_task": {"result": "created"},
@@ -431,3 +454,8 @@ async def test_legacy_tool_request_outside_allowlist_is_rejected():
 
     assert pm.calls == []
     assert "task_management.create_task" in tools_used
+    assert any(
+        "task_management.create_task" in message.get("content", "")
+        and "not allowed in the current chat mode" in message.get("content", "")
+        for message in helper.conversations[1]
+    )

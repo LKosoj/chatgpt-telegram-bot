@@ -213,10 +213,7 @@ class PluginManager:
                 return spec
         return None
 
-    def __get_plugin_by_function_name(self, function_name):
-        """
-        Находит плагин по имени функции
-        """
+    def get_plugin_name_by_function_name(self, function_name):
         if "." in function_name:
             prefix = function_name.split(".", 1)[0]
             for plugin_name in self.plugins.keys():
@@ -224,18 +221,35 @@ class PluginManager:
                 if not plugin_instance:
                     continue
                 if plugin_instance.get_function_prefix() == prefix:
-                    return plugin_instance
+                    return plugin_name
 
-        for plugin_name, plugin_class in self.plugins.items():
+        for plugin_name in self.plugins.keys():
             plugin_instance = self.get_plugin(plugin_name)
             if not plugin_instance:
                 continue
 
             specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
             if any(spec.get('name') == function_name for spec in specs):
-                return plugin_instance
+                return plugin_name
 
         return None
+
+    def is_function_allowed(self, function_name, allowed_plugins):
+        if allowed_plugins == ['All']:
+            return True
+        if not allowed_plugins or allowed_plugins == ['None']:
+            return False
+        plugin_name = self.get_plugin_name_by_function_name(function_name)
+        return plugin_name in allowed_plugins
+
+    def __get_plugin_by_function_name(self, function_name):
+        """
+        Находит плагин по имени функции
+        """
+        plugin_name = self.get_plugin_name_by_function_name(function_name)
+        if not plugin_name:
+            return None
+        return self.get_plugin(plugin_name)
 
     def get_plugin(self, plugin_name):
         """

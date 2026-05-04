@@ -109,6 +109,11 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
             tool_name = call["name"]
             arguments = call["arguments"]
             logger.info(f'Calling tool {tool_name} with arguments {arguments}')
+            if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
+                error = f'Tool {tool_name} is not allowed in the current chat mode'
+                logger.warning(error)
+                errors[tool_name] = json.dumps({'error': error}, ensure_ascii=False)
+                continue
             try:
                 args = json.loads(arguments)
                 args['chat_id'] = chat_id
