@@ -508,10 +508,10 @@ async def handle_direct_result(config, update: Update, response: any):
 
     result = response['direct_result']
     kind = result['kind']
-    format = result['format']
+    result_format = result.get('format')
     value = result['value']
     add_value = result.get('add_value', None)
-    logging.info(f"Handling direct result - kind: {kind}, format: {format}, value: {value}, add_value: {str(add_value)[:200]}")
+    logging.info(f"Handling direct result - kind: {kind}, format: {result_format}, value: {value}, add_value: {str(add_value)[:200]}")
 
     message = update.effective_message or (update.callback_query.message if update.callback_query else None)
     if not message:
@@ -525,9 +525,9 @@ async def handle_direct_result(config, update: Update, response: any):
     sent_messages = []
 
     if kind == 'photo':
-        if format == 'url':
+        if result_format == 'url':
             sent_messages.append(await message.reply_photo(**common_args, photo=value))
-        elif format == 'path':
+        elif result_format == 'path':
             try:
                 if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
                     # Пробуем отправить как документ
@@ -541,18 +541,34 @@ async def handle_direct_result(config, update: Update, response: any):
                 photo_file, photo_format = resize_image_if_needed(value)
                 sent_messages.append(await message.reply_photo(**common_args, photo=photo_file))
     elif kind == 'gif' or kind == 'file':
-        if format == 'url':
+        if result_format == 'url':
             sent_messages.append(await message.reply_document(**common_args, document=value))
-        if format == 'path':
+        if result_format == 'path':
             sent_messages.append(await message.reply_document(**common_args, document=open(value, 'rb')))
     elif kind == 'dice':
         sent_messages.append(await message.reply_dice(**common_args, emoji=value))
+    elif kind == 'reaction':
+        target_message = getattr(message, 'reply_to_message', None)
+        set_reaction = getattr(target_message, 'set_reaction', None) if target_message else None
+        if set_reaction:
+            try:
+                if await set_reaction(reaction=value):
+                    return sent_messages
+            except Exception as e:
+                logging.warning(f"Could not set reaction direct result: {e}", exc_info=True)
+        sent_messages.append(await message.reply_text(
+            message_thread_id=get_thread_id(update),
+            reply_to_message_id=get_reply_to_message_id(config, update),
+            text=f"Reaction: {value}",
+            parse_mode=None
+        ))
+        return sent_messages
 
     if add_value or kind == 'text':
         # Split long messages into chunks
         text = add_value if add_value else value
         chunks = split_into_chunks(text)
-        if format == 'markdown':
+        if result_format == 'markdown':
             parse_mode = constants.ParseMode.MARKDOWN
         else:
             parse_mode = None
@@ -615,7 +631,7 @@ async def handle_direct_result(config, update: Update, response: any):
                         parse_mode=None
                     ))
 
-    if format == 'path':
+    if result_format == 'path':
         cleanup_intermediate_files(response)
     return sent_messages
 

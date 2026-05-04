@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from telegram import constants
+from telegram.constants import ReactionEmoji
 
 
 _INSERTED_MODULES = []
@@ -21,6 +23,7 @@ _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
 from bot.utils import handle_direct_result
+from bot.plugins.reaction import ReactionPlugin
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -61,27 +64,28 @@ class FakeUpdate:
         self.effective_chat = SimpleNamespace(type="private")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="handle_direct_result reads direct_result['format'] before reaction branch exists",
-)
 @pytest.mark.asyncio
 async def test_handle_direct_result_reaction_without_format_sets_reply_target_reaction():
     target = FakeReactionTarget()
     message = FakeMessage(reply_to_message=target)
+    response = await ReactionPlugin().execute(
+        "react_with_emoji",
+        helper=None,
+        reaction=ReactionEmoji.FIRE.value,
+    )
+    assert "format" not in response["direct_result"]
 
-    await handle_direct_result(_config(), FakeUpdate(message), _reaction_response("🔥"))
+    await handle_direct_result(_config(), FakeUpdate(message), response)
 
     target.set_reaction.assert_awaited_once()
     reaction_call = target.set_reaction.await_args
-    assert reaction_call.args == ("🔥",) or reaction_call.kwargs.get("reaction") == "🔥"
+    assert (
+        reaction_call.args == (ReactionEmoji.FIRE.value,)
+        or reaction_call.kwargs.get("reaction") == ReactionEmoji.FIRE.value
+    )
     message.reply_text.assert_not_called()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="handle_direct_result reads direct_result['format'] before reaction fallback exists",
-)
 @pytest.mark.asyncio
 async def test_handle_direct_result_reaction_without_reply_target_sends_fallback_message():
     message = FakeMessage()
@@ -90,4 +94,29 @@ async def test_handle_direct_result_reaction_without_reply_target_sends_fallback
 
     message.reply_text.assert_awaited_once()
     assert message.reply_text.await_args.kwargs["text"].strip()
+    assert sent_messages == [message.reply_text.return_value]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_text_branch_still_replies_with_markdown():
+    message = FakeMessage()
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "value": "hello",
+            }
+        },
+    )
+
+    message.reply_text.assert_awaited_once_with(
+        message_thread_id=None,
+        reply_to_message_id=None,
+        text="hello",
+        parse_mode=constants.ParseMode.MARKDOWN,
+    )
     assert sent_messages == [message.reply_text.return_value]
