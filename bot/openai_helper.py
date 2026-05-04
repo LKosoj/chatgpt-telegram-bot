@@ -335,7 +335,16 @@ class OpenAIHelper:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
 
-    async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None, **kwargs) -> tuple[str, str]:
+    async def get_chat_response(
+        self,
+        chat_id: int,
+        query: str,
+        request_id: str = None,
+        session_id: str = None,
+        user_id: int = None,
+        request_context=None,
+        **kwargs,
+    ) -> tuple[str, str]:
         """
         Gets a full response from the GPT model with optional session support.
         :param chat_id: The chat ID
@@ -346,12 +355,18 @@ class OpenAIHelper:
         :return: The answer from the model and the number of tokens used
         """
         try:
+            if request_context is not None:
+                chat_id = request_context.chat_id
+                user_id = request_context.user_id
+                if session_id is None:
+                    session_id = request_context.session_id
+
             # Add the last image file ID to the context if available
             if chat_id in self.last_image_file_ids:
                 # The model can now access this through the function calls
                 self.last_image_file_id = self.last_image_file_ids[chat_id]
             plugins_used = ()
-            if request_id and hasattr(self, 'message_ids'):
+            if request_context is None and request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
             
             # Вызов с учетом возможного отсутствия session_id
@@ -370,6 +385,7 @@ class OpenAIHelper:
                     response,
                     allowed_plugins=allowed_plugins,
                     user_id=user_id,
+                    request_context=request_context,
                 )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
@@ -411,7 +427,15 @@ class OpenAIHelper:
             if hasattr(self, 'last_image_file_id'):
                 delattr(self, 'last_image_file_id')
 
-    async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None):
+    async def get_chat_response_stream(
+        self,
+        chat_id: int,
+        query: str,
+        request_id: str = None,
+        session_id: str = None,
+        user_id: int = None,
+        request_context=None,
+    ):
         """
         Stream response from the GPT model with optional session support.
         :param chat_id: The chat ID
@@ -423,6 +447,12 @@ class OpenAIHelper:
         plugins_used = ()
         try:
             logger.info(f'Starting chat response stream for chat_id={chat_id}')
+
+            if request_context is not None:
+                chat_id = request_context.chat_id
+                user_id = request_context.user_id
+                if session_id is None:
+                    session_id = request_context.session_id
             
             # Проверяем, инициализирован ли контекст разговора
             if chat_id not in self.conversations:
@@ -441,7 +471,7 @@ class OpenAIHelper:
             if chat_id not in self.conversations_vision:
                 self.conversations_vision[chat_id] = False
 
-            if request_id and hasattr(self, 'message_ids'):
+            if request_context is None and request_id and hasattr(self, 'message_ids'):
                 self.message_id = self.message_ids.get(request_id)
                 
             logger.info('Getting chat response from model')
@@ -468,6 +498,7 @@ class OpenAIHelper:
                         stream=True,
                         allowed_plugins=allowed_plugins,
                         user_id=user_id,
+                        request_context=request_context,
                     )
                     if is_direct_result(response):
                         yield response, '0'
@@ -744,8 +775,28 @@ class OpenAIHelper:
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
-    async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None):
-        return await handle_function_call(self, chat_id, response, stream, times, tools_used, allowed_plugins, user_id)
+    async def __handle_function_call(
+        self,
+        chat_id,
+        response,
+        stream=False,
+        times=0,
+        tools_used=(),
+        allowed_plugins=None,
+        user_id=None,
+        request_context=None,
+    ):
+        return await handle_function_call(
+            self,
+            chat_id,
+            response,
+            stream,
+            times,
+            tools_used,
+            allowed_plugins,
+            user_id,
+            request_context,
+        )
 
     def _add_function_call_to_history(self, chat_id: int, function_name: str, content: str) -> None:
         self.__add_function_call_to_history(chat_id=chat_id, function_name=function_name, content=content)

@@ -41,9 +41,23 @@ def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
         return None
 
 
-async def handle_function_call(helper, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None):
+async def handle_function_call(
+    helper,
+    chat_id,
+    response,
+    stream=False,
+    times=0,
+    tools_used=(),
+    allowed_plugins=None,
+    user_id=None,
+    request_context=None,
+):
     tool_calls = []
     try:
+        if request_context is not None:
+            chat_id = request_context.chat_id
+            user_id = request_context.user_id
+
         if allowed_plugins is None:
             allowed_plugins = ['All']
         allowed_plugins = helper.plugin_manager.filter_allowed_plugins(allowed_plugins)
@@ -100,7 +114,8 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
         if not tool_calls:
             return response, tools_used
 
-        helper.user_id = user_id
+        if request_context is None:
+            helper.user_id = user_id
         model_to_use = helper.get_current_model(user_id)
 
         prepared = []
@@ -116,15 +131,27 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
                 continue
             try:
                 args = json.loads(arguments)
-                args['chat_id'] = chat_id
-                args['user_id'] = user_id if user_id is not None else chat_id
+                if request_context is not None:
+                    args['chat_id'] = request_context.plugin_chat_id
+                    args['user_id'] = request_context.user_id
+                    if request_context.message_id is not None:
+                        args['message_id'] = request_context.message_id
+                else:
+                    args['chat_id'] = chat_id
+                    args['user_id'] = user_id if user_id is not None else chat_id
                 arguments = json.dumps(args, ensure_ascii=False)
                 prepared.append((tool_name, arguments))
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
                 errors[tool_name] = json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)
 
-        tasks = [helper.plugin_manager.call_function(name, helper, args) for name, args in prepared]
+        if request_context is None:
+            tasks = [helper.plugin_manager.call_function(name, helper, args) for name, args in prepared]
+        else:
+            tasks = [
+                helper.plugin_manager.call_function(name, helper, args, request_context=request_context)
+                for name, args in prepared
+            ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         direct_result = None
@@ -169,7 +196,17 @@ async def handle_function_call(helper, chat_id, response, stream=False, times=0,
             stream=stream,
             extra_headers={ "X-Title": "tgBot" },
         )
-        return await handle_function_call(helper, chat_id, response, stream, times + 1, tools_used, allowed_plugins, user_id)
+        return await handle_function_call(
+            helper,
+            chat_id,
+            response,
+            stream,
+            times + 1,
+            tools_used,
+            allowed_plugins,
+            user_id,
+            request_context,
+        )
     except Exception as e:
         logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
         bot_language = helper.config['bot_language']

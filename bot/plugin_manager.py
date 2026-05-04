@@ -160,7 +160,7 @@ class PluginManager:
             return {"function_declarations": all_specs}
         return [{"type": "function", "function": spec} for spec in all_specs]
 
-    async def call_function(self, function_name, helper, arguments):
+    async def call_function(self, function_name, helper, arguments, request_context=None):
         """
         Call a function based on the name and parameters provided
         """
@@ -177,6 +177,9 @@ class PluginManager:
                 errors = validate_function_args(spec, parsed_args)
                 if errors:
                     return json.dumps({'error': f'Invalid args for {function_name}: {errors}'}, ensure_ascii=False)
+
+            if request_context is not None:
+                parsed_args['request_context'] = request_context
 
             logger.debug(f"Вызываем функцию {function_name} с аргументами: {parsed_args}")
             base_name = function_name.split(".", 1)[-1]

@@ -44,6 +44,7 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import OpenAIHelper, default_max_tokens
+from bot.request_context import RequestContext
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -68,6 +69,7 @@ class DummyPluginManager:
     def __init__(self, responses):
         self.responses = responses
         self.calls = []
+        self.call_contexts = []
         self.spec_calls = []
         self.filtered = []
 
@@ -75,8 +77,9 @@ class DummyPluginManager:
         self.filtered.append(list(allowed_plugins or []))
         return allowed_plugins
 
-    async def call_function(self, name, helper, arguments):
+    async def call_function(self, name, helper, arguments, request_context=None):
         self.calls.append((name, arguments))
+        self.call_contexts.append(request_context)
         return self.responses[name]
 
     def get_functions_specs(self, helper, model_to_use, allowed_plugins):
@@ -361,6 +364,73 @@ async def test_all_allowlist_allows_any_tool_call():
     assert set(tools_used) == {"task_management.create_task"}
     assert out.choices[0].message.tool_calls is None
     assert pm.calls and pm.calls[0][0] == "task_management.create_task"
+
+
+@pytest.mark.asyncio
+async def test_request_context_tool_flow_injects_context_without_shared_user_id():
+    request_context = RequestContext(
+        chat_id=77,
+        user_id=42,
+        message_id=123,
+        session_id="session-1",
+    )
+    pm = DummyPluginManager({
+        "p1.do": {"direct_result": {"kind": "text", "format": "markdown", "value": "ok"}},
+    })
+    helper = _make_helper(pm)
+    helper.conversations[request_context.chat_id] = []
+    helper.user_id = "legacy-user"
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("p1.do", "{}"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=999,
+        response=response,
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=999,
+        request_context=request_context,
+    )
+
+    assert helper.user_id == "legacy-user"
+    assert pm.call_contexts == [request_context]
+    assert set(tools_used) == {"p1.do"}
+    assert out["direct_result"]["value"] == "ok"
+    sent_args = json.loads(pm.calls[0][1])
+    assert sent_args["chat_id"] == "77"
+    assert sent_args["user_id"] == 42
+    assert sent_args["message_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_with_request_context_keeps_legacy_message_id_state():
+    request_context = RequestContext(
+        chat_id=77,
+        user_id=42,
+        message_id=123,
+        session_id="session-1",
+    )
+    pm = DummyPluginManager({})
+    helper = _make_helper(
+        pm,
+        db=DummyDB({"messages": [{"role": "system", "content": "hi"}]}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.message_ids["request-1"] = 999
+    helper.message_id = "legacy-message"
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=999,
+        query="hello",
+        request_id="request-1",
+        user_id=999,
+        request_context=request_context,
+    )
+
+    assert answer == "done"
+    assert total_tokens == 3
+    assert helper.message_id == "legacy-message"
 
 
 @pytest.mark.asyncio
