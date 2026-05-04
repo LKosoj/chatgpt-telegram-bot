@@ -32,12 +32,6 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
-CONCURRENT_STATE_BUG_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="Tool plugins currently read request-local data from shared OpenAIHelper state.",
-)
-
-
 class FakeToolCall:
     def __init__(self, name, arguments):
         self.function = SimpleNamespace(name=name, arguments=arguments)
@@ -60,12 +54,14 @@ class FakeResponse:
 
 
 class RacingPluginManager:
-    def __init__(self, task_plugin=None, language_plugin=None):
+    def __init__(self, task_plugin=None, language_plugin=None, reminder_plugin=None):
         self.plugins = {}
         if task_plugin is not None:
             self.plugins["task_management.create_task"] = task_plugin
         if language_plugin is not None:
             self.plugins["language_learning.track_progress"] = language_plugin
+        if reminder_plugin is not None:
+            self.plugins["reminders.set_reminder"] = reminder_plugin
         self.first_call_started = asyncio.Event()
         self.second_call_started = asyncio.Event()
         self.call_count = 0
@@ -76,7 +72,7 @@ class RacingPluginManager:
     def is_function_allowed(self, function_name, allowed_plugins):
         return True
 
-    async def call_function(self, function_name, helper, arguments):
+    async def call_function(self, function_name, helper, arguments, request_context=None):
         self.call_count += 1
         if self.call_count == 1:
             self.first_call_started.set()
@@ -85,6 +81,8 @@ class RacingPluginManager:
             self.second_call_started.set()
 
         args = json.loads(arguments)
+        if request_context is not None:
+            args["request_context"] = request_context
         plugin = self.plugins[function_name]
         base_name = function_name.split(".", 1)[1]
         await plugin.execute(base_name, helper, **args)
@@ -335,7 +333,6 @@ async def test_language_learning_legacy_helper_user_id_fallback(tmp_path, caplog
 
 
 @pytest.mark.asyncio
-@CONCURRENT_STATE_BUG_XFAIL
 async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_path):
     plugin = RemindersPlugin()
     plugin.initialize(storage_root=str(tmp_path))
@@ -360,3 +357,87 @@ async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_pa
 
     reminder = next(iter(plugin.reminders[request_context.plugin_chat_id].values()))
     assert reminder["reply_to_message_id"] == request_context.message_id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_path):
+    plugin = RemindersPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    plugin_manager = RacingPluginManager(reminder_plugin=plugin)
+    helper = SharedHelper(plugin_manager)
+    helper.message_id = 999
+    first_context = RequestContext(
+        chat_id=1001,
+        user_id=101,
+        message_id=111,
+        session_id="session-1",
+    )
+    second_context = RequestContext(
+        chat_id=1002,
+        user_id=202,
+        message_id=222,
+        session_id="session-2",
+    )
+
+    first = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=first_context.chat_id,
+        response=FakeResponse(
+            "reminders.set_reminder",
+            {
+                "time": "2030-01-01 12:30",
+                "message": "first reminder",
+                "integration": "telegram",
+                "current_time": "2026-05-04 10:00",
+            },
+        ),
+        allowed_plugins=["All"],
+        user_id=first_context.user_id,
+        request_context=first_context,
+    ))
+    await plugin_manager.first_call_started.wait()
+    second = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=second_context.chat_id,
+        response=FakeResponse(
+            "reminders.set_reminder",
+            {
+                "time": "2030-01-01 12:45",
+                "message": "second reminder",
+                "integration": "telegram",
+                "current_time": "2026-05-04 10:00",
+            },
+        ),
+        allowed_plugins=["All"],
+        user_id=second_context.user_id,
+        request_context=second_context,
+    ))
+
+    await asyncio.gather(first, second)
+
+    first_reminder = next(iter(plugin.reminders[first_context.plugin_chat_id].values()))
+    second_reminder = next(iter(plugin.reminders[second_context.plugin_chat_id].values()))
+    assert first_reminder["reply_to_message_id"] == first_context.message_id
+    assert second_reminder["reply_to_message_id"] == second_context.message_id
+
+
+@pytest.mark.asyncio
+async def test_reminder_legacy_helper_message_id_fallback(tmp_path, caplog):
+    plugin = RemindersPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(message_id=444)
+
+    with caplog.at_level(logging.WARNING):
+        await plugin.execute(
+            "set_reminder",
+            helper,
+            chat_id="555",
+            time="2030-01-01 12:30",
+            message="legacy reminder",
+            integration="telegram",
+            current_time="2026-05-04 10:00",
+        )
+
+    reminder = next(iter(plugin.reminders["555"].values()))
+    assert reminder["reply_to_message_id"] == helper.message_id
+    assert "Deprecated reminders reply_to_message_id fallback to helper.message_id" in caplog.text
