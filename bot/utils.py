@@ -7,6 +7,7 @@ import logging
 import os
 import io
 import base64
+import time
 from PIL import Image
 import uuid
 
@@ -54,6 +55,105 @@ def get_thread_id(update: Update) -> int | None:
     if update.effective_message and update.effective_message.is_topic_message:
         return update.effective_message.message_thread_id
     return None
+
+class BusyStatusMessage:
+    """
+    Maintains a temporary progress message for long-running chat responses.
+    """
+
+    def __init__(
+        self,
+        update: Update,
+        context: CallbackContext,
+        description: str,
+        *,
+        config: dict | None = None,
+        interval: float = 30.0,
+    ):
+        self.update = update
+        self.context = context
+        self.description = description
+        self.config = config
+        self.interval = interval
+        self.message = None
+        self._started_at = time.monotonic()
+        self._task = None
+        self._stopped = False
+
+    async def start(self):
+        if self._task is not None:
+            return self
+
+        application = getattr(self.context, "application", None)
+        create_task = getattr(application, "create_task", None)
+        if create_task is not None:
+            self._task = create_task(self._run(), update=self.update)
+        else:
+            self._task = asyncio.create_task(self._run())
+        return self
+
+    async def stop(self):
+        self._stopped = True
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+        if self.message is not None:
+            try:
+                await self.message.delete()
+            except Exception as e:
+                logging.warning(f"Failed to delete busy status message: {e}")
+            finally:
+                self.message = None
+
+    async def _run(self):
+        try:
+            await asyncio.sleep(self.interval)
+            while not self._stopped:
+                if self.message is None:
+                    if not await self._send():
+                        return
+                else:
+                    await self._edit()
+                await asyncio.sleep(self.interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _send(self) -> bool:
+        if not self.update.effective_message:
+            return False
+        try:
+            self.message = await self.update.effective_message.reply_text(
+                message_thread_id=get_thread_id(self.update),
+                reply_to_message_id=(
+                    get_reply_to_message_id(self.config, self.update)
+                    if self.config is not None else None
+                ),
+                text=self._text(),
+            )
+            return True
+        except Exception as e:
+            logging.warning(f"Failed to send busy status message: {e}")
+            return False
+
+    async def _edit(self):
+        try:
+            await self.message.edit_text(text=self._text())
+        except telegram.error.BadRequest as e:
+            if str(e).startswith("Message is not modified"):
+                return
+            logging.warning(f"Failed to edit busy status message: {e}")
+        except Exception as e:
+            logging.warning(f"Failed to edit busy status message: {e}")
+
+    def _text(self) -> str:
+        elapsed_seconds = max(0, int(time.monotonic() - self._started_at))
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        return f"{self.description}\nВремя ожидания: {minutes:02d}:{seconds:02d}"
 
 def get_stream_cutoff_values(update: Update, content: str) -> int:
     """

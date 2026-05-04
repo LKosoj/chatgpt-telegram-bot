@@ -26,7 +26,7 @@ from PIL import Image
 from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
-    cleanup_intermediate_files, send_long_response_as_file
+    cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .i18n import localized_text
 from .plugins.haiper_image_to_video import WAITING_PROMPT
@@ -1842,56 +1842,67 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
-                    response, total_tokens = await self.openai.get_chat_response(
-                        chat_id=chat_id,
-                        query=prompt,
-                        request_id=request_id,
-                        user_id=user_id,
-                        request_context=request_context,
+                    busy_status = BusyStatusMessage(
+                        update,
+                        context,
+                        "Готовлю ответ...",
+                        config=self.config,
                     )
+                    await busy_status.start()
+                    try:
+                        response, total_tokens = await self.openai.get_chat_response(
+                            chat_id=chat_id,
+                            query=prompt,
+                            request_id=request_id,
+                            user_id=user_id,
+                            request_context=request_context,
+                        )
+                        await busy_status.stop()
 
-                    if is_direct_result(response):
-                        analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
-                        if analytics_plugin:
-                            message_data = {
-                                'text': prompt,
-                                'tokens': total_tokens,
-                                'user_id': user_id
-                            }
-                            analytics_plugin.update_stats(str(chat_id), message_data)
-                        return await self._handle_direct_result(update, response)
+                        if is_direct_result(response):
+                            analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
+                            if analytics_plugin:
+                                message_data = {
+                                    'text': prompt,
+                                    'tokens': total_tokens,
+                                    'user_id': user_id
+                                }
+                                analytics_plugin.update_stats(str(chat_id), message_data)
+                            return await self._handle_direct_result(update, response)
 
-                    # Split into chunks of 4096 characters (Telegram's message limit)
-                    chunks = split_into_chunks(response)
+                        # Split into chunks of 4096 characters (Telegram's message limit)
+                        chunks = split_into_chunks(response)
 
-                    # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-                    if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
-                        # Получаем имя текущей сессии
-                        sessions = self.db.list_user_sessions(user_id, is_active=1)
-                        active_session = next((s for s in sessions if s['is_active']), None)
-                        session_name = active_session['session_name'] if active_session else 'transcription'
-                        
-                        await send_long_response_as_file(self.config, update, response, session_name)
-                    else:
-                        for index, chunk in enumerate(chunks):
-                            try:
-                                await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    reply_to_message_id=get_reply_to_message_id(self.config,
-                                                                                update) if index == 0 else None,
-                                    text=chunk,
-                                    parse_mode=constants.ParseMode.MARKDOWN
-                                )
-                            except Exception:
+                        # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
+                        if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
+                            # Получаем имя текущей сессии
+                            sessions = self.db.list_user_sessions(user_id, is_active=1)
+                            active_session = next((s for s in sessions if s['is_active']), None)
+                            session_name = active_session['session_name'] if active_session else 'transcription'
+
+                            await send_long_response_as_file(self.config, update, response, session_name)
+                        else:
+                            for index, chunk in enumerate(chunks):
                                 try:
                                     await update.effective_message.reply_text(
                                         message_thread_id=get_thread_id(update),
                                         reply_to_message_id=get_reply_to_message_id(self.config,
                                                                                     update) if index == 0 else None,
-                                        text=chunk
+                                        text=chunk,
+                                        parse_mode=constants.ParseMode.MARKDOWN
                                     )
-                                except Exception as exception:
-                                    raise exception
+                                except Exception:
+                                    try:
+                                        await update.effective_message.reply_text(
+                                            message_thread_id=get_thread_id(update),
+                                            reply_to_message_id=get_reply_to_message_id(self.config,
+                                                                                        update) if index == 0 else None,
+                                            text=chunk
+                                        )
+                                    except Exception as exception:
+                                        raise exception
+                    finally:
+                        await busy_status.stop()
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
             analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
