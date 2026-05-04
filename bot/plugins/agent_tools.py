@@ -339,7 +339,7 @@ class AgentToolsPlugin(Plugin):
         for option in options if isinstance(options, list) else []:
             text = str(option or "").strip()
             if text and text not in normalized:
-                normalized.append(text[:80])
+                normalized.append(text)
             if len(normalized) >= 6:
                 break
         return normalized

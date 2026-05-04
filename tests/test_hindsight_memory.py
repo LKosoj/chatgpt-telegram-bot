@@ -142,7 +142,7 @@ def make_helper():
         "enable_vision_follow_up_questions": True,
         "vision_prompt": "test",
         "vision_detail": "auto",
-        "vision_max_tokens": 300,
+        "vision_max_tokens": 1000,
         "tts_model": "llmgateway/silero-tts",
         "tts_voice": "kseniya",
         "tts_response_format": "wav",

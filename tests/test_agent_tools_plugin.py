@@ -39,6 +39,13 @@ def test_agent_tools_registers_specs_and_handlers():
     assert pm.get_message_handlers()
 
 
+def test_agent_tools_preserves_full_option_text():
+    plugin = AgentToolsPlugin()
+    long_option = "A" * 120
+
+    assert plugin._normalize_options([long_option]) == [long_option]
+
+
 @pytest.mark.asyncio
 async def test_manage_plan_tasks_tracks_progress(tmp_path):
     plugin = AgentToolsPlugin()

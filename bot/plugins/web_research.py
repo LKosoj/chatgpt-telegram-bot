@@ -66,7 +66,7 @@ class WebResearchPlugin(Plugin):
                 {"role": "user", "content": query}
             ],
             temperature=0,
-            max_tokens=160,
+            max_tokens=1000,
             extra_headers={ "X-Title": "tgBot" },
         )
         content = response.choices[0].message.content or ""

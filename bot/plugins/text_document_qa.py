@@ -614,7 +614,7 @@ class TextDocumentQAPlugin(Plugin):
             await self._create_document_index(text_content, doc_id)
 
             # Генерируем саммари документа
-            summary_prompt = f"Создай краткое описание (не более 150-200 символов) для следующего текста:\n\n{text_content[:5000]}"
+            summary_prompt = f"Создай краткое описание (не более 150-200 символов) для следующего текста:\n\n{text_content}"
             summary_response, _ = await self.openai_helper.ask(
                 prompt=summary_prompt,
                 user_id=chat_id,

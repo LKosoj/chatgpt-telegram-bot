@@ -67,7 +67,7 @@ class HindsightClient:
             timeout=timeout,
         )
         if response.status_code >= 400:
-            detail = response.text[:500]
+            detail = response.text
             raise HindsightError(f"Hindsight request failed: {response.status_code} {detail}")
         try:
             data = response.json()

@@ -155,7 +155,7 @@ def _make_helper(plugin_manager, db=None, client=None):
         "max_history_size": 5,
         "max_conversation_age_minutes": 60,
         "assistant_prompt": "hi",
-        "max_tokens": 100,
+        "max_tokens": 1000,
         "n_choices": 1,
         "temperature": 0.1,
         "image_model": "llmgateway/ai-klein-generation",
@@ -175,7 +175,7 @@ def _make_helper(plugin_manager, db=None, client=None):
         "enable_vision_follow_up_questions": True,
         "vision_prompt": "test",
         "vision_detail": "auto",
-        "vision_max_tokens": 300,
+        "vision_max_tokens": 1000,
         "tts_model": "llmgateway/silero-tts",
         "tts_voice": "kseniya",
         "tts_response_format": "wav",
@@ -202,6 +202,27 @@ def test_vision_history_content_keeps_only_text():
     ]
 
     assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
+
+
+def test_hindsight_memory_parser_preserves_full_fields():
+    helper = _make_helper(DummyPluginManager({}))
+    content = "memory-" + ("x" * 2500)
+    context = "context-" + ("y" * 700)
+    tag = "tag-" + ("z" * 120)
+
+    items = helper._parse_hindsight_memory_items(json.dumps({
+        "items": [{
+            "content": content,
+            "context": context,
+            "tags": [tag],
+        }]
+    }))
+
+    assert items == [{
+        "content": content,
+        "context": context,
+        "tags": [tag],
+    }]
 
 
 def test_resolve_allowed_plugins_returns_mode_tools():
@@ -255,6 +276,19 @@ async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     assert answer == "done"
     assert total_tokens == 3
     assert pm.spec_calls == [["weather"]]
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_rejects_empty_model_content():
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content=None)]))
+
+    with pytest.raises(ValueError, match="Модель вернула пустой ответ"):
+        await helper.get_chat_response(
+            chat_id=1,
+            query="hello",
+            user_id=1,
+        )
 
 
 @pytest.mark.asyncio

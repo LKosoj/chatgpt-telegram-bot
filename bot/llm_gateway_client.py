@@ -42,7 +42,7 @@ class LLMGatewayClient:
         }
         response = await self._client.post(url, headers=headers, json=payload, timeout=timeout)
         if response.status_code >= 400:
-            detail = response.text[:500]
+            detail = response.text
             raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
         try:
             data = response.json()
@@ -70,7 +70,7 @@ class LLMGatewayClient:
         }
         response = await self._client.post(url, headers=headers, data=data, files=files, timeout=timeout)
         if response.status_code >= 400:
-            detail = response.text[:500]
+            detail = response.text
             raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
         try:
             response_data = response.json()

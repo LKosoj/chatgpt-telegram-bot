@@ -2053,9 +2053,6 @@ class ChatGPTTelegramBot:
                                 divider = '_' if use_markdown else ''
                                 text = f'{query}\n\n{divider}{answer_tr}:{divider}\n{content}'
 
-                                # We only want to send the first 4096 characters. No chunking allowed in inline mode.
-                                text = text[:4096]
-
                                 await edit_message_with_retry(context, chat_id=None, message_id=inline_message_id,
                                                               text=text, markdown=use_markdown, is_inline=True)
 
@@ -2102,9 +2099,6 @@ class ChatGPTTelegramBot:
                             return
 
                         text_content = f'{query}\n\n_{answer_tr}:_\n{response}'
-
-                        # We only want to send the first 4096 characters. No chunking allowed in inline mode.
-                        text_content = text_content[:4096]
 
                         # Edit the original message with the generated content
                         await edit_message_with_retry(context, chat_id=None, message_id=inline_message_id,

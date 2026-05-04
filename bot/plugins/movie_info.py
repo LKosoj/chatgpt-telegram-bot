@@ -234,8 +234,8 @@ class MovieInfoPlugin(Plugin):
                     reviews = self._get_movie_reviews(movie_id)
                     
                     critic_reviews = "\n".join(
-                        [f"- {review.get('author', 'Аноним')}: {review.get('content', 'Нет текста')[:200]}..." 
-                         for review in reviews[:3]]
+                        [f"- {review.get('author', 'Аноним')}: {review.get('content', 'Нет текста')}"
+                         for review in reviews[:6]]
                     ) if reviews else "Нет отзывов критиков."
                     
                     # Безопасное извлечение жанров
@@ -291,4 +291,4 @@ class MovieInfoPlugin(Plugin):
         
         except Exception as e:
             logging.error(f"Непредвиденная ошибка: {str(e)}")
-            return {'error': f'Непредвиденная ошибка: {str(e)}'} 
+            return {'error': f'Непредвиденная ошибка: {str(e)}'}

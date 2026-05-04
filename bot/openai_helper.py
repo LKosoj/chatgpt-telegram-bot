@@ -56,6 +56,24 @@ from .i18n import localized_text
 logger = logging.getLogger(__name__)
 
 HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
+EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
+
+
+def _choice_message_text(choice) -> str:
+    message = getattr(choice, "message", None)
+    content = getattr(message, "content", None)
+    return content.strip() if isinstance(content, str) else ""
+
+
+def _required_choice_message_text(choice) -> str:
+    content = _choice_message_text(choice)
+    if content:
+        return content
+    logger.warning(
+        "Model returned empty assistant content; finish_reason=%s",
+        getattr(choice, "finish_reason", None),
+    )
+    raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
 
 HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
 Long-term memory recalled for this Telegram user:
@@ -326,8 +344,9 @@ class OpenAIHelper:
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
             )
-            self.__add_to_history(user_id, role="assistant", content=response.choices[0].message.content.strip())
-            return response.choices[0].message.content.strip(), response.usage.total_tokens
+            content = _required_choice_message_text(response.choices[0])
+            self.__add_to_history(user_id, role="assistant", content=content)
+            return content, response.usage.total_tokens
         except Exception as e:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
             raise
@@ -389,14 +408,14 @@ class OpenAIHelper:
 
             if len(response.choices) > 1 and self.config['n_choices'] > 1:
                 for index, choice in enumerate(response.choices):
-                    content = choice.message.content.strip()
+                    content = _required_choice_message_text(choice)
                     if index == 0:
                         self.__add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
                     answer += f'{index + 1}\u20e3\n'
                     answer += content
                     answer += '\n\n'
             else:
-                answer = response.choices[0].message.content.strip()
+                answer = _required_choice_message_text(response.choices[0])
                 self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
 
             bot_language = self.config['bot_language']
@@ -1014,14 +1033,14 @@ class OpenAIHelper:
 
         if len(response.choices) > 1 and self.config['n_choices'] > 1:
             for index, choice in enumerate(response.choices):
-                content = choice.message.content.strip()
+                content = _required_choice_message_text(choice)
                 if index == 0:
                     self.__add_to_history(chat_id, role="assistant", content=content)
                 answer += f'{index + 1}\u20e3\n'
                 answer += content
                 answer += '\n\n'
         else:
-            answer = response.choices[0].message.content.strip()
+            answer = _required_choice_message_text(response.choices[0])
             self.__add_to_history(chat_id, role="assistant", content=answer)
 
         bot_language = self.config['bot_language']
@@ -1311,12 +1330,12 @@ class OpenAIHelper:
             if not content_text or self._looks_sensitive_memory(content_text):
                 continue
             parsed = {
-                "content": content_text[:2000],
-                "context": str(item.get("context") or "").strip()[:500],
+                "content": content_text,
+                "context": str(item.get("context") or "").strip(),
             }
             tags = item.get("tags")
             if isinstance(tags, list):
-                parsed["tags"] = [str(tag).strip()[:80] for tag in tags if str(tag).strip()]
+                parsed["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
             items.append(parsed)
         return items
 
@@ -1761,7 +1780,7 @@ class OpenAIHelper:
         
         # Максимальное количество токенов для генерации
         max_generation_tokens = max(
-            500,  # Минимальное количество токенов для генерации
+            1000,  # Минимальное количество токенов для генерации
             min(
                 total_max_tokens - current_tokens - reserved_tokens,  # Оставшиеся токены
                 total_max_tokens // 2  # Не более половины от общего количества
