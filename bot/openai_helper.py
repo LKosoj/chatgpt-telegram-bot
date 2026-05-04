@@ -216,7 +216,8 @@ class OpenAIHelper:
             model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
             messages=messages,
             temperature=0.0,
-            max_tokens=40,
+            max_tokens=1000,
+            response_format={"type": "json_object"},
             stream=False,
             extra_headers={ "X-Title": "tgBot" },
         )

@@ -83,6 +83,8 @@ async def test_reply_intent_classifier_uses_light_model():
 
     assert intent == "image_edit"
     assert helper.client.calls[0]["model"] == LLMGATEWAY_LIGHT_MODEL
+    assert helper.client.calls[0]["response_format"] == {"type": "json_object"}
+    assert helper.client.calls[0]["max_tokens"] == 1000
 
 
 @pytest.mark.asyncio
