@@ -37,6 +37,26 @@ def test_message_count_saved(db):
     assert sessions[0]["message_count"] == 2
 
 
+def test_session_name_uses_text_from_multimodal_content(db):
+    context = {
+        "messages": [
+            {"role": "system", "content": "s"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "что на этой картинке изображено подробно?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+                ],
+            },
+        ]
+    }
+
+    db.save_conversation_context(1, context, "HTML", 0.8, 80, openai_helper=DummyOpenAI())
+
+    sessions = db.list_user_sessions(1, is_active=1)
+    assert sessions[0]["session_name"] == "ShortName"
+
+
 def test_max_sessions_enforced(db):
     helper = DummyOpenAI()
     for _ in range(6):

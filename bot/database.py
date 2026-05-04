@@ -197,6 +197,22 @@ class Database:
             result = cursor.fetchone()
             return result[0] if result else None
 
+    @staticmethod
+    def _session_name_source_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict) and item.get('type') == 'text':
+                    text_parts.append(str(item.get('text', '')))
+            return ' '.join(part.strip() for part in text_parts if part and part.strip())
+        if content is None:
+            return ''
+        return str(content)
+
     def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100, session_id: str = None, openai_helper = None) -> None:
         """Сохранение контекста разговора с поддержкой сессий"""
         try:
@@ -249,6 +265,7 @@ class Database:
                      if msg.get('role') == 'user'), 
                     None
                 )
+                user_message = self._session_name_source_text(user_message)
                 if user_message and openai_helper:
                     if len(user_message) > 20:
                         session_name, _ = openai_helper.ask_sync(
