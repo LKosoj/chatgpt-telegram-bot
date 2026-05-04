@@ -95,3 +95,15 @@ async def test_reply_intent_classifier_rejects_invalid_response():
     intent = await OpenAIHelper.classify_reply_intent(helper, "что это значит?", "text")
 
     assert intent == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_classifier_accepts_plain_label():
+    pytest.importorskip("tiktoken")
+    from bot.openai_helper import OpenAIHelper
+
+    helper = FakeHelper("image_describe")
+
+    intent = await OpenAIHelper.classify_reply_intent(helper, "что на этой картинке?", "image")
+
+    assert intent == "image_describe"

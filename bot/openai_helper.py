@@ -219,17 +219,22 @@ class OpenAIHelper:
             extra_headers={ "X-Title": "tgBot" },
         )
         content = response.choices[0].message.content or ""
+        allowed_intents = {"image_edit", "image_describe", "text_reply"}
         start = content.find("{")
         end = content.rfind("}")
-        if start < 0 or end <= start:
-            return "unknown"
-        try:
-            data = json.loads(content[start:end + 1])
-        except json.JSONDecodeError:
-            return "unknown"
-        intent = str(data.get("intent", "")).strip().lower()
-        if intent in {"image_edit", "image_describe", "text_reply"}:
-            return intent
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(content[start:end + 1])
+                intent = str(data.get("intent", "")).strip().lower()
+                if intent in allowed_intents:
+                    return intent
+            except json.JSONDecodeError:
+                pass
+
+        normalized_content = content.strip().lower()
+        for intent in allowed_intents:
+            if intent in normalized_content:
+                return intent
         return "unknown"
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
@@ -1492,6 +1497,12 @@ class OpenAIHelper:
         except Exception as e:
             logger.error(f"Error downloading file: {e}")
             raise
+
+    async def download_file_as_bytes(self, file_id: str) -> bytes:
+        """
+        Downloads a Telegram file by file_id as bytes.
+        """
+        return bytes(await self.get_file_data(file_id))
 
     def set_last_image_file_id(self, chat_id: int, file_id: str):
         """Store the last image file ID for the chat"""
