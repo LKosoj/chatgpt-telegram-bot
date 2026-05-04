@@ -80,3 +80,21 @@ def test_concurrent_access_smoke(db):
         t.start()
     for t in threads:
         t.join()
+
+
+def test_save_image_creates_missing_user_settings(db):
+    image_id = db.save_image(42, 42, "telegram-file-id")
+
+    assert image_id
+    assert db.get_user_settings(42) == {}
+    images = db.get_user_images(42, 42, limit=1)
+    assert images[0]["file_id"] == "telegram-file-id"
+
+
+def test_delete_user_data_removes_images_before_settings(db):
+    db.save_image(42, 42, "telegram-file-id")
+
+    db.delete_user_data(42)
+
+    assert db.get_user_settings(42) is None
+    assert db.get_user_images(42, 42, limit=1) == []

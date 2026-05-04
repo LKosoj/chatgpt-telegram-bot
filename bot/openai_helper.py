@@ -85,7 +85,9 @@ Definitions:
 - image_describe: the user asks about visual content in an image, including description, analysis, identification, or questions about what is shown.
 - text_reply: the user asks or clarifies something about text, conversation context, or anything that should continue as normal chat.
 
-Use replied_message_kind as the source context. Do not choose image_edit or image_describe unless the user intent depends on an image."""
+Use replied_message_kind as the source context. Do not choose image_edit or image_describe unless the user intent depends on an image.
+If replied_message_kind is "image", requests like "нарисуй коту на голове шапочку", "добавь шапочку", "put a hat on it" are image_edit.
+If replied_message_kind is "image", requests like "что на картинке?", "опиши изображение", "what is this?" are image_describe."""
 
 
 @lru_cache(maxsize=128)
@@ -254,6 +256,7 @@ class OpenAIHelper:
         for alias, intent in intent_aliases.items():
             if alias in normalized_content:
                 return intent
+        logger.info("Reply intent classifier returned unrecognized content: %r", content[:200])
         return "unknown"
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:

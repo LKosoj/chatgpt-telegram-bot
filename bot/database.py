@@ -346,8 +346,9 @@ class Database:
             logger.info(f'Deleting all data for user_id={user_id}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
+                cursor.execute('DELETE FROM images WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM conversation_context WHERE user_id = ?', (user_id,))
+                cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
                 logger.info(f'All data deleted successfully for user_id={user_id}')
         except Exception as e:
             logger.error(f'Error deleting user data: {e}', exc_info=True)
@@ -375,6 +376,10 @@ class Database:
 
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR IGNORE INTO user_settings (user_id, settings)
+                    VALUES (?, ?)
+                ''', (user_id, '{}'))
                 cursor.execute('''
                     INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path, status)
                     VALUES (?, ?, ?, ?, ?, ?)

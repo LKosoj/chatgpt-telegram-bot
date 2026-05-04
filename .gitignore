@@ -15,6 +15,8 @@ bot/.vscode/lua.booster.lint.json
 bot/plugins/.cursorrules
 /.specstory
 bot/user_data.db
+bot/user_data.db-shm
+bot/user_data.db-wal
 *.html
 /.vscode
 # SpecStory explanation file
