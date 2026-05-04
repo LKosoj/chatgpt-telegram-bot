@@ -764,8 +764,7 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         try:
             image_bytes = await self.download_file_as_bytes(file_id)
-            image_data_url = encode_image(io.BytesIO(image_bytes))
-            response = await self.gateway_client.image_edit(prompt, [image_data_url])
+            response = await self.gateway_client.image_edit_file(prompt, image_bytes)
             return extract_image_result(response)
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
