@@ -1,5 +1,5 @@
 import asyncio
-import time
+from datetime import datetime
 
 import pytest
 import requests
@@ -22,6 +22,9 @@ class FakeResponse:
             raise self.json_error
         return self.payload
 
+    def raise_for_status(self):
+        return None
+
 
 def _fake_get(calls, payload=None, error=None, json_error=None):
     def fake_get(url, *args, **kwargs):
@@ -31,6 +34,68 @@ def _fake_get(calls, payload=None, error=None, json_error=None):
         return FakeResponse(payload=payload, json_error=json_error)
 
     return fake_get
+
+
+def _fake_async_client(
+    calls,
+    payload=None,
+    error=None,
+    json_error=None,
+    delay=0,
+):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("timeout") == 10.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            calls.append(url)
+            if delay:
+                await asyncio.sleep(delay)
+            if error:
+                raise error
+            return FakeResponse(payload=payload, json_error=json_error)
+
+    return FakeAsyncClient
+
+
+def _patch_get(
+    monkeypatch,
+    module,
+    calls,
+    payload=None,
+    error=None,
+    json_error=None,
+):
+    if module is weather_module:
+        monkeypatch.setattr(
+            module.httpx,
+            "AsyncClient",
+            _fake_async_client(
+                calls,
+                payload=payload,
+                error=error,
+                json_error=json_error,
+            ),
+        )
+        return
+
+    monkeypatch.setattr(
+        module.requests,
+        "get",
+        _fake_get(calls, payload=payload, error=error, json_error=json_error),
+    )
+
+
+def _network_error(module):
+    if module is weather_module:
+        return module.httpx.TimeoutException("timed out")
+    return requests.Timeout("timed out")
 
 
 def _assert_controlled_error(result, expected_message):
@@ -49,6 +114,38 @@ SUCCESS_CASES = [
         {"current_weather": {"temperature": 21.5}},
         {"current_weather": {"temperature": 21.5}},
         id="weather",
+    ),
+    pytest.param(
+        weather_module,
+        WeatherPlugin,
+        "get_forecast_weather",
+        {
+            "latitude": "52.52",
+            "longitude": "13.41",
+            "unit": "celsius",
+            "forecast_days": 1,
+        },
+        {
+            "daily": {
+                "time": ["2026-05-04"],
+                "weathercode": [0],
+                "temperature_2m_max": [20],
+                "temperature_2m_min": [10],
+                "precipitation_probability_mean": [5],
+            }
+        },
+        {
+            "today": datetime.today().strftime("%A, %B %d, %Y"),
+            "forecast": {
+                "Monday, May 04, 2026": {
+                    "weathercode": 0,
+                    "temperature_2m_max": 20,
+                    "temperature_2m_min": 10,
+                    "precipitation_probability_mean": 5,
+                }
+            },
+        },
+        id="weather-forecast",
     ),
     pytest.param(
         crypto_module,
@@ -91,13 +188,6 @@ ERROR_CASES = [
         WeatherPlugin,
         "get_current_weather",
         {"latitude": "52.52", "longitude": "13.41", "unit": "celsius"},
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "WeatherPlugin lets requests errors escape "
-                "from async execute"
-            ),
-        ),
         id="weather",
     ),
     pytest.param(
@@ -139,11 +229,7 @@ async def test_async_http_plugins_use_mocked_successful_response(
     expected,
 ):
     calls = []
-    monkeypatch.setattr(
-        module.requests,
-        "get",
-        _fake_get(calls, payload=payload),
-    )
+    _patch_get(monkeypatch, module, calls, payload=payload)
 
     result = await plugin_cls().execute(function_name, helper=None, **kwargs)
 
@@ -164,11 +250,7 @@ async def test_async_http_plugins_return_controlled_error_on_network_error(
     kwargs,
 ):
     calls = []
-    monkeypatch.setattr(
-        module.requests,
-        "get",
-        _fake_get(calls, error=requests.Timeout("timed out")),
-    )
+    _patch_get(monkeypatch, module, calls, error=_network_error(module))
 
     result = await plugin_cls().execute(function_name, helper=None, **kwargs)
 
@@ -189,10 +271,11 @@ async def test_async_http_plugins_handle_json_parse_error_separately(
     kwargs,
 ):
     calls = []
-    monkeypatch.setattr(
-        module.requests,
-        "get",
-        _fake_get(calls, json_error=ValueError("invalid json")),
+    _patch_get(
+        monkeypatch,
+        module,
+        calls,
+        json_error=ValueError("invalid json"),
     )
 
     result = await plugin_cls().execute(function_name, helper=None, **kwargs)
@@ -201,34 +284,34 @@ async def test_async_http_plugins_handle_json_parse_error_separately(
     assert len(calls) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "CryptoPlugin calls blocking requests.get directly "
-        "inside async execute"
-    ),
-)
 @pytest.mark.asyncio
 async def test_slow_http_does_not_block_parallel_async_task(monkeypatch):
     events = []
-
-    def slow_get(url, *args, **kwargs):
-        time.sleep(0.05)
-        return FakeResponse({"data": {"symbol": "BTC", "rateUsd": "60000.00"}})
-
-    monkeypatch.setattr(crypto_module.requests, "get", slow_get)
+    calls = []
+    monkeypatch.setattr(
+        weather_module.httpx,
+        "AsyncClient",
+        _fake_async_client(
+            calls,
+            payload={"current_weather": {"temperature": 21.5}},
+            delay=0.05,
+        ),
+    )
 
     async def parallel_task():
         await asyncio.sleep(0.01)
         events.append("parallel")
 
     task = asyncio.create_task(parallel_task())
-    await CryptoPlugin().execute(
-        "get_crypto_rate",
+    await WeatherPlugin().execute(
+        "get_current_weather",
         helper=None,
-        asset="bitcoin",
+        latitude="52.52",
+        longitude="13.41",
+        unit="celsius",
     )
     events.append("plugin_done")
     await task
 
     assert events == ["parallel", "plugin_done"]
+    assert len(calls) == 1
