@@ -38,6 +38,7 @@ from .conversation_key import get_conversation_key
 logger = logging.getLogger(__name__)
 
 WAITING_PROMPT = 1
+DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
 
 
 class ChatGPTTelegramBot:
@@ -3043,14 +3044,22 @@ class ChatGPTTelegramBot:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
-            application = ApplicationBuilder() \
+            builder = ApplicationBuilder() \
                 .token(self.config['token']) \
                 .post_init(self.post_init) \
                 .post_shutdown(self._post_shutdown) \
-                .concurrent_updates(True) \
-                .local_mode(True) \
-                .base_url('http://localhost:8081/bot') \
-                .build()
+                .concurrent_updates(True)
+
+            telegram_local_mode = self.config.get('telegram_local_mode', True)
+            telegram_base_url = self.config.get(
+                'telegram_base_url',
+                DEFAULT_TELEGRAM_BASE_URL
+            )
+            builder = builder.local_mode(telegram_local_mode)
+            if telegram_local_mode and telegram_base_url:
+                builder = builder.base_url(telegram_base_url)
+
+            application = builder.build()
 
             self.application = application
             self.openai.bot = application.bot

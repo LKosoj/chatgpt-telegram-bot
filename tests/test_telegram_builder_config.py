@@ -217,10 +217,16 @@ def test_default_telegram_builder_uses_local_bot_api(monkeypatch):
     assert application.run_polling_calls == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TELEGRAM_LOCAL_MODE and TELEGRAM_BASE_URL are not parsed yet.",
-)
+def test_main_defaults_telegram_local_bot_api_config(monkeypatch):
+    _set_required_env(monkeypatch)
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.config["telegram_local_mode"] is True
+    assert bot.config["telegram_base_url"] == "http://localhost:8081/bot"
+    assert bot.run_calls == 1
+
+
 def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):
     _set_required_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_LOCAL_MODE", "true")
@@ -233,10 +239,6 @@ def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):
     assert bot.run_calls == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Telegram builder still uses hardcoded local Bot API base URL.",
-)
 def test_telegram_builder_uses_custom_local_base_url(monkeypatch):
     builder, application = _run_bot_with_fake_builder(
         monkeypatch,
@@ -251,10 +253,6 @@ def test_telegram_builder_uses_custom_local_base_url(monkeypatch):
     assert application.run_polling_calls == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Telegram builder does not support disabling local mode yet.",
-)
 def test_telegram_builder_skips_base_url_when_local_mode_disabled(monkeypatch):
     builder, application = _run_bot_with_fake_builder(
         monkeypatch,
@@ -269,16 +267,22 @@ def test_telegram_builder_skips_base_url_when_local_mode_disabled(monkeypatch):
     assert application.run_polling_calls == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TELEGRAM_BASE_URL validation is not implemented yet.",
-)
 def test_invalid_telegram_base_url_rejected_before_polling(monkeypatch):
     _set_required_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_LOCAL_MODE", "true")
     monkeypatch.setenv("TELEGRAM_BASE_URL", "not-a-url")
 
     with pytest.raises(ValueError, match="TELEGRAM_BASE_URL"):
+        _run_main_with_fake_dependencies(monkeypatch)
+
+    assert CapturingTelegramBot.instances == []
+
+
+def test_invalid_telegram_local_mode_rejected_before_polling(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_LOCAL_MODE", "sometimes")
+
+    with pytest.raises(ValueError, match="TELEGRAM_LOCAL_MODE"):
         _run_main_with_fake_dependencies(monkeypatch)
 
     assert CapturingTelegramBot.instances == []

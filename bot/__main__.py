@@ -1,5 +1,6 @@
 import logging
 import os
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,35 @@ from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from .telegram_bot import ChatGPTTelegramBot
 from .database import Database
+
+
+DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
+
+
+def parse_bool_env(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in ('1', 'true', 'yes', 'y', 'on'):
+        return True
+    if normalized in ('0', 'false', 'no', 'n', 'off'):
+        return False
+
+    raise ValueError(f'{name} must be a boolean value')
+
+
+def validate_telegram_base_url(value):
+    if not value:
+        return ''
+
+    parsed = urlparse(value)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise ValueError('TELEGRAM_BASE_URL must be an absolute http(s) URL')
+
+    return value
+
 
 def main():
     # Read .env file
@@ -106,10 +136,19 @@ def main():
         logging.warning('The environment variable MONTHLY_GUEST_BUDGET is deprecated. '
                         'Please use GUEST_BUDGET with BUDGET_PERIOD instead.')
 
+    telegram_local_mode = parse_bool_env('TELEGRAM_LOCAL_MODE', True)
+    telegram_base_url = os.environ.get(
+        'TELEGRAM_BASE_URL',
+        DEFAULT_TELEGRAM_BASE_URL if telegram_local_mode else ''
+    )
+    telegram_base_url = validate_telegram_base_url(telegram_base_url)
+
     telegram_config = {
         'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
         'api_key': api_key,
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
+        'telegram_local_mode': telegram_local_mode,
+        'telegram_base_url': telegram_base_url,
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
         'enable_quoting': os.environ.get('ENABLE_QUOTING', 'true').lower() == 'true',
