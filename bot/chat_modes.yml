@@ -177,7 +177,6 @@ travel_guide:
     - auto_tts
     - youtube_transcript
     - text_document_qa
-    - deepl
     - reminders
 
 content_creator:
@@ -581,7 +580,6 @@ chief_assistant:
     - ddg_web_search
     - gtts_text_to_speech
     - auto_tts
-    - deepl
     - reminders
     - vkusvill
 code_assistant:
@@ -847,7 +845,6 @@ english_tutor:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - deepl
     - gtts_text_to_speech
     - auto_tts
     - reminders
@@ -1016,7 +1013,6 @@ movie_expert:
     - prompt_perfect
     - gtts_text_to_speech
     - auto_tts
-    - deepl
     - reminders
 
 code_interpreter:
@@ -1471,7 +1467,6 @@ meta_writer:
     - ddg_web_search
     - website_content
     - prompt_perfect
-    - deepl
     - gtts_text_to_speech
     - auto_tts
     - show_me_diagrams
