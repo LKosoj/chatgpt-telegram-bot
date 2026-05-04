@@ -71,8 +71,9 @@ def _patch_get(
     payload=None,
     error=None,
     json_error=None,
+    delay=0,
 ):
-    if module is weather_module:
+    if module in (weather_module, crypto_module):
         monkeypatch.setattr(
             module.httpx,
             "AsyncClient",
@@ -81,6 +82,7 @@ def _patch_get(
                 payload=payload,
                 error=error,
                 json_error=json_error,
+                delay=delay,
             ),
         )
         return
@@ -93,7 +95,7 @@ def _patch_get(
 
 
 def _network_error(module):
-    if module is weather_module:
+    if module in (weather_module, crypto_module):
         return module.httpx.TimeoutException("timed out")
     return requests.Timeout("timed out")
 
@@ -195,13 +197,6 @@ ERROR_CASES = [
         CryptoPlugin,
         "get_crypto_rate",
         {"asset": "bitcoin"},
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason=(
-                "CryptoPlugin lets requests errors escape "
-                "from async execute"
-            ),
-        ),
         id="crypto",
     ),
     pytest.param(
@@ -284,31 +279,52 @@ async def test_async_http_plugins_handle_json_parse_error_separately(
     assert len(calls) == 1
 
 
+NON_BLOCKING_CASES = [
+    pytest.param(
+        weather_module,
+        WeatherPlugin,
+        "get_current_weather",
+        {"latitude": "52.52", "longitude": "13.41", "unit": "celsius"},
+        {"current_weather": {"temperature": 21.5}},
+        id="weather",
+    ),
+    pytest.param(
+        crypto_module,
+        CryptoPlugin,
+        "get_crypto_rate",
+        {"asset": "bitcoin"},
+        {"data": {"symbol": "BTC", "rateUsd": "60000.00"}},
+        id="crypto",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "module, plugin_cls, function_name, kwargs, payload",
+    NON_BLOCKING_CASES,
+)
 @pytest.mark.asyncio
-async def test_slow_http_does_not_block_parallel_async_task(monkeypatch):
+async def test_slow_http_does_not_block_parallel_async_task(
+    monkeypatch,
+    module,
+    plugin_cls,
+    function_name,
+    kwargs,
+    payload,
+):
     events = []
     calls = []
-    monkeypatch.setattr(
-        weather_module.httpx,
-        "AsyncClient",
-        _fake_async_client(
-            calls,
-            payload={"current_weather": {"temperature": 21.5}},
-            delay=0.05,
-        ),
-    )
+    _patch_get(monkeypatch, module, calls, payload=payload, delay=0.05)
 
     async def parallel_task():
         await asyncio.sleep(0.01)
         events.append("parallel")
 
     task = asyncio.create_task(parallel_task())
-    await WeatherPlugin().execute(
-        "get_current_weather",
+    await plugin_cls().execute(
+        function_name,
         helper=None,
-        latitude="52.52",
-        longitude="13.41",
-        unit="celsius",
+        **kwargs,
     )
     events.append("plugin_done")
     await task
