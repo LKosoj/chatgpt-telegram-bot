@@ -258,8 +258,8 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
     """
     task = context.application.create_task(coroutine(), update=update)
     try:
-        # Increase timeout to 380 seconds
-        async with asyncio.timeout(380):
+        # Keep long-running model/tool requests alive while still bounding stuck tasks.
+        async with asyncio.timeout(2000):
             while not task.done():
                 if not is_inline:
                     try:
