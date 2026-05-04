@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -59,11 +60,12 @@ class FakeResponse:
 
 
 class RacingPluginManager:
-    def __init__(self, task_plugin, language_plugin):
+    def __init__(self, task_plugin, language_plugin=None):
         self.plugins = {
             "task_management.create_task": task_plugin,
-            "language_learning.track_progress": language_plugin,
         }
+        if language_plugin is not None:
+            self.plugins["language_learning.track_progress"] = language_plugin
         self.first_call_started = asyncio.Event()
         self.second_call_started = asyncio.Event()
         self.call_count = 0
@@ -114,7 +116,6 @@ class SharedHelper:
 
 
 @pytest.mark.asyncio
-@CONCURRENT_STATE_BUG_XFAIL
 async def test_concurrent_tool_calls_keep_task_and_progress_owners_separate(tmp_path):
     task_plugin = TaskManagementPlugin()
     language_plugin = LanguageLearningPlugin()
@@ -149,6 +150,97 @@ async def test_concurrent_tool_calls_keep_task_and_progress_owners_separate(tmp_
 
     assert set(task_plugin.tasks) == {"101"}
     assert set(language_plugin.users_progress) == {"202"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_task_calls_keep_owners_separate(tmp_path):
+    task_plugin = TaskManagementPlugin()
+    task_plugin.initialize(storage_root=str(tmp_path))
+    plugin_manager = RacingPluginManager(task_plugin)
+    helper = SharedHelper(plugin_manager)
+
+    first = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=1001,
+        response=FakeResponse(
+            "task_management.create_task",
+            {"title": "first task", "priority": "high"},
+        ),
+        allowed_plugins=["All"],
+        user_id=101,
+    ))
+    await plugin_manager.first_call_started.wait()
+    second = asyncio.create_task(handle_function_call(
+        helper,
+        chat_id=1002,
+        response=FakeResponse(
+            "task_management.create_task",
+            {"title": "second task", "priority": "low"},
+        ),
+        allowed_plugins=["All"],
+        user_id=202,
+    ))
+
+    await asyncio.gather(first, second)
+
+    assert set(task_plugin.tasks) == {"101", "202"}
+    assert {task["title"] for task in task_plugin.tasks["101"].values()} == {"first task"}
+    assert {task["title"] for task in task_plugin.tasks["202"].values()} == {"second task"}
+
+
+@pytest.mark.asyncio
+async def test_task_management_uses_request_context_user_id(tmp_path):
+    plugin = TaskManagementPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=999)
+    request_context = RequestContext(chat_id=555, user_id=101, message_id=123)
+
+    await plugin.execute(
+        "create_task",
+        helper,
+        title="context task",
+        priority="high",
+        request_context=request_context,
+    )
+
+    assert set(plugin.tasks) == {"101"}
+    assert next(iter(plugin.tasks["101"].values()))["title"] == "context task"
+
+
+@pytest.mark.asyncio
+async def test_task_management_uses_explicit_user_id_without_request_context(tmp_path):
+    plugin = TaskManagementPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=999)
+
+    await plugin.execute(
+        "create_task",
+        helper,
+        title="kwarg task",
+        priority="medium",
+        user_id=202,
+    )
+
+    assert set(plugin.tasks) == {"202"}
+    assert next(iter(plugin.tasks["202"].values()))["title"] == "kwarg task"
+
+
+@pytest.mark.asyncio
+async def test_task_management_legacy_helper_user_id_fallback(tmp_path, caplog):
+    plugin = TaskManagementPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=303)
+
+    with caplog.at_level(logging.WARNING):
+        await plugin.execute(
+            "create_task",
+            helper,
+            title="legacy task",
+            priority="low",
+        )
+
+    assert set(plugin.tasks) == {"303"}
+    assert "Deprecated task_management owner fallback to helper.user_id" in caplog.text
 
 
 @pytest.mark.asyncio

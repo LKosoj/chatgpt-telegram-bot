@@ -1,9 +1,12 @@
 #task_management.py
 import os
 import json
+import logging
 from datetime import datetime
 from typing import Dict, Any
 from .plugin import Plugin
+
+logger = logging.getLogger(__name__)
 
 class TaskManagementPlugin(Plugin):
     """
@@ -117,9 +120,19 @@ class TaskManagementPlugin(Plugin):
         with open(self.tasks_file, 'w', encoding='utf-8') as f:
             json.dump(self.tasks, f, ensure_ascii=False, indent=2)
 
+    def _get_owner_user_id(self, helper, kwargs) -> str:
+        request_context = kwargs.get("request_context")
+        if request_context is not None and request_context.user_id is not None:
+            return str(request_context.user_id)
+        if kwargs.get("user_id") is not None:
+            return str(kwargs["user_id"])
+
+        logger.warning("Deprecated task_management owner fallback to helper.user_id")
+        return str(helper.user_id)
+
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """Execute plugin functions"""
-        user_id = str(helper.user_id)
+        user_id = self._get_owner_user_id(helper, kwargs)
         
         if function_name == "create_task":
             task_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{user_id}'
