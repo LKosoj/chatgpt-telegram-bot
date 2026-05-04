@@ -1,267 +1,331 @@
-## Principal difference from forked project:
-- [x] (NEW!) Message queue. If a message is large, Telegram will split it into several parts, the bot will process it as one message. If the bot is thinking, all messages are added to the queue and processed sequentially.
-- [x] (NEW!) o-1 model support
-- [x] (NEW!) youtube video transcription
-- [x] (NEW!) ali-vilab/In-Context-LoRA model for image generation using huggingface
-- [x] (NEW!) deepl translate using free or payment key
-- [x] (NEW!) web support
-- [x] (NEW!) RAG support
-- [x] (NEW!) Prompt select system
-- [x] (NEW!) Select model from inline keyboard
-- [x] (NEW!) Sessions support - see [SESSIONS.md](SESSIONS.md)
-- [x] (NEW!) Generate video from image
-- [x] (NEW!) Summarize web-content with Yandex Summarize API
-
 # ChatGPT Telegram Bot
 
-![python-version](https://img.shields.io/badge/python-3.9-blue.svg)
-[![openai-version](https://img.shields.io/badge/openai-0.27.8-orange.svg)](https://openai.com/)
-[![license](https://img.shields.io/badge/License-GPL%202.0-brightgreen.svg)](LICENSE)
-[![Publish Docker image](https://github.com/n3d1117/chatgpt-telegram-bot/actions/workflows/publish.yaml/badge.svg)](https://github.com/n3d1117/chatgpt-telegram-bot/actions/workflows/publish.yaml)
+Telegram bot for an OpenAI-compatible LLMGateway setup. The bot keeps the
+Telegram UX from the original project, but the current runtime is centered on
+LLMGateway models and gateway-backed tools for chat, web, images, audio, and
+long-term memory.
 
-A [Telegram bot](https://core.telegram.org/bots/api) that integrates with OpenAI's _official_ [ChatGPT](https://openai.com/blog/chatgpt/), [DALL·E](https://openai.com/product/dall-e-2) and [Whisper](https://openai.com/research/whisper) APIs to provide answers. Ready to use with minimal configuration required.
+## What It Does
 
-## Screenshots
+- Chat with session history, named sessions, budgets, usage stats, streaming,
+  and per-user access control.
+- Use only LLMGateway chat models:
+  - `llmgateway/high` for regular assistant work.
+  - `llmgateway/light_model` for routing, classification, naming, and small
+    background decisions.
+  - `llmgateway/big_context` for large-context tasks.
+- Generate and edit images through LLMGateway image models.
+- Describe images with the configured vision model.
+- Transcribe audio through LLMGateway transcription.
+- Generate speech through LLMGateway Silero TTS.
+- Read web pages, YouTube URLs, search the web, and run web/deep-research
+  through LLMGateway.
+- Use plugins as model tools, with namespaced function names and per-mode tool
+  allow-lists.
+- Optionally use Hindsight as per-Telegram-user long-term memory.
 
-### Demo
-![demo](https://user-images.githubusercontent.com/11541888/225114786-0d639854-b3e1-4214-b49a-e51ce8c40387.png)
+## Architecture
 
-### Plugins
-![plugins](https://github.com/n3d1117/chatgpt-telegram-bot/assets/11541888/83d5e0cd-e09a-463d-a292-722f919e929f)
+Runtime starts in `bot/__main__.py`:
 
-## Features
-- [x] Support markdown in answers
-- [x] Reset conversation with the `/reset` command
-- [x] Typing indicator while generating a response
-- [x] Access can be restricted by specifying a list of allowed users
-- [x] Docker and Proxy support
-- [x] Image generation using DALL·E via the `/image` command
-- [x] Transcribe audio and video messages using Whisper (may require [ffmpeg](https://ffmpeg.org))
-- [x] Automatic conversation summary to avoid excessive token usage
-- [x] Track token usage per user - by [@AlexHTW](https://github.com/AlexHTW)
-- [x] Get personal token usage statistics via the `/stats` command - by [@AlexHTW](https://github.com/AlexHTW)
-- [x] User budgets and guest budgets - by [@AlexHTW](https://github.com/AlexHTW)
-- [x] Stream support
-- [x] GPT-4 support
-  - If you have access to the GPT-4 API, simply change the `OPENAI_MODEL` parameter to `gpt-4`
-- [x] Localized bot language
-  - Available languages :brazil: :cn: :finland: :de: :indonesia: :iran: :it: :malaysia: :netherlands: :poland: :ru: :saudi_arabia: :es: :taiwan: :tr: :ukraine: :gb: :uzbekistan: :vietnam: :israel:
-- [x] Improved inline queries support for group and private chats - by [@bugfloyd](https://github.com/bugfloyd)
-  - To use this feature, enable inline queries for your bot in BotFather via the `/setinline` [command](https://core.telegram.org/bots/inline)
-- [x] Support *new models* [announced on June 13, 2023](https://openai.com/blog/function-calling-and-other-api-updates)
-- [x] Support *functions* (plugins) to extend the bot's functionality with 3rd party services
-  - Weather, Spotify, Web search, text-to-speech and more. See [here](#available-plugins) for a list of available plugins
-- [x] Support unofficial OpenAI-compatible APIs - by [@kristaller486](https://github.com/kristaller486)
-- [x] Support GPT-4 Turbo and DALL·E 3 [announced on November 6, 2023](https://openai.com/blog/new-models-and-developer-products-announced-at-devday) - by [@AlexHTW](https://github.com/AlexHTW)
-- [x] Text-to-speech support [announced on November 6, 2023](https://platform.openai.com/docs/guides/text-to-speech) - by [@gilcu3](https://github.com/gilcu3)
-- [x] Vision support [announced on November 6, 2023](https://platform.openai.com/docs/guides/vision) - by [@gilcu3](https://github.com/gilcu3)
-- [x] GPT-4o model support [announced on May 12, 2024](https://openai.com/index/hello-gpt-4o/) - by [@err09r](https://github.com/err09r)
-- [x] (NEW!) Message queue for handling large messages
-- [x] (NEW!) O-1 model support
-- [x] (NEW!) YouTube video transcription
-- [x] (NEW!) HuggingFace In-Context-LoRA model for image generation
-- [x] (NEW!) DeepL translation using free or paid key
-- [x] (NEW!) Web support
+1. Load environment variables.
+2. Build `PluginManager`.
+3. Build `Database` for SQLite session storage.
+4. Build `OpenAIHelper` for LLMGateway/OpenAI-compatible calls.
+5. Build and run `ChatGPTTelegramBot`.
 
-## Additional features - help needed!
-If you'd like to help, check out the [issues](https://github.com/n3d1117/chatgpt-telegram-bot/issues) section and contribute!  
-If you want to help with translations, check out the [Translations Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/219)
+Main modules:
 
-PRs are always welcome!
+| Path | Responsibility |
+|---|---|
+| `bot/telegram_bot.py` | Telegram handlers, sessions UI, media routing, usage accounting |
+| `bot/openai_helper.py` | Chat, vision, image/audio helpers, model selection, Hindsight auto-recall/save |
+| `bot/llm_gateway_client.py` | Gateway web, research, image-edit calls |
+| `bot/plugin_manager.py` | Plugin discovery, tool specs, validation |
+| `bot/openai_tool_handler.py` | Tool-call execution loop |
+| `bot/database.py` | SQLite persistence for sessions and image references |
+| `bot/chat_modes.yml` | User-facing chat modes and allowed tools |
+| `bot/plugins/` | Built-in plugins |
 
-## Prerequisites
-- Python 3.9+
-- A [Telegram bot](https://core.telegram.org/bots#6-botfather) and its token (see [tutorial](https://core.telegram.org/bots/tutorial#obtain-your-bot-token))
-- An [OpenAI](https://openai.com) account (see [configuration](#configuration) section)
+## Requirements
 
-## Getting started
+- Python 3.9+.
+- Telegram bot token from BotFather.
+- LLMGateway-compatible API endpoint.
+- API key for the gateway. The bot still reads it from `OPENAI_API_KEY`.
+- `ffmpeg` for audio/video processing.
 
-### Configuration
-Customize the configuration by copying `.env.example` and renaming it to `.env`, then editing the required parameters as desired:
+Install dependencies:
 
-| Parameter                   | Description                                                                                                                                                                                                                   |
-|-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `OPENAI_API_KEY`            | Your OpenAI API key, you can get it from [here](https://platform.openai.com/account/api-keys)                                                                                                                                 |
-| `TELEGRAM_BOT_TOKEN`        | Your Telegram bot's token, obtained using [BotFather](http://t.me/botfather) (see [tutorial](https://core.telegram.org/bots/tutorial#obtain-your-bot-token))                                                                  |
-| `ADMIN_USER_IDS`            | Telegram user IDs of admins. These users have access to special admin commands, information and no budget restrictions. Admin IDs don't have to be added to `ALLOWED_TELEGRAM_USER_IDS`. **Note**: by default, no admin (`-`) |
-| `ALLOWED_TELEGRAM_USER_IDS` | A comma-separated list of Telegram user IDs that are allowed to interact with the bot (use [getidsbot](https://t.me/getidsbot) to find your user ID). **Note**: by default, *everyone* is allowed (`*`)                       |
-
-### Optional configuration
-The following parameters are optional and can be set in the `.env` file:
-
-#### Budgets
-| Parameter             | Description                                                                                                                                                                                                                                                                                                                                                                               | Default value      |
-|-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
-| `BUDGET_PERIOD`       | Determines the time frame all budgets are applied to. Available periods: `daily` *(resets budget every day)*, `monthly` *(resets budgets on the first of each month)*, `all-time` *(never resets budget)*. See the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/184) for more information                                                                  | `monthly`          |
-| `USER_BUDGETS`        | A comma-separated list of $-amounts per user from list `ALLOWED_TELEGRAM_USER_IDS` to set custom usage limit of OpenAI API costs for each. For `*`- user lists the first `USER_BUDGETS` value is given to every user. **Note**: by default, *no limits* for any user (`*`). See the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/184) for more information | `*`                |
-| `GUEST_BUDGET`        | $-amount as usage limit for all guest users. Guest users are users in group chats that are not in the `ALLOWED_TELEGRAM_USER_IDS` list. Value is ignored if no usage limits are set in user budgets (`USER_BUDGETS`=`*`). See the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/184) for more information                                                   | `100.0`            |
-| `TOKEN_PRICE`         | $-price per 1000 tokens used to compute cost information in usage statistics. Source: https://openai.com/pricing                                                                                                                                                                                                                                                                          | `0.002`            |
-| `IMAGE_PRICES`        | A comma-separated list with 3 elements of prices for the different image sizes: `256x256`, `512x512` and `1024x1024`. Source: https://openai.com/pricing                                                                                                                                                                                                                                  | `0.016,0.018,0.02` |
-| `TRANSCRIPTION_PRICE` | USD-price for one minute of audio transcription. Source: https://openai.com/pricing                                                                                                                                                                                                                                                                                                       | `0.006`            |
-| `VISION_TOKEN_PRICE`  | USD-price per 1K tokens of image interpretation. Source: https://openai.com/pricing                                                                                                                                                                                                                                                                                                       | `0.01`             |
-| `TTS_PRICES`          | A comma-separated list with prices for the tts models: `tts-1`, `tts-1-hd`. Source: https://openai.com/pricing                                                                                                                                                                                                                                                                            | `0.015,0.030`      |
-
-Check out the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/184) for possible budget configurations.
-
-#### Additional optional configuration options
-| Parameter                           | Description                                                                                                                                                                                                                                                                             | Default value                      |
-|-------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------|
-| `ENABLE_QUOTING`                    | Whether to enable message quoting in private chats                                                                                                                                                                                                                                      | `true`                             |
-| `ENABLE_IMAGE_GENERATION`           | Whether to enable image generation via the `/image` command                                                                                                                                                                                                                             | `true`                             |
-| `ENABLE_TRANSCRIPTION`              | Whether to enable transcriptions of audio and video messages                                                                                                                                                                                                                            | `true`                             |
-| `ENABLE_TTS_GENERATION`             | Whether to enable text to speech generation via the `/tts`                                                                                                                                                                                                                              | `true`                             |
-| `ENABLE_VISION`                     | Whether to enable vision capabilities in supported models                                                                                                                                                                                                                               | `true`                             |
-| `PROXY`                             | Proxy to be used for OpenAI and Telegram bot (e.g. `http://localhost:8080`)                                                                                                                                                                                                             | -                                  |
-| `OPENAI_PROXY`                      | Proxy to be used only for OpenAI (e.g. `http://localhost:8080`)                                                                                                                                                                                                                         | -                                  |
-| `TELEGRAM_PROXY`                    | Proxy to be used only for Telegram bot (e.g. `http://localhost:8080`)                                                                                                                                                                                                                   | -                                  |
-| `OPENAI_MODEL`                      | The OpenAI model to use for generating responses. You can find all available models [here](https://platform.openai.com/docs/models/)                                                                                                                                                    | `gpt-3.5-turbo`                    |
-| `OPENAI_BASE_URL`                   | Endpoint URL for unofficial OpenAI-compatible APIs (e.g., LocalAI or text-generation-webui)                                                                                                                                                                                             | Default OpenAI API URL             |
-| `ASSISTANT_PROMPT`                  | A system message that sets the tone and controls the behavior of the assistant                                                                                                                                                                                                          | `You are a helpful assistant.`     |
-| `SHOW_USAGE`                        | Whether to show OpenAI token usage information after each response                                                                                                                                                                                                                      | `false`                            |
-| `STREAM`                            | Whether to stream responses. **Note**: incompatible, if enabled, with `N_CHOICES` higher than 1                                                                                                                                                                                         | `true`                             |
-| `MAX_TOKENS`                        | Upper bound on how many tokens the ChatGPT API will return                                                                                                                                                                                                                              | `1200` for GPT-3, `2400` for GPT-4 |
-| `VISION_MAX_TOKENS`                 | Upper bound on how many tokens vision models will return                                                                                                                                                                                                                                | `300` for gpt-4-vision-preview     |
-| `VISION_MODEL`                      | The Vision to Speech model to use. Allowed values: `gpt-4-vision-preview`                                                                                                                                                                                                               | `gpt-4-vision-preview`             |
-| `ENABLE_VISION_FOLLOW_UP_QUESTIONS` | If true, once you send an image to the bot, it uses the configured VISION_MODEL until the conversation ends. Otherwise, it uses the OPENAI_MODEL to follow the conversation. Allowed values: `true` or `false`                                                                          | `true`                             |
-| `MAX_HISTORY_SIZE`                  | Max number of messages to keep in memory, after which the conversation will be summarised to avoid excessive token usage                                                                                                                                                                | `15`                               |
-| `MAX_CONVERSATION_AGE_MINUTES`      | Maximum number of minutes a conversation should live since the last message, after which the conversation will be reset                                                                                                                                                                 | `180`                              |
-| `VOICE_REPLY_WITH_TRANSCRIPT_ONLY`  | Whether to answer to voice messages with the transcript only or with a ChatGPT response of the transcript                                                                                                                                                                               | `false`                            |
-| `VOICE_REPLY_PROMPTS`               | A semicolon separated list of phrases (i.e. `Hi bot;Hello chat`). If the transcript starts with any of them, it will be treated as a prompt even if `VOICE_REPLY_WITH_TRANSCRIPT_ONLY` is set to `true`                                                                                 | -                                  |
-| `VISION_PROMPT`                     | A phrase (i.e. `What is in this image`). The vision models use it as prompt to interpret a given image. If there is caption in the image sent to the bot, that supersedes this parameter                                                                                                | `What is in this image`            |
-| `N_CHOICES`                         | Number of answers to generate for each input message. **Note**: setting this to a number higher than 1 will not work properly if `STREAM` is enabled                                                                                                                                    | `1`                                |
-| `TEMPERATURE`                       | Number between 0 and 2. Higher values will make the output more random                                                                                                                                                                                                                  | `1.0`                              |
-| `PRESENCE_PENALTY`                  | Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they appear in the text so far                                                                                                                                                                        | `0.0`                              |
-| `FREQUENCY_PENALTY`                 | Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing frequency in the text so far                                                                                                                                                                   | `0.0`                              |
-| `IMAGE_FORMAT`                      | The Telegram image receive mode. Allowed values: `document` or `photo`                                                                                                                                                                                                                  | `photo`                            |
-| `IMAGE_MODEL`                       | The DALL·E model to be used. Available models: `dall-e-2` and `dall-e-3`, find current available models [here](https://platform.openai.com/docs/models/dall-e)                                                                                                                          | `dall-e-2`                         |
-| `IMAGE_QUALITY`                     | Quality of DALL·E images, only available for `dall-e-3`-model. Possible options: `standard` or `hd`, beware of [pricing differences](https://openai.com/pricing#image-models).                                                                                                          | `standard`                         |
-| `IMAGE_STYLE`                       | Style for DALL·E image generation, only available for `dall-e-3`-model. Possible options: `vivid` or `natural`. Check availbe styles [here](https://platform.openai.com/docs/api-reference/images/create).                                                                              | `vivid`                            |
-| `IMAGE_SIZE`                        | The DALL·E generated image size. Must be `256x256`, `512x512`, or `1024x1024` for dall-e-2. Must be `1024x1024` for dall-e-3 models.                                                                                                                                                    | `512x512`                          |
-| `VISION_DETAIL`                     | The detail parameter for vision models, explained [Vision Guide](https://platform.openai.com/docs/guides/vision). Allowed values: `low` or `high`                                                                                                                                       | `auto`                             |
-| `GROUP_TRIGGER_KEYWORD`             | If set, the bot in group chats will only respond to messages that start with this keyword                                                                                                                                                                                               | -                                  |
-| `IGNORE_GROUP_TRANSCRIPTIONS`       | If set to true, the bot will not process transcriptions in group chats                                                                                                                                                                                                                  | `true`                             |
-| `IGNORE_GROUP_VISION`               | If set to true, the bot will not process vision queries in group chats                                                                                                                                                                                                                  | `true`                             |
-| `BOT_LANGUAGE`                      | Language of general bot messages. Currently available: `en`, `de`, `ru`, `tr`, `it`, `fi`, `es`, `id`, `nl`, `zh-cn`, `zh-tw`, `vi`, `fa`, `pt-br`, `uk`, `ms`, `uz`, `ar`.  [Contribute with additional translations](https://github.com/n3d1117/chatgpt-telegram-bot/discussions/219) | `en`                               |
-| `WHISPER_PROMPT`                    | To improve the accuracy of Whisper's transcription service, especially for specific names or terms, you can set up a custom message.  [Speech to text - Prompting](https://platform.openai.com/docs/guides/speech-to-text/prompting)                                                    | `-`                                |
-| `TTS_VOICE`                         | The Text to Speech voice to use. Allowed values: `alloy`, `echo`, `fable`, `onyx`, `nova`, or `shimmer`                                                                                                                                                                                 | `alloy`                            |
-| `TTS_MODEL`                         | The Text to Speech model to use. Allowed values: `tts-1` or `tts-1-hd`                                                                                                                                                                                                                  | `tts-1`                            |
-
-Check out the [official API reference](https://platform.openai.com/docs/api-reference/chat) for more details.
-
-#### Functions
-| Parameter                         | Description                                                                                                                                      | Default value                       |
-|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
-| `ENABLE_FUNCTIONS`                | Whether to use functions (aka plugins). You can read more about functions [here](https://openai.com/blog/function-calling-and-other-api-updates) | `true` (if available for the model) |
-| `FUNCTIONS_MAX_CONSECUTIVE_CALLS` | Maximum number of back-to-back function calls to be made by the model in a single response, before displaying a user-facing message              | `10`                                |
-| `PLUGINS`                         | List of plugins to enable (see below for a full list), e.g: `PLUGINS=wolfram_alpha,weather`                                                      | -                                   |
-| `SHOW_PLUGINS_USED`               | Whether to show which plugins were used for a response                                                                                           | `false`                             |
-| `PLUGIN_STORAGE_ROOT`             | Root directory for plugin persistent data (defaults to `bot/config`)                                                                              | -                                   |
-| `PLUGIN_STRICT_VALIDATION`        | Fail fast on missing/invalid plugins or function name collisions                                                                                 | `false`                             |
-| `PLUGIN_MENU_PAGE_SIZE`           | Inline plugins menu page size (commands are shown under `/plugins`)                                                                               | `8`                                 |
-
-Notes:
-- Plugin function names are now namespaced as `<plugin_id>.<function>`, e.g. `deepl.translate` or `ddg_translate.translate`.
-- Plugin commands are no longer shown individually in Telegram menu. Only `/plugins` is shown and opens the inline plugins menu (description is localized via `translations.json`).
-- The inline plugins menu is paginated (see `PLUGIN_MENU_PAGE_SIZE`).
-- Commands that require arguments open a small submenu with usage plus a prompt to enter parameters.
-
-#### Available plugins
-| Name                      | Description                                                                                                                                         | Required environment variable(s)                                     | Dependency          |
-|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|---------------------|
-| `weather`                 | Daily weather and 7-day forecast for any location (powered by [Open-Meteo](https://open-meteo.com))                                                 | -                                                                    |                     |
-| `wolfram_alpha`           | WolframAlpha queries (powered by [WolframAlpha](https://www.wolframalpha.com))                                                                      | `WOLFRAM_APP_ID`                                                     | `wolframalpha`      |
-| `ddg_web_search`          | Web search (powered by [DuckDuckGo](https://duckduckgo.com))                                                                                        | -                                                                    | `duckduckgo_search` |
-| `ddg_translate`           | Translate text to any language (powered by [DuckDuckGo](https://duckduckgo.com))                                                                    | -                                                                    | `duckduckgo_search` |       
-| `ddg_image_search`        | Search image or GIF (powered by [DuckDuckGo](https://duckduckgo.com))                                                                               | -                                                                    | `duckduckgo_search` |
-| `crypto`                  | Live cryptocurrencies rate (powered by [CoinCap](https://coincap.io)) - by [@stumpyfr](https://github.com/stumpyfr)                                 | -                                                                    |                     |
-| `spotify`                 | Spotify top tracks/artists, currently playing song and content search (powered by [Spotify](https://spotify.com)). Requires one-time authorization. | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | `spotipy`           |
-| `worldtimeapi`            | Get latest world time (powered by [WorldTimeAPI](https://worldtimeapi.org/)) - by [@noriellecruz](https://github.com/noriellecruz)                  | `WORLDTIME_DEFAULT_TIMEZONE`                                         |                     |
-| `dice`                    | Send a dice in the chat!                                                                                                                            | -                                                                    |                     |
-| `youtube_audio_extractor` | Extract audio from YouTube videos                                                                                                                   | -                                                                    | `pytube`            |
-| `deepl`                   | Translate text to any language (powered by [DeepL](https://deepl.com)) - by [@LedyBacer](https://github.com/LedyBacer)                              | `DEEPL_API_KEY`                                                      |                     |
-| `gtts_text_to_speech`     | Text to speech (powered by Google Translate APIs)                                                                                                   | -                                                                    | `gtts`              |
-| `whois`                   | Query the whois domain database - by [@jnaskali](https://github.com/jnaskali)                                                                       | -                                                                    | `whois`             |
-| `webshot`                 | Screenshot a website from a given url or domain name - by [@noriellecruz](https://github.com/noriellecruz)                                          | -                                                                    |                     |
-| `auto_tts`                | Text to speech using OpenAI APIs - by [@Jipok](https://github.com/Jipok)                                                                            | -                                                                    |                     |
-
-#### Environment variables
-| Variable                          | Description                                                                                                                                                                                     | Default value                       |
-|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
-| `WOLFRAM_APP_ID`                  | Wolfram Alpha APP ID (required only for the `wolfram_alpha` plugin, you can get one [here](https://products.wolframalpha.com/simple-api/documentation))                                          | -                                   |
-| `SPOTIFY_CLIENT_ID`               | Spotify app Client ID (required only for the `spotify` plugin, you can find it on the [dashboard](https://developer.spotify.com/dashboard/))                                                    | -                                   |
-| `SPOTIFY_CLIENT_SECRET`           | Spotify app Client Secret (required only for the `spotify` plugin, you can find it on the [dashboard](https://developer.spotify.com/dashboard/))                                                | -                                   |
-| `SPOTIFY_REDIRECT_URI`            | Spotify app Redirect URI (required only for the `spotify` plugin, you can find it on the [dashboard](https://developer.spotify.com/dashboard/))                                                 | -                                   |
-| `WORLDTIME_DEFAULT_TIMEZONE`      | Default timezone to use, i.e. `Europe/Rome` (required only for the `worldtimeapi` plugin, you can get TZ Identifiers from [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) | -                                   |
-| `DUCKDUCKGO_SAFESEARCH`           | DuckDuckGo safe search (`on`, `off` or `moderate`) (optional, applies to `ddg_web_search` and `ddg_image_search`)                                                                               | `moderate`                          |
-| `DEEPL_API_KEY`                   | DeepL API key (required for the `deepl` plugin, you can get one [here](https://www.deepl.com/pro-api?cta=header-pro-api))                                                                       | -                                   |
-
-### Installing
-Clone the repository and navigate to the project directory:
-
-```shell
-git clone https://github.com/n3d1117/chatgpt-telegram-bot.git
-cd chatgpt-telegram-bot
-```
-
-#### From Source
-1. Create a virtual environment:
-```shell
+```bash
 python -m venv venv
-```
-
-2. Activate the virtual environment:
-```shell
-# For Linux or macOS:
 source venv/bin/activate
-
-# For Windows:
-venv\Scripts\activate
-```
-
-3. Install the dependencies using `requirements.txt` file:
-```shell
 pip install -r requirements.txt
 ```
 
-4. Use the following command to start the bot:
-```
+Run:
+
+```bash
 python -m bot
 ```
 
-#### Using Docker Compose
+Docker is also available:
 
-Run the following command to build and run the Docker image:
-```shell
+```bash
 docker compose up
 ```
 
-#### Ready-to-use Docker images
-You can also use the Docker image from [Docker Hub](https://hub.docker.com/r/n3d1117/chatgpt-telegram-bot):
-```shell
-docker pull n3d1117/chatgpt-telegram-bot:latest
-docker run -it --env-file .env n3d1117/chatgpt-telegram-bot
+## Minimal Configuration
+
+Create `.env` from `.env.example` and set at least:
+
+```env
+TELEGRAM_BOT_TOKEN=123456:telegram-token
+OPENAI_API_KEY=sk-gateway-token
+OPENAI_BASE_URL=http://gateway.example/v1
 ```
 
-or using the [GitHub Container Registry](https://github.com/n3d1117/chatgpt-telegram-bot/pkgs/container/chatgpt-telegram-bot/):
+> [!NOTE]
+> `OPENAI_API_KEY` should contain the LLMGateway key in the current setup. The
+> project still uses OpenAI-compatible clients, so the legacy environment
+> variable name remains.
 
-```shell
-docker pull ghcr.io/n3d1117/chatgpt-telegram-bot:latest
-docker run -it --env-file .env ghcr.io/n3d1117/chatgpt-telegram-bot
+Recommended gateway model settings:
+
+```env
+OPENAI_MODEL=llmgateway/high
+LIGHT_MODEL=llmgateway/light_model
+BIG_MODEL_TO_USE=llmgateway/big_context
+IMAGE_MODEL=llmgateway/ai-klein-generation
+TTS_MODEL=llmgateway/silero-tts
+TTS_VOICE=kseniya
+TTS_RESPONSE_FORMAT=wav
+TRANSCRIPTION_MODEL=llmgateway/whisper-large-v3
 ```
 
-#### Docker manual build
-```shell
-docker build -t chatgpt-telegram-bot .
-docker run -it --env-file .env chatgpt-telegram-bot
+Useful feature toggles:
+
+```env
+ENABLE_FUNCTIONS=true
+ENABLE_IMAGE_GENERATION=true
+ENABLE_VISION=true
+ENABLE_TRANSCRIPTION=true
+ENABLE_TTS_GENERATION=true
+MAX_SESSIONS=5
+BOT_LANGUAGE=ru
 ```
+
+## LLMGateway Features
+
+### Chat Models
+
+Only these chat models are expected in the bot:
+
+| Use | Model |
+|---|---|
+| Main assistant | `llmgateway/high` |
+| Fast classification/routing | `llmgateway/light_model` |
+| Large context | `llmgateway/big_context` |
+
+Model switching UI from the legacy multi-provider bot is not part of the
+current intended workflow.
+
+### Web And Research
+
+Web operations are gateway-backed:
+
+- Web search: `llmgateway/web-search`.
+- Web read: `llmgateway/web-read`.
+- Web research: `llmgateway/web-research`.
+- Deep research: `llmgateway/web-deep-research`.
+
+The web research plugin first uses the light model to decide whether a request
+needs regular research or deep research. Deep research can take significantly
+longer.
+
+YouTube URLs are handled through gateway web read; the gateway detects YouTube
+and returns transcript-like content when available.
+
+### Images
+
+Image generation uses `llmgateway/ai-klein-generation`.
+
+Image editing uses `llmgateway/ai-klein-edit`. The bot can route edit requests
+from:
+
+- an image uploaded with a caption;
+- a reply to a Telegram image;
+- the last generated/sent image when the text clearly refers to it.
+
+Examples:
+
+- "Нарисуй кота" creates a new image.
+- Replying to that image with "нарисуй коту шапочку" edits the referenced image.
+- Replying to an image with "что на этой картинке?" routes to vision instead of
+  image edit.
+
+### Audio
+
+- Text-to-speech uses LLMGateway Silero TTS.
+- Default voice is `kseniya`.
+- Default response format is `wav`.
+- Voice/audio transcription uses the gateway transcription model.
+
+## Hindsight Long-Term Memory
+
+Hindsight is optional and enabled automatically when both values are configured:
+
+```env
+HINDSIGHT_BASE_URL=http://hindsight.example/hindsight
+HINDSIGHT_API_TOKEN=secret
+```
+
+Defaults:
+
+```env
+HINDSIGHT_NAMESPACE=default
+HINDSIGHT_BANK_PREFIX=telegram-
+HINDSIGHT_AUTO_RECALL=true
+HINDSIGHT_AUTO_SAVE=true
+HINDSIGHT_RECALL_BUDGET=mid
+HINDSIGHT_RECALL_MAX_TOKENS=4096
+HINDSIGHT_MEMORY_TYPES=world,experience
+HINDSIGHT_ASYNC_STORE=true
+HINDSIGHT_MAX_AUTO_SAVE_ITEMS=5
+```
+
+Memory bank per Telegram user:
+
+```text
+telegram-<user_id>
+```
+
+Auto-recall is done once for the first user request in a session and persisted
+into SQLite conversation history. Auto-save runs when a session is deleted:
+
+1. The bot snapshots the deleted session messages.
+2. The Telegram UI closes/updates immediately.
+3. Fact extraction and Hindsight retain run in a background task.
+
+The extractor is intentionally strict. It should save only durable facts such
+as explicit preferences, ongoing projects, long-term constraints, and explicit
+"remember this" statements. It should not save one-off image edits, single
+technical questions, transient web searches, uploaded-image descriptions, logs,
+or secrets.
+
+## Plugins
+
+Plugins live in `bot/plugins/` and subclass `Plugin`.
+
+Key behavior:
+
+- Tool names are namespaced as `<plugin_id>.<function>`.
+- `PLUGINS` is an allow-list. Empty means no explicit allow-list is applied by
+  startup config.
+- Chat modes can further restrict allowed tools through `bot/chat_modes.yml`.
+- Tool arguments are validated against plugin JSON schemas before execution.
+
+Common current plugins include:
+
+| Plugin | Purpose |
+|---|---|
+| `web_research` | Gateway-backed web/deep research |
+| `website_content` | Gateway-backed page/URL reading |
+| `ddg_image_search` | Gateway-backed image search compatibility plugin |
+| `stable_diffusion` | Gateway-backed image generation compatibility plugin |
+| `gtts_text_to_speech` | Gateway-backed TTS compatibility plugin |
+| `auto_tts` | Auto TTS responses |
+| `youtube_transcript` | YouTube transcript compatibility path |
+| `hindsight_memory` | Manual Hindsight recall/list/stats tools |
+| `codeinterpreter` | Code execution/analysis helper |
+| `text_document_qa` | Local document Q&A |
+| `reminders` | Reminder management |
+
+Enable selected plugins:
+
+```env
+PLUGINS=web_research,website_content,stable_diffusion,gtts_text_to_speech,hindsight_memory
+```
+
+## Sessions And Chat Modes
+
+The bot stores real conversation history in SQLite:
+
+- system prompt;
+- user messages;
+- assistant responses;
+- Hindsight recall context when it was injected for that session.
+
+Session controls are exposed through Telegram inline menus. Deleting a session
+is the point where Hindsight auto-save is scheduled.
+
+Chat modes are defined in `bot/chat_modes.yml`. Keep mode tool names aligned
+with plugin ids, not display names.
+
+## Development
+
+Run targeted tests:
+
+```bash
+python -m pytest -q tests/test_llm_gateway_routing.py
+python -m pytest -q tests/test_hindsight_memory.py
+python -m pytest -q tests/test_database.py
+```
+
+For syntax-only checks:
+
+```bash
+python -m py_compile bot/openai_helper.py bot/telegram_bot.py
+```
+
+Useful focused test areas:
+
+| Area | Tests |
+|---|---|
+| Plugin registry/specs | `tests/test_plugin_manager.py` |
+| Plugin arguments | `tests/test_plugin_arg_validation.py` |
+| Tool-call routing | `tests/test_openai_helper_tool_calls.py` |
+| Chat modes | `tests/test_chat_modes_registry.py` |
+| SQLite sessions | `tests/test_database.py` |
+| LLMGateway routing | `tests/test_llm_gateway_routing.py` |
+| Hindsight memory | `tests/test_hindsight_memory.py` |
+
+## Troubleshooting
+
+### Startup Exits Immediately
+
+Check required environment variables:
+
+```env
+TELEGRAM_BOT_TOKEN=...
+OPENAI_API_KEY=...
+```
+
+### Gateway Calls Fail
+
+Check:
+
+- `OPENAI_BASE_URL` points to the gateway `/v1` base.
+- `OPENAI_API_KEY` is the gateway key.
+- The selected model starts with `llmgateway/`.
+
+### Hindsight Shows Documents But No Memories
+
+Hindsight can store source documents while still producing zero memory units.
+Check the bank's `documents`, `memories/list`, `operations`, and `stats`
+endpoints. In this bot, auto-save sends extracted durable facts to Hindsight;
+Hindsight then owns the document-to-memory extraction pipeline.
+
+### Image Reply Editing Generates A New Image
+
+Use a reply to the Telegram image message or refer clearly to the last generated
+image. The bot classifies reply intent with the light model and has a legacy
+fallback for obvious image-edit wording.
 
 ## Credits
-- [ChatGPT](https://chat.openai.com/chat) from [OpenAI](https://openai.com)
+
+This project is based on the original `chatgpt-telegram-bot` lineage and uses:
+
 - [python-telegram-bot](https://python-telegram-bot.org)
-- [jiaaro/pydub](https://github.com/jiaaro/pydub)
-
-## Disclaimer
-This is a personal project and is not affiliated with OpenAI in any way.
-
-## License
-This project is released under the terms of the GPL 2.0 license. For more information, see the [LICENSE](LICENSE) file included in the repository.
+- [OpenAI Python SDK](https://github.com/openai/openai-python)
+- LLMGateway-compatible OpenAI API routing
