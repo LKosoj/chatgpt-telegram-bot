@@ -137,7 +137,7 @@ async def handle_function_call(
                     if request_context.message_id is not None:
                         args['message_id'] = request_context.message_id
                 else:
-                    args['chat_id'] = chat_id
+                    args['chat_id'] = str(chat_id)
                     args['user_id'] = user_id if user_id is not None else chat_id
                 arguments = json.dumps(args, ensure_ascii=False)
                 prepared.append((tool_name, arguments))

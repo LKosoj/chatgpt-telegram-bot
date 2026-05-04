@@ -167,10 +167,6 @@ async def test_tool_injected_chat_id_is_plugin_string():
     assert call_context is request_context
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="legacy tool flow still injects chat_id as int without RequestContext",
-)
 @pytest.mark.asyncio
 async def test_legacy_tool_injected_chat_id_is_plugin_string():
     plugin_manager = RecordingPluginManager()
@@ -215,10 +211,6 @@ async def test_conversation_analytics_tool_call_uses_string_chat_id(tmp_path):
     assert not any("Invalid args" in item[2] for item in helper.history)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="conversation_analytics still advertises injected chat_id as model-required",
-)
 def test_model_visible_required_args_exclude_internal_chat_id(tmp_path):
     plugin_manager = object.__new__(PluginManager)
     plugin_manager.plugins = {"conversation_analytics": ConversationAnalyticsPlugin}

@@ -43,8 +43,8 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
-from bot.openai_helper import OpenAIHelper, default_max_tokens
-from bot.request_context import RequestContext
+from bot.openai_helper import OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.request_context import RequestContext  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -320,7 +320,7 @@ async def test_legacy_tool_request_in_content_is_executed():
     assert pm.calls and pm.calls[0][0] == "p1.do"
     sent_args = json.loads(pm.calls[0][1])
     assert sent_args["x"] == 1
-    assert sent_args["chat_id"] == 1
+    assert sent_args["chat_id"] == "1"
     assert sent_args["user_id"] == 1
 
 

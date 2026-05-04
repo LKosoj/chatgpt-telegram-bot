@@ -51,7 +51,7 @@ class ConversationAnalyticsPlugin(Plugin):
                         "enum": ["usage", "topics", "sentiment", "all"]
                     }
                 },
-                "required": ["chat_id", "time_period", "analysis_type"]
+                "required": ["time_period", "analysis_type"]
             }
         },
         {
@@ -75,7 +75,7 @@ class ConversationAnalyticsPlugin(Plugin):
                         "default": 3
                     }
                 },
-                "required": ["chat_id", "recommendation_type"]
+                "required": ["recommendation_type"]
             }
         }]
 
