@@ -77,6 +77,16 @@ Do not save passwords, API keys, tokens, secrets, credentials, private auth data
 temporary logs, generic chit-chat, or facts that are already contradicted inside the exchange.
 If there is nothing worth saving, return {"items":[]}."""
 
+REPLY_INTENT_CLASSIFIER_PROMPT = """Classify a Telegram user's reply intent.
+Return only JSON in this exact shape: {"intent":"<one of: image_edit, image_describe, text_reply>"}
+
+Definitions:
+- image_edit: the user wants to transform, modify, add to, remove from, redraw, or restyle an image.
+- image_describe: the user asks about visual content in an image, including description, analysis, identification, or questions about what is shown.
+- text_reply: the user asks or clarifies something about text, conversation context, or anything that should continue as normal chat.
+
+Use replied_message_kind as the source context. Do not choose image_edit or image_describe unless the user intent depends on an image."""
+
 
 @lru_cache(maxsize=128)
 def default_max_tokens(model: str = None) -> int:
@@ -182,6 +192,45 @@ class OpenAIHelper:
                 namespace=self.config.get('hindsight_namespace', 'default'),
                 timeout=float(self.config.get('hindsight_timeout', 30.0)),
             )
+
+    async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
+        """
+        Classifies a Telegram reply intent using the light model.
+        """
+        messages = [
+            {"role": "system", "content": REPLY_INTENT_CLASSIFIER_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "replied_message_kind": replied_message_kind,
+                        "user_reply": user_text,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        response = await self.client.chat.completions.create(
+            model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            messages=messages,
+            temperature=0.0,
+            max_tokens=40,
+            stream=False,
+            extra_headers={ "X-Title": "tgBot" },
+        )
+        content = response.choices[0].message.content or ""
+        start = content.find("{")
+        end = content.rfind("}")
+        if start < 0 or end <= start:
+            return "unknown"
+        try:
+            data = json.loads(content[start:end + 1])
+        except json.JSONDecodeError:
+            return "unknown"
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent in {"image_edit", "image_describe", "text_reply"}:
+            return intent
+        return "unknown"
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """

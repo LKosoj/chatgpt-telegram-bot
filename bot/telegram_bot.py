@@ -134,6 +134,32 @@ class ChatGPTTelegramBot:
             return document.file_id
         return None
 
+    def _reply_context_kind(self, update: Update) -> str | None:
+        message = update.effective_message
+        replied_message = getattr(message, 'reply_to_message', None)
+        if not replied_message:
+            return None
+        if self._image_file_id_from_message(replied_message):
+            return "image"
+        if getattr(replied_message, 'text', None) or getattr(replied_message, 'caption', None):
+            return "text"
+        return "other"
+
+    async def _classify_reply_intent(self, update: Update, prompt: str | None) -> str | None:
+        if not prompt:
+            return None
+        replied_message_kind = self._reply_context_kind(update)
+        if not replied_message_kind:
+            return None
+        try:
+            intent = await self.openai.classify_reply_intent(prompt, replied_message_kind)
+            logger.info("Classified reply intent as %s for %s context", intent, replied_message_kind)
+            if intent in {"image_edit", "image_describe", "text_reply"}:
+                return intent
+        except Exception:
+            logger.warning("Failed to classify reply intent with light model; using legacy routing", exc_info=True)
+        return None
+
     def _remember_sent_image_messages(self, update: Update, sent_messages) -> None:
         if not sent_messages:
             return
@@ -1604,7 +1630,12 @@ class ChatGPTTelegramBot:
                     logger.warning('Message does not start with trigger keyword, ignoring...')
                     return
 
-        if self.config['enable_image_generation'] and self._is_image_edit_request(prompt):
+        reply_intent = await self._classify_reply_intent(update, prompt)
+
+        if self.config['enable_image_generation'] and (
+            reply_intent == "image_edit"
+            or (reply_intent is None and self._is_image_edit_request(prompt))
+        ):
             source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
                 async def _edit():
@@ -1613,7 +1644,10 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _edit, constants.ChatAction.UPLOAD_PHOTO)
                 return
 
-        if self.config['enable_vision'] and self._is_image_description_request(prompt):
+        if self.config['enable_vision'] and (
+            reply_intent == "image_describe"
+            or (reply_intent is None and self._is_image_description_request(prompt))
+        ):
             source_file_id = self._image_description_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
                 async def _describe():
@@ -2396,11 +2430,18 @@ class ChatGPTTelegramBot:
 
     async def handle_plugin_menu_args_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик ответов на запрос параметров команд плагинов."""
-        pending = context.user_data.get("plugin_menu_pending")
-        if not pending or not update.message or not update.message.reply_to_message:
+        if not update.message:
             return
 
-        if update.message.reply_to_message.message_id != pending.get("prompt_message_id"):
+        pending = context.user_data.get("plugin_menu_pending")
+        is_plugin_menu_reply = (
+            pending
+            and update.message.reply_to_message
+            and update.message.reply_to_message.message_id == pending.get("prompt_message_id")
+        )
+        if not is_plugin_menu_reply:
+            if not filters.COMMAND.check_update(update):
+                await self.prompt(update, context)
             return
 
         plugin_name = pending.get("plugin")
@@ -2974,8 +3015,7 @@ class ChatGPTTelegramBot:
             application.add_handler(
                 MessageHandler(
                     filters.REPLY & filters.TEXT,
-                    self.handle_plugin_menu_args_reply,
-                    block=False
+                    self.handle_plugin_menu_args_reply
                 )
             )
 

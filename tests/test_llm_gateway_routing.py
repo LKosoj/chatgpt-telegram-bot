@@ -70,3 +70,28 @@ async def test_web_research_uses_light_model_then_deep_research():
     assert helper.client.calls[0]["model"] == LLMGATEWAY_LIGHT_MODEL
     assert helper.gateway_client.calls[0][0] == "deep_research"
     assert result["result"]["output"] == "deep"
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_classifier_uses_light_model():
+    pytest.importorskip("tiktoken")
+    from bot.openai_helper import OpenAIHelper
+
+    helper = FakeHelper('{"intent":"image_edit"}')
+
+    intent = await OpenAIHelper.classify_reply_intent(helper, "добавь шапочку", "image")
+
+    assert intent == "image_edit"
+    assert helper.client.calls[0]["model"] == LLMGATEWAY_LIGHT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_classifier_rejects_invalid_response():
+    pytest.importorskip("tiktoken")
+    from bot.openai_helper import OpenAIHelper
+
+    helper = FakeHelper("not-json")
+
+    intent = await OpenAIHelper.classify_reply_intent(helper, "что это значит?", "text")
+
+    assert intent == "unknown"
