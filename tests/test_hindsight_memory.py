@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import types
 
@@ -11,6 +12,7 @@ pytest.importorskip("tiktoken")
 from bot.hindsight_client import HindsightClient, format_recall_results
 from bot.openai_helper import OpenAIHelper
 from bot.plugins.hindsight_memory import HindsightMemoryPlugin
+from bot.telegram_bot import ChatGPTTelegramBot
 
 
 class DummyDB:
@@ -75,6 +77,25 @@ class FakeHindsight:
     async def retain_memories(self, bank_id, items, **kwargs):
         self.retained.append((bank_id, items, kwargs))
         return {"success": True, "bank_id": bank_id, "items_count": len(items), "async": True}
+
+
+class SlowFinalizeOpenAI:
+    def __init__(self):
+        self.config = {"hindsight_auto_save": True}
+        self.started = asyncio.Event()
+        self.finish = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.calls = []
+
+    def is_hindsight_enabled(self):
+        return True
+
+    async def finalize_hindsight_session_memory(self, user_id, session_id, messages=None):
+        self.calls.append((user_id, session_id, messages))
+        self.started.set()
+        await self.finish.wait()
+        self.finished.set()
+        return 1
 
 
 class FakeCompletions:
@@ -253,6 +274,48 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
     assert item["content"] == "User prefers concise Python examples."
     assert item["document_id"] == "telegram-123-session-1-final"
     assert item["metadata"]["mode"] == "session_close"
+
+
+@pytest.mark.asyncio
+async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
+    helper = make_helper()
+    helper.config["hindsight_api_token"] = "secret"
+    helper.config["hindsight_enabled"] = True
+    helper.config["hindsight_auto_save"] = True
+    helper.hindsight_client = FakeHindsight()
+    helper.fake_completions.content = json.dumps({
+        "items": [{
+            "content": "User prefers short answers.",
+            "context": "session preference",
+        }]
+    })
+    helper.db.context = {"messages": []}
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "I prefer short answers."},
+        {"role": "assistant", "content": "Understood."},
+    ]
+
+    saved_count = await helper.finalize_hindsight_session_memory(123, "session-1", messages=messages)
+
+    assert saved_count == 1
+    assert helper.hindsight_client.retained[0][1][0]["content"] == "User prefers short answers."
+
+
+@pytest.mark.asyncio
+async def test_hindsight_session_finalize_is_scheduled_in_background():
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.db = DummyDB()
+    bot.openai = SlowFinalizeOpenAI()
+
+    bot._schedule_hindsight_session_finalize(123, "session-1")
+
+    await asyncio.wait_for(bot.openai.started.wait(), timeout=1)
+    assert bot.openai.calls[0][0] == 123
+    assert bot.openai.calls[0][1] == "session-1"
+    assert bot.openai.calls[0][2] == bot.db.context["messages"]
+    bot.openai.finish.set()
+    await asyncio.wait_for(bot.openai.finished.wait(), timeout=1)
 
 
 @pytest.mark.asyncio

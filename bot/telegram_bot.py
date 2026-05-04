@@ -188,6 +188,45 @@ class ChatGPTTelegramBot:
         sent_messages = await handle_direct_result(self.config, update, response)
         self._remember_sent_image_messages(update, sent_messages)
 
+    def _schedule_hindsight_session_finalize(self, user_id: int, session_id: str | None) -> None:
+        if not session_id:
+            return
+        if not self.openai.is_hindsight_enabled() or not self.openai.config.get('hindsight_auto_save', True):
+            return
+
+        try:
+            context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id)
+            messages = context.get('messages', []) if isinstance(context, dict) else []
+            messages = [dict(message) for message in messages if isinstance(message, dict)]
+        except Exception:
+            logger.warning(
+                "Failed to snapshot session before background Hindsight finalize for user_id=%s session_id=%s",
+                user_id,
+                session_id,
+                exc_info=True,
+            )
+            return
+
+        async def _finalize():
+            try:
+                saved_count = await self.openai.finalize_hindsight_session_memory(user_id, session_id, messages=messages)
+                if saved_count:
+                    logger.info(
+                        "Background Hindsight session finalize saved %s item(s) for user_id=%s session_id=%s",
+                        saved_count,
+                        user_id,
+                        session_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "Background Hindsight session finalize failed for user_id=%s session_id=%s",
+                    user_id,
+                    session_id,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_finalize(), name=f"hindsight_finalize_{user_id}_{session_id}")
+
     def _is_image_edit_request(self, text: str | None) -> bool:
         prompt = (text or '').strip().lower()
         if not prompt:
@@ -2837,7 +2876,7 @@ class ChatGPTTelegramBot:
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                await self.openai.finalize_hindsight_session_memory(user_id, session_id)
+                self._schedule_hindsight_session_finalize(user_id, session_id)
                 self.db.delete_session(user_id, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
                 session_id = self.db.get_active_session_id(user_id)

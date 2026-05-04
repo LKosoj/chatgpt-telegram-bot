@@ -1100,13 +1100,19 @@ class OpenAIHelper:
     def _messages_with_hindsight_context(self, chat_id: int) -> list[dict[str, Any]]:
         return self.conversations[chat_id]
 
-    async def finalize_hindsight_session_memory(self, user_id: int, session_id: str | None) -> int:
+    async def finalize_hindsight_session_memory(
+        self,
+        user_id: int,
+        session_id: str | None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> int:
         if not session_id or not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_save', True):
             return 0
 
         try:
-            context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self)
-            messages = context.get('messages', []) if isinstance(context, dict) else []
+            if messages is None:
+                context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self)
+                messages = context.get('messages', []) if isinstance(context, dict) else []
             transcript = self._session_transcript_for_hindsight(messages)
             if not transcript:
                 return 0
