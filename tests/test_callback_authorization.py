@@ -56,12 +56,6 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
-CALLBACK_AUTH_BUG_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="Callback flows currently do not apply is_allowed consistently.",
-)
-
-
 class FakeCallbackMessage:
     def __init__(self, chat_id=1234):
         self.chat_id = chat_id
@@ -140,7 +134,6 @@ def _make_bot(allowed_user_ids):
 
 
 @pytest.mark.asyncio
-@CALLBACK_AUTH_BUG_XFAIL
 async def test_callback_reset_allows_wildcard_allowed_users():
     bot = _make_bot(allowed_user_ids="*")
     update = FakeCallbackUpdate("session:back", user_id=999)
@@ -166,7 +159,6 @@ async def test_callback_reset_rejects_restricted_non_member():
 
 
 @pytest.mark.asyncio
-@CALLBACK_AUTH_BUG_XFAIL
 async def test_unauthorized_prompt_selection_does_not_mutate_mode_or_context():
     bot = _make_bot(allowed_user_ids="111")
     bot.reset = AsyncMock()
@@ -192,7 +184,6 @@ async def test_unauthorized_prompt_selection_does_not_mutate_mode_or_context():
         "session:export",
     ],
 )
-@CALLBACK_AUTH_BUG_XFAIL
 async def test_unauthorized_session_callback_does_not_mutate_db(callback_data):
     bot = _make_bot(allowed_user_ids="111")
     bot.reset = AsyncMock()

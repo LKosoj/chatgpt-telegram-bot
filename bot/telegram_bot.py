@@ -627,9 +627,7 @@ class ChatGPTTelegramBot:
         # Получаем информацию о пользователе из callback_query или message
         if is_callback:
             user_id = update.callback_query.from_user.id
-            # Проверяем права доступа для callback_query
-            allowed_user_ids = self.config['allowed_user_ids'].split(',')
-            if str(user_id) not in allowed_user_ids and 'guests' not in self.config and not is_admin(self.config, user_id):
+            if not await is_allowed(self.config, update, context):
                 await update.callback_query.edit_message_text(
                     text=localized_text('access_denied_command', self.config['bot_language'])
                 )
@@ -816,14 +814,15 @@ class ChatGPTTelegramBot:
         """
         query = update.callback_query
         await query.answer()
+
+        if not await is_allowed(self.config, update, context):
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return
         
         chat_id = query.message.chat_id
         user_id = query.from_user.id
-
-        # Проверяем права доступа для callback_query
-        #if not await is_allowed(self.config, update, context):
-        #    await query.edit_message_text(text="У вас нет доступа к этой команде.")
-        #    return
         
         # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
@@ -2783,6 +2782,12 @@ class ChatGPTTelegramBot:
         """
         query = update.callback_query
         await query.answer()
+
+        if not await is_allowed(self.config, update, context):
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return
 
         chat_id = query.message.chat_id
         user_id = query.from_user.id
