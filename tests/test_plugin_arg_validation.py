@@ -3,8 +3,6 @@ import json
 import textwrap
 from pathlib import Path
 
-import pytest
-
 from bot.plugin_manager import PluginManager
 from bot.validation import validate_function_args
 
@@ -19,40 +17,30 @@ def _schema(properties, required=None):
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Manual validation accepts bool because bool is an int subclass",
-)
 def test_jsonschema_rejects_bool_for_integer():
     spec = _schema({"count": {"type": "integer"}})
 
     errors = validate_function_args(spec, {"count": True})
 
-    assert errors
+    assert errors == ["Invalid type for 'count': expected integer"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Manual validation accepts bool because bool is an int subclass",
-)
 def test_jsonschema_rejects_bool_for_number():
     spec = _schema({"ratio": {"type": "number"}})
 
     errors = validate_function_args(spec, {"ratio": True})
 
-    assert errors
+    assert errors == ["Invalid type for 'ratio': expected number"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Manual validation does not enforce enum constraints",
-)
 def test_jsonschema_rejects_invalid_enum():
     spec = _schema({"mode": {"type": "string", "enum": ["fast", "safe"]}})
 
     errors = validate_function_args(spec, {"mode": "unsafe"})
 
-    assert errors
+    assert errors == [
+        "Invalid value for 'mode': expected one of ['fast', 'safe']"
+    ]
 
 
 def test_jsonschema_reports_missing_required():
@@ -63,10 +51,6 @@ def test_jsonschema_reports_missing_required():
     assert "Missing required arg 'text'" in errors
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Manual validation does not validate nested object properties",
-)
 def test_jsonschema_rejects_invalid_nested_object_property():
     spec = _schema(
         {
@@ -81,13 +65,9 @@ def test_jsonschema_rejects_invalid_nested_object_property():
 
     errors = validate_function_args(spec, {"filters": {"limit": "10"}})
 
-    assert errors
+    assert errors == ["Invalid type for 'filters.limit': expected integer"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Manual validation does not validate array item schemas",
-)
 def test_jsonschema_rejects_invalid_array_item_type():
     spec = _schema(
         {
@@ -100,7 +80,7 @@ def test_jsonschema_rejects_invalid_array_item_type():
 
     errors = validate_function_args(spec, {"tags": ["valid", 3]})
 
-    assert errors
+    assert errors == ["Invalid type for 'tags[1]': expected string"]
 
 
 def _write_plugin(path: Path):

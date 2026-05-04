@@ -43,6 +43,7 @@ SpeechRecognition>=3.10.0
 cryptography>=41.0.4
 pandas
 jinja2>=3.1.2
+jsonschema>=4.0.0
 Markdown>=3.5
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
