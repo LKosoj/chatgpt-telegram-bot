@@ -226,7 +226,11 @@ class OpenAIHelper:
             "image_question": "image_describe",
             "vision": "image_describe",
             "edit_image": "image_edit",
+            "image_editing": "image_edit",
             "image_modify": "image_edit",
+            "modify_image": "image_edit",
+            "redraw_image": "image_edit",
+            "image_redraw": "image_edit",
             "normal_chat": "text_reply",
             "text": "text_reply",
         }

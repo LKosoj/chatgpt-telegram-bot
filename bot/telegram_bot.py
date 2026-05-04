@@ -196,8 +196,9 @@ class ChatGPTTelegramBot:
             'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
             'добавь', 'добавить', 'убери', 'убрать', 'замени', 'заменить',
             'дорисуй', 'дорисовать', 'перерисуй', 'перерисовать',
+            'нарисуй', 'нарисовать',
             'надень', 'одень', 'сделай ему', 'сделай ей', 'сделай им',
-            'edit', 'modify', 'change', 'add ', 'remove ', 'replace', 'put ',
+            'edit', 'modify', 'change', 'draw ', 'add ', 'remove ', 'replace', 'put ',
         )
         return any(marker in prompt for marker in edit_markers)
 
@@ -205,7 +206,8 @@ class ChatGPTTelegramBot:
         prompt = (text or '').strip().lower()
         strong_edit_markers = (
             'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
-            'перерисуй', 'перерисовать', 'edit', 'modify', 'change',
+            'перерисуй', 'перерисовать', 'нарисуй', 'нарисовать',
+            'edit', 'modify', 'change', 'draw ',
         )
         image_reference_markers = (
             'это изображ', 'эту карт', 'эта карт', 'этот рисун', 'этого кот',
@@ -1628,10 +1630,11 @@ class ChatGPTTelegramBot:
                     return
 
         reply_intent = await self._classify_reply_intent(update, prompt)
+        use_legacy_image_routing = reply_intent in (None, "unknown")
 
         if self.config['enable_image_generation'] and (
             reply_intent == "image_edit"
-            or (reply_intent is None and self._is_image_edit_request(prompt))
+            or (use_legacy_image_routing and self._is_image_edit_request(prompt))
         ):
             source_file_id = self._image_edit_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
@@ -1640,10 +1643,11 @@ class ChatGPTTelegramBot:
 
                 await wrap_with_indicator(update, context, _edit, constants.ChatAction.UPLOAD_PHOTO)
                 return
+            logger.info("Image edit route matched but no source image file_id was found")
 
         if self.config['enable_vision'] and (
             reply_intent == "image_describe"
-            or (reply_intent is None and self._is_image_description_request(prompt))
+            or (use_legacy_image_routing and self._is_image_description_request(prompt))
         ):
             source_file_id = self._image_description_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
