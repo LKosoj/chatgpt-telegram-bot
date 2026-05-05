@@ -92,6 +92,8 @@ def _make_db(active_sessions=None):
         create_session=MagicMock(return_value="session-new"),
         switch_active_session=MagicMock(),
         delete_session=MagicMock(),
+        get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
+        delete_sessions_by_ids=MagicMock(return_value=True),
         save_conversation_context=MagicMock(),
         get_active_session_id=MagicMock(return_value="session-active"),
         get_conversation_context=MagicMock(return_value=(
@@ -106,8 +108,10 @@ def _make_db(active_sessions=None):
 
 def _make_openai():
     return SimpleNamespace(
-        config={"temperature": 0.1},
+        config={"temperature": 0.1, "hindsight_auto_save": True},
         conversations={},
+        is_hindsight_enabled=MagicMock(return_value=False),
+        finalize_hindsight_session_memory=AsyncMock(return_value=0),
         reset_chat_history=MagicMock(),
     )
 
@@ -133,7 +137,8 @@ def _make_bot(active_sessions=None):
             "max_tokens_percent": 80,
         }
     })
-    bot._schedule_hindsight_session_finalize = MagicMock()
+    bot._finalize_hindsight_session_before_delete = AsyncMock(return_value=1)
+    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock()
     bot.reset = AsyncMock()
     return bot
 
@@ -168,6 +173,7 @@ async def test_group_prompt_selection_uses_group_conversation_key_for_session_db
         user_id=-100123,
         max_sessions=5,
         openai_helper=bot.openai,
+        prune_old_sessions=False,
     )
     bot.db.save_conversation_context.assert_called_once()
     assert bot.db.save_conversation_context.call_args.args[0] == -100123
@@ -199,6 +205,7 @@ async def test_group_session_new_uses_group_key_and_lowercase_max_sessions_confi
         user_id=-100123,
         max_sessions=3,
         openai_helper=bot.openai,
+        prune_old_sessions=False,
     )
     bot.openai.reset_chat_history.assert_called_once_with(
         chat_id=-100123,
@@ -214,7 +221,7 @@ async def test_group_session_delete_uses_group_conversation_key():
 
     await bot.handle_session_callback(update, _make_context())
 
-    bot._schedule_hindsight_session_finalize.assert_called_once_with(-100123, "session-2")
+    bot._finalize_hindsight_session_before_delete.assert_awaited_once_with(-100123, "session-2")
     bot.db.delete_session.assert_called_once_with(
         -100123,
         "session-2",
@@ -226,7 +233,122 @@ async def test_group_session_delete_uses_group_conversation_key():
         "session-active",
         openai_helper=bot.openai,
     )
-    assert bot.openai.conversations[-100123] == [{"role": "user", "content": "group history"}]
+
+
+@pytest.mark.asyncio
+async def test_group_session_delete_waits_for_hindsight_before_db_delete():
+    order = []
+    bot = _make_bot()
+    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=lambda *_: order.append("finalize") or 1)
+    bot.db.delete_session.side_effect = lambda *_args, **_kwargs: order.append("delete")
+    update = _group_update("session:delete:session-2")
+
+    await bot.handle_session_callback(update, _make_context())
+
+    assert order == ["finalize", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_group_session_delete_keeps_session_when_hindsight_finalize_fails():
+    bot = _make_bot()
+    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=RuntimeError("retain failed"))
+    update = _group_update("session:delete:session-2")
+
+    await bot.handle_session_callback(update, _make_context())
+
+    bot.db.delete_session.assert_not_called()
+    update.callback_query.edit_message_text.assert_awaited_once()
+    assert "retain failed" in update.callback_query.edit_message_text.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_hindsight_session_before_delete_uses_snapshot_and_sync_store():
+    bot = _make_bot()
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "remember this"},
+    ]
+    bot.db.get_conversation_context.return_value = (
+        {"messages": messages},
+        "Markdown",
+        0.1,
+        50,
+        "session-2",
+    )
+    bot.openai.is_hindsight_enabled.return_value = True
+    bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.finalize_hindsight_session_memory = AsyncMock(return_value=2)
+
+    saved_count = await ChatGPTTelegramBot._finalize_hindsight_session_before_delete(
+        bot,
+        -100123,
+        "session-2",
+    )
+
+    assert saved_count == 2
+    bot.openai.finalize_hindsight_session_memory.assert_awaited_once_with(
+        -100123,
+        "session-2",
+        messages=messages,
+        raise_on_error=True,
+        async_store=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalize_and_delete_oldest_sessions_waits_before_delete():
+    order = []
+    bot = _make_bot()
+    bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1", "old-2"]
+    bot._finalize_hindsight_session_before_delete = AsyncMock(
+        side_effect=lambda _user_id, session_id: order.append(f"finalize:{session_id}") or 1
+    )
+    bot.db.delete_sessions_by_ids.side_effect = lambda *_args: order.append("delete") or True
+
+    await ChatGPTTelegramBot._finalize_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
+
+    assert order == ["finalize:old-1", "finalize:old-2", "delete"]
+    bot.db.delete_sessions_by_ids.assert_called_once_with(-100123, ["old-1", "old-2"])
+
+
+@pytest.mark.asyncio
+async def test_finalize_and_delete_oldest_sessions_keeps_sessions_when_finalize_fails():
+    bot = _make_bot()
+    bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1"]
+    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=RuntimeError("retain failed"))
+
+    with pytest.raises(RuntimeError, match="retain failed"):
+        await ChatGPTTelegramBot._finalize_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
+
+    bot.db.delete_sessions_by_ids.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_group_session_new_prunes_old_sessions_after_hindsight_finalize():
+    order = []
+    bot = _make_bot()
+    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock(
+        side_effect=lambda *_: order.append("prune")
+    )
+    bot.db.create_session.side_effect = lambda **_kwargs: order.append("create") or "session-new"
+    bot.config["max_sessions"] = 3
+    update = _group_update("session:new")
+
+    await bot.handle_session_callback(update, _make_context())
+
+    assert order == ["prune", "create"]
+    bot._finalize_and_delete_oldest_sessions_for_limit.assert_awaited_once_with(-100123, 3)
+    bot.db.create_session.assert_called_once_with(
+        user_id=-100123,
+        max_sessions=3,
+        openai_helper=bot.openai,
+        prune_old_sessions=False,
+    )
+    bot.openai.reset_chat_history.assert_called_once_with(
+        chat_id=-100123,
+        content='',
+        session_id="session-new",
+    )
 
 
 @pytest.mark.asyncio

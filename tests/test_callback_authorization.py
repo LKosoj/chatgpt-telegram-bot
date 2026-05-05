@@ -129,7 +129,8 @@ def _make_bot(allowed_user_ids):
             "max_tokens_percent": 80,
         }
     })
-    bot._schedule_hindsight_session_finalize = MagicMock()
+    bot._finalize_hindsight_session_before_delete = AsyncMock()
+    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock()
     return bot
 
 

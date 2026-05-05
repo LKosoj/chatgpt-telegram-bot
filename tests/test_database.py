@@ -15,6 +15,15 @@ class DummyOpenAI:
         return ("ShortName", None)
 
 
+class DummyHindsightOpenAI(DummyOpenAI):
+    def __init__(self):
+        super().__init__()
+        self.config["hindsight_auto_save"] = True
+
+    def is_hindsight_enabled(self):
+        return True
+
+
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
@@ -63,6 +72,14 @@ def test_max_sessions_enforced(db):
         db.create_session(1, max_sessions=3, openai_helper=helper)
     sessions = db.list_user_sessions(1)
     assert len(sessions) <= 3
+
+
+def test_create_session_does_not_prune_hindsight_sessions_without_async_finalize(db):
+    helper = DummyHindsightOpenAI()
+    for _ in range(4):
+        db.create_session(1, max_sessions=3, openai_helper=helper)
+    sessions = db.list_user_sessions(1)
+    assert len(sessions) == 4
 
 
 def test_pragmas_enabled(db):

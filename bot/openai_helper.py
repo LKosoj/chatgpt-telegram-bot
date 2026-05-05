@@ -1191,6 +1191,9 @@ class OpenAIHelper:
         user_id: int,
         session_id: str | None,
         messages: list[dict[str, Any]] | None = None,
+        *,
+        raise_on_error: bool = False,
+        async_store: bool | None = None,
     ) -> int:
         if not session_id or not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_save', True):
             return 0
@@ -1214,10 +1217,13 @@ class OpenAIHelper:
                 items=items,
                 mode="session_close",
                 document_id=f"telegram-{user_id}-{session_id}-final",
+                async_store=async_store,
             )
             return len(items)
         except Exception as e:
             logger.warning("Hindsight session finalize failed for user_id=%s session_id=%s: %s", user_id, session_id, e)
+            if raise_on_error:
+                raise
             return 0
 
     def _session_transcript_for_hindsight(self, messages: list[dict[str, Any]]) -> str:
@@ -1245,6 +1251,7 @@ class OpenAIHelper:
         session_id: str | None,
         mode: str,
         document_id: str | None = None,
+        async_store: bool | None = None,
     ) -> None:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         bank_id = self.get_hindsight_bank_id(user_id)
@@ -1274,7 +1281,7 @@ class OpenAIHelper:
         await self.hindsight_client.retain_memories(
             bank_id,
             normalized,
-            async_store=bool(self.config.get('hindsight_async_store', True)),
+            async_store=bool(self.config.get('hindsight_async_store', True)) if async_store is None else async_store,
         )
         logger.info("Saved %s Hindsight memory item(s) to bank %s", len(normalized), bank_id)
 

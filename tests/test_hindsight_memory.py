@@ -90,8 +90,8 @@ class SlowFinalizeOpenAI:
     def is_hindsight_enabled(self):
         return True
 
-    async def finalize_hindsight_session_memory(self, user_id, session_id, messages=None):
-        self.calls.append((user_id, session_id, messages))
+    async def finalize_hindsight_session_memory(self, user_id, session_id, messages=None, **kwargs):
+        self.calls.append((user_id, session_id, messages, kwargs))
         self.started.set()
         await self.finish.wait()
         self.finished.set()
@@ -311,18 +311,22 @@ async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_hindsight_session_finalize_is_scheduled_in_background():
+async def test_hindsight_session_finalize_is_awaited_before_delete():
     bot = object.__new__(ChatGPTTelegramBot)
     bot.db = DummyDB()
     bot.openai = SlowFinalizeOpenAI()
 
-    bot._schedule_hindsight_session_finalize(123, "session-1")
+    task = asyncio.create_task(bot._finalize_hindsight_session_before_delete(123, "session-1"))
 
     await asyncio.wait_for(bot.openai.started.wait(), timeout=1)
+    assert not task.done()
     assert bot.openai.calls[0][0] == 123
     assert bot.openai.calls[0][1] == "session-1"
     assert bot.openai.calls[0][2] == bot.db.context["messages"]
+    assert bot.openai.calls[0][3] == {"raise_on_error": True, "async_store": False}
     bot.openai.finish.set()
+    saved_count = await asyncio.wait_for(task, timeout=1)
+    assert saved_count == 1
     await asyncio.wait_for(bot.openai.finished.wait(), timeout=1)
 
 

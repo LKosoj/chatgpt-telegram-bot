@@ -475,13 +475,7 @@ class Database:
             logger.error(f"Ошибка при подсчете сессий пользователя: {e}")
             return 0
 
-    def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
-        """
-        Удаление самых старых сессий пользователя до достижения лимита
-        
-        :param user_id: Идентификатор пользователя
-        :return: Успешность удаления
-        """
+    def get_oldest_session_ids_for_limit(self, user_id: int, max_sessions: Optional[int] = None) -> List[str]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -494,31 +488,51 @@ class Database:
                 cursor.execute("SELECT COUNT(*) FROM conversation_context WHERE user_id = ?", (user_id,))
                 total = cursor.fetchone()[0]
                 if total < max_sessions:
-                    return True
+                    return []
 
                 to_delete = total - (max_sessions - 1)
                 if to_delete <= 0:
-                    return True
+                    return []
 
                 cursor.execute("""
-                    SELECT session_id 
-                    FROM conversation_context 
-                    WHERE user_id = ? 
-                    ORDER BY created_at ASC 
+                    SELECT session_id
+                    FROM conversation_context
+                    WHERE user_id = ?
+                    ORDER BY created_at ASC
                     LIMIT ?
                 """, (user_id, to_delete))
-                session_ids = [row[0] for row in cursor.fetchall()]
-                if not session_ids:
-                    return True
+                return [row[0] for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка при получении старых сессий: {e}")
+            return []
 
+    def delete_sessions_by_ids(self, user_id: int, session_ids: List[str]) -> bool:
+        if not session_ids:
+            return True
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
                 placeholders = ",".join("?" for _ in session_ids)
                 cursor.execute(
                     f"DELETE FROM conversation_context WHERE user_id = ? AND session_id IN ({placeholders})",
                     (user_id, *session_ids)
                 )
-
                 return True
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка при удалении сессий: {e}")
+            return False
+
+    def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
+        """
+        Удаление самых старых сессий пользователя до достижения лимита
         
+        :param user_id: Идентификатор пользователя
+        :return: Успешность удаления
+        """
+        try:
+            session_ids = self.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
+            return self.delete_sessions_by_ids(user_id, session_ids)
+
         except sqlite3.Error as e:
             logger.error(f"Ошибка при удалении старых сессий: {e}")
             return False
@@ -555,7 +569,8 @@ class Database:
         session_name: str = None, 
         max_sessions: int = 5,
         first_message: str = None,
-        openai_helper = None
+        openai_helper = None,
+        prune_old_sessions: bool = True,
     ) -> Optional[str]:
         """
         Создание новой сессии с сохранением режима из активной сессии
@@ -568,8 +583,20 @@ class Database:
         :return: Идентификатор новой сессии или None
         """
         try:
-            # Удаляем старые сессии
-            self.delete_oldest_session(user_id, max_sessions=max_sessions)
+            if prune_old_sessions:
+                hindsight_requires_async_finalize = (
+                    openai_helper is not None
+                    and getattr(openai_helper, "is_hindsight_enabled", lambda: False)()
+                    and getattr(openai_helper, "config", {}).get('hindsight_auto_save', True)
+                )
+                if hindsight_requires_async_finalize:
+                    logger.warning(
+                        "Skipping automatic session pruning for user %s because Hindsight auto-save "
+                        "requires explicit async finalization before deletion.",
+                        user_id,
+                    )
+                else:
+                    self.delete_oldest_session(user_id, max_sessions=max_sessions)
             
             # Получаем данные из активной сессии
             sessions = self.list_user_sessions(user_id, 1)
