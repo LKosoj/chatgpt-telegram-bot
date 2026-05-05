@@ -131,6 +131,28 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_file_id_hash ON images(file_id_hash)
                 ''')
 
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS hindsight_finalize_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        session_id TEXT NOT NULL,
+                        messages TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        saved_count INTEGER DEFAULT NULL,
+                        last_error TEXT DEFAULT NULL,
+                        locked_at TIMESTAMP DEFAULT NULL,
+                        next_attempt_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_hindsight_finalize_jobs_status_next_attempt
+                    ON hindsight_finalize_jobs(status, next_attempt_at, created_at)
+                ''')
+
                 # Проверяем необходимость миграции
                 #cursor.execute("PRAGMA table_info(conversation_context)")
                 #columns = [column[1] for column in cursor.fetchall()]
@@ -346,6 +368,7 @@ class Database:
             logger.info(f'Deleting all data for user_id={user_id}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute('DELETE FROM hindsight_finalize_jobs WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM images WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM conversation_context WHERE user_id = ?', (user_id,))
                 cursor.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
@@ -522,6 +545,169 @@ class Database:
             logger.error(f"Ошибка при удалении сессий: {e}")
             return False
 
+    def create_hindsight_finalize_job(self, user_id: int, session_id: str, messages: List[Dict[str, Any]]) -> int:
+        try:
+            payload = json.dumps({"messages": messages}, ensure_ascii=False)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages)
+                    VALUES (?, ?, ?)
+                ''', (user_id, session_id, payload))
+                return int(cursor.lastrowid)
+        except Exception as e:
+            logger.error(f"Ошибка создания Hindsight finalize job: {e}", exc_info=True)
+            raise
+
+    def create_hindsight_finalize_jobs_for_sessions(self, user_id: int, session_ids: List[str]) -> List[int]:
+        if not session_ids:
+            return []
+        try:
+            job_ids = []
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for session_id in session_ids:
+                    cursor.execute('''
+                        SELECT context
+                        FROM conversation_context
+                        WHERE user_id = ? AND session_id = ?
+                    ''', (user_id, session_id))
+                    row = cursor.fetchone()
+                    if not row:
+                        raise ValueError(f"Session not found for Hindsight finalize job: {user_id}/{session_id}")
+
+                    context = json.loads(row["context"]) if row["context"] else {"messages": []}
+                    messages = context.get("messages", []) if isinstance(context, dict) else []
+                    messages = [dict(message) for message in messages if isinstance(message, dict)]
+                    payload = json.dumps({"messages": messages}, ensure_ascii=False)
+                    cursor.execute('''
+                        INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, session_id, payload))
+                    job_ids.append(int(cursor.lastrowid))
+            return job_ids
+        except Exception as e:
+            logger.error(f"Ошибка создания Hindsight finalize jobs: {e}", exc_info=True)
+            raise
+
+    def claim_hindsight_finalize_jobs(
+        self,
+        limit: int = 5,
+        lease_seconds: int = 900,
+        max_attempts: int = 5,
+    ) -> List[Dict[str, Any]]:
+        try:
+            limit = max(1, int(limit))
+            lease_seconds = max(1, int(lease_seconds))
+            max_attempts = max(1, int(max_attempts))
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute('''
+                    SELECT id
+                    FROM hindsight_finalize_jobs
+                    WHERE attempts < ?
+                      AND (
+                        (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP))
+                        OR (status = 'processing' AND locked_at <= datetime(CURRENT_TIMESTAMP, ?))
+                      )
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                ''', (max_attempts, f"-{lease_seconds} seconds", limit))
+                job_ids = [row[0] for row in cursor.fetchall()]
+                if not job_ids:
+                    return []
+
+                placeholders = ",".join("?" for _ in job_ids)
+                cursor.execute(f'''
+                    UPDATE hindsight_finalize_jobs
+                    SET status = 'processing',
+                        locked_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                ''', job_ids)
+                cursor.execute(f'''
+                    SELECT id, user_id, session_id, messages, attempts
+                    FROM hindsight_finalize_jobs
+                    WHERE id IN ({placeholders})
+                ''', job_ids)
+                rows = cursor.fetchall()
+
+            order = {job_id: index for index, job_id in enumerate(job_ids)}
+            jobs = []
+            for row in rows:
+                payload = json.loads(row["messages"])
+                messages = payload.get("messages", []) if isinstance(payload, dict) else payload
+                jobs.append({
+                    "id": row["id"],
+                    "user_id": row["user_id"],
+                    "session_id": row["session_id"],
+                    "messages": messages if isinstance(messages, list) else [],
+                    "attempts": row["attempts"],
+                })
+            jobs.sort(key=lambda job: order.get(job["id"], 0))
+            return jobs
+        except Exception as e:
+            logger.error(f"Ошибка получения Hindsight finalize jobs: {e}", exc_info=True)
+            raise
+
+    def mark_hindsight_finalize_job_done(self, job_id: int, saved_count: int) -> bool:
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE hindsight_finalize_jobs
+                    SET status = 'done',
+                        saved_count = ?,
+                        last_error = NULL,
+                        locked_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (saved_count, job_id))
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка завершения Hindsight finalize job: {e}")
+            return False
+
+    def mark_hindsight_finalize_job_failed(
+        self,
+        job_id: int,
+        error: str,
+        retry_delay_seconds: int = 60,
+        max_attempts: int = 5,
+    ) -> bool:
+        try:
+            retry_delay_seconds = max(0, int(retry_delay_seconds))
+            max_attempts = max(1, int(max_attempts))
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT attempts
+                    FROM hindsight_finalize_jobs
+                    WHERE id = ?
+                ''', (job_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return False
+
+                attempts = int(row["attempts"]) + 1
+                status = 'failed' if attempts >= max_attempts else 'pending'
+                cursor.execute('''
+                    UPDATE hindsight_finalize_jobs
+                    SET status = ?,
+                        attempts = ?,
+                        last_error = ?,
+                        locked_at = NULL,
+                        next_attempt_at = datetime(CURRENT_TIMESTAMP, ?),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (status, attempts, error, f"+{retry_delay_seconds} seconds", job_id))
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка обновления Hindsight finalize job: {e}")
+            return False
+
     def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
         """
         Удаление самых старых сессий пользователя до достижения лимита
@@ -590,11 +776,9 @@ class Database:
                     and getattr(openai_helper, "config", {}).get('hindsight_auto_save', True)
                 )
                 if hindsight_requires_async_finalize:
-                    logger.warning(
-                        "Skipping automatic session pruning for user %s because Hindsight auto-save "
-                        "requires explicit async finalization before deletion.",
-                        user_id,
-                    )
+                    session_ids = self.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
+                    self.create_hindsight_finalize_jobs_for_sessions(user_id, session_ids)
+                    self.delete_sessions_by_ids(user_id, session_ids)
                 else:
                     self.delete_oldest_session(user_id, max_sessions=max_sessions)
             

@@ -94,6 +94,11 @@ def _make_db(active_sessions=None):
         delete_session=MagicMock(),
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
         delete_sessions_by_ids=MagicMock(return_value=True),
+        create_hindsight_finalize_job=MagicMock(return_value=10),
+        create_hindsight_finalize_jobs_for_sessions=MagicMock(return_value=[]),
+        claim_hindsight_finalize_jobs=MagicMock(return_value=[]),
+        mark_hindsight_finalize_job_done=MagicMock(return_value=True),
+        mark_hindsight_finalize_job_failed=MagicMock(return_value=True),
         save_conversation_context=MagicMock(),
         get_active_session_id=MagicMock(return_value="session-active"),
         get_conversation_context=MagicMock(return_value=(
@@ -137,8 +142,8 @@ def _make_bot(active_sessions=None):
             "max_tokens_percent": 80,
         }
     })
-    bot._finalize_hindsight_session_before_delete = AsyncMock(return_value=1)
-    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock()
+    bot._enqueue_hindsight_session_finalize_before_delete = AsyncMock(return_value=10)
+    bot._enqueue_hindsight_and_delete_oldest_sessions_for_limit = AsyncMock()
     bot.reset = AsyncMock()
     return bot
 
@@ -221,7 +226,7 @@ async def test_group_session_delete_uses_group_conversation_key():
 
     await bot.handle_session_callback(update, _make_context())
 
-    bot._finalize_hindsight_session_before_delete.assert_awaited_once_with(-100123, "session-2")
+    bot._enqueue_hindsight_session_finalize_before_delete.assert_awaited_once_with(-100123, "session-2")
     bot.db.delete_session.assert_called_once_with(
         -100123,
         "session-2",
@@ -236,33 +241,33 @@ async def test_group_session_delete_uses_group_conversation_key():
 
 
 @pytest.mark.asyncio
-async def test_group_session_delete_waits_for_hindsight_before_db_delete():
+async def test_group_session_delete_enqueues_hindsight_before_db_delete():
     order = []
     bot = _make_bot()
-    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=lambda *_: order.append("finalize") or 1)
+    bot._enqueue_hindsight_session_finalize_before_delete = AsyncMock(side_effect=lambda *_: order.append("enqueue") or 10)
     bot.db.delete_session.side_effect = lambda *_args, **_kwargs: order.append("delete")
     update = _group_update("session:delete:session-2")
 
     await bot.handle_session_callback(update, _make_context())
 
-    assert order == ["finalize", "delete"]
+    assert order == ["enqueue", "delete"]
 
 
 @pytest.mark.asyncio
-async def test_group_session_delete_keeps_session_when_hindsight_finalize_fails():
+async def test_group_session_delete_keeps_session_when_hindsight_enqueue_fails():
     bot = _make_bot()
-    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=RuntimeError("retain failed"))
+    bot._enqueue_hindsight_session_finalize_before_delete = AsyncMock(side_effect=RuntimeError("enqueue failed"))
     update = _group_update("session:delete:session-2")
 
     await bot.handle_session_callback(update, _make_context())
 
     bot.db.delete_session.assert_not_called()
     update.callback_query.edit_message_text.assert_awaited_once()
-    assert "retain failed" in update.callback_query.edit_message_text.await_args.kwargs["text"]
+    assert "enqueue failed" in update.callback_query.edit_message_text.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
-async def test_finalize_hindsight_session_before_delete_uses_snapshot_and_sync_store():
+async def test_enqueue_hindsight_session_finalize_before_delete_persists_snapshot():
     bot = _make_bot()
     messages = [
         {"role": "system", "content": "system prompt"},
@@ -277,57 +282,99 @@ async def test_finalize_hindsight_session_before_delete_uses_snapshot_and_sync_s
     )
     bot.openai.is_hindsight_enabled.return_value = True
     bot.openai.config["hindsight_auto_save"] = True
-    bot.openai.finalize_hindsight_session_memory = AsyncMock(return_value=2)
 
-    saved_count = await ChatGPTTelegramBot._finalize_hindsight_session_before_delete(
+    job_id = await ChatGPTTelegramBot._enqueue_hindsight_session_finalize_before_delete(
         bot,
         -100123,
         "session-2",
     )
 
-    assert saved_count == 2
-    bot.openai.finalize_hindsight_session_memory.assert_awaited_once_with(
-        -100123,
-        "session-2",
-        messages=messages,
-        raise_on_error=True,
-        async_store=False,
-    )
+    assert job_id == 10
+    bot.db.create_hindsight_finalize_job.assert_called_once_with(-100123, "session-2", messages=messages)
+    bot.openai.finalize_hindsight_session_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_finalize_and_delete_oldest_sessions_waits_before_delete():
+async def test_enqueue_and_delete_oldest_sessions_waits_for_snapshot_before_delete():
     order = []
     bot = _make_bot()
     bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1", "old-2"]
-    bot._finalize_hindsight_session_before_delete = AsyncMock(
-        side_effect=lambda _user_id, session_id: order.append(f"finalize:{session_id}") or 1
-    )
+    bot.db.create_hindsight_finalize_jobs_for_sessions.side_effect = lambda *_args: order.append("enqueue") or [10, 11]
     bot.db.delete_sessions_by_ids.side_effect = lambda *_args: order.append("delete") or True
 
-    await ChatGPTTelegramBot._finalize_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
+    await ChatGPTTelegramBot._enqueue_hindsight_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
 
-    assert order == ["finalize:old-1", "finalize:old-2", "delete"]
+    assert order == ["enqueue", "delete"]
+    bot.db.create_hindsight_finalize_jobs_for_sessions.assert_called_once_with(-100123, ["old-1", "old-2"])
     bot.db.delete_sessions_by_ids.assert_called_once_with(-100123, ["old-1", "old-2"])
 
 
 @pytest.mark.asyncio
-async def test_finalize_and_delete_oldest_sessions_keeps_sessions_when_finalize_fails():
+async def test_enqueue_and_delete_oldest_sessions_keeps_sessions_when_enqueue_fails():
     bot = _make_bot()
     bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1"]
-    bot._finalize_hindsight_session_before_delete = AsyncMock(side_effect=RuntimeError("retain failed"))
+    bot.db.create_hindsight_finalize_jobs_for_sessions.side_effect = RuntimeError("enqueue failed")
 
-    with pytest.raises(RuntimeError, match="retain failed"):
-        await ChatGPTTelegramBot._finalize_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
+    with pytest.raises(RuntimeError, match="enqueue failed"):
+        await ChatGPTTelegramBot._enqueue_hindsight_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
 
     bot.db.delete_sessions_by_ids.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_group_session_new_prunes_old_sessions_after_hindsight_finalize():
+async def test_process_pending_hindsight_finalize_jobs_marks_done_after_save():
+    bot = _make_bot()
+    messages = [{"role": "user", "content": "remember this"}]
+    bot.openai.is_hindsight_enabled.return_value = True
+    bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.finalize_hindsight_session_memory = AsyncMock(return_value=2)
+    bot.db.claim_hindsight_finalize_jobs.return_value = [{
+        "id": 11,
+        "user_id": -100123,
+        "session_id": "old-1",
+        "messages": messages,
+    }]
+
+    processed = await ChatGPTTelegramBot._process_pending_hindsight_finalize_jobs(bot, limit=5)
+
+    assert processed == 1
+    bot.openai.finalize_hindsight_session_memory.assert_awaited_once_with(
+        -100123,
+        "old-1",
+        messages=messages,
+        raise_on_error=True,
+        async_store=False,
+    )
+    bot.db.mark_hindsight_finalize_job_done.assert_called_once_with(11, 2)
+    bot.db.mark_hindsight_finalize_job_failed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_pending_hindsight_finalize_jobs_marks_failed_for_retry():
+    bot = _make_bot()
+    bot.openai.is_hindsight_enabled.return_value = True
+    bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.finalize_hindsight_session_memory = AsyncMock(side_effect=RuntimeError("retain failed"))
+    bot.db.claim_hindsight_finalize_jobs.return_value = [{
+        "id": 11,
+        "user_id": -100123,
+        "session_id": "old-1",
+        "messages": [{"role": "user", "content": "remember this"}],
+    }]
+
+    processed = await ChatGPTTelegramBot._process_pending_hindsight_finalize_jobs(bot, limit=5)
+
+    assert processed == 1
+    bot.db.mark_hindsight_finalize_job_done.assert_not_called()
+    bot.db.mark_hindsight_finalize_job_failed.assert_called_once()
+    assert bot.db.mark_hindsight_finalize_job_failed.call_args.args[:2] == (11, "retain failed")
+
+
+@pytest.mark.asyncio
+async def test_group_session_new_prunes_old_sessions_after_hindsight_enqueue():
     order = []
     bot = _make_bot()
-    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock(
+    bot._enqueue_hindsight_and_delete_oldest_sessions_for_limit = AsyncMock(
         side_effect=lambda *_: order.append("prune")
     )
     bot.db.create_session.side_effect = lambda **_kwargs: order.append("create") or "session-new"
@@ -337,7 +384,7 @@ async def test_group_session_new_prunes_old_sessions_after_hindsight_finalize():
     await bot.handle_session_callback(update, _make_context())
 
     assert order == ["prune", "create"]
-    bot._finalize_and_delete_oldest_sessions_for_limit.assert_awaited_once_with(-100123, 3)
+    bot._enqueue_hindsight_and_delete_oldest_sessions_for_limit.assert_awaited_once_with(-100123, 3)
     bot.db.create_session.assert_called_once_with(
         user_id=-100123,
         max_sessions=3,

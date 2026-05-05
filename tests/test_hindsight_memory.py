@@ -19,6 +19,7 @@ class DummyDB:
     def __init__(self):
         self.saved = []
         self.context = {"messages": [{"role": "system", "content": "system prompt"}]}
+        self.jobs = []
 
     def list_user_sessions(self, user_id, is_active=1):
         return [{
@@ -40,6 +41,10 @@ class DummyDB:
     def save_conversation_context(self, user_id, context, parse_mode, temperature, max_tokens_percent, session_id=None, openai_helper=None):
         self.context = context
         self.saved.append(context)
+
+    def create_hindsight_finalize_job(self, user_id, session_id, messages):
+        self.jobs.append((user_id, session_id, messages))
+        return len(self.jobs)
 
 
 class DummyPluginManager:
@@ -311,23 +316,16 @@ async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_hindsight_session_finalize_is_awaited_before_delete():
+async def test_hindsight_session_finalize_is_enqueued_before_delete():
     bot = object.__new__(ChatGPTTelegramBot)
     bot.db = DummyDB()
     bot.openai = SlowFinalizeOpenAI()
 
-    task = asyncio.create_task(bot._finalize_hindsight_session_before_delete(123, "session-1"))
+    job_id = await bot._enqueue_hindsight_session_finalize_before_delete(123, "session-1")
 
-    await asyncio.wait_for(bot.openai.started.wait(), timeout=1)
-    assert not task.done()
-    assert bot.openai.calls[0][0] == 123
-    assert bot.openai.calls[0][1] == "session-1"
-    assert bot.openai.calls[0][2] == bot.db.context["messages"]
-    assert bot.openai.calls[0][3] == {"raise_on_error": True, "async_store": False}
-    bot.openai.finish.set()
-    saved_count = await asyncio.wait_for(task, timeout=1)
-    assert saved_count == 1
-    await asyncio.wait_for(bot.openai.finished.wait(), timeout=1)
+    assert job_id == 1
+    assert bot.db.jobs == [(123, "session-1", bot.db.context["messages"])]
+    assert bot.openai.calls == []
 
 
 @pytest.mark.asyncio

@@ -97,6 +97,7 @@ def _make_db():
         get_conversation_context=MagicMock(return_value=({"messages": []}, "HTML", 0.1, 80, "session-1")),
         get_active_session_id=MagicMock(return_value="session-1"),
         get_session_details=MagicMock(return_value=None),
+        create_hindsight_finalize_job=MagicMock(return_value=1),
     )
 
 
@@ -104,6 +105,7 @@ def _make_openai():
     return SimpleNamespace(
         config={"temperature": 0.1},
         conversations={},
+        is_hindsight_enabled=MagicMock(return_value=False),
         get_current_model=MagicMock(return_value="gpt-test"),
         reset_chat_history=MagicMock(),
     )
@@ -129,8 +131,8 @@ def _make_bot(allowed_user_ids):
             "max_tokens_percent": 80,
         }
     })
-    bot._finalize_hindsight_session_before_delete = AsyncMock()
-    bot._finalize_and_delete_oldest_sessions_for_limit = AsyncMock()
+    bot._enqueue_hindsight_session_finalize_before_delete = AsyncMock()
+    bot._enqueue_hindsight_and_delete_oldest_sessions_for_limit = AsyncMock()
     return bot
 
 
