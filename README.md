@@ -249,13 +249,21 @@ Common current plugins include:
 | `youtube_transcript` | YouTube transcript compatibility path |
 | `hindsight_memory` | Manual Hindsight recall/list/stats tools |
 | `codeinterpreter` | Code execution/analysis helper |
-| `text_document_qa` | Local document Q&A |
+| `text_document_qa` | AnythingLLM-backed document Q&A with one workspace per Telegram chat |
 | `reminders` | Reminder management |
 
 Enable selected plugins:
 
 ```env
 PLUGINS=web_research,website_content,stable_diffusion,gtts_text_to_speech,hindsight_memory
+```
+
+For `text_document_qa`, configure AnythingLLM API access:
+
+```env
+ANYTHINGLLM_BASE_URL=http://anythingllm.example/api
+ANYTHINGLLM_API_KEY=your_anythingllm_api_key
+ANYTHINGLLM_WORKSPACE_PREFIX=telegram-chat
 ```
 
 ## Sessions And Chat Modes

@@ -1,82 +1,52 @@
-import logging
-import os
-import io
+from __future__ import annotations
+
+import asyncio
 import hashlib
 import json
+import logging
+import mimetypes
+import os
+import re
 import time
-from typing import Dict, List
-import faiss
-import numpy as np
-try:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-except ImportError:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-try:
-    from langchain_community.docstore.document import Document
-except ImportError:
-    from langchain.docstore.document import Document
+from pathlib import Path
+from typing import Any, Dict, List
+
+import httpx
+
 from .plugin import Plugin
-import asyncio
-from docling.document_converter import DocumentConverter
-import tempfile
-import concurrent.futures
-from ..utils import handle_direct_result
-import torch
-import gc
+
+logger = logging.getLogger(__name__)
+
+
+class AnythingLLMError(RuntimeError):
+    pass
+
 
 class TextDocumentQAPlugin(Plugin):
     """
-    Плагин для анализа текстовых документов с использованием векторного поиска
+    Document Q&A plugin backed by per-chat AnythingLLM workspaces.
     """
-    def __init__(self):
-        # Директории для хранения документов и векторных индексов
-        self.docs_dir = os.path.join(os.path.dirname(__file__), 'text_documents')
-        self.index_dir = os.path.join(os.path.dirname(__file__), 'vector_indices')
-        self.metadata_dir = os.path.join(os.path.dirname(__file__), 'document_metadata')
-        os.makedirs(self.docs_dir, exist_ok=True)
-        os.makedirs(self.index_dir, exist_ok=True)
+
+    def __init__(self, http_transport: httpx.AsyncBaseTransport | None = None):
+        self.metadata_dir = os.path.join(os.path.dirname(__file__), "document_metadata")
+        self.workspace_map_path = os.path.join(os.path.dirname(__file__), "anythingllm_workspaces.json")
         os.makedirs(self.metadata_dir, exist_ok=True)
-                
-        # Настройки для разделения текста
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-        )
-        
-        # Инициализация конвертера документов
-        self.document_converter = DocumentConverter()
-        
-        # ThreadPoolExecutor для CPU-bound операций
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        
-        # Загрузка существующих индексов
-        self.document_indices = {}
-        self._load_existing_indices()
-        
-        # Максимальный возраст документа (30 дней в секундах)
-        self.max_document_age = 30 * 24 * 60 * 60
-        # Время за которое нужно предупредить о удалении (1 день в секундах)
-        self.warning_before_delete = 24 * 60 * 60
-        
-        # Флаг для отслеживания запущенной задачи очистки
+
         self.cleanup_task = None
-        
-        # Словарь для хранения задач обработки
         self.processing_tasks = {}
-        self.config = {'enable_quoting': False}
+        self.config = {"enable_quoting": False}
+        self.max_document_age = 30 * 24 * 60 * 60
+        self.warning_before_delete = 24 * 60 * 60
+        self._http_transport = http_transport
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
         if storage_root:
-            self.docs_dir = os.path.join(storage_root, 'text_documents')
-            self.index_dir = os.path.join(storage_root, 'vector_indices')
-            self.metadata_dir = os.path.join(storage_root, 'document_metadata')
-            os.makedirs(self.docs_dir, exist_ok=True)
-            os.makedirs(self.index_dir, exist_ok=True)
+            os.makedirs(storage_root, exist_ok=True)
+            self.metadata_dir = os.path.join(storage_root, "document_metadata")
+            self.workspace_map_path = os.path.join(storage_root, "anythingllm_workspaces.json")
             os.makedirs(self.metadata_dir, exist_ok=True)
-            self.document_indices = {}
-            self._load_existing_indices()
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -88,7 +58,6 @@ class TextDocumentQAPlugin(Plugin):
         return "TextDocumentQA"
 
     def get_commands(self) -> List[Dict]:
-        """Возвращает список команд, которые поддерживает плагин"""
         return [
             {
                 "command": "list_documents",
@@ -96,7 +65,7 @@ class TextDocumentQAPlugin(Plugin):
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "list_documents"},
                 "plugin_name": "text_document_qa",
-                "add_to_menu": True
+                "add_to_menu": True,
             },
             {
                 "command": "ask_question",
@@ -104,7 +73,7 @@ class TextDocumentQAPlugin(Plugin):
                 "args": self.t("text_doc_args_ask"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "ask_question"},
-                "plugin_name": "text_document_qa"
+                "plugin_name": "text_document_qa",
             },
             {
                 "command": "delete_document",
@@ -112,557 +81,530 @@ class TextDocumentQAPlugin(Plugin):
                 "args": self.t("text_doc_args_delete"),
                 "handler": self.execute,
                 "handler_kwargs": {"function_name": "delete_document"},
-                "plugin_name": "text_document_qa"
-            }
+                "plugin_name": "text_document_qa",
+            },
         ]
 
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "upload_document",
-            "description": "Загрузить текстовый документ для анализа",
+            "description": "Загрузить документ в AnythingLLM workspace текущего чата",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_content": {
                         "type": "string",
-                        "description": "Содержимое текстового файла"
+                        "description": "Содержимое текстового файла",
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "Имя файла"
-                    }
+                        "description": "Имя файла",
+                    },
                 },
-                "required": ["file_content", "file_name"]
-            }
+                "required": ["file_content", "file_name"],
+            },
         }, {
             "name": "list_documents",
-            "description": "Показать список доступных документов",
+            "description": "Показать документы AnythingLLM workspace текущего чата",
             "parameters": {
                 "type": "object",
                 "properties": {},
-                "required": []
-            }
+                "required": [],
+            },
         }, {
             "name": "ask_question",
-            "description": "Задать вопрос по загруженному документу",
+            "description": "Задать вопрос по документам AnythingLLM workspace текущего чата",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "ID документа"
+                        "description": "ID документа из списка документов",
                     },
                     "query": {
                         "type": "string",
-                        "description": "Вопрос к документу"
-                    }
+                        "description": "Вопрос к документам",
+                    },
                 },
-                "required": ["document_id", "query"]
-            }
+                "required": ["document_id", "query"],
+            },
         }, {
             "name": "delete_document",
-            "description": "Удалить документ и его индекс",
+            "description": "Удалить документ из AnythingLLM workspace текущего чата",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "ID документа для удаления"
-                    }
+                        "description": "ID документа для удаления",
+                    },
                 },
-                "required": ["document_id"]
-            }
+                "required": ["document_id"],
+            },
         }]
 
-    def _load_existing_indices(self):
-        """Загрузка существующих векторных индексов"""
-        for filename in os.listdir(self.index_dir):
-            if filename.endswith('.index'):
-                doc_id = filename[:-6]  # удаляем .index
-                index_path = os.path.join(self.index_dir, filename)
-                try:
-                    index = faiss.read_index(index_path)
-                    self.document_indices[doc_id] = index
-                except Exception as e:
-                    logging.error(f"Ошибка загрузки индекса {filename}: {e}")
-
-    async def _create_document_index(self, text: str, doc_id: str):
-        """Создание векторного индекса для документа"""
+    async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         try:
-            # Разбиваем текст на чанки
-            docs = self.text_splitter.create_documents([text])
-            
-            # Получаем эмбеддинги для каждого чанка
-            embeddings_response = await self.openai_helper.client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=[doc.page_content for doc in docs],
-                extra_headers={ "X-Title": "tgBot" },
-            )
-            
-            embeddings = [item.embedding for item in embeddings_response.data]
-            
-            # Создаем FAISS индекс
-            dimension = len(embeddings[0])
-            index = faiss.IndexFlatL2(dimension)
-            index.add(np.array(embeddings))
-            
-            # Сохраняем индекс
-            index_path = os.path.join(self.index_dir, f"{doc_id}.index")
-            faiss.write_index(index, index_path)
-            
-            # Сохраняем текстовые чанки
-            chunks_path = os.path.join(self.docs_dir, f"{doc_id}.json")
-            with open(chunks_path, 'w', encoding='utf-8') as f:
-                json.dump([doc.page_content for doc in docs], f, ensure_ascii=False)
-            
-            self.document_indices[doc_id] = index
-            return index
-        except Exception as e:
-            logging.error(f"Ошибка при создании индекса: {str(e)}")
-            raise
+            chat_id = kwargs.get("chat_id")
 
-    async def initialize_async(self):
-        """Асинхронная инициализация плагина"""
-        if not self.cleanup_task:
-            self.cleanup_task = asyncio.create_task(self._cleanup_loop())
-            
+            if not chat_id:
+                return {"error": self.t("text_doc_generic_error", error="chat_id is required")}
+
+            if function_name == "list_documents":
+                documents = await self._get_user_documents(chat_id)
+                if not documents:
+                    return self._direct_text(self.t("text_doc_no_documents"))
+
+                docs_list = [self.t("text_doc_list_title")]
+                for doc in documents:
+                    docs_list.append(self.t("text_doc_list_item_name", file_name=doc["file_name"]))
+                    docs_list.append(self.t("text_doc_list_item_id", doc_id=doc["doc_id"]))
+                    docs_list.append(self.t("text_doc_list_item_created", created_at=doc["created_at"]))
+                    if doc.get("summary"):
+                        docs_list.append(self.t("text_doc_list_item_summary", summary=doc["summary"]))
+                    docs_list.append(self.t("text_doc_list_item_commands"))
+                    docs_list.append(self.t("text_doc_list_item_command_ask", doc_id=doc["doc_id"]))
+                    docs_list.append(self.t("text_doc_list_item_command_delete", doc_id=doc["doc_id"]))
+                docs_list.append(self.t("text_doc_list_footer"))
+
+                return self._direct_text("\n".join(docs_list))
+
+            if function_name == "upload_document":
+                error = self._configuration_error()
+                if error:
+                    return {"error": error}
+
+                file_content = kwargs.get("file_content")
+                file_name = kwargs.get("file_name")
+                if not file_content:
+                    return {"error": self.t("text_doc_file_content_missing")}
+                if not file_name:
+                    return {"error": self.t("text_doc_generic_error", error="file_name is required")}
+
+                temp_id = hashlib.md5(str(time.time()).encode()).hexdigest()
+                processing_task = asyncio.create_task(
+                    self._process_document(
+                        file_content=file_content,
+                        file_name=file_name,
+                        temp_id=temp_id,
+                        chat_id=chat_id,
+                        update=kwargs.get("update"),
+                    )
+                )
+                self.processing_tasks[temp_id] = processing_task
+
+                return self._direct_text(
+                    self.t("text_doc_processing_started", file_name=file_name, temp_id=temp_id)
+                )
+
+            if function_name == "ask_question":
+                error = self._configuration_error()
+                if error:
+                    return {"error": error}
+
+                doc_id = kwargs.get("document_id")
+                query = kwargs.get("query")
+                if not doc_id or not query:
+                    return {"error": self.t("text_doc_generic_error", error="document_id and query are required")}
+
+                metadata = await self._get_document_metadata(doc_id, chat_id)
+                if not metadata:
+                    return {"error": self.t("text_doc_not_found")}
+
+                await self._update_last_access(doc_id)
+                workspace_slug = metadata["workspace_slug"]
+                response = await self._chat(workspace_slug, chat_id, self._strip_document_id(query, doc_id))
+                return self._direct_text(response)
+
+            if function_name == "delete_document":
+                error = self._configuration_error()
+                if error:
+                    return {"error": error}
+
+                doc_id = kwargs.get("document_id")
+                if not doc_id:
+                    return {"error": self.t("text_doc_generic_error", error="document_id is required")}
+
+                metadata = await self._get_document_metadata(doc_id, chat_id)
+                if not metadata:
+                    return {"error": self.t("text_doc_not_found")}
+
+                await self._delete_document(doc_id, metadata)
+                return self._direct_text(self.t("text_doc_deleted"))
+
+            return {"error": self.t("text_doc_generic_error", error=f"Unknown function {function_name}")}
+        except Exception as e:
+            logger.exception("Error in TextDocumentQAPlugin")
+            return {"error": self.t("text_doc_generic_error", error=str(e))}
+
+    async def _process_document(self, file_content: Any, file_name: str, temp_id: str, chat_id: str, update=None):
+        try:
+            workspace_slug = await self._ensure_workspace(chat_id)
+            document = await self._upload_document(workspace_slug, file_name, self._coerce_file_content(file_content))
+            location = document.get("location")
+            if not location:
+                raise AnythingLLMError("AnythingLLM upload response did not include document location")
+
+            doc_id = self._document_id(chat_id, location)
+            current_time = time.time()
+            metadata = {
+                "backend": "anythingllm",
+                "file_name": document.get("title") or file_name,
+                "created_at": current_time,
+                "last_accessed": current_time,
+                "doc_id": doc_id,
+                "owner_chat_id": chat_id,
+                "summary": self._document_summary(document),
+                "workspace_slug": workspace_slug,
+                "anythingllm_location": location,
+                "warning_sent": False,
+            }
+            await self._save_document_metadata(doc_id, metadata)
+
+            response = self._direct_text(
+                self.t(
+                    "text_doc_processed_message",
+                    file_name=file_name,
+                    summary=metadata["summary"],
+                    doc_id=doc_id,
+                )
+            )
+            await self._send_direct_result(update, response)
+        except Exception as e:
+            logger.exception("Error processing document with AnythingLLM")
+            await self._send_direct_result(
+                update,
+                self._direct_text(self.t("text_doc_processing_error", file_name=file_name, error=str(e))),
+            )
+        finally:
+            self.processing_tasks.pop(temp_id, None)
+
+    def _configuration_error(self) -> str | None:
+        missing = []
+        if not self._base_url():
+            missing.append("ANYTHINGLLM_BASE_URL")
+        if not self._api_key():
+            missing.append("ANYTHINGLLM_API_KEY")
+        if missing:
+            return f"Missing AnythingLLM configuration: {', '.join(missing)}"
+        return None
+
+    def _base_url(self) -> str:
+        return os.getenv("ANYTHINGLLM_BASE_URL", "").rstrip("/")
+
+    def _api_key(self) -> str:
+        return os.getenv("ANYTHINGLLM_API_KEY", "")
+
+    def _timeout(self) -> float:
+        return float(os.getenv("ANYTHINGLLM_TIMEOUT", "120"))
+
+    def _chat_mode(self) -> str:
+        return os.getenv("ANYTHINGLLM_CHAT_MODE", "query")
+
+    def _top_n(self) -> int:
+        return int(os.getenv("ANYTHINGLLM_TOP_N", "6"))
+
+    def _similarity_threshold(self) -> float:
+        return float(os.getenv("ANYTHINGLLM_SIMILARITY_THRESHOLD", "0.25"))
+
+    def _vector_search_mode(self) -> str:
+        return os.getenv("ANYTHINGLLM_VECTOR_SEARCH_MODE", "rerank")
+
+    def _workspace_prefix(self) -> str:
+        return os.getenv("ANYTHINGLLM_WORKSPACE_PREFIX", "telegram-chat")
+
+    def _workspace_name(self, chat_id: str) -> str:
+        return f"{self._workspace_prefix()}-{self._chat_hash(chat_id)}"
+
+    def _session_id(self, chat_id: str) -> str:
+        return f"{self._workspace_prefix()}-{self._chat_hash(chat_id)}"
+
+    def _chat_hash(self, chat_id: str) -> str:
+        return hashlib.sha256(str(chat_id).encode()).hexdigest()[:16]
+
+    def _document_id(self, chat_id: str, location: str) -> str:
+        return hashlib.md5(f"{chat_id}:{location}".encode()).hexdigest()
+
+    async def _request(self, method: str, path: str, **kwargs) -> Dict:
+        error = self._configuration_error()
+        if error:
+            raise AnythingLLMError(error)
+
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers["Authorization"] = f"Bearer {self._api_key()}"
+        async with httpx.AsyncClient(
+            base_url=self._base_url(),
+            timeout=self._timeout(),
+            transport=self._http_transport,
+        ) as client:
+            response = await client.request(method, path, headers=headers, **kwargs)
+
+        if response.status_code >= 400:
+            raise AnythingLLMError(
+                f"AnythingLLM {method} {path} failed with HTTP {response.status_code}: {response.text}"
+            )
+
+        if not response.content:
+            return {}
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise AnythingLLMError(f"AnythingLLM returned non-JSON response for {method} {path}") from exc
+        if isinstance(payload, dict) and payload.get("error"):
+            raise AnythingLLMError(str(payload["error"]))
+        return payload
+
+    async def _ensure_workspace(self, chat_id: str) -> str:
+        workspace_map = self._load_workspace_map()
+        cached_slug = workspace_map.get(str(chat_id))
+        if cached_slug and await self._workspace_exists(cached_slug):
+            return cached_slug
+
+        name = self._workspace_name(chat_id)
+        for workspace in await self._list_workspaces():
+            if workspace.get("name") == name:
+                slug = workspace["slug"]
+                workspace_map[str(chat_id)] = slug
+                self._save_workspace_map(workspace_map)
+                return slug
+
+        payload = {
+            "name": name,
+            "chatMode": self._chat_mode(),
+            "vectorSearchMode": self._vector_search_mode(),
+            "topN": self._top_n(),
+            "similarityThreshold": self._similarity_threshold(),
+        }
+        response = await self._request("POST", "/v1/workspace/new", json=payload)
+        workspace = response.get("workspace") or {}
+        slug = workspace.get("slug")
+        if not slug:
+            raise AnythingLLMError("AnythingLLM workspace creation response did not include slug")
+        workspace_map[str(chat_id)] = slug
+        self._save_workspace_map(workspace_map)
+        return slug
+
+    async def _workspace_exists(self, slug: str) -> bool:
+        try:
+            await self._request("GET", f"/v1/workspace/{slug}")
+            return True
+        except AnythingLLMError:
+            return False
+
+    async def _list_workspaces(self) -> List[Dict]:
+        response = await self._request("GET", "/v1/workspaces")
+        return response.get("workspaces") or []
+
+    async def _upload_document(self, workspace_slug: str, file_name: str, file_content: bytes) -> Dict:
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        files = {"file": (file_name, file_content, mime_type)}
+        data = {"addToWorkspaces": workspace_slug}
+        response = await self._request("POST", "/v1/document/upload", files=files, data=data)
+        documents = response.get("documents") or []
+        if not documents:
+            raise AnythingLLMError("AnythingLLM upload response did not include documents")
+        return documents[0]
+
+    async def _chat(self, workspace_slug: str, chat_id: str, query: str) -> str:
+        payload = {
+            "message": query,
+            "mode": self._chat_mode(),
+            "sessionId": self._session_id(chat_id),
+        }
+        response = await self._request("POST", f"/v1/workspace/{workspace_slug}/chat", json=payload)
+        if response.get("error"):
+            raise AnythingLLMError(str(response["error"]))
+        text_response = response.get("textResponse")
+        if not text_response:
+            raise AnythingLLMError("AnythingLLM chat response did not include textResponse")
+        return text_response
+
+    async def _delete_document(self, doc_id: str, metadata: Dict) -> None:
+        workspace_slug = metadata.get("workspace_slug")
+        location = metadata.get("anythingllm_location")
+        if workspace_slug and location:
+            await self._request(
+                "POST",
+                f"/v1/workspace/{workspace_slug}/update-embeddings",
+                json={"adds": [], "deletes": [location]},
+            )
+            await self._request("DELETE", "/v1/system/remove-documents", json={"names": [location]})
+        metadata_path = self._metadata_path(doc_id)
+        if metadata_path.exists():
+            metadata_path.unlink()
+
+    async def _get_user_documents(self, chat_id: str) -> List[Dict]:
+        documents = []
+        for metadata_path in self._metadata_files():
+            try:
+                metadata = self._load_json_file(metadata_path)
+            except Exception as exc:
+                logger.error("Failed to read document metadata %s: %s", metadata_path, exc)
+                continue
+
+            if metadata.get("backend") != "anythingllm":
+                continue
+            if metadata.get("owner_chat_id") != chat_id:
+                continue
+
+            created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(metadata["created_at"]))
+            documents.append({
+                "doc_id": metadata["doc_id"],
+                "file_name": metadata["file_name"],
+                "created_at": created_at,
+                "summary": metadata.get("summary", ""),
+            })
+
+        documents.sort(key=lambda x: x["created_at"], reverse=True)
+        return documents
+
+    async def _get_document_metadata(self, doc_id: str, chat_id: str) -> Dict | None:
+        metadata_path = self._metadata_path(doc_id)
+        if not metadata_path.exists():
+            return None
+        metadata = self._load_json_file(metadata_path)
+        if metadata.get("backend") != "anythingllm":
+            return None
+        if metadata.get("owner_chat_id") != chat_id:
+            return None
+        return metadata
+
+    async def _save_document_metadata(self, doc_id: str, metadata: Dict) -> None:
+        metadata_path = self._metadata_path(doc_id)
+        with metadata_path.open("w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False)
+
+    async def _update_last_access(self, doc_id: str):
+        try:
+            metadata_path = self._metadata_path(doc_id)
+            if not metadata_path.exists():
+                return
+            metadata = self._load_json_file(metadata_path)
+            metadata["last_accessed"] = time.time()
+            metadata["warning_sent"] = False
+            with metadata_path.open("w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False)
+        except Exception as e:
+            logger.error("Failed to update document access time: %s", e)
+
     async def _cleanup_loop(self):
-        """Бесконечный цикл очистки старых документов"""
         while True:
             try:
                 await self._cleanup_old_documents()
             except Exception as e:
-                logging.error(f"Ошибка при очистке старых документов: {e}")
-            # Проверяем раз в сутки
+                logger.error("Failed to cleanup old documents: %s", e)
             await asyncio.sleep(24 * 60 * 60)
 
-    async def _update_last_access(self, doc_id: str):
-        """Обновляет время последнего доступа к документу"""
-        try:
-            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
-            if os.path.exists(metadata_path):
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                
-                metadata['last_accessed'] = time.time()
-                # Сбрасываем флаг отправки предупреждения при новом обращении
-                metadata['warning_sent'] = False
-                
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump(metadata, f, ensure_ascii=False)
-        except Exception as e:
-            logging.error(f"Ошибка при обновлении времени доступа: {e}")
-
-    async def _send_deletion_warning(self, metadata: Dict, doc_id: str):
-        """Отправляет предупреждение пользователю о предстоящем удалении документа"""
-        try:
-            chat_id = metadata.get('owner_chat_id')
-            file_name = metadata.get('file_name')
-            
-            warning_message = {
-                "direct_result": {
-                    "kind": "text",
-                    "format": "markdown",
-                    "value": self.t(
-                        "text_doc_deletion_warning",
-                        file_name=file_name,
-                        doc_id=doc_id
-                    )
-                }
-            }
-            
-            # Создаем фиктивный update с chat_id для handle_direct_result
-            update = type('Update', (), {'effective_chat': type('Chat', (), {'id': chat_id})})()
-            await handle_direct_result(self.config, update, warning_message)
-            
-            # Отмечаем в метаданных, что предупреждение было отправлено
-            metadata['warning_sent'] = True
-            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, ensure_ascii=False)
-                
-        except Exception as e:
-            logging.error(f"Ошибка при отправке предупреждения о удалении: {e}")
-
     async def _cleanup_old_documents(self):
-        """Удаляет документы, к которым не обращались больше max_document_age"""
         current_time = time.time()
         deleted_count = 0
-
-        # Проверяем все метаданные документов
-        for filename in os.listdir(self.metadata_dir):
-            if not filename.endswith('.json'):
-                continue
-
-            doc_id = filename[:-5]  # удаляем .json
-            metadata_path = os.path.join(self.metadata_dir, filename)
-
+        for metadata_path in self._metadata_files():
+            doc_id = metadata_path.stem
             try:
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-
-                # Проверяем время последнего доступа
-                last_accessed = metadata.get('last_accessed', metadata['created_at'])
+                metadata = self._load_json_file(metadata_path)
+                if metadata.get("backend") != "anythingllm":
+                    continue
+                last_accessed = metadata.get("last_accessed", metadata["created_at"])
                 time_since_last_access = current_time - last_accessed
-                
-                # Если до удаления остался один день и предупреждение еще не отправлено
-                if (time_since_last_access > (self.max_document_age - self.warning_before_delete) and 
-                    time_since_last_access <= self.max_document_age and 
-                    not metadata.get('warning_sent', False)):
-                    await self._send_deletion_warning(metadata, doc_id)
-                
-                # Если прошло больше max_document_age, удаляем документ
-                elif time_since_last_access > self.max_document_age:
-                    # Удаляем все файлы, связанные с документом
-                    await self._delete_document_files(doc_id)
-                    deleted_count += 1
 
+                if (
+                    time_since_last_access > (self.max_document_age - self.warning_before_delete)
+                    and time_since_last_access <= self.max_document_age
+                    and not metadata.get("warning_sent", False)
+                ):
+                    await self._send_deletion_warning(metadata, doc_id)
+                elif time_since_last_access > self.max_document_age:
+                    await self._delete_document(doc_id, metadata)
+                    deleted_count += 1
             except Exception as e:
-                logging.error(f"Ошибка при проверке документа {doc_id}: {e}")
+                logger.error("Failed to cleanup document %s: %s", doc_id, e)
 
         if deleted_count > 0:
-            logging.info(f"Удалено {deleted_count} устаревших документов")
+            logger.info("Deleted %s expired AnythingLLM documents", deleted_count)
 
-    async def _delete_document_files(self, doc_id: str):
-        """Удаляет все файлы, связанные с документом"""
-        # Удаляем файлы
-        files_to_delete = [
-            os.path.join(self.index_dir, f"{doc_id}.index"),
-            os.path.join(self.docs_dir, f"{doc_id}.json"),
-            os.path.join(self.metadata_dir, f"{doc_id}.json")
-        ]
-
-        for file_path in files_to_delete:
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    logging.error(f"Ошибка при удалении файла {file_path}: {e}")
-
-        # Удаляем из памяти
-        self.document_indices.pop(doc_id, None)
-
-    async def _process_file(self, file_content: bytes, file_name: str) -> str:
-        """Обработка файла и извлечение текста"""
-        loop = asyncio.get_event_loop()
-        
-        # Создаем временный файл
-        with tempfile.NamedTemporaryFile(suffix=f".{file_name.split('.')[-1]}", delete=False) as temp_file:
-            temp_file.write(file_content)
-            temp_file.flush()
-            temp_file_path = temp_file.name
-
+    async def _send_deletion_warning(self, metadata: Dict, doc_id: str):
         try:
-            # Для .txt файлов используем прямое чтение
-            if file_name.lower().endswith('.txt'):
-                try:
-                    with open(temp_file_path, 'r', encoding='utf-8') as f:
-                        text_content = f.read()
-                except UnicodeDecodeError:
-                    with open(temp_file_path, 'r', encoding='windows-1251') as f:
-                        text_content = f.read()
-            else:
-                # Запускаем конвертацию в отдельном потоке
-                def convert_file():
-                    result = self.document_converter.convert(temp_file_path)
-                    return result.document.export_to_markdown()
-                
-                # Выполняем CPU-bound операцию в thread pool
-                text_content = await loop.run_in_executor(self.executor, convert_file)
-
-            return text_content
-
-        except Exception as e:
-            raise Exception(f"Ошибка при обработке файла: {str(e)}")
-        finally:
-            # Удаляем временный файл
-            try:
-                os.remove(temp_file_path)
-            except Exception as e:
-                logging.error(f"Ошибка при удалении временного файла: {e}")
-
-    async def _check_document_access(self, doc_id: str, chat_id: str) -> bool:
-        """Проверяет, имеет ли пользователь доступ к документу"""
-        try:
-            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
-            if not os.path.exists(metadata_path):
-                return False
-                
-            with open(metadata_path, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            return metadata.get('owner_chat_id') == chat_id
-        except Exception as e:
-            logging.error(f"Ошибка при проверке доступа к документу: {e}")
-            return False
-
-    async def _get_user_documents(self, chat_id: str) -> List[Dict]:
-        """Получает список документов, доступных пользователю"""
-        documents = []
-        try:
-            logging.info(f"_get_user_documents вызван для chat_id: {chat_id}")
-            logging.info(f"Путь к директории метаданных: {self.metadata_dir}")
-            
-            if not os.path.exists(self.metadata_dir):
-                logging.error(f"Директория метаданных не существует: {self.metadata_dir}")
-                return []
-                
-            files = os.listdir(self.metadata_dir)
-            logging.info(f"Найдены файлы в директории: {files}")
-            
-            for filename in files:
-                if not filename.endswith('.json'):
-                    continue
-                    
-                metadata_path = os.path.join(self.metadata_dir, filename)
-                logging.info(f"Обрабатываем файл: {metadata_path}")
-                
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                    
-                logging.info(f"Метаданные файла {filename}: {metadata}")
-                logging.info(f"Сравниваем owner_chat_id: {metadata.get('owner_chat_id')} с chat_id: {chat_id}")
-                
-                if metadata.get('owner_chat_id') == chat_id:
-                    # Добавляем информацию о времени создания в человекочитаемом формате
-                    created_at = time.strftime('%Y-%m-%d %H:%M:%S', 
-                                             time.localtime(metadata['created_at']))
-                    documents.append({
-                        'doc_id': metadata['doc_id'],
-                        'file_name': metadata['file_name'],
-                        'created_at': created_at,
-                        'summary': metadata.get('summary', '')
-                    })
-            
-            # Сортируем по времени создания (новые первыми)
-            documents.sort(key=lambda x: x['created_at'], reverse=True)
-            return documents
-        except Exception as e:
-            logging.error(f"Ошибка при получении списка документов: {e}")
-            return []
-
-    async def execute(self, function_name: str, helper, **kwargs) -> Dict:
-        try:
-            logging.info(f"TextDocumentQAPlugin.execute вызван с function_name={function_name}")
-            logging.info(f"kwargs: {kwargs}")
-            
-            self.openai_helper = helper
-            chat_id = kwargs.get('chat_id')
-            logging.info(f"chat_id: {chat_id}")
-            
-            self.last_chat_id = chat_id  # Сохраняем chat_id для последующего использования
-            
-            # Запускаем задачу очистки при первом вызове execute
-            if hasattr(self, "initialize_async"):
-                await self.initialize_async()
-            
-            if function_name == "list_documents":
-                logging.info("Начинаем получение списка документов")
-                documents = await self._get_user_documents(chat_id)
-                logging.info(f"Получены документы: {documents}")
-                
-                if not documents:
-                    return {
-                        "direct_result": {
-                            "kind": "text",
-                            "format": "markdown",
-                            "value": self.t("text_doc_no_documents")
-                        }
-                    }
-                
-                # Формируем красивый список документов
-                docs_list = [self.t("text_doc_list_title")]
-                for doc in documents:
-                    docs_list.append(self.t("text_doc_list_item_name", file_name=doc['file_name']))
-                    docs_list.append(self.t("text_doc_list_item_id", doc_id=doc['doc_id']))
-                    docs_list.append(self.t("text_doc_list_item_created", created_at=doc['created_at']))
-                    if 'summary' in doc:
-                        docs_list.append(self.t("text_doc_list_item_summary", summary=doc['summary']))
-                    docs_list.append(self.t("text_doc_list_item_commands"))
-                    docs_list.append(self.t("text_doc_list_item_command_ask", doc_id=doc['doc_id']))
-                    docs_list.append(self.t("text_doc_list_item_command_delete", doc_id=doc['doc_id']))
-                
-                docs_list.append(self.t("text_doc_list_footer"))
-                
-                return {
-                    "direct_result": {
-                        "kind": "text",
-                        "format": "markdown",
-                        "value": "\n".join(docs_list)
-                    }
-                }
-                
-            elif function_name == "upload_document":
-                file_content = kwargs.get('file_content')
-                file_name = kwargs.get('file_name')
-                
-                if not file_content:
-                    return {"error": self.t("text_doc_file_content_missing")}
-
-                # Создаем временный ID для отслеживания прогресса
-                temp_id = hashlib.md5(str(time.time()).encode()).hexdigest()
-
-                # Запускаем асинхронную обработку
-                processing_task = asyncio.create_task(self._process_document(file_content, file_name, temp_id, kwargs.get('chat_id'), kwargs.get('update')))
-                self.processing_tasks[temp_id] = processing_task
-
-                return {
-                    "direct_result": {
-                        "kind": "text",
-                        "format": "markdown",
-                        "value": self.t(
-                            "text_doc_processing_started",
-                            file_name=file_name,
-                            temp_id=temp_id
-                        )
-                    }
-                }
-
-            elif function_name == "ask_question":
-                doc_id = kwargs.get('document_id')
-                query = kwargs.get('query')
-
-                if doc_id not in self.document_indices:
-                    return {"error": self.t("text_doc_not_found")}
-
-                # Проверяем права доступа
-                if not await self._check_document_access(doc_id, chat_id):
-                    return {"error": self.t("text_doc_access_denied")}
-
-                # Обновляем время последнего доступа
-                await self._update_last_access(doc_id)
-
-                # Получаем эмбеддинг для вопроса
-                query_embedding_response = await helper.client.embeddings.create(
-                    model="text-embedding-ada-002",
-                    input=query,
-                    extra_headers={ "X-Title": "tgBot" },
-                )
-                query_embedding = query_embedding_response.data[0].embedding
-
-                # Ищем похожие чанки
-                index = self.document_indices[doc_id]
-                k = 3  # количество ближайших чанков
-                D, I = index.search(np.array([query_embedding]), k)
-
-                # Загружаем текстовые чанки
-                chunks_path = os.path.join(self.docs_dir, f"{doc_id}.json")
-                with open(chunks_path, 'r', encoding='utf-8') as f:
-                    chunks = json.load(f)
-                logging.info(f"Найдены чанки: {chunks}")
-
-                # Собираем контекст из найденных чанков
-                context = "\n".join([chunks[i] for i in I[0]])
-
-                # Формируем промпт для GPT
-                prompt = f"""На основе следующего контекста ответь на вопрос.
-                Контекст:
-                {context}
-
-                Вопрос: {query}
-                """
-
-                # Получаем ответ от GPT
-                response, _ = await helper.get_chat_response(
-                    chat_id=chat_id,
-                    query=prompt
-                )
-
-                return {
-                    "direct_result": {
-                        "kind": "text",
-                        "format": "markdown",
-                        "value": response
-                    }
-                }
-
-            elif function_name == "delete_document":
-                doc_id = kwargs.get('document_id')
-                
-                if doc_id not in self.document_indices:
-                    return {"error": self.t("text_doc_not_found")}
-
-                # Проверяем права доступа
-                if not await self._check_document_access(doc_id, chat_id):
-                    return {"error": self.t("text_doc_access_denied")}
-
-                # Удаляем все файлы документа
-                await self._delete_document_files(doc_id)
-
-                return {
-                    "direct_result": {
-                        "kind": "text",
-                        "format": "markdown",
-                        "value": self.t("text_doc_deleted")
-                    }
-                }
-
-        except Exception as e:
-            logging.error(f"Ошибка в TextDocumentQAPlugin: {str(e)}")
-            return {"error": self.t("text_doc_generic_error", error=str(e))}
-
-    async def _process_document(self, file_content: bytes, file_name: str, temp_id: str, chat_id: str, update=None):
-        """Асинхронная обработка документа"""
-        try:
-            # Обрабатываем файл
-            text_content = await self._process_file(file_content, file_name)
-
-            # Создаем уникальный ID для документа
-            doc_id = hashlib.md5(chat_id.encode() + text_content.encode()).hexdigest()
-
-            # Создаем индекс
-            await self._create_document_index(text_content, doc_id)
-
-            # Генерируем саммари документа
-            summary_prompt = f"Создай краткое описание (не более 150-200 символов) для следующего текста:\n\n{text_content}"
-            summary_response, _ = await self.openai_helper.ask(
-                prompt=summary_prompt,
-                user_id=chat_id,
-                assistant_prompt="Ты - эксперт в области обработки текстовых документов. Ты умеешь создавать краткое, но полностью описывающее содержимое документа описание."
+            chat_id = metadata.get("owner_chat_id")
+            file_name = metadata.get("file_name")
+            warning_message = self._direct_text(
+                self.t("text_doc_deletion_warning", file_name=file_name, doc_id=doc_id)
             )
-
-            # Сохраняем метаданные документа
-            current_time = time.time()
-            metadata = {
-                'file_name': file_name,
-                'created_at': current_time,
-                'last_accessed': current_time,
-                'doc_id': doc_id,
-                'owner_chat_id': chat_id,
-                'summary': summary_response
-            }
-            metadata_path = os.path.join(self.metadata_dir, f"{doc_id}.json")
-            with open(metadata_path, 'w', encoding='utf-8') as f:
+            update = type("Update", (), {"effective_chat": type("Chat", (), {"id": chat_id})})()
+            from ..utils import handle_direct_result
+            await handle_direct_result(self.config, update, warning_message)
+            metadata["warning_sent"] = True
+            with self._metadata_path(doc_id).open("w", encoding="utf-8") as f:
                 json.dump(metadata, f, ensure_ascii=False)
-
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            # Отправляем сообщение о завершении обработки через chat_response
-            response = {
-                "direct_result": {
-                    "kind": "text",
-                    "format": "markdown",
-                    "value": self.t(
-                        "text_doc_processed_message",
-                        file_name=file_name,
-                        summary=summary_response,
-                        doc_id=doc_id
-                    )
-                }
-            }
-            await handle_direct_result(self.config, update, response)
-
         except Exception as e:
-            # В случае ошибки отправляем сообщение об ошибке
-            error_response = {
-                "direct_result": {
-                    "kind": "text",
-                    "format": "markdown",
-                    "value": self.t("text_doc_processing_error", file_name=file_name, error=str(e))
-                }
+            logger.error("Failed to send document deletion warning: %s", e)
+
+    def _metadata_path(self, doc_id: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{32}", doc_id):
+            return Path(self.metadata_dir) / "__invalid__.json"
+        return Path(self.metadata_dir) / f"{doc_id}.json"
+
+    def _metadata_files(self) -> List[Path]:
+        metadata_dir = Path(self.metadata_dir)
+        if not metadata_dir.exists():
+            return []
+        return [path for path in metadata_dir.iterdir() if path.suffix == ".json"]
+
+    def _load_workspace_map(self) -> Dict[str, str]:
+        path = Path(self.workspace_map_path)
+        if not path.exists():
+            return {}
+        try:
+            data = self._load_json_file(path)
+        except Exception as exc:
+            logger.error("Failed to read AnythingLLM workspace map: %s", exc)
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_workspace_map(self, workspace_map: Dict[str, str]) -> None:
+        with Path(self.workspace_map_path).open("w", encoding="utf-8") as f:
+            json.dump(workspace_map, f, ensure_ascii=False)
+
+    def _load_json_file(self, path: Path) -> Dict:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _coerce_file_content(self, file_content: Any) -> bytes:
+        if isinstance(file_content, bytes):
+            return file_content
+        if isinstance(file_content, bytearray):
+            return bytes(file_content)
+        if isinstance(file_content, str):
+            return file_content.encode("utf-8")
+        raise AnythingLLMError(f"Unsupported file_content type: {type(file_content).__name__}")
+
+    def _document_summary(self, document: Dict) -> str:
+        details = []
+        if document.get("wordCount") is not None:
+            details.append(f"{document['wordCount']} words")
+        if document.get("token_count_estimate") is not None:
+            details.append(f"{document['token_count_estimate']} estimated tokens")
+        if document.get("description") and document["description"] != "Unknown":
+            details.append(str(document["description"]))
+        return ", ".join(details) or "Stored in AnythingLLM"
+
+    def _strip_document_id(self, query: str, doc_id: str) -> str:
+        query = query.strip()
+        if query.startswith(doc_id):
+            return query[len(doc_id):].strip()
+        return query
+
+    async def _send_direct_result(self, update, response: Dict) -> None:
+        if update is None:
+            logger.info("Document processing result: %s", response)
+            return
+        from ..utils import handle_direct_result
+        await handle_direct_result(self.config, update, response)
+
+    def _direct_text(self, value: str) -> Dict:
+        return {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "value": value,
             }
-            await handle_direct_result(self.config, update, error_response)
-        finally:
-            # Удаляем задачу из словаря
-            self.processing_tasks.pop(temp_id, None) 
+        }

@@ -21,19 +21,13 @@ dependencies:
   - youtube-transcript-api=0.6.2
   - readability-lxml=0.8.1
   - lxml-html-clean=0.1.1
-  - docling
   #- transformers
   - accelerate
-  - faiss-gpu
-  - langchain
-  - langchain-community
-  - langchain-text-splitters
   #- pytorch
   - pip
   - pip:
       - wolframalpha
       - duckduckgo_search
-      - docling
       #- torch
       - pyswisseph
       - openai-whisper
