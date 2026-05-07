@@ -54,6 +54,7 @@ class FakeMessage:
         self.message_thread_id = None
         self.reply_to_message = reply_to_message
         self.reply_text = AsyncMock(return_value=SimpleNamespace(message_id=200))
+        self.reply_document = AsyncMock(return_value=SimpleNamespace(message_id=201))
 
 
 class FakeUpdate:
@@ -120,3 +121,61 @@ async def test_handle_direct_result_text_branch_still_replies_with_markdown():
         parse_mode=constants.ParseMode.MARKDOWN,
     )
     assert sent_messages == [message.reply_text.return_value]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_final_sends_text_and_multiple_artifacts(tmp_path):
+    first_artifact = tmp_path / "one.pptx"
+    second_artifact = tmp_path / "two.xlsx"
+    first_artifact.write_bytes(b"one")
+    second_artifact.write_bytes(b"two")
+    message = FakeMessage()
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "summary",
+                "artifacts": [
+                    {"kind": "file", "format": "path", "value": str(first_artifact)},
+                    {"kind": "file", "format": "path", "value": str(second_artifact)},
+                ],
+            }
+        },
+    )
+
+    message.reply_text.assert_awaited_once()
+    assert message.reply_text.await_args.kwargs["text"] == "summary"
+    assert message.reply_document.await_count == 2
+    assert sent_messages == [
+        message.reply_text.return_value,
+        message.reply_document.return_value,
+        message.reply_document.return_value,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_final_long_text_goes_as_html_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    message = FakeMessage()
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "x" * 4097,
+                "artifacts": [],
+            }
+        },
+    )
+
+    message.reply_text.assert_not_called()
+    message.reply_document.assert_awaited_once()
+    assert message.reply_document.await_args.kwargs["filename"].endswith(".html")
+    assert sent_messages == [message.reply_document.return_value]

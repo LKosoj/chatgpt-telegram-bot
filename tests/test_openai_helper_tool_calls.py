@@ -548,6 +548,48 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
 
 
 @pytest.mark.asyncio
+async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
+    responses = {
+        "skills.publish_result": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "ready",
+                "artifacts": [
+                    {
+                        "kind": "file",
+                        "format": "path",
+                        "value": "/tmp/silver_analysis.pptx",
+                    }
+                ],
+                "defer": False,
+            },
+        },
+    }
+    helper = _make_helper(
+        DummyPluginManager(responses),
+        client=DummyClient([FakeResponse(content="should not be called")]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills.publish_result", "{}", id="call-artifact"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 0
+    assert set(tools_used) == {"skills.publish_result"}
+    assert out["direct_result"]["text"] == "ready"
+    assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/silver_analysis.pptx"
+
+
+@pytest.mark.asyncio
 async def test_legacy_tool_request_in_content_is_executed():
     responses = {
         "p1.do": {"result": "ok1"},

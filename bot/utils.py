@@ -609,7 +609,7 @@ async def handle_direct_result(config, update: Update, response: any):
     result = response['direct_result']
     kind = result['kind']
     result_format = result.get('format')
-    value = result['value']
+    value = result.get('value')
     add_value = result.get('add_value', None)
     logging.info(f"Handling direct result - kind: {kind}, format: {result_format}, value: {value}, add_value: {str(add_value)[:200]}")
 
@@ -623,6 +623,29 @@ async def handle_direct_result(config, update: Update, response: any):
         'reply_to_message_id': get_reply_to_message_id(config, update),
     }
     sent_messages = []
+
+    if kind == 'final':
+        text = str(result.get('text') or "").strip()
+        if text:
+            text_result = {
+                "direct_result": {
+                    "kind": "text",
+                    "format": result.get("text_format", "markdown"),
+                    "value": text,
+                    "force_html_file": True,
+                }
+            }
+            text_messages = await handle_direct_result(config, update, text_result)
+            if text_messages:
+                sent_messages.extend(text_messages)
+
+        for artifact in result.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact})
+            if artifact_messages:
+                sent_messages.extend(artifact_messages)
+        return sent_messages
 
     if kind == 'photo':
         if result_format == 'url':
@@ -676,11 +699,15 @@ async def handle_direct_result(config, update: Update, response: any):
         # Отправляем как файл если: 
         # - ответ больше 3х частей ИЛИ 
         # - (ответ больше одной части И содержит вставки кода)
-        if len(chunks) > 3 or (len(chunks) > 1 and '```' in text):
+        if len(chunks) > 3 or (len(chunks) > 1 and '```' in text) or (
+            result.get("force_html_file") and len(chunks) > 1
+        ):
             # Получаем имя текущей сессии
             session_name = text[:10]
             
-            await send_long_response_as_file(config, update, text, session_name)
+            sent_message = await send_long_response_as_file(config, update, text, session_name)
+            if sent_message:
+                sent_messages.append(sent_message)
         else:
             for i, chunk in enumerate(chunks):
                 # Only reply to original message for first chunk
@@ -861,7 +888,7 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     filename = f"{safe_session_name}_{timestamp}.html"
     
     # Отправляем файл пользователю
-    await update.effective_message.reply_document(
+    sent_message = await update.effective_message.reply_document(
         message_thread_id=get_thread_id(update),
         reply_to_message_id=get_reply_to_message_id(config, update),
         document=response_file,
@@ -875,3 +902,5 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
         os.remove(output_path)
     except Exception as e:
         logging.warning(f"Не удалось удалить временный файл {output_path}: {e}")
+
+    return sent_message

@@ -74,6 +74,8 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
         "skills.get_skill_status",
         "skills.update_skill_progress",
         "skills.run_skill_script",
+        "skills.publish_artifact",
+        "skills.publish_result",
     }
 
 
@@ -339,6 +341,133 @@ async def test_skill_script_execution_reports_missing_runtime(tmp_path, monkeypa
 
     assert result["success"] is False
     assert "node" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_returns_final_direct_result(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    artifact_path = tmp_path / "silver_analysis.pptx"
+    artifact_path.write_bytes(b"pptx-data")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_artifact",
+        helper=None,
+        skill_name="demo",
+        file_path=str(artifact_path),
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["file_path"] == str(artifact_path)
+    assert result["direct_result"] == {
+        "kind": "file",
+        "format": "path",
+        "value": str(artifact_path),
+        "defer": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_publish_result_returns_text_and_multiple_artifacts(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    first_artifact = tmp_path / "silver_analysis.pptx"
+    second_artifact = tmp_path / "silver_notes.docx"
+    first_artifact.write_bytes(b"pptx-data")
+    second_artifact.write_bytes(b"docx-data")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_result",
+        helper=None,
+        skill_name="demo",
+        text="Итоговая сводка",
+        artifacts=[
+            {"file_path": str(first_artifact)},
+            {"file_path": str(second_artifact)},
+        ],
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["direct_result"]["kind"] == "final"
+    assert result["direct_result"]["defer"] is False
+    assert result["direct_result"]["text"] == "Итоговая сводка"
+    assert [item["value"] for item in result["direct_result"]["artifacts"]] == [
+        str(first_artifact),
+        str(second_artifact),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_result_requires_text_or_artifacts(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_result",
+        helper=None,
+        skill_name="demo",
+        text="",
+        artifacts=[],
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "text, artifacts" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_publish_result_text_only_does_not_require_script_enablement(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=99)
+
+    result = await plugin.execute(
+        "publish_result",
+        helper=None,
+        skill_name="demo",
+        text="Короткий итог",
+        chat_id=10,
+        user_id=99,
+    )
+
+    assert result["success"] is True
+    assert result["direct_result"]["kind"] == "final"
+    assert result["direct_result"]["text"] == "Короткий итог"
+    assert result["direct_result"]["artifacts"] == []
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_requires_active_skill_and_admin(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    artifact_path = tmp_path / "silver_analysis.pptx"
+    artifact_path.write_bytes(b"pptx-data")
+
+    inactive = await plugin.execute(
+        "publish_artifact",
+        helper=None,
+        skill_name="demo",
+        file_path=str(artifact_path),
+        chat_id=10,
+        user_id=42,
+    )
+    assert inactive["success"] is False
+    assert "active" in inactive["error"]
+
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+    restricted = await plugin.execute(
+        "publish_artifact",
+        helper=None,
+        skill_name="demo",
+        file_path=str(artifact_path),
+        chat_id=10,
+        user_id=99,
+    )
+    assert restricted["success"] is False
+    assert "restricted" in restricted["error"]
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,26 @@ from .utils import is_direct_result, escape_markdown
 
 logger = logging.getLogger(__name__)
 
+
+def _direct_result_payload(response) -> dict | None:
+    if type(response) is not dict:
+        try:
+            response = json.loads(response)
+        except Exception:
+            return None
+    result = response.get("direct_result")
+    return result if isinstance(result, dict) else None
+
+
+def _should_defer_direct_result(response, defer_direct_results: bool) -> bool:
+    if not defer_direct_results:
+        return False
+    direct_result = _direct_result_payload(response)
+    if direct_result and direct_result.get("defer") is False:
+        return False
+    return True
+
+
 def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
     """
     Backwards-compatible parsing for legacy prompts that ask the model to output JSON like:
@@ -191,7 +211,7 @@ async def handle_function_call(
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             if is_direct_result(tool_response):
-                if defer_direct_results:
+                if _should_defer_direct_result(tool_response, defer_direct_results):
                     logger.info("Deferring direct result from tool %s to model reentry", tool_name)
                 elif direct_result is None:
                     direct_result = tool_response
