@@ -412,6 +412,27 @@ class OpenAIHelper:
                     return response, '0'
                 if plugins_used and not _response_has_message_text(response):
                     response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
+                elif not plugins_used and not _response_has_message_text(response):
+                    retry_response = await self._retry_empty_response_with_tools(
+                        chat_id,
+                        user_id,
+                        session_id,
+                        allowed_plugins,
+                    )
+                    if retry_response is not None:
+                        response, retry_plugins_used = await self.__handle_function_call(
+                            chat_id,
+                            retry_response,
+                            allowed_plugins=allowed_plugins,
+                            user_id=user_id,
+                            request_context=request_context,
+                        )
+                        plugins_used += retry_plugins_used
+                        if is_direct_result(response):
+                            logger.debug('Direct result returned after empty response retry')
+                            return response, '0'
+                        if retry_plugins_used and not _response_has_message_text(response):
+                            response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
 
             answer = ''
 
@@ -865,6 +886,51 @@ class OpenAIHelper:
         if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
             common_args['max_completion_tokens'] = max_tokens
         return await self.client.chat.completions.create(**common_args)
+
+    async def _retry_empty_response_with_tools(
+        self,
+        chat_id: int,
+        user_id: int | None,
+        session_id: str | None,
+        allowed_plugins,
+    ):
+        model_to_use = self.get_current_model(user_id)
+        if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
+            return None
+
+        tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
+        if not tools:
+            return None
+
+        logger.warning(
+            "Retrying empty model response with tools for chat_id=%s user_id=%s session_id=%s",
+            chat_id,
+            user_id,
+            session_id,
+        )
+        max_tokens = self.get_max_tokens(model_to_use, 80, chat_id)
+        messages = list(self._messages_with_hindsight_context(chat_id))
+        messages.append({
+            "role": "user",
+            "content": (
+                "Предыдущий ответ был пустым. Продолжите выполнение задачи: "
+                "если нужен инструмент, вызовите подходящий tool; если инструмент не нужен, "
+                "верните непустой ответ пользователю."
+            ),
+        })
+        return await self.client.chat.completions.create(
+            model=model_to_use,
+            messages=messages,
+            tools=tools,
+            tool_choice='auto',
+            temperature=self.config['temperature'],
+            n=1,
+            max_tokens=max_tokens,
+            presence_penalty=self.config['presence_penalty'],
+            frequency_penalty=self.config['frequency_penalty'],
+            stream=False,
+            extra_headers={ "X-Title": "tgBot" },
+        )
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """

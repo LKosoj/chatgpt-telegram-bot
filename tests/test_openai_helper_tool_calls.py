@@ -66,8 +66,9 @@ class DummyDB:
 
 
 class DummyPluginManager:
-    def __init__(self, responses):
+    def __init__(self, responses, specs=None):
         self.responses = responses
+        self.specs = specs or []
         self.calls = []
         self.call_contexts = []
         self.spec_calls = []
@@ -84,7 +85,7 @@ class DummyPluginManager:
 
     def get_functions_specs(self, helper, model_to_use, allowed_plugins):
         self.spec_calls.append(list(allowed_plugins or []))
-        return []
+        return self.specs
 
     def get_plugin_source_name(self, function_name):
         return function_name.split(".", 1)[0]
@@ -331,6 +332,41 @@ async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     assert pm.calls[0][0] == "skills.list_skills"
     assert "Инструменты уже выполнены" in client.create_kwargs[-1]["messages"][-1]["content"]
     assert "tools" not in client.create_kwargs[-1]
+
+
+@pytest.mark.asyncio
+async def test_empty_response_before_tool_calls_is_retried_with_tools():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"success": True, "skills": []}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(content=None),
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")], content=None),
+        FakeResponse(content="final answer"),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use skills",
+        user_id=1,
+    )
+
+    assert answer == "final answer"
+    assert total_tokens == 3
+    assert client.calls == 3
+    assert pm.calls[0][0] == "skills.list_skills"
+    assert "Предыдущий ответ был пустым" in client.create_kwargs[1]["messages"][-1]["content"]
+    assert client.create_kwargs[1]["tools"] == [tool_spec]
 
 
 @pytest.mark.asyncio
