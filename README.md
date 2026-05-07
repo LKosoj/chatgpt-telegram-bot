@@ -251,12 +251,38 @@ Common current plugins include:
 | `codeinterpreter` | Code execution/analysis helper |
 | `text_document_qa` | AnythingLLM-backed document Q&A with one workspace per Telegram chat |
 | `reminders` | Reminder management |
+| `skills` | Local `SKILL.md` instructions and optional skill script execution |
 
 Enable selected plugins:
 
 ```env
 PLUGINS=web_research,website_content,stable_diffusion,gtts_text_to_speech,hindsight_memory
 ```
+
+### Skills Plugin
+
+The `skills` plugin scans local skill directories for `SKILL.md` files and
+exposes them to the model through tools. The `skills_agent` chat mode is defined
+in `bot/chat_modes.yml`.
+
+```env
+PLUGINS=skills,agent_tools
+SKILLS_DIR=/path/to/skills
+```
+
+By default, Python scripts under `skills/<skill>/scripts/*.py` are listed but
+not executed. To allow script execution without a sandbox, enable it explicitly
+and restrict it to trusted Telegram user IDs:
+
+```env
+SKILLS_ALLOW_SCRIPTS=true
+SKILLS_SCRIPT_ADMIN_USER_IDS=123456789
+SKILLS_SCRIPT_TIMEOUT=120
+SKILLS_SCRIPT_OUTPUT_MAX_CHARS=12000
+```
+
+Skill scripts run with the same OS permissions and environment as the bot
+process. Use this only with trusted skills and trusted operators.
 
 For `text_document_qa`, configure AnythingLLM API access:
 

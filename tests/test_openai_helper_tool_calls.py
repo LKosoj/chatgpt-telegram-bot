@@ -225,6 +225,24 @@ def test_hindsight_memory_parser_preserves_full_fields():
     }]
 
 
+def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_all_modes_list=lambda: [
+            "name: assistant, welcome_message: simple assistant",
+            "name: skills_agent, welcome_message: complex agent",
+        ],
+    )
+
+    prompt = helper._build_auto_chat_mode_prompt("Подготовь план, выполни шаги и проверь результат")
+
+    assert "skills_agent" in prompt
+    assert "Если задача простая" in prompt
+    assert "Сложная задача" in prompt
+    assert "Не выбирай skills_agent по отдельным словам" in prompt
+    assert "Верни assistant" in prompt or "верни assistant" in prompt
+
+
 def test_resolve_allowed_plugins_returns_mode_tools():
     saved_context = {
         "messages": [

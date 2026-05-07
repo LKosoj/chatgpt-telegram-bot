@@ -30,3 +30,15 @@ assistant:
     registry.validate_tools(DummyPluginManager(available={"ok"}))
 
     assert any("missing_tool" in rec.message for rec in caplog.records)
+
+
+def test_skills_agent_mode_is_registered():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    mode = registry.get_mode_by_key("skills_agent")
+
+    assert mode is not None
+    assert mode["tools"] == ["All"]
+    assert "skills.list_skills" in mode["prompt_start"]
+    assert "skills.run_skill_script" in mode["prompt_start"]
