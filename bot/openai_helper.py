@@ -885,7 +885,7 @@ class OpenAIHelper:
         }
         if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
             common_args['max_completion_tokens'] = max_tokens
-        return await self.client.chat.completions.create(**common_args)
+        return await self._create_empty_response_retry_completion("after_tools", **common_args)
 
     async def _retry_empty_response_with_tools(
         self,
@@ -918,7 +918,8 @@ class OpenAIHelper:
                 "верните непустой ответ пользователю."
             ),
         })
-        return await self.client.chat.completions.create(
+        return await self._create_empty_response_retry_completion(
+            "with_tools",
             model=model_to_use,
             messages=messages,
             tools=tools,
@@ -931,6 +932,21 @@ class OpenAIHelper:
             stream=False,
             extra_headers={ "X-Title": "tgBot" },
         )
+
+    async def _create_empty_response_retry_completion(self, retry_kind: str, **kwargs):
+        logger.warning(
+            "Empty response retry request started kind=%s max_tokens=%s tools=%s",
+            retry_kind,
+            kwargs.get('max_tokens') or kwargs.get('max_completion_tokens'),
+            bool(kwargs.get('tools')),
+        )
+        response = await self.client.chat.completions.create(**kwargs)
+        logger.warning(
+            "Empty response retry request finished kind=%s choices=%s",
+            retry_kind,
+            len(getattr(response, "choices", []) or []),
+        )
+        return response
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """
