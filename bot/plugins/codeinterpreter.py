@@ -416,6 +416,13 @@ class CodeInterpreterPlugin(Plugin):
             logging.info(f"Устанавливаем отсутствующую библиотеку: {missing_package}")
             if await self.install_package(missing_package):
                 return await self._execute_code(code)
+        except SystemExit as e:
+            exit_code = e.code if e.code is not None else 0
+            logging.error("Выполняемый код вызвал sys.exit(%s)", exit_code)
+            return {
+                'error': f'Выполняемый код вызвал sys.exit({exit_code})',
+                'output': output_buffer.getvalue().strip(),
+            }
         except Exception as e:
             logging.exception(f"Неожиданная ошибка при выполнении кода: {e}")
             return {'error': str(e), 'output': f'Неожиданная ошибка: {str(e)}'}
@@ -672,7 +679,8 @@ class CodeInterpreterPlugin(Plugin):
             return None
 
         try:
-            if self._looks_like_python_code(code_prompt):
+            direct_code = self._looks_like_python_code(code_prompt)
+            if direct_code:
                 generated_code = self.extract_code_from_response(code_prompt)
             else:
                 # Генерируем код
@@ -687,11 +695,14 @@ class CodeInterpreterPlugin(Plugin):
                 result = await self.execute_code(generated_code)
 
                 # Проверяем, не является ли результат словарем с ошибкой
-                if result is not None and not self.is_error_result(result):
+                if result is not None and (direct_code or not self.is_error_result(result)):
                     # Код выполнен успешно
                     logging.info("Код успешно выполнен.")
                     
-                    explanation = await self.explain_code(generated_code)
+                    if direct_code:
+                        explanation = "Код был передан явно и выполнен без автогенерации."
+                    else:
+                        explanation = await self.explain_code(generated_code)
                     
                     report = self.generate_report(generated_code, explanation, result)
                     self.advanced_visualization(report, session_id)

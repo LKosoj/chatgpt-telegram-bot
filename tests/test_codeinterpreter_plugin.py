@@ -74,6 +74,27 @@ async def test_code_prompt_python_is_executed_without_regeneration(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_direct_python_code_returns_subprocess_errors_without_internal_debug(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    async def fail_debug_code(*_args, **_kwargs):
+        raise AssertionError("debug_code should not be called for direct Python code")
+
+    monkeypatch.setattr(plugin, "debug_code", fail_debug_code)
+    monkeypatch.setattr(plugin, "advanced_visualization", lambda *_args, **_kwargs: None)
+
+    result = await plugin.run_code(
+        None,
+        "print('STDERR: TypeError: Cannot create property options on string')",
+        "direct_error",
+        attempts=3,
+    )
+
+    assert "TypeError: Cannot create property options on string" in result
+
+
+@pytest.mark.asyncio
 async def test_execute_code_exposes_python_command_alias(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -86,6 +107,17 @@ async def test_execute_code_exposes_python_command_alias(tmp_path, monkeypatch):
     )
 
     assert result["__captured_print__"] == "alias-ok"
+
+
+@pytest.mark.asyncio
+async def test_execute_code_captures_system_exit_instead_of_crashing_bot(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = await plugin._execute_code("import sys\nprint('before exit')\nsys.exit(1)\n")
+
+    assert result["error"] == "Выполняемый код вызвал sys.exit(1)"
+    assert result["output"] == "before exit"
 
 
 @pytest.mark.asyncio

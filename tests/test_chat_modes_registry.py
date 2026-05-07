@@ -48,3 +48,5 @@ def test_skills_agent_mode_is_registered():
     assert "Если tool нужен, вызовите его сразу" in mode["prompt_start"]
     assert "Никогда не выводите служебные reasoning-теги" in mode["prompt_start"]
     assert "Никогда не выводите сырые результаты tools" in mode["prompt_start"]
+    assert "Не выдумывайте абсолютные пути" in mode["prompt_start"]
+    assert "не повторяйте тот же вызов" in mode["prompt_start"]

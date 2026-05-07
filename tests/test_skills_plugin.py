@@ -1,4 +1,5 @@
 import logging
+import shutil
 
 import pytest
 
@@ -169,6 +170,23 @@ async def test_list_skills_refreshes_by_default(tmp_path, monkeypatch):
     assert {skill["id"] for skill in listed["skills"]} == {"demo", "later"}
 
 
+def test_skill_scan_lists_nested_and_non_python_scripts(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    scripts_dir = tmp_path / "skills" / "demo" / "scripts"
+    tools_dir = scripts_dir / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "build.js").write_text("console.log('ok')\n", encoding="utf-8")
+    (scripts_dir / "run.sh").write_text("echo ok\n", encoding="utf-8")
+    (scripts_dir / ".hidden.py").write_text("print('hidden')\n", encoding="utf-8")
+    cache_dir = scripts_dir / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "skip.pyc").write_bytes(b"skip")
+
+    plugin.available_skills = plugin._scan_skills()
+
+    assert plugin.available_skills["demo"]["scripts"] == ["echo.py", "run.sh", "tools/build.js"]
+
+
 @pytest.mark.asyncio
 async def test_skill_state_persists_between_instances(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)
@@ -237,7 +255,90 @@ async def test_skill_script_execution_uses_allowlist_and_json_args(tmp_path, mon
 
     assert result["success"] is True
     assert result["returncode"] == 0
+    assert result["runtime"] == "python"
     assert '["one", "{\\"two\\": 2}"]' in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_supports_nested_python_scripts(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    tools_dir = tmp_path / "skills" / "demo" / "scripts" / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "nested.py").write_text(
+        (
+            "import json\n"
+            "import sys\n"
+            "print('nested=' + json.dumps(sys.argv[1:]))\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="tools/nested.py",
+        args_json='["one"]',
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["runtime"] == "python"
+    assert 'nested=["one"]' in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_supports_node_runtime(tmp_path, monkeypatch):
+    if shutil.which("node") is None:
+        pytest.skip("node runtime is not installed")
+
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    script_path = tmp_path / "skills" / "demo" / "scripts" / "echo.js"
+    script_path.write_text(
+        "console.log('node_args=' + JSON.stringify(process.argv.slice(2)))\n",
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="echo.js",
+        args_json='["one"]',
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["runtime"] == "node"
+    assert 'node_args=["one"]' in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_reports_missing_runtime(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    script_path = tmp_path / "skills" / "demo" / "scripts" / "echo.js"
+    script_path.write_text("console.log('ok')\n", encoding="utf-8")
+    plugin.available_skills = plugin._scan_skills()
+    monkeypatch.setattr("bot.plugins.skills.shutil.which", lambda _name: None)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="echo.js",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "node" in result["error"]
 
 
 @pytest.mark.asyncio

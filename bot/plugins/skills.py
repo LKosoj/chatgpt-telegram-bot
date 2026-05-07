@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -150,7 +151,7 @@ class SkillsPlugin(Plugin):
             {
                 "name": "run_skill_script",
                 "description": (
-                    "Run an allowed Python script from an active skill. Scripts must be enabled by "
+                    "Run an allowed script from an active skill scripts directory. Scripts must be enabled by "
                     "SKILLS_ALLOW_SCRIPTS and the caller must be allowed by SKILLS_SCRIPT_ADMIN_USER_IDS."
                 ),
                 "parameters": {
@@ -162,7 +163,7 @@ class SkillsPlugin(Plugin):
                         },
                         "script_name": {
                             "type": "string",
-                            "description": "Python script file name from the skill scripts directory.",
+                            "description": "Script path returned by the skill metadata, relative to the skill scripts directory.",
                         },
                         "args_json": {
                             "type": "string",
@@ -305,7 +306,19 @@ class SkillsPlugin(Plugin):
         scripts_dir = skill_path / "scripts"
         if not scripts_dir.exists() or not scripts_dir.is_dir():
             return []
-        return sorted(path.name for path in scripts_dir.glob("*.py") if path.is_file())
+        scripts = []
+        for path in scripts_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            relative_path = path.relative_to(scripts_dir)
+            if "__pycache__" in relative_path.parts:
+                continue
+            if any(part.startswith(".") for part in relative_path.parts):
+                continue
+            if path.suffix == ".pyc":
+                continue
+            scripts.append(relative_path.as_posix())
+        return sorted(scripts)
 
     def _list_skills(self, *, refresh: bool = False) -> Dict[str, Any]:
         if refresh:
@@ -477,18 +490,27 @@ class SkillsPlugin(Plugin):
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
 
+        command, runtime, runtime_error = self._script_command(script_path)
+        if runtime_error:
+            return {
+                "success": False,
+                "error": runtime_error,
+                "skill": skill_id,
+                "script": script_name,
+            }
+
         started = time.monotonic()
         logger.info(
-            "Running skill script skill=%s script=%s user_id=%s scope=%s",
+            "Running skill script skill=%s script=%s runtime=%s user_id=%s scope=%s",
             skill_id,
             script_name,
+            runtime,
             user_id,
             scope,
         )
         try:
             process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(script_path),
+                *command,
                 *argv,
                 cwd=str(skill_path),
                 stdout=asyncio.subprocess.PIPE,
@@ -513,9 +535,10 @@ class SkillsPlugin(Plugin):
         stdout = self._truncate(stdout_bytes.decode("utf-8", errors="replace"))
         stderr = self._truncate(stderr_bytes.decode("utf-8", errors="replace"))
         logger.info(
-            "Skill script finished skill=%s script=%s returncode=%s duration_ms=%s",
+            "Skill script finished skill=%s script=%s runtime=%s returncode=%s duration_ms=%s",
             skill_id,
             script_name,
+            runtime,
             process.returncode,
             duration_ms,
         )
@@ -523,11 +546,37 @@ class SkillsPlugin(Plugin):
             "success": process.returncode == 0,
             "skill": skill_id,
             "script": script_name,
+            "runtime": runtime,
             "returncode": process.returncode,
             "duration_ms": duration_ms,
             "stdout": stdout,
             "stderr": stderr,
         }
+
+    def _script_command(self, script_path: Path) -> tuple[List[str] | None, str | None, str | None]:
+        suffix = script_path.suffix.lower()
+        if suffix == ".py":
+            return [sys.executable, str(script_path)], "python", None
+        if suffix in {".js", ".mjs", ".cjs"}:
+            node_path = shutil.which("node")
+            if not node_path:
+                return None, "node", "Runtime 'node' is not available for this skill script"
+            return [node_path, str(script_path)], "node", None
+        if suffix == ".sh":
+            shell_path = shutil.which("bash") or shutil.which("sh")
+            if not shell_path:
+                return None, "shell", "Runtime 'bash' or 'sh' is not available for this skill script"
+            return [shell_path, str(script_path)], "shell", None
+        if os.access(script_path, os.X_OK):
+            return [str(script_path)], "executable", None
+        return (
+            None,
+            None,
+            (
+                f"Unsupported script runtime for '{script_path.name}'. "
+                "Supported scripts: .py, .js/.mjs/.cjs, .sh, or executable files."
+            ),
+        )
 
     def _resolve_skill_id(self, skill_name: str) -> str | None:
         normalized = (skill_name or "").strip()
