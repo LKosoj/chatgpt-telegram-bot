@@ -75,9 +75,10 @@ class MultiSessionDB(DummyDB):
 
 
 class DummyPluginManager:
-    def __init__(self, responses, specs=None):
+    def __init__(self, responses, specs=None, plugins=None):
         self.responses = responses
         self.specs = specs or []
+        self.plugins = plugins or {}
         self.calls = []
         self.call_contexts = []
         self.spec_calls = []
@@ -102,6 +103,9 @@ class DummyPluginManager:
     def has_plugin(self, plugin_name):
         return True
 
+    def get_plugin(self, plugin_name):
+        return self.plugins.get(plugin_name)
+
     def is_function_allowed(self, function_name, allowed_plugins):
         if allowed_plugins == ["All"]:
             return True
@@ -124,6 +128,14 @@ class DummyClient:
         if self.responses:
             return self.responses.pop(0)
         return FakeResponse(tool_calls=None, content="done")
+
+
+class FakeSkillsPlugin:
+    active_skills = {"scope": {"pptx": {}}}
+    available_skills = {"pptx": {"scripts": ["build.py"]}}
+
+    def _scope_key(self, _kwargs):
+        return "scope"
 
 
 class FakeToolCall:
@@ -885,3 +897,88 @@ async def test_legacy_tool_request_outside_allowlist_is_rejected():
         and "not allowed in the current chat mode" in message.get("content", "")
         for message in helper.conversations[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_routes_skill_scripts_away_from_codeinterpreter():
+    pm = DummyPluginManager({
+        "codeinterpreter.deep_analysis": {"result": "should not run"},
+    })
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="use run_skill_script")]))
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "codeinterpreter.deep_analysis",
+            json.dumps({
+                "code_prompt": (
+                    "import subprocess\n"
+                    "subprocess.run(['python3', '/srv/chatgpt-telegram-bot/bot/skills/pptx/scripts/build.py'])"
+                ),
+            }),
+            id="call-code",
+        ),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert set(tools_used) == {"codeinterpreter.deep_analysis"}
+    assert out.choices[0].message.content == "use run_skill_script"
+    assert any(
+        "skills.run_skill_script" in (message.get("content") or "")
+        and "codeinterpreter.deep_analysis" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_routes_active_skill_script_names_away_from_codeinterpreter():
+    pm = DummyPluginManager(
+        {"codeinterpreter.deep_analysis": {"result": "should not run"}},
+        plugins={"skills": FakeSkillsPlugin()},
+    )
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="use run_skill_script")]))
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "codeinterpreter.deep_analysis",
+            json.dumps({"code_prompt": "import subprocess\nsubprocess.run(['python3', 'build.py'])"}),
+            id="call-code",
+        ),
+    ])
+
+    await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert any(
+        "skills.run_skill_script" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_still_allows_general_codeinterpreter_calls():
+    pm = DummyPluginManager({
+        "codeinterpreter.deep_analysis": {"result": "42"},
+    })
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="calculated")]))
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "codeinterpreter.deep_analysis",
+            json.dumps({"code_prompt": "print(6 * 7)"}),
+            id="call-code",
+        ),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls and pm.calls[0][0] == "codeinterpreter.deep_analysis"
+    assert set(tools_used) == {"codeinterpreter.deep_analysis"}
+    assert out.choices[0].message.content == "calculated"

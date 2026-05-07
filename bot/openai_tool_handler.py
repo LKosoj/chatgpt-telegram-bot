@@ -3,12 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import openai
 
 from .utils import is_direct_result, escape_markdown
 
 logger = logging.getLogger(__name__)
+
+SKILL_SCRIPT_PATH_RE = re.compile(
+    r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\][^\s'\"`/\\]+[/\\]scripts[/\\][^\s'\"`]+",
+    re.IGNORECASE,
+)
+SCRIPT_EXECUTION_RE = re.compile(r"\b(?:subprocess|os\.system|exec|spawn|python3?|node|bash|sh)\b", re.IGNORECASE)
 
 
 def _direct_result_payload(response) -> dict | None:
@@ -59,6 +66,80 @@ def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
         return tool_name.strip(), json.dumps(args, ensure_ascii=False)
     except Exception:
         return None
+
+
+def _system_message(helper, chat_id: int) -> dict | None:
+    messages = getattr(helper, "conversations", {}).get(chat_id, [])
+    return next((msg for msg in messages if msg.get("role") == "system"), None)
+
+
+def _is_skills_agent_mode(helper, chat_id: int) -> bool:
+    system_message = _system_message(helper, chat_id)
+    if not system_message:
+        return False
+    if system_message.get("mode_key") == "skills_agent":
+        return True
+
+    mode_from_system_message = getattr(helper, "_mode_from_system_message", None)
+    registry = getattr(helper, "chat_modes_registry", None)
+    get_mode_by_key = getattr(registry, "get_mode_by_key", None)
+    if not callable(mode_from_system_message) or not callable(get_mode_by_key):
+        return False
+
+    current_mode = mode_from_system_message(system_message)
+    skills_mode = get_mode_by_key("skills_agent")
+    return bool(current_mode and skills_mode and current_mode == skills_mode)
+
+
+def _active_skill_script_names(helper, tool_args: dict) -> set[str]:
+    plugin_manager = getattr(helper, "plugin_manager", None)
+    get_plugin = getattr(plugin_manager, "get_plugin", None)
+    if not callable(get_plugin):
+        return set()
+
+    skills_plugin = get_plugin("skills")
+    if not skills_plugin:
+        return set()
+
+    scope_key = getattr(skills_plugin, "_scope_key", None)
+    if not callable(scope_key):
+        return set()
+
+    scope = scope_key(tool_args)
+    active_skills = getattr(skills_plugin, "active_skills", {}).get(scope, {})
+    available_skills = getattr(skills_plugin, "available_skills", {})
+    script_names = set()
+    for skill_id in active_skills:
+        for script_name in available_skills.get(skill_id, {}).get("scripts", []):
+            script_names.add(str(script_name))
+            script_names.add(str(script_name).rsplit("/", 1)[-1])
+    return {name for name in script_names if name}
+
+
+def _skill_script_routing_error(helper, chat_id: int, tool_name: str, tool_args: dict) -> str | None:
+    if tool_name != "codeinterpreter.deep_analysis" or not _is_skills_agent_mode(helper, chat_id):
+        return None
+
+    text = "\n".join(
+        str(tool_args.get(field) or "")
+        for field in ("code_prompt", "data_path")
+    )
+    if SKILL_SCRIPT_PATH_RE.search(text):
+        return (
+            "Routing denied in skills_agent: skill scripts must be executed through "
+            "skills.run_skill_script, not codeinterpreter.deep_analysis."
+        )
+
+    if not SCRIPT_EXECUTION_RE.search(text):
+        return None
+
+    for script_name in _active_skill_script_names(helper, tool_args):
+        if script_name in text:
+            return (
+                "Routing denied in skills_agent: active skill scripts must be executed through "
+                "skills.run_skill_script, not codeinterpreter.deep_analysis."
+            )
+    return None
 
 
 async def handle_function_call(
@@ -191,6 +272,18 @@ async def handle_function_call(
                 else:
                     args['chat_id'] = str(chat_id)
                     args['user_id'] = user_id if user_id is not None else chat_id
+                routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
+                if routing_error:
+                    logger.warning("%s Tool=%s", routing_error, tool_name)
+                    errors.append((
+                        tool_name,
+                        tool_call_id,
+                        json.dumps({
+                            "error": routing_error,
+                            "required_tool": "skills.run_skill_script",
+                        }, ensure_ascii=False),
+                    ))
+                    continue
                 arguments = json.dumps(args, ensure_ascii=False)
                 prepared.append((tool_name, arguments, tool_call_id))
             except json.JSONDecodeError:
