@@ -511,6 +511,42 @@ async def test_parallel_tool_calls_direct_result_short_circuit():
 
 
 @pytest.mark.asyncio
+async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
+    responses = {
+        "stable_diffusion.stable_diffusion": {
+            "direct_result": {
+                "kind": "photo",
+                "format": "path",
+                "value": "/tmp/image.png",
+                "add_value": "generated",
+            },
+        },
+    }
+    helper = _make_helper(
+        DummyPluginManager(responses),
+        client=DummyClient([FakeResponse(content="presentation ready")]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda content: {"defer_direct_results": content == "agent-mode"},
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 1
+    assert set(tools_used) == {"stable_diffusion.stable_diffusion"}
+    assert out.choices[0].message.content == "presentation ready"
+    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
+    assert tool_messages
+    assert "/tmp/image.png" in tool_messages[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_legacy_tool_request_in_content_is_executed():
     responses = {
         "p1.do": {"result": "ok1"},

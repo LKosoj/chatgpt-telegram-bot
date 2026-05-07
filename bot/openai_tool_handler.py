@@ -128,6 +128,9 @@ async def handle_function_call(
         )
         if structured_tool_history:
             add_assistant_tool_calls_to_history(chat_id, tool_calls)
+        defer_direct_results = bool(
+            getattr(helper, "_defer_direct_tool_results", lambda _chat_id: False)(chat_id)
+        )
 
         def add_tool_result(tool_name, tool_response, tool_call_id=None):
             if structured_tool_history:
@@ -185,7 +188,7 @@ async def handle_function_call(
             logger.info(f'Function {tool_name} response: {tool_response}')
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
-            if is_direct_result(tool_response) and direct_result is None:
+            if is_direct_result(tool_response) and direct_result is None and not defer_direct_results:
                 direct_result = tool_response
             if direct_result:
                 add_tool_result(

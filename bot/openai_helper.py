@@ -896,6 +896,14 @@ class OpenAIHelper:
             ],
         })
 
+    def _defer_direct_tool_results(self, chat_id: int) -> bool:
+        messages = self.conversations.get(chat_id, [])
+        system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
+        if not system_message:
+            return False
+        current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get("content", ""))
+        return bool(current_mode and current_mode.get("defer_direct_results"))
+
     def _add_function_call_to_history(
         self,
         chat_id: int,

@@ -40,6 +40,7 @@ def test_skills_agent_mode_is_registered():
 
     assert mode is not None
     assert mode["tools"] == ["All"]
+    assert mode["defer_direct_results"] is True
     assert "skills.list_skills" in mode["prompt_start"]
     assert "skills.run_skill_script" in mode["prompt_start"]
     assert "можно активировать несколько подходящих skills" in mode["prompt_start"]

@@ -1507,5 +1507,6 @@ skills_agent:
     10. Никогда не выводите сырые результаты tools вида "Function ... returned: ..."; используйте их только как внутренние данные для следующего действия или нормального ответа.
 
   parse_mode: HTML
+  defer_direct_results: true
   tools:
     - All
