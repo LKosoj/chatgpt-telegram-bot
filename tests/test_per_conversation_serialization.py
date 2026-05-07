@@ -164,6 +164,23 @@ async def _run_without_indicator(update, context, coroutine, chat_action, is_inl
 
 
 @pytest.mark.asyncio
+async def test_reentrant_process_buffer_does_not_clear_active_processing_flag():
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.buffer_lock = asyncio.Lock()
+    bot.message_buffer = {
+        1234: {
+            "messages": [],
+            "processing": True,
+            "timer": None,
+        }
+    }
+
+    await bot.process_buffer(1234)
+
+    assert bot.message_buffer[1234]["processing"] is True
+
+
+@pytest.mark.asyncio
 async def test_same_conversation_key_updates_are_serialized(monkeypatch):
     monkeypatch.setattr(telegram_bot, "wrap_with_indicator", _run_without_indicator)
     bot, db, openai = _make_bot()

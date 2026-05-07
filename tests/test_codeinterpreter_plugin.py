@@ -95,6 +95,17 @@ async def test_direct_python_code_returns_subprocess_errors_without_internal_deb
 
 
 @pytest.mark.asyncio
+async def test_execute_code_returns_syntax_error_without_keyerror(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = await plugin.execute_code("for")
+
+    assert "error" in result
+    assert "Syntax" in result["error"] or "syntax" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_execute_code_exposes_python_command_alias(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     monkeypatch.chdir(tmp_path)

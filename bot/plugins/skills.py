@@ -640,6 +640,8 @@ class SkillsPlugin(Plugin):
                 return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
 
         artifact_path = self._resolve_artifact_path(file_path)
+        if not self._is_allowed_artifact_path(skill_id, artifact_path):
+            return {"success": False, "error": "Artifact path is outside controlled skill storage"}
         if not artifact_path.exists():
             return {"success": False, "error": f"Artifact file '{file_path}' does not exist"}
         if not artifact_path.is_file():
@@ -687,7 +689,7 @@ class SkillsPlugin(Plugin):
                 return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
 
         final_text = "" if text is None else str(text).strip()
-        artifact_items, artifact_error = self._normalize_artifacts(artifacts)
+        artifact_items, artifact_error = self._normalize_artifacts(skill_id, artifacts)
         if artifact_error:
             return {"success": False, "error": artifact_error}
         if not final_text and not artifact_items:
@@ -715,7 +717,7 @@ class SkillsPlugin(Plugin):
             },
         }
 
-    def _normalize_artifacts(self, artifacts: Any) -> tuple[List[Dict[str, Any]], str | None]:
+    def _normalize_artifacts(self, skill_id: str, artifacts: Any) -> tuple[List[Dict[str, Any]], str | None]:
         if artifacts is None:
             return [], None
         if isinstance(artifacts, str):
@@ -741,6 +743,8 @@ class SkillsPlugin(Plugin):
                 return [], "Artifact file_path is required"
 
             artifact_path = self._resolve_artifact_path(str(file_path))
+            if not self._is_allowed_artifact_path(skill_id, artifact_path):
+                return [], "Artifact path is outside controlled skill storage"
             if not artifact_path.exists():
                 return [], f"Artifact file '{file_path}' does not exist"
             if not artifact_path.is_file():
@@ -787,6 +791,17 @@ class SkillsPlugin(Plugin):
         if not artifact_path.is_absolute():
             artifact_path = Path.cwd() / artifact_path
         return artifact_path.resolve()
+
+    def _is_allowed_artifact_path(self, skill_id: str, artifact_path: Path) -> bool:
+        roots = []
+        skill_info = self.available_skills.get(skill_id, {})
+        if skill_info.get("path"):
+            roots.append(Path(skill_info["path"]).resolve())
+        if getattr(self, "storage_root", None):
+            roots.append(Path(self.storage_root).resolve())
+        if self.skills_dir:
+            roots.append(self.skills_dir.resolve())
+        return any(self._is_relative_to(artifact_path, root) for root in roots)
 
     def _resolve_skill_id(self, skill_name: str) -> str | None:
         normalized = (skill_name or "").strip()

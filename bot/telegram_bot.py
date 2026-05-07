@@ -1642,6 +1642,7 @@ class ChatGPTTelegramBot:
         Process all messages in the buffer sequentially, combining messages from the same user
         within the buffer timeout period
         """
+        started_processing = False
         try:
             async with self.buffer_lock:
                 if chat_id not in self.message_buffer:
@@ -1652,6 +1653,7 @@ class ChatGPTTelegramBot:
                     return
                     
                 buffer_data['processing'] = True
+                started_processing = True
                 messages = buffer_data['messages']
                 buffer_data['messages'] = []
 
@@ -1703,9 +1705,10 @@ class ChatGPTTelegramBot:
             logger.error(f"Error in process_buffer: {e}")
         finally:
             # Reset processing flag
-            async with self.buffer_lock:
-                if chat_id in self.message_buffer:
-                    self.message_buffer[chat_id]['processing'] = False
+            if started_processing:
+                async with self.buffer_lock:
+                    if chat_id in self.message_buffer:
+                        self.message_buffer[chat_id]['processing'] = False
                     
     async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversation_key = get_conversation_key(update)
@@ -2377,7 +2380,7 @@ class ChatGPTTelegramBot:
             # Регистрируем обработчик callback_query если он есть
             if 'callback_query_handler' in cmd and 'callback_pattern' in cmd:
                 handler = CallbackQueryHandler(
-                    lambda update, context, cmd=cmd: cmd['callback_query_handler'](update, context),
+                    lambda update, context, cmd=cmd: self.handle_plugin_callback_query(update, context, cmd),
                     pattern=cmd['callback_pattern']
                 )
                 application.add_handler(handler)
@@ -2410,6 +2413,16 @@ class ChatGPTTelegramBot:
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
         application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
         application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
+
+    async def handle_plugin_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
+        query = update.callback_query
+        if not await is_allowed(self.config, update, context):
+            if query:
+                await query.edit_message_text(
+                    text=localized_text('access_denied_command', self.config['bot_language'])
+                )
+            return
+        return await cmd['callback_query_handler'](update, context)
 
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         """Обработчик команд плагинов"""
@@ -3071,7 +3084,11 @@ class ChatGPTTelegramBot:
             elif action == "switch":
                 # Переключаемся на выбранную сессию
                 session_id = data[2]
-                self.db.switch_active_session(conversation_key, session_id)
+                if not self.db.switch_active_session(conversation_key, session_id):
+                    await query.edit_message_text(
+                        localized_text('session_not_found', self.config['bot_language'])
+                    )
+                    return
                 # Загружаем контекст выбранной сессии
                 current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(conversation_key, session_id)
                 if current_context and 'messages' in current_context:

@@ -82,8 +82,23 @@ def test_function_allowlist_uses_plugin_ownership(tmp_path):
 
     assert pm.get_plugin_name_by_function_name("alpha.do") == "alpha"
     assert pm.is_function_allowed("alpha.do", ["alpha"]) is True
+    assert pm.get_plugin_name_by_function_name("alpha.missing") is None
+    assert pm.is_function_allowed("alpha.missing", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["All"]) is True
+
+
+def test_strict_validation_raises_on_duplicate_function_names(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "shared.do")
+    _write_plugin(plugin_dir / "beta.py", "BetaPlugin", "shared.do")
+    monkeypatch.setenv("PLUGIN_STRICT_VALIDATION", "true")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    with pytest.raises(ValueError, match="Duplicate function name"):
+        pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
 
 
 @pytest.mark.asyncio

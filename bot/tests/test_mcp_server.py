@@ -123,6 +123,26 @@ async def test_list_servers(mcp_plugin, mock_env_vars):
 
 
 @pytest.mark.asyncio
+async def test_list_servers_supports_stdio_config(mcp_plugin, mock_env_vars):
+    mcp_plugin.servers = {
+        "stdio_server": {
+            "transport": "stdio",
+            "command": "python",
+            "args": ["server.py"],
+            "description": "Stdio server",
+            "tools": [{"name": "stdio_tool"}],
+        }
+    }
+
+    result = await mcp_plugin.list_servers()
+
+    assert result["servers"][0]["transport"] == "stdio"
+    assert result["servers"][0]["base_url"] == ""
+    assert result["servers"][0]["command"] == "python"
+    assert result["servers"][0]["args"] == ["server.py"]
+
+
+@pytest.mark.asyncio
 async def test_remove_server(mcp_plugin, mock_env_vars):
     """Тест удаления сервера"""
     # Добавляем тестовый сервер
@@ -232,14 +252,32 @@ async def test_execute_filter_internal_params(mcp_plugin, mock_env_vars):
         function_name="test_server_test_function",
         helper=None,
         param1="value1",
-        user_id=123
+        user_id=123,
+        chat_id=456,
+        request_context=object(),
     )
     
     # Проверяем, что user_id был удален из параметров
     call_args = mcp_plugin.call_mcp_function.call_args[1]
     assert "user_id" not in call_args
+    assert "chat_id" not in call_args
+    assert "request_context" not in call_args
     assert "param1" in call_args
     assert call_args["param1"] == "value1"
+
+
+@pytest.mark.asyncio
+async def test_execute_list_servers_respects_allowed_users(mcp_plugin, mock_env_vars):
+    mcp_plugin.is_user_allowed = MagicMock(return_value=False)
+
+    result = await mcp_plugin.execute(
+        function_name="list_mcp_servers",
+        helper=None,
+        user_id=999,
+    )
+
+    assert "error" in result
+    mcp_plugin.is_user_allowed.assert_called_once_with(999)
 
 
 @pytest.mark.asyncio

@@ -153,14 +153,11 @@ class Database:
                     ON hindsight_finalize_jobs(status, next_attempt_at, created_at)
                 ''')
 
-                # Проверяем необходимость миграции
-                #cursor.execute("PRAGMA table_info(conversation_context)")
-                #columns = [column[1] for column in cursor.fetchall()]
-                
-                # Если нет новых колонок, выполняем миграцию
-                #if 'session_id' not in columns:
-                #    logger.warning('Performing database migration for conversation_context')
-                #    self.migrate_conversation_context()
+                cursor.execute("PRAGMA table_info(conversation_context)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'session_id' not in columns:
+                    logger.warning('Performing database migration for conversation_context')
+                    self.migrate_conversation_context()
 
                 # Индекс для быстрого поиска сессий (создаем после миграции)
                 cursor.execute('''
@@ -269,11 +266,12 @@ class Database:
                 # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
                     logger.info(f"Создаем новую запись для сессии {session_id}")
+                    model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
                     cursor.execute('''
                         INSERT INTO conversation_context 
-                        (user_id, session_id, context, parse_mode, temperature, max_tokens_percent, is_active, message_count)
-                        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-                    ''', (user_id, session_id, context_json, parse_mode, temperature, max_tokens_percent, message_count))
+                        (user_id, session_id, context, model, parse_mode, temperature, max_tokens_percent, is_active, message_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    ''', (user_id, session_id, context_json, model, parse_mode, temperature, max_tokens_percent, message_count))
 
                 cursor.execute('''
                     SELECT session_name FROM conversation_context WHERE user_id = ? AND session_id = ?
@@ -924,11 +922,19 @@ class Database:
             logger.error(f'Ошибка получения списка сессий: {e}', exc_info=True)
             return []
 
-    def switch_active_session(self, user_id: int, session_id: str):
+    def switch_active_session(self, user_id: int, session_id: str) -> bool:
         """Переключение активной сессии"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 1
+                    FROM conversation_context
+                    WHERE user_id = ? AND session_id = ?
+                ''', (user_id, session_id))
+                if cursor.fetchone() is None:
+                    return False
+
                 # Деактивируем все сессии пользователя
                 cursor.execute('''
                     UPDATE conversation_context 
@@ -942,6 +948,7 @@ class Database:
                     SET is_active = 1 
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
+                return cursor.rowcount > 0
         except Exception as e:
             logger.error(f'Ошибка переключения сессии: {e}', exc_info=True)
             raise
@@ -965,8 +972,12 @@ class Database:
             active_session = next((s for s in sessions if s['is_active']), None)
 
             # Если удаляется активная сессия, создаем новую
-            if active_session.get('session_id') == session_id:
-                new_session_id = self.create_session(user_id, openai_helper=openai_helper)
+            if active_session and active_session.get('session_id') == session_id:
+                new_session_id = self.create_session(
+                    user_id,
+                    openai_helper=openai_helper,
+                    prune_old_sessions=False,
+                )
                 if not new_session_id:
                     logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
                 else:
@@ -1008,6 +1019,7 @@ class Database:
                         CREATE TABLE conversation_context (
                             user_id INTEGER,
                             context TEXT NOT NULL,
+                            model TEXT NOT NULL,
                             parse_mode TEXT NOT NULL,
                             temperature FLOAT NOT NULL,
                             max_tokens_percent INTEGER DEFAULT 100,
@@ -1027,14 +1039,17 @@ class Database:
                         ON conversation_context(user_id, session_id, is_active)
                     ''')
                     
+                    model_expr = "COALESCE(model, ?)" if 'model' in columns else "?"
+                    default_context = '{"messages": []}'
                     # Миграция данных с генерацией сессий
-                    cursor.execute('''
+                    cursor.execute(f'''
                         INSERT INTO conversation_context 
-                        (user_id, context, parse_mode, temperature, max_tokens_percent, 
+                        (user_id, context, model, parse_mode, temperature, max_tokens_percent,
                          session_id, session_name, is_active, message_count, created_at, updated_at)
                         SELECT 
                             user_id, 
-                            COALESCE(context, '{"messages": []}'),
+                            COALESCE(context, ?),
+                            {model_expr},
                             COALESCE(parse_mode, 'HTML'),
                             COALESCE(temperature, 0.8),
                             COALESCE(max_tokens_percent, 100),
@@ -1045,7 +1060,7 @@ class Database:
                             COALESCE(created_at, CURRENT_TIMESTAMP),
                             COALESCE(updated_at, CURRENT_TIMESTAMP)
                         FROM conversation_context_old
-                    ''')
+                    ''', (default_context, LLMGATEWAY_HIGH_MODEL))
                     
                     # Удаляем старую таблицу
                     cursor.execute('DROP TABLE conversation_context_old')

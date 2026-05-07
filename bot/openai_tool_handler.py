@@ -18,6 +18,12 @@ SKILL_SCRIPT_PATH_RE = re.compile(
 SCRIPT_EXECUTION_RE = re.compile(r"\b(?:subprocess|os\.system|exec|spawn|python3?|node|bash|sh)\b", re.IGNORECASE)
 
 
+async def _prepend_stream_item(first_item, response):
+    yield first_item
+    async for item in response:
+        yield item
+
+
 def _direct_result_payload(response) -> dict | None:
     if type(response) is not dict:
         try:
@@ -184,9 +190,9 @@ async def handle_function_call(
                         elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':
                             break
                         else:
-                            return response, tools_used
+                            return _prepend_stream_item(item, response), tools_used
                     else:
-                        return response, tools_used
+                        return _prepend_stream_item(item, response), tools_used
             except openai.APIError as e:
                 logger.error(f"API Error in function call streaming: {e}")
                 return response, tools_used

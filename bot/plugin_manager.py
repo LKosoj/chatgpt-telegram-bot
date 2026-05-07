@@ -153,6 +153,8 @@ class PluginManager:
                             raise ValueError(msg)
                         logger.warning(msg)
             except Exception as e:
+                if self.strict_validation:
+                    raise
                 logger.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
 
@@ -217,15 +219,6 @@ class PluginManager:
         return None
 
     def get_plugin_name_by_function_name(self, function_name):
-        if "." in function_name:
-            prefix = function_name.split(".", 1)[0]
-            for plugin_name in self.plugins.keys():
-                plugin_instance = self.get_plugin(plugin_name)
-                if not plugin_instance:
-                    continue
-                if plugin_instance.get_function_prefix() == prefix:
-                    return plugin_name
-
         for plugin_name in self.plugins.keys():
             plugin_instance = self.get_plugin(plugin_name)
             if not plugin_instance:

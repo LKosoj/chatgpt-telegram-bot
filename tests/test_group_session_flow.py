@@ -115,6 +115,7 @@ def _make_openai():
     return SimpleNamespace(
         config={"temperature": 0.1, "hindsight_auto_save": True},
         conversations={},
+        loaded_conversation_sessions={},
         is_hindsight_enabled=MagicMock(return_value=False),
         finalize_hindsight_session_memory=AsyncMock(return_value=0),
         reset_chat_history=MagicMock(),

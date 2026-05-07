@@ -346,7 +346,7 @@ async def test_skill_script_execution_reports_missing_runtime(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_publish_artifact_returns_final_direct_result(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
-    artifact_path = tmp_path / "silver_analysis.pptx"
+    artifact_path = tmp_path / "storage" / "silver_analysis.pptx"
     artifact_path.write_bytes(b"pptx-data")
     await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
 
@@ -372,8 +372,8 @@ async def test_publish_artifact_returns_final_direct_result(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_publish_result_returns_text_and_multiple_artifacts(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
-    first_artifact = tmp_path / "silver_analysis.pptx"
-    second_artifact = tmp_path / "silver_notes.docx"
+    first_artifact = tmp_path / "storage" / "silver_analysis.pptx"
+    second_artifact = tmp_path / "storage" / "silver_notes.docx"
     first_artifact.write_bytes(b"pptx-data")
     second_artifact.write_bytes(b"docx-data")
     await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
@@ -404,7 +404,7 @@ async def test_publish_result_returns_text_and_multiple_artifacts(tmp_path, monk
 @pytest.mark.asyncio
 async def test_publish_result_artifacts_do_not_require_script_enablement(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
-    artifact_path = tmp_path / "egg_presentation.pptx"
+    artifact_path = tmp_path / "storage" / "egg_presentation.pptx"
     artifact_path.write_bytes(b"pptx-data")
     await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
 
@@ -465,7 +465,7 @@ async def test_publish_result_text_only_does_not_require_script_enablement(tmp_p
 @pytest.mark.asyncio
 async def test_publish_artifact_requires_active_skill_not_script_admin(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
-    artifact_path = tmp_path / "silver_analysis.pptx"
+    artifact_path = tmp_path / "storage" / "silver_analysis.pptx"
     artifact_path.write_bytes(b"pptx-data")
 
     inactive = await plugin.execute(
@@ -490,6 +490,51 @@ async def test_publish_artifact_requires_active_skill_not_script_admin(tmp_path,
     )
     assert result["success"] is True
     assert result["direct_result"]["value"] == str(artifact_path)
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_rejects_path_outside_controlled_storage(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
+    outside_dir = tmp_path.parent / f"{tmp_path.name}_outside"
+    outside_dir.mkdir(exist_ok=True)
+    outside_artifact = outside_dir / "secret.txt"
+    outside_artifact.write_text("secret", encoding="utf-8")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_artifact",
+        helper=None,
+        skill_name="demo",
+        file_path=str(outside_artifact),
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "controlled skill storage" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_publish_result_rejects_artifact_outside_controlled_storage(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
+    outside_dir = tmp_path.parent / f"{tmp_path.name}_outside_result"
+    outside_dir.mkdir(exist_ok=True)
+    outside_artifact = outside_dir / "secret.txt"
+    outside_artifact.write_text("secret", encoding="utf-8")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_result",
+        helper=None,
+        skill_name="demo",
+        text="Done",
+        artifacts=[{"file_path": str(outside_artifact)}],
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "controlled skill storage" in result["error"]
 
 
 @pytest.mark.asyncio

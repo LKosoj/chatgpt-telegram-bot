@@ -38,7 +38,14 @@ async def is_user_in_group(update: Update, context: CallbackContext, user_id: in
     Checks if user_id is a member of the group
     """
     try:
-        chat_member = await context.bot.get_chat_member(update.message.chat_id, user_id)
+        chat = update.effective_chat
+        if chat is None and update.callback_query and update.callback_query.message:
+            chat = getattr(update.callback_query.message, "chat", None)
+        if chat is None and update.message:
+            chat = getattr(update.message, "chat", None)
+        if chat is None:
+            return False
+        chat_member = await context.bot.get_chat_member(chat.id, user_id)
         return chat_member.status in [ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER]
     except telegram.error.BadRequest as e:
         if str(e) == "User not found":

@@ -200,7 +200,7 @@ class ShowMeDiagramsPlugin(Plugin):
         except Exception as e:
             return {"result": f"Error generating diagram: {str(e)}"}
     
-    def _generate_plantuml(self, puml_content: str, helper, user_id: int) -> str:
+    async def _generate_plantuml(self, puml_content: str, helper, user_id: int) -> str:
         """Генерирует изображение из PlantUML кода"""
         temp_dir = tempfile.gettempdir()
         file_name = f'diagram_{uuid.uuid4()}'
@@ -233,7 +233,7 @@ class ShowMeDiagramsPlugin(Plugin):
                 {"role": "system", "content": "Ты самый лучший специалист по генерации и исправлению ошибок в коде для PlantUML."},
                 {"role": "user", "content": f"При генерации диаграммы возникла ошибка:\n{result.stderr}\n\nВот текущий код PlantUML:\n\n{current_puml_code}\n\nИсправь ошибку, так же проверь код на отсутствие других ошибок и верни правильный код для PlantUML. Верни только исправленный код, без комментариев и объяснений."}
             ]
-            response, _ = helper.ask(messages, user_id=user_id)
+            response, _ = await helper.ask(messages, user_id=user_id)
             
             # Удаляем маркеры кода, если они есть
             generated_text = response.replace("```plantuml", "").replace("```", "").strip()
@@ -283,28 +283,28 @@ class ShowMeDiagramsPlugin(Plugin):
 
     async def _generate_gantt_chart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('gantt_chart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_flowchart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('flowchart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_mind_map(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('mind_map', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_project_timeline(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('project_timeline', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_infographic(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('infographic', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_org_chart(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('org_chart', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)
 
     async def _generate_process_diagram(self, title: str, description: str, helper, user_id: int) -> str:
         puml_code = await self._generate_diagram_code('process_diagram', title, description, helper, user_id)
-        return self._generate_plantuml(puml_code, helper, user_id)
+        return await self._generate_plantuml(puml_code, helper, user_id)

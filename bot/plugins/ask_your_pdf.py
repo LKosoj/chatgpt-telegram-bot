@@ -16,6 +16,11 @@ try:
 except ImportError:
     textract = None
 
+try:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text
+except ImportError:
+    pdfminer_extract_text = None
+
 from .plugin import Plugin
 
 
@@ -178,9 +183,17 @@ class AskYourPDFPlugin(Plugin):
 
         return file_hash.hexdigest()
 
+    def _cache_key(self, file_hash: str, query: str) -> str:
+        query_hash = hashlib.sha256((query or "").encode("utf-8")).hexdigest()
+        return f"{file_hash}_{query_hash}"
+
+    def _cache_file_path(self, file_hash: str, query: str) -> str:
+        return os.path.join(self.cache_dir, f"{self._cache_key(file_hash, query)}.json")
+
     def load_cache(self, file_hash: str, query: str) -> Dict:
         try:
-            cache_file = os.path.join(self.cache_dir, f"{file_hash}.json")
+            cache_key = self._cache_key(file_hash, query)
+            cache_file = self._cache_file_path(file_hash, query)
             if os.path.exists(cache_file):
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cached_data = json.load(f)
@@ -191,7 +204,7 @@ class AskYourPDFPlugin(Plugin):
                     return None
 
                 cached_size = len(json.dumps(cached_data, ensure_ascii=False))
-                self._update_cache_metadata(file_hash, cached_size)
+                self._update_cache_metadata(cache_key, cached_size)
                 return cached_data["result"]
         except Exception as e:
             logging.error(f"Ошибка при загрузке кэша: {e}")
@@ -199,7 +212,8 @@ class AskYourPDFPlugin(Plugin):
 
     def save_cache(self, file_hash: str, query: str, result: Dict):
         try:
-            cache_file = os.path.join(self.cache_dir, f"{file_hash}.json")
+            cache_key = self._cache_key(file_hash, query)
+            cache_file = self._cache_file_path(file_hash, query)
             cached_data = {
                 "cached_at": time.time(),
                 "result": result,
@@ -209,7 +223,7 @@ class AskYourPDFPlugin(Plugin):
                 json.dump(cached_data, f, ensure_ascii=False)
 
             cached_size = len(json.dumps(cached_data, ensure_ascii=False))
-            self._update_cache_metadata(file_hash, cached_size)
+            self._update_cache_metadata(cache_key, cached_size)
         except Exception as e:
             logging.error(f"Ошибка при сохранении кэша: {e}")
 
@@ -249,10 +263,16 @@ class AskYourPDFPlugin(Plugin):
             return extracted.decode("utf-8", errors="replace")
         return str(extracted)
 
+    def _extract_text_with_pdfminer(self, file_path: str) -> str:
+        if pdfminer_extract_text is None:
+            return ""
+        return pdfminer_extract_text(file_path) or ""
+
     def _extract_pdf_text(self, file_path: str) -> str:
         errors = []
         extractors = (
             self._extract_text_with_pypdf2,
+            self._extract_text_with_pdfminer,
             self._extract_text_with_textract,
         )
         for extractor in extractors:
@@ -320,6 +340,14 @@ class AskYourPDFPlugin(Plugin):
 
                 if not file_path or not os.path.exists(file_path):
                     return {"error": self.t("ask_your_pdf_file_not_found")}
+
+                if not self._is_path_in_controlled_storage(file_path):
+                    return {
+                        "error": self.t(
+                            "ask_your_pdf_error",
+                            error="File path is outside controlled storage",
+                        ),
+                    }
 
                 file_hash = self.generate_file_hash(file_path)
                 cached_result = self.load_cache(file_hash, query)

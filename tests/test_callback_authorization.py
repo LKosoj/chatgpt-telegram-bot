@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram import ChatMember
 
 
 _INSERTED_MODULES = []
@@ -51,6 +52,7 @@ _install_module_if_missing("tenacity", _tenacity)
 
 from bot.telegram_bot import ChatGPTTelegramBot
 from bot.i18n import localized_text
+from bot.utils import is_allowed
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -201,3 +203,38 @@ async def test_unauthorized_session_callback_does_not_mutate_db(callback_data):
     bot.db.export_sessions_to_yaml.assert_not_called()
     bot.openai.reset_chat_history.assert_not_called()
     bot.reset.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restricted_group_callback_checks_membership_without_message():
+    update = FakeCallbackUpdate("session:back", user_id=999, chat_id=-100123)
+    update.effective_chat.type = "supergroup"
+    context = _make_context()
+    context.bot.get_chat_member.return_value = SimpleNamespace(status=ChatMember.MEMBER)
+
+    allowed = await is_allowed(
+        {"allowed_user_ids": "111", "admin_user_ids": "-", "bot_language": "en"},
+        update,
+        context,
+    )
+
+    assert allowed is True
+    context.bot.get_chat_member.assert_awaited_once_with(-100123, "111")
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_plugin_callback_query_does_not_call_plugin_handler():
+    bot = _make_bot(allowed_user_ids="111")
+    plugin_handler = AsyncMock()
+    update = FakeCallbackUpdate("plugin:run", user_id=999)
+
+    await bot.handle_plugin_callback_query(
+        update,
+        _make_context(),
+        {"callback_query_handler": plugin_handler},
+    )
+
+    plugin_handler.assert_not_called()
+    update.callback_query.edit_message_text.assert_awaited_once_with(
+        text=localized_text("access_denied_command", "en")
+    )

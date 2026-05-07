@@ -455,7 +455,7 @@ class CodeInterpreterPlugin(Plugin):
         code = self.extract_code_from_response(code)
         await self.preinstall_required_packages(code)
         analyze_result = self.analyze_code_syntax(code)
-        if analyze_result is not None and analyze_result['status']:
+        if isinstance(analyze_result, dict) and analyze_result.get('status') is True:
             # Очищаем текущие графики
             plt.close("all")
             

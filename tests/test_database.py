@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -72,6 +73,85 @@ def test_max_sessions_enforced(db):
         db.create_session(1, max_sessions=3, openai_helper=helper)
     sessions = db.list_user_sessions(1)
     assert len(sessions) <= 3
+
+
+def test_save_context_with_missing_explicit_session_includes_model(db):
+    context = {"messages": [{"role": "user", "content": "hello"}]}
+
+    db.save_conversation_context(
+        1,
+        context,
+        "HTML",
+        0.8,
+        80,
+        session_id="missing-session",
+        openai_helper=DummyOpenAI(),
+    )
+
+    session = db.get_session_details(1, "missing-session")
+    sessions = db.list_user_sessions(1)
+    assert session is not None
+    assert sessions[0]["model"] == "llmgateway/high"
+
+
+def test_switch_missing_session_keeps_current_active_session(db):
+    helper = DummyOpenAI()
+    first = db.create_session(1, openai_helper=helper)
+    second = db.create_session(1, openai_helper=helper)
+    assert db.get_active_session_id(1) == second
+
+    assert db.switch_active_session(1, "missing-session") is False
+
+    assert db.get_active_session_id(1) == second
+    assert first != second
+
+
+def test_deleting_active_session_at_limit_does_not_delete_extra_session(db):
+    helper = DummyOpenAI()
+    for _ in range(5):
+        db.create_session(1, max_sessions=5, openai_helper=helper)
+    active = db.get_active_session_id(1)
+
+    db.delete_session(1, active, openai_helper=helper)
+
+    sessions = db.list_user_sessions(1)
+    session_ids = {session["session_id"] for session in sessions}
+    assert len(sessions) == 5
+    assert active not in session_ids
+    assert db.get_active_session_id(1) in session_ids
+
+
+def test_legacy_conversation_context_migrates_before_session_index(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._instance = None
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE conversation_context (
+                user_id INTEGER PRIMARY KEY,
+                context TEXT NOT NULL,
+                parse_mode TEXT NOT NULL,
+                temperature FLOAT NOT NULL,
+                max_tokens_percent INTEGER DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            INSERT INTO conversation_context
+            (user_id, context, parse_mode, temperature, max_tokens_percent)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1, '{"messages": []}', "HTML", 0.8, 80))
+
+    migrated = Database()
+
+    sessions = migrated.list_user_sessions(1)
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"]
+    assert sessions[0]["model"] == "llmgateway/high"
+    with migrated.get_connection() as conn:
+        indexes = conn.execute("PRAGMA index_list(conversation_context)").fetchall()
+    assert any(row[1] == "idx_conversation_context_session" for row in indexes)
 
 
 def test_create_session_prunes_hindsight_sessions_through_finalize_jobs(db):

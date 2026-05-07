@@ -167,6 +167,22 @@ class FakeResponse:
         )
 
 
+class FakeStreamChoice:
+    def __init__(self, content):
+        self.delta = types.SimpleNamespace(content=content, tool_calls=None)
+        self.finish_reason = None
+
+
+class FakeStreamItem:
+    def __init__(self, content):
+        self.choices = [FakeStreamChoice(content)]
+
+
+async def _fake_stream(contents):
+    for content in contents:
+        yield FakeStreamItem(content)
+
+
 def _make_helper(plugin_manager, db=None, client=None):
     config = {
         "openai_base": "",
@@ -296,6 +312,25 @@ def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
 
     assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["All"]
     assert pm.filtered[-1] == ["All"]
+
+
+@pytest.mark.asyncio
+async def test_stream_without_tool_calls_preserves_first_chunk():
+    helper = _make_helper(DummyPluginManager({}))
+
+    response, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1,
+        response=_fake_stream(["Hel", "lo"]),
+        stream=True,
+        allowed_plugins=["All"],
+        user_id=1,
+    )
+
+    chunks = []
+    async for item in response:
+        chunks.append(item.choices[0].delta.content)
+    assert chunks == ["Hel", "lo"]
+    assert tools_used == ()
 
 
 @pytest.mark.asyncio

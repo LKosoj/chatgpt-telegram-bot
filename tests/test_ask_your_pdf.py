@@ -117,6 +117,35 @@ async def test_analyze_pdf_cache_hit_returns_cached_result_without_helper(
 
 
 @pytest.mark.asyncio
+async def test_analyze_pdf_cache_is_scoped_by_query(monkeypatch, tmp_path):
+    module = _load_ask_your_pdf_module(monkeypatch)
+    plugin = _plugin(tmp_path, module)
+    pdf_path = _create_pdf(tmp_path / "scoped-cache.pdf")
+    helper = _helper()
+    helper.get_chat_response.side_effect = [
+        ("first answer", 1),
+        ("second answer", 1),
+    ]
+
+    first = await plugin.execute(
+        "analyze_pdf",
+        helper,
+        file_path=str(pdf_path),
+        query="Summarize the document",
+    )
+    second = await plugin.execute(
+        "analyze_pdf",
+        helper,
+        file_path=str(pdf_path),
+        query="List action items",
+    )
+
+    assert first["result"] == "first answer"
+    assert second["result"] == "second answer"
+    assert helper.get_chat_response.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_analyze_pdf_missing_file_returns_error_without_helper(
     monkeypatch,
     tmp_path,
@@ -243,3 +272,25 @@ async def test_upload_pdf_rejects_path_outside_plugin_storage(
 
     assert "error" in result
     assert "direct_result" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_pdf_rejects_path_outside_plugin_storage(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_ask_your_pdf_module(monkeypatch)
+    storage_root = tmp_path / "plugin-storage"
+    plugin = _plugin(storage_root, module)
+    outside_pdf = _create_pdf(tmp_path / "outside-analyze.pdf")
+    helper = _helper()
+
+    result = await plugin.execute(
+        "analyze_pdf",
+        helper=helper,
+        file_path=str(outside_pdf),
+        query="Summarize outside document",
+    )
+
+    assert "error" in result
+    helper.get_chat_response.assert_not_called()

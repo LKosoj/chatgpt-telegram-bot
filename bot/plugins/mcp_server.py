@@ -527,7 +527,10 @@ class MCPServerPlugin(Plugin):
         for server_name, config in self.servers.items():
             server_info = {
                 "name": server_name,
-                "base_url": config["base_url"],
+                "transport": config.get("transport", "http"),
+                "base_url": config.get("base_url", ""),
+                "command": config.get("command", ""),
+                "args": config.get("args", []),
                 "description": config.get("description", ""),
                 "tools_count": len(config.get("tools", [])),
                 "tools": [tool["name"] for tool in config.get("tools", [])]
@@ -738,6 +741,8 @@ class MCPServerPlugin(Plugin):
                 return await self.register_server(**kwargs)
                 
             elif function_name == "list_mcp_servers":
+                if user_id and not self.is_user_allowed(user_id):
+                    return {"error": self.t("mcp_access_denied")}
                 return await self.list_servers()
                 
             elif function_name == "remove_mcp_server":
@@ -760,6 +765,8 @@ class MCPServerPlugin(Plugin):
                     filtered_kwargs = kwargs.copy()
                     # Удаляем параметры, которые не должны передаваться внешнему серверу
                     filtered_kwargs.pop('user_id', None)
+                    filtered_kwargs.pop('chat_id', None)
+                    filtered_kwargs.pop('request_context', None)
                     
                     # Вызываем функцию на сервере с отфильтрованными параметрами
                     return await self.call_mcp_function(server_name, original_function_name, **filtered_kwargs)
