@@ -16,6 +16,14 @@ from .plugin import Plugin
 
 CLOSED_STATUSES = {"completed", "cancelled"}
 TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+MAX_SUBAGENTS = 5
+MAX_SUBAGENT_TOOL_ROUNDS = 5
+SUBAGENT_BLOCKED_FUNCTIONS = {
+    "agent_tools.ask_telegram_user",
+    "agent_tools.run_subagents",
+    "skills.publish_artifact",
+    "skills.publish_result",
+}
 
 
 class _PendingAskReplyFilter(filters.MessageFilter):
@@ -95,7 +103,8 @@ class AgentToolsPlugin(Plugin):
                 "name": "ask_telegram_user",
                 "description": (
                     "Ask the Telegram user a concrete question and wait for a button or text answer. "
-                    "Use when explicit confirmation, a choice, or missing information is required."
+                    "Use when explicit confirmation, a choice, or missing information is required. "
+                    "Answer variants must be passed in options, not embedded into the question text."
                 ),
                 "parameters": {
                     "type": "object",
@@ -104,7 +113,9 @@ class AgentToolsPlugin(Plugin):
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional button labels for likely answers.",
+                            "minItems": 1,
+                            "maxItems": 6,
+                            "description": "Required button labels for the answer choices.",
                         },
                         "allow_free_text": {
                             "type": "boolean",
@@ -115,7 +126,53 @@ class AgentToolsPlugin(Plugin):
                             "description": "How long to wait for the user's answer. Defaults to 1800.",
                         },
                     },
-                    "required": ["question"],
+                    "required": ["question", "options"],
+                },
+            },
+            {
+                "name": "run_subagents",
+                "description": (
+                    "Run independent tool-capable subagents in parallel for bounded subtasks. "
+                    "Subagents may call tools and skills, but they cannot ask Telegram questions, "
+                    "publish final artifacts, or start nested subagents."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "shared_context": {
+                            "type": "string",
+                            "description": "Optional context shared with every subagent.",
+                        },
+                        "subagents": {
+                            "type": "array",
+                            "description": "Subagents to run in parallel.",
+                            "minItems": 1,
+                            "maxItems": MAX_SUBAGENTS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "description": "Stable short id, for example research_1.",
+                                    },
+                                    "role": {
+                                        "type": "string",
+                                        "description": "Role/persona for this subagent.",
+                                    },
+                                    "task": {
+                                        "type": "string",
+                                        "description": "Concrete bounded task for this subagent.",
+                                    },
+                                    "context": {
+                                        "type": "string",
+                                        "description": "Optional extra context for this subagent only.",
+                                    },
+                                },
+                                "required": ["id", "role", "task"],
+                            },
+                        },
+                    },
+                    "required": ["subagents"],
                 },
             },
         ]
@@ -142,6 +199,8 @@ class AgentToolsPlugin(Plugin):
             return self._manage_plan_tasks(helper, **kwargs)
         if function_name == "ask_telegram_user":
             return await self._ask_telegram_user(helper, **kwargs)
+        if function_name == "run_subagents":
+            return await self._run_subagents(helper, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
     def load_tasks(self) -> None:
@@ -281,6 +340,245 @@ class AgentToolsPlugin(Plugin):
             },
         }
 
+    async def _run_subagents(self, helper, **kwargs) -> Dict:
+        subagents = kwargs.get("subagents") or []
+        if not isinstance(subagents, list) or not subagents:
+            return {"success": False, "error": "subagents must be a non-empty list"}
+        if len(subagents) > MAX_SUBAGENTS:
+            return {"success": False, "error": f"At most {MAX_SUBAGENTS} subagents can run at once"}
+
+        shared_context = str(kwargs.get("shared_context") or "").strip()
+        tasks = [
+            self._run_one_subagent(helper, item, shared_context, kwargs)
+            for item in subagents
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        normalized_results = []
+        for item, result in zip(subagents, results):
+            subagent_id = str(item.get("id") or "subagent").strip()
+            role = str(item.get("role") or "").strip()
+            if isinstance(result, Exception):
+                normalized_results.append({
+                    "id": subagent_id,
+                    "role": role,
+                    "status": "error",
+                    "error": str(result),
+                })
+            else:
+                normalized_results.append(result)
+
+        return {
+            "success": True,
+            "subagents": normalized_results,
+        }
+
+    async def _run_one_subagent(
+        self,
+        helper,
+        item: Dict[str, Any],
+        shared_context: str,
+        kwargs: Dict[str, Any],
+    ) -> Dict:
+        subagent_id = str(item.get("id") or "").strip()
+        role = str(item.get("role") or "").strip()
+        task = str(item.get("task") or "").strip()
+        context = str(item.get("context") or "").strip()
+        if not subagent_id or not role or not task:
+            return {
+                "id": subagent_id or "subagent",
+                "role": role,
+                "status": "error",
+                "error": "Subagent requires id, role, and task",
+            }
+
+        user_id = kwargs.get("user_id")
+        model_to_use = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
+        model_to_use = model_to_use or getattr(helper, "model", None) or "llmgateway/high"
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a bounded subagent. You may call available tools and skills to complete "
+                    "your assigned subtask. Do not address the Telegram user, do not ask the user "
+                    "questions, do not publish final artifacts, and do not start nested subagents. "
+                    "When using skills, list/get/activate the relevant skill, run its scripts only "
+                    "through skills.run_skill_script, and report outputs or artifact paths to the parent. "
+                    "Return concise findings for the parent agent to synthesize."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Subagent id: {subagent_id}\n"
+                    f"Role: {role}\n"
+                    f"Task: {task}\n\n"
+                    f"Shared context:\n{shared_context or '(none)'}\n\n"
+                    f"Subagent-specific context:\n{context or '(none)'}"
+                ),
+            },
+        ]
+        result_text = await self._run_subagent_completion_loop(helper, model_to_use, messages, kwargs)
+        return {
+            "id": subagent_id,
+            "role": role,
+            "status": "completed",
+            "result": result_text,
+        }
+
+    async def _run_subagent_completion_loop(
+        self,
+        helper,
+        model_to_use: str,
+        messages: List[Dict[str, Any]],
+        kwargs: Dict[str, Any],
+    ) -> str:
+        tools, allowed_function_names = self._subagent_tools(helper, model_to_use)
+
+        for round_index in range(MAX_SUBAGENT_TOOL_ROUNDS + 1):
+            request_kwargs = {
+                "model": model_to_use,
+                "messages": messages,
+                "temperature": 0.2,
+                "stream": False,
+                "extra_headers": {"X-Title": "tgBot"},
+            }
+            if tools:
+                request_kwargs["tools"] = tools
+                request_kwargs["tool_choice"] = (
+                    "auto" if round_index < MAX_SUBAGENT_TOOL_ROUNDS else "none"
+                )
+
+            response = await helper.client.chat.completions.create(**request_kwargs)
+            choice = response.choices[0]
+            tool_calls = self._extract_tool_calls(choice)
+            if tool_calls and round_index < MAX_SUBAGENT_TOOL_ROUNDS:
+                messages.append(self._assistant_tool_calls_message(choice, tool_calls))
+                for call in tool_calls:
+                    tool_response = await self._call_subagent_tool(
+                        helper,
+                        call,
+                        allowed_function_names,
+                        kwargs,
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": self._tool_result_content(helper, tool_response),
+                    })
+                continue
+
+            return self._choice_text(response)
+
+        return ""
+
+    def _subagent_tools(self, helper, model_to_use: str) -> tuple[Any, set[str]]:
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        if not plugin_manager:
+            return None, set()
+
+        tools = plugin_manager.get_functions_specs(helper, model_to_use, ["All"])
+        if isinstance(tools, dict):
+            return None, set()
+
+        filtered_tools = []
+        allowed_function_names = set()
+        for tool in tools or []:
+            function_spec = tool.get("function") or {}
+            function_name = function_spec.get("name")
+            if not function_name or function_name in SUBAGENT_BLOCKED_FUNCTIONS:
+                continue
+            filtered_tools.append(tool)
+            allowed_function_names.add(function_name)
+        return filtered_tools, allowed_function_names
+
+    def _extract_tool_calls(self, choice) -> List[Dict[str, str]]:
+        message = getattr(choice, "message", None)
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        tool_calls = []
+        for index, tool_call in enumerate(raw_tool_calls):
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", "") if function else ""
+            if not name:
+                continue
+            tool_calls.append({
+                "id": getattr(tool_call, "id", None) or f"sub_call_{index}",
+                "name": name,
+                "arguments": getattr(function, "arguments", "{}") or "{}",
+            })
+        return tool_calls
+
+    def _assistant_tool_calls_message(self, choice, tool_calls: List[Dict[str, str]]) -> Dict[str, Any]:
+        message = getattr(choice, "message", None)
+        return {
+            "role": "assistant",
+            "content": getattr(message, "content", None),
+            "tool_calls": [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call.get("arguments") or "{}",
+                    },
+                }
+                for call in tool_calls
+            ],
+        }
+
+    async def _call_subagent_tool(
+        self,
+        helper,
+        call: Dict[str, str],
+        allowed_function_names: set[str],
+        kwargs: Dict[str, Any],
+    ) -> str:
+        tool_name = call["name"]
+        if tool_name not in allowed_function_names:
+            return json.dumps({"error": f"Tool {tool_name} is not available to subagents"}, ensure_ascii=False)
+
+        try:
+            args = json.loads(call.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
+
+        if kwargs.get("chat_id") is not None:
+            args["chat_id"] = kwargs.get("chat_id")
+        args["user_id"] = (
+            kwargs.get("user_id") if kwargs.get("user_id") is not None else kwargs.get("chat_id")
+        )
+        return await helper.plugin_manager.call_function(
+            tool_name,
+            helper,
+            json.dumps(args, ensure_ascii=False),
+        )
+
+    def _tool_result_content(self, helper, content: Any) -> str:
+        formatter = getattr(helper, "_tool_result_content", None)
+        if callable(formatter):
+            return formatter(content)
+        if isinstance(content, str):
+            return content
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except TypeError:
+            return str(content)
+
+    def _choice_text(self, response) -> str:
+        try:
+            content = response.choices[0].message.content
+        except Exception:
+            return ""
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or ""))
+                else:
+                    parts.append(str(item))
+            return "\n".join(part for part in parts if part)
+        return str(content or "")
+
     async def _ask_telegram_user(self, helper, **kwargs) -> Dict:
         question = str(kwargs.get("question") or "").strip()
         if not question:
@@ -300,6 +598,8 @@ class AgentToolsPlugin(Plugin):
             return {"success": False, "error": "A Telegram question is already waiting for this chat"}
 
         options = self._normalize_options(kwargs.get("options") or [])
+        if not options:
+            return {"success": False, "error": "options are required for ask_telegram_user"}
         allow_free_text = bool(kwargs.get("allow_free_text", True))
         timeout = self._normalize_timeout(kwargs.get("timeout_seconds"))
         user_id = self._normalize_optional_int(kwargs.get("user_id"))

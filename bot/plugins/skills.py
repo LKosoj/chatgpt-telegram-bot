@@ -631,17 +631,6 @@ class SkillsPlugin(Plugin):
 
     def _publish_artifact(self, skill_name: str, file_path: str, **kwargs) -> Dict[str, Any]:
         user_id = kwargs.get("user_id")
-        if not self.allow_scripts:
-            return {
-                "success": False,
-                "error": "Skill artifact publishing is disabled. Set SKILLS_ALLOW_SCRIPTS=true to enable it.",
-            }
-        if not self._is_script_admin(user_id):
-            return {
-                "success": False,
-                "error": "Skill artifact publishing is restricted by SKILLS_SCRIPT_ADMIN_USER_IDS.",
-            }
-
         scope = self._scope_key(kwargs)
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
@@ -703,16 +692,6 @@ class SkillsPlugin(Plugin):
             return {"success": False, "error": artifact_error}
         if not final_text and not artifact_items:
             return {"success": False, "error": "Final result must include text, artifacts, or both"}
-        if artifact_items and not self.allow_scripts:
-            return {
-                "success": False,
-                "error": "Skill artifact publishing is disabled. Set SKILLS_ALLOW_SCRIPTS=true to enable it.",
-            }
-        if artifact_items and not self._is_script_admin(user_id):
-            return {
-                "success": False,
-                "error": "Skill artifact publishing is restricted by SKILLS_SCRIPT_ADMIN_USER_IDS.",
-            }
 
         logger.info(
             "Publishing skill result skill=%s text_chars=%s artifacts=%s user_id=%s scope=%s",
