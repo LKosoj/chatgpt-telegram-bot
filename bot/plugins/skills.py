@@ -56,6 +56,7 @@ class SkillsPlugin(Plugin):
         )
 
         self.available_skills = self._scan_skills()
+        self._log_available_skills()
         self._load_state()
 
     def get_source_name(self) -> str:
@@ -71,7 +72,8 @@ class SkillsPlugin(Plugin):
                     "properties": {
                         "refresh": {
                             "type": "boolean",
-                            "description": "Whether to rescan the skills directory before listing.",
+                            "description": "Whether to rescan the skills directory before listing. Defaults to true.",
+                            "default": True,
                         }
                     },
                 },
@@ -178,7 +180,7 @@ class SkillsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         self._ensure_ready()
         if function_name == "list_skills":
-            return self._list_skills(refresh=bool(kwargs.get("refresh", False)))
+            return self._list_skills(refresh=self._bool_arg(kwargs.get("refresh"), default=True))
         if function_name == "get_skill":
             return self._get_skill(str(kwargs.get("skill_name") or ""))
         if function_name == "activate_skill":
@@ -322,6 +324,29 @@ class SkillsPlugin(Plugin):
             "scripts_enabled": self.allow_scripts,
             "scripts_admin_restricted": not self.script_admin_all,
         }
+
+    def _log_available_skills(self) -> None:
+        if not self.available_skills:
+            logger.info("No skills found in %s", self.skills_dir)
+            return
+        skills_summary = ", ".join(
+            f"{skill_id} ({info['name']})" if info["name"] != skill_id else skill_id
+            for skill_id, info in self.available_skills.items()
+        )
+        logger.info("Available skills in %s (%s): %s", self.skills_dir, len(self.available_skills), skills_summary)
+
+    def _bool_arg(self, value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in TRUE_VALUES:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return bool(value)
 
     def _get_skill(self, skill_name: str) -> Dict[str, Any]:
         skill_id = self._resolve_skill_id(skill_name)

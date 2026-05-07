@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from bot.plugin_manager import PluginManager
@@ -100,6 +102,21 @@ def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeyp
     assert plugin.available_skills["workflow"]["metadata"]["allow_scripts"] is False
 
 
+def test_initialize_logs_available_skills(tmp_path, monkeypatch, caplog):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill(skills_dir)
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+    caplog.set_level(logging.INFO, logger="bot.plugins.skills")
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert "Available skills in" in caplog.text
+    assert "demo" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)
@@ -140,6 +157,16 @@ async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
     status = await plugin.execute("get_skill_status", helper=None, skill_name="demo", chat_id=10, user_id=42)
     assert status["success"] is True
     assert status["state"]["current_step"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_skills_refreshes_by_default(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    _write_skill(tmp_path / "skills", name="later")
+
+    listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
+
+    assert {skill["id"] for skill in listed["skills"]} == {"demo", "later"}
 
 
 @pytest.mark.asyncio
