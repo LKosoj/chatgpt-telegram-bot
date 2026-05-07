@@ -69,11 +69,18 @@ def _required_choice_message_text(choice) -> str:
     content = _choice_message_text(choice)
     if content:
         return content
+    message = getattr(choice, "message", None)
+    tool_calls = getattr(message, "tool_calls", None)
     logger.warning(
-        "Model returned empty assistant content; finish_reason=%s",
+        "Model returned empty assistant content; finish_reason=%s tool_call_count=%s",
         getattr(choice, "finish_reason", None),
+        len(tool_calls) if tool_calls else 0,
     )
     raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
+
+
+def _response_has_message_text(response) -> bool:
+    return any(_choice_message_text(choice) for choice in getattr(response, "choices", []) or [])
 
 HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
 Long-term memory recalled for this Telegram user:
@@ -403,6 +410,8 @@ class OpenAIHelper:
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
                     return response, '0'
+                if plugins_used and not _response_has_message_text(response):
+                    response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
 
             answer = ''
 
@@ -813,6 +822,49 @@ class OpenAIHelper:
 
     def _localized_text(self, key, bot_language):
         return localized_text(key, bot_language)
+
+    async def _retry_empty_response_after_tools(self, chat_id: int, user_id: int | None, session_id: str | None):
+        logger.warning(
+            "Retrying empty model response after tool calls for chat_id=%s user_id=%s session_id=%s",
+            chat_id,
+            user_id,
+            session_id,
+        )
+        model_to_use = self.get_current_model(user_id)
+        session_owner = user_id if user_id is not None else chat_id
+        max_tokens_percent = 80
+        try:
+            sessions = self.db.list_user_sessions(session_owner, is_active=1)
+            active_session = next((s for s in sessions if s['is_active']), None)
+            if active_session:
+                max_tokens_percent = active_session.get('max_tokens_percent') or max_tokens_percent
+        except Exception as exc:
+            logger.warning("Failed to read active session for empty response retry: %s", exc)
+
+        max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
+        messages = list(self._messages_with_hindsight_context(chat_id))
+        messages.append({
+            "role": "user",
+            "content": (
+                "Инструменты уже выполнены. Верните непустой финальный ответ пользователю: "
+                "результат, краткий статус или конкретный вопрос для продолжения. "
+                "Не вызывайте tools в этом ответе."
+            ),
+        })
+        common_args = {
+            'model': model_to_use,
+            'messages': messages,
+            'temperature': self.config['temperature'],
+            'n': 1,
+            'max_tokens': max_tokens,
+            'presence_penalty': self.config['presence_penalty'],
+            'frequency_penalty': self.config['frequency_penalty'],
+            'stream': False,
+            'extra_headers': { "X-Title": "tgBot" },
+        }
+        if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
+            common_args['max_completion_tokens'] = max_tokens
+        return await self.client.chat.completions.create(**common_args)
 
     async def generate_image(self, prompt: str) -> tuple[str, str]:
         """

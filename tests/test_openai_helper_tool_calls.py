@@ -310,6 +310,30 @@ async def test_get_chat_response_rejects_empty_model_content():
 
 
 @pytest.mark.asyncio
+async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
+    pm = DummyPluginManager({"skills.list_skills": {"success": True, "skills": []}})
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")], content=None),
+        FakeResponse(content=None),
+        FakeResponse(content="final answer"),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use skills",
+        user_id=1,
+    )
+
+    assert answer == "final answer"
+    assert total_tokens == 3
+    assert client.calls == 3
+    assert pm.calls[0][0] == "skills.list_skills"
+    assert "Инструменты уже выполнены" in client.create_kwargs[-1]["messages"][-1]["content"]
+    assert "tools" not in client.create_kwargs[-1]
+
+
+@pytest.mark.asyncio
 async def test_parallel_tool_calls_no_direct_result():
     responses = {
         "p1.do": {"result": "ok1"},
