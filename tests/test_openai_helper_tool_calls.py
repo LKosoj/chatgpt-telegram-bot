@@ -312,7 +312,18 @@ async def test_get_chat_response_rejects_empty_model_content():
 
 @pytest.mark.asyncio
 async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
-    pm = DummyPluginManager({"skills.list_skills": {"success": True, "skills": []}})
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"success": True, "skills": []}},
+        specs=[tool_spec],
+    )
     client = DummyClient([
         FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")], content=None),
         FakeResponse(content=None),
@@ -330,8 +341,23 @@ async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     assert total_tokens == 3
     assert client.calls == 3
     assert pm.calls[0][0] == "skills.list_skills"
-    assert "Инструменты уже выполнены" in client.create_kwargs[-1]["messages"][-1]["content"]
-    assert "tools" not in client.create_kwargs[-1]
+    assert "Предыдущий ответ был пустым" in client.create_kwargs[-1]["messages"][-1]["content"]
+    assert client.create_kwargs[-1]["tools"] == [tool_spec]
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_strips_think_markers():
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="<think>hidden</think>visible</think>done")]))
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    )
+
+    assert answer == "visible\ndone"
+    assert total_tokens == 3
 
 
 @pytest.mark.asyncio

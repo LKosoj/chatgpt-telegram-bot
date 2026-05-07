@@ -4,6 +4,7 @@ import logging
 import os
 import asyncio
 import uuid
+import re
 from typing import Any, Optional
 from datetime import datetime as dt
 
@@ -57,12 +58,18 @@ logger = logging.getLogger(__name__)
 
 HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
+THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 
 
 def _choice_message_text(choice) -> str:
     message = getattr(choice, "message", None)
     content = getattr(message, "content", None)
-    return content.strip() if isinstance(content, str) else ""
+    if not isinstance(content, str):
+        return ""
+    content = THINK_BLOCK_RE.sub("", content)
+    content = THINK_TAG_RE.sub("\n", content)
+    return content.strip()
 
 
 def _required_choice_message_text(choice) -> str:
@@ -411,7 +418,26 @@ class OpenAIHelper:
                     logger.debug('Direct result returned, skipping further processing')
                     return response, '0'
                 if plugins_used and not _response_has_message_text(response):
-                    response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
+                    retry_response = await self._retry_empty_response_with_tools(
+                        chat_id,
+                        user_id,
+                        session_id,
+                        allowed_plugins,
+                    )
+                    if retry_response is not None:
+                        response, retry_plugins_used = await self.__handle_function_call(
+                            chat_id,
+                            retry_response,
+                            allowed_plugins=allowed_plugins,
+                            user_id=user_id,
+                            request_context=request_context,
+                        )
+                        plugins_used += retry_plugins_used
+                        if is_direct_result(response):
+                            logger.debug('Direct result returned after empty response retry')
+                            return response, '0'
+                    if not _response_has_message_text(response):
+                        response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
                 elif not plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
                         chat_id,
