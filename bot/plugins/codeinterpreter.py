@@ -100,6 +100,7 @@ class CodeInterpreterPlugin(Plugin):
 
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 120
+        self.python_alias_dir = "/tmp/chatgpt_telegram_bot_codeinterpreter_bin"
         self.supported_formats = {
             '.csv': pd.read_csv,
             '.xlsx': pd.read_excel,
@@ -169,6 +170,7 @@ class CodeInterpreterPlugin(Plugin):
                 
                 if os.path.exists(html_file):
                     return {
+                        "result": result,
                         "direct_result": {
                             "kind": "file",
                             "format": "path",
@@ -178,6 +180,7 @@ class CodeInterpreterPlugin(Plugin):
                 else:
                     self.advanced_visualization(result, session_id)
                     return {
+                        "result": result,
                         "direct_result": {
                             "kind": "file",
                             "format": "path",
@@ -315,6 +318,36 @@ class CodeInterpreterPlugin(Plugin):
             logging.error(f"Неожиданная ошибка при анализе кода: {e}")
             return {"error": self.t("codeinterpreter_unexpected_error", error=str(e))}
 
+    def _looks_like_python_code(self, text: str) -> bool:
+        code = self.extract_code_from_response(text or "").strip()
+        if not code:
+            return False
+        code_markers = (
+            r"^\s*import\s+",
+            r"^\s*from\s+\w+\s+import\s+",
+            r"^\s*def\s+",
+            r"^\s*class\s+",
+            r"^\s*print\(",
+            r"^\s*with\s+",
+            r"^\s*for\s+",
+            r"^\s*if\s+",
+            r"^\s*[A-Za-z_]\w*\s*=",
+        )
+        if "```" not in (text or "") and not any(re.search(marker, code, re.M) for marker in code_markers):
+            return False
+        analyze_result = self.analyze_code_syntax(code)
+        return isinstance(analyze_result, dict) and analyze_result.get("status") is True
+
+    def _ensure_python_alias_dir(self) -> str:
+        os.makedirs(self.python_alias_dir, exist_ok=True)
+        alias_path = os.path.join(self.python_alias_dir, "python")
+        if os.path.lexists(alias_path):
+            if not os.path.islink(alias_path) or os.readlink(alias_path) != sys.executable:
+                os.remove(alias_path)
+        if not os.path.exists(alias_path):
+            os.symlink(sys.executable, alias_path)
+        return self.python_alias_dir
+
     @async_handle_exceptions
     async def debug_code(self, code, error_message, add_prompt, session_id):
         """Автоматическая отладка кода с объяснением ошибок."""
@@ -342,9 +375,12 @@ class CodeInterpreterPlugin(Plugin):
 
         output_buffer = StringIO()
         original_stdout = sys.stdout
+        original_path = os.environ.get("PATH", "")
         sys.stdout = output_buffer
         try:
             with timeout(self.timeout_seconds):
+                python_alias_dir = self._ensure_python_alias_dir()
+                os.environ["PATH"] = python_alias_dir + os.pathsep + original_path
                 
                 exec_globals = {
                     "__name__": "__main__",
@@ -355,6 +391,7 @@ class CodeInterpreterPlugin(Plugin):
                     "matplotlib": matplotlib,
                     "logging": logging,
                     "os": os,
+                    "sys": sys,
                     "__captured_values__": {}
                 }
                 exec_locals = {}
@@ -385,6 +422,7 @@ class CodeInterpreterPlugin(Plugin):
         finally:
             # Восстанавливаем stdout и получаем перехваченный вывод
             sys.stdout = original_stdout
+            os.environ["PATH"] = original_path
             captured_output = output_buffer.getvalue().strip()
             
             # Добавляем перехваченный вывод в результат
@@ -598,12 +636,12 @@ class CodeInterpreterPlugin(Plugin):
     
     def clean_data(self, session_id):
         """Удаляет файлы с суффиксом _{session_id} в каталогах data и plots."""
-        for file in os.listdir('data'):
-            if f'_{session_id}' in file:
-                os.remove(os.path.join('data', file))
-        for file in os.listdir('plots'):
-            if f'_{session_id}' in file:
-                os.remove(os.path.join('plots', file))
+        for directory in ('data', 'plots'):
+            if not os.path.isdir(directory):
+                continue
+            for file in os.listdir(directory):
+                if f'_{session_id}' in file:
+                    os.remove(os.path.join(directory, file))
 
     async def run_code(self, data_path, code_prompt, session_id, attempts=3):
         """Основной метод для загрузки данных, выполнения и анализа кода."""
@@ -634,11 +672,14 @@ class CodeInterpreterPlugin(Plugin):
             return None
 
         try:
-            # Генерируем код
-            generated_code = await self.generate_code(code_prompt + add_prompt, session_id)
-            if not generated_code:
-                logging.error("Ошибка генерации кода")
-                return None
+            if self._looks_like_python_code(code_prompt):
+                generated_code = self.extract_code_from_response(code_prompt)
+            else:
+                # Генерируем код
+                generated_code = await self.generate_code(code_prompt + add_prompt, session_id)
+                if not generated_code:
+                    logging.error("Ошибка генерации кода")
+                    return None
         
             for attempt in range(attempts):
 
