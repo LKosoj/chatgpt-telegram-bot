@@ -143,6 +143,10 @@ async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
     )
     assert activated["success"] is True
     assert activated["scope"] == "chat:10"
+    assert activated["skill"]["script_tool_calls"] == [{
+        "tool_name": "skills.run_skill_script",
+        "arguments": {"skill_name": "demo", "script_name": "echo.py"},
+    }]
 
     updated = await plugin.execute(
         "update_skill_progress",
@@ -160,6 +164,16 @@ async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
     status = await plugin.execute("get_skill_status", helper=None, skill_name="demo", chat_id=10, user_id=42)
     assert status["success"] is True
     assert status["state"]["current_step"] == 2
+    assert status["script_tool_calls"] == [{
+        "tool_name": "skills.run_skill_script",
+        "arguments": {"skill_name": "demo", "script_name": "echo.py"},
+    }]
+
+    all_status = await plugin.execute("get_skill_status", helper=None, chat_id=10, user_id=42)
+    assert all_status["active_script_tool_calls"] == [{
+        "tool_name": "skills.run_skill_script",
+        "arguments": {"skill_name": "demo", "script_name": "echo.py"},
+    }]
 
 
 @pytest.mark.asyncio

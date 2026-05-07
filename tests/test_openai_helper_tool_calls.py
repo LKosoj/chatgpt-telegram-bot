@@ -996,6 +996,67 @@ async def test_skills_agent_routes_active_skill_script_names_away_from_codeinter
 
 
 @pytest.mark.asyncio
+async def test_skills_agent_rejects_ad_hoc_tmp_script_creation_via_codeinterpreter():
+    pm = DummyPluginManager({"codeinterpreter.deep_analysis": {"result": "should not run"}})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="use skill scripts")]))
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "codeinterpreter.deep_analysis",
+            json.dumps({
+                "code_prompt": (
+                    "Write the following JavaScript code to the file /tmp/create_silver_pptx.js. "
+                    "Use fs.writeFileSync to write it."
+                ),
+            }),
+            id="call-code",
+        ),
+    ])
+
+    await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert any(
+        "ad-hoc script files" in (message.get("content") or "")
+        and "skills.publish_result" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_rejects_codeinterpreter_when_active_skill_has_scripts():
+    pm = DummyPluginManager(
+        {"codeinterpreter.deep_analysis": {"result": "should not run"}},
+        plugins={"skills": FakeSkillsPlugin()},
+    )
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="use active skill script")]))
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "codeinterpreter.deep_analysis",
+            json.dumps({"code_prompt": "print(6 * 7)"}),
+            id="call-code",
+        ),
+    ])
+
+    await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert any(
+        "active skill provides scripts" in (message.get("content") or "")
+        and "skills.run_skill_script" in (message.get("content") or "")
+        and '"skill_name": "pptx"' in (message.get("content") or "")
+        and '"script_name": "build.py"' in (message.get("content") or "")
+        and "suggested_tool_call" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
 async def test_skills_agent_still_allows_general_codeinterpreter_calls():
     pm = DummyPluginManager({
         "codeinterpreter.deep_analysis": {"result": "42"},

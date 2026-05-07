@@ -414,6 +414,27 @@ class SkillsPlugin(Plugin):
             "scripts_admin_restricted": not self.script_admin_all,
         }
 
+    def _script_tool_calls(self, skill_id: str) -> List[Dict[str, Any]]:
+        info = self.available_skills.get(skill_id)
+        if not info:
+            return []
+        return [
+            {
+                "tool_name": "skills.run_skill_script",
+                "arguments": {
+                    "skill_name": skill_id,
+                    "script_name": script_name,
+                },
+            }
+            for script_name in info["scripts"]
+        ]
+
+    def _active_script_tool_calls(self, scope_state: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        calls: List[Dict[str, Any]] = []
+        for skill_id in sorted(scope_state):
+            calls.extend(self._script_tool_calls(skill_id))
+        return calls
+
     def _log_available_skills(self) -> None:
         if not self.available_skills:
             logger.info("No skills found in %s", self.skills_dir)
@@ -480,6 +501,7 @@ class SkillsPlugin(Plugin):
                 "description": info["description"],
                 "body": info["body"],
                 "scripts": info["scripts"],
+                "script_tool_calls": self._script_tool_calls(skill_id),
             },
             "scope": scope,
         }
@@ -489,12 +511,23 @@ class SkillsPlugin(Plugin):
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             if not skill_name:
-                return {"success": True, "scope": scope, "active_skills": scope_state}
+                return {
+                    "success": True,
+                    "scope": scope,
+                    "active_skills": scope_state,
+                    "active_script_tool_calls": self._active_script_tool_calls(scope_state),
+                }
 
             skill_id = self._resolve_skill_id(skill_name)
             if not skill_id or skill_id not in scope_state:
                 return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
-            return {"success": True, "scope": scope, "skill": skill_id, "state": scope_state[skill_id]}
+            return {
+                "success": True,
+                "scope": scope,
+                "skill": skill_id,
+                "state": scope_state[skill_id],
+                "script_tool_calls": self._script_tool_calls(skill_id),
+            }
 
     def _update_skill_progress(
         self,

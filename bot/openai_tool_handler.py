@@ -15,7 +15,12 @@ SKILL_SCRIPT_PATH_RE = re.compile(
     r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\][^\s'\"`/\\]+[/\\]scripts[/\\][^\s'\"`]+",
     re.IGNORECASE,
 )
-SCRIPT_EXECUTION_RE = re.compile(r"\b(?:subprocess|os\.system|exec|spawn|python3?|node|bash|sh)\b", re.IGNORECASE)
+SCRIPT_FILE_CREATION_RE = re.compile(
+    r"\b(?:write|create|save)\b[\s\S]{0,240}\b(?:javascript|js|python|shell|bash|node)\b"
+    r"[\s\S]{0,240}(?:/tmp/|\.js\b|\.py\b|\.sh\b)"
+    r"|\bfs\.writeFileSync\b",
+    re.IGNORECASE,
+)
 
 
 async def _prepend_stream_item(first_item, response):
@@ -97,32 +102,52 @@ def _is_skills_agent_mode(helper, chat_id: int) -> bool:
     return bool(current_mode and skills_mode and current_mode == skills_mode)
 
 
-def _active_skill_script_names(helper, tool_args: dict) -> set[str]:
+def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
     plugin_manager = getattr(helper, "plugin_manager", None)
     get_plugin = getattr(plugin_manager, "get_plugin", None)
     if not callable(get_plugin):
-        return set()
+        return []
 
     skills_plugin = get_plugin("skills")
     if not skills_plugin:
-        return set()
+        return []
 
     scope_key = getattr(skills_plugin, "_scope_key", None)
     if not callable(scope_key):
-        return set()
+        return []
 
     scope = scope_key(tool_args)
     active_skills = getattr(skills_plugin, "active_skills", {}).get(scope, {})
     available_skills = getattr(skills_plugin, "available_skills", {})
-    script_names = set()
-    for skill_id in active_skills:
+    scripts = []
+    for skill_id in sorted(active_skills):
         for script_name in available_skills.get(skill_id, {}).get("scripts", []):
-            script_names.add(str(script_name))
-            script_names.add(str(script_name).rsplit("/", 1)[-1])
-    return {name for name in script_names if name}
+            scripts.append({
+                "skill_name": str(skill_id),
+                "script_name": str(script_name),
+            })
+    return scripts
 
 
-def _skill_script_routing_error(helper, chat_id: int, tool_name: str, tool_args: dict) -> str | None:
+def _skill_script_routing_payload(error: str, active_scripts: list[dict] | None = None) -> dict:
+    payload = {
+        "error": error,
+        "required_tool": "skills.run_skill_script",
+    }
+    if active_scripts:
+        payload["call_instruction"] = (
+            "Call skills.run_skill_script with one of the available skill_name/script_name pairs."
+        )
+        payload["available_skill_scripts"] = active_scripts
+        if len(active_scripts) == 1:
+            payload["suggested_tool_call"] = {
+                "tool_name": "skills.run_skill_script",
+                "arguments": active_scripts[0],
+            }
+    return payload
+
+
+def _skill_script_routing_error(helper, chat_id: int, tool_name: str, tool_args: dict) -> dict | None:
     if tool_name != "codeinterpreter.deep_analysis" or not _is_skills_agent_mode(helper, chat_id):
         return None
 
@@ -130,21 +155,27 @@ def _skill_script_routing_error(helper, chat_id: int, tool_name: str, tool_args:
         str(tool_args.get(field) or "")
         for field in ("code_prompt", "data_path")
     )
+    active_scripts = _active_skill_scripts(helper, tool_args)
+    if active_scripts:
+        return _skill_script_routing_payload(
+            "Routing denied in skills_agent: an active skill provides scripts, so code "
+            "execution must go through skills.run_skill_script, not codeinterpreter.deep_analysis.",
+            active_scripts,
+        )
+
     if SKILL_SCRIPT_PATH_RE.search(text):
-        return (
+        return _skill_script_routing_payload(
             "Routing denied in skills_agent: skill scripts must be executed through "
             "skills.run_skill_script, not codeinterpreter.deep_analysis."
         )
 
-    if not SCRIPT_EXECUTION_RE.search(text):
-        return None
+    if SCRIPT_FILE_CREATION_RE.search(text):
+        return _skill_script_routing_payload(
+            "Routing denied in skills_agent: ad-hoc script files must not be created or "
+            "executed through codeinterpreter.deep_analysis. Use active skill scripts via "
+            "skills.run_skill_script, then publish artifacts through skills.publish_result."
+        )
 
-    for script_name in _active_skill_script_names(helper, tool_args):
-        if script_name in text:
-            return (
-                "Routing denied in skills_agent: active skill scripts must be executed through "
-                "skills.run_skill_script, not codeinterpreter.deep_analysis."
-            )
     return None
 
 
@@ -280,14 +311,11 @@ async def handle_function_call(
                     args['user_id'] = user_id if user_id is not None else chat_id
                 routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
                 if routing_error:
-                    logger.warning("%s Tool=%s", routing_error, tool_name)
+                    logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)
                     errors.append((
                         tool_name,
                         tool_call_id,
-                        json.dumps({
-                            "error": routing_error,
-                            "required_tool": "skills.run_skill_script",
-                        }, ensure_ascii=False),
+                        json.dumps(routing_error, ensure_ascii=False),
                     ))
                     continue
                 arguments = json.dumps(args, ensure_ascii=False)
