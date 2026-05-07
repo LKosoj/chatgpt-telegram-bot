@@ -74,6 +74,32 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
     }
 
 
+def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    skill_dir = skills_dir / "workflow"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: workflow\n"
+            "description: Full workflow: extract -> analyze -> report\n"
+            "allow_scripts: false\n"
+            "---\n"
+            "Follow the workflow.\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["workflow"]["description"] == "Full workflow: extract -> analyze -> report"
+    assert plugin.available_skills["workflow"]["metadata"]["allow_scripts"] is False
+
+
 @pytest.mark.asyncio
 async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)

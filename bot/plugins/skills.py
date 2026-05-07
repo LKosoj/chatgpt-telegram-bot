@@ -258,11 +258,46 @@ class SkillsPlugin(Plugin):
         if content.startswith("---"):
             parts = content.split("---", 2)
             if len(parts) == 3 and not parts[0].strip():
-                metadata = yaml.safe_load(parts[1].strip()) or {}
+                frontmatter = parts[1].strip()
+                try:
+                    metadata = yaml.safe_load(frontmatter) or {}
+                except yaml.YAMLError:
+                    metadata = self._parse_flat_frontmatter(frontmatter)
                 if not isinstance(metadata, dict):
                     metadata = {}
                 return metadata, parts[2].strip()
         return {}, content.strip()
+
+    def _parse_flat_frontmatter(self, frontmatter: str) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        current_key = None
+        for raw_line in frontmatter.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if raw_line[0].isspace() and current_key:
+                metadata[current_key] = f"{metadata[current_key]} {line}".strip()
+                continue
+
+            key, separator, value = raw_line.partition(":")
+            if not separator:
+                continue
+            key = key.strip()
+            if not key:
+                continue
+            metadata[key] = self._parse_flat_scalar(value.strip())
+            current_key = key
+        return metadata
+
+    def _parse_flat_scalar(self, value: str) -> Any:
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            return value[1:-1]
+        lowered = value.lower()
+        if lowered in TRUE_VALUES:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return value
 
     def _list_skill_scripts(self, skill_path: Path) -> List[str]:
         scripts_dir = skill_path / "scripts"
