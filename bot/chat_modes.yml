@@ -1512,5 +1512,8 @@ skills_agent:
 
   parse_mode: HTML
   defer_direct_results: true
+  prompt_markers:
+    - "локальные skills"
+    - "skills."
   tools:
     - All

@@ -53,3 +53,16 @@ def test_skills_agent_mode_is_registered():
     assert "Никогда не выводите сырые результаты tools" in mode["prompt_start"]
     assert "Не выдумывайте абсолютные пути" in mode["prompt_start"]
     assert "не повторяйте тот же вызов" in mode["prompt_start"]
+
+
+def test_skills_agent_mode_is_detected_by_prompt_markers():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    mode = registry.get_mode_by_system_prompt(
+        "Вы - агент, который умеет использовать локальные skills через инструменты skills.\n"
+        "Старая версия prompt без mode_key."
+    )
+
+    assert mode is not None
+    assert mode["defer_direct_results"] is True

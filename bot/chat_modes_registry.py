@@ -49,6 +49,11 @@ class ChatModesRegistry:
         for mode_data in self._data.values():
             if mode_data.get("prompt_start", "").strip() == system_content.strip():
                 return mode_data
+        normalized_content = system_content.lower()
+        for mode_data in self._data.values():
+            markers = mode_data.get("prompt_markers") or []
+            if markers and all(str(marker).lower() in normalized_content for marker in markers):
+                return mode_data
         return None
 
     def get_all_modes_list(self) -> List[str]:

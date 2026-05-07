@@ -195,6 +195,7 @@ class OpenAIHelper:
         self.plugin_manager = plugin_manager
         self.db = db
         self.conversations: dict[int: list] = {}  # {chat_id: history}
+        self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
@@ -528,10 +529,11 @@ class OpenAIHelper:
                     session_id = request_context.session_id
             
             # Проверяем, инициализирован ли контекст разговора
-            if chat_id not in self.conversations:
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+            loaded_session_id = self.loaded_conversation_sessions.get(chat_id)
+            session_changed = chat_id in self.loaded_conversation_sessions and loaded_session_id != session_id
+            if chat_id not in self.conversations or session_changed:
                 logger.info(f'Initializing conversation context for chat_id={chat_id}')
-                # Пытаемся загрузить контекст из базы данных с учетом session_id
-                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
                 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
@@ -539,6 +541,7 @@ class OpenAIHelper:
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     self.reset_chat_history(chat_id, session_id=session_id)
+                self.loaded_conversation_sessions[chat_id] = session_id
             
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
@@ -668,14 +671,17 @@ class OpenAIHelper:
             
             # Пытаемся загрузить контекст из базы данных
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
-                        
-            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+
+            loaded_session_id = self.loaded_conversation_sessions.get(chat_id)
+            session_changed = chat_id in self.loaded_conversation_sessions and loaded_session_id != session_id
+            if chat_id not in self.conversations or self.__max_age_reached(chat_id) or session_changed:
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
                     self.conversations[chat_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     self.reset_chat_history(chat_id, session_id=session_id)
+                self.loaded_conversation_sessions[chat_id] = session_id
 
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
@@ -1612,6 +1618,7 @@ class OpenAIHelper:
             system_message = self.db.get_mode_from_context(context)
             
             self.conversations[chat_id] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
+            self.loaded_conversation_sessions[chat_id] = session_id
             
             # Сохраняем обновленный контекст
             self.db.save_conversation_context(
@@ -1694,6 +1701,7 @@ class OpenAIHelper:
         
         # Получаем текущий контекст для сохранения с учетом session_id
         _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+        self.loaded_conversation_sessions[chat_id] = session_id
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
         self.db.save_conversation_context(

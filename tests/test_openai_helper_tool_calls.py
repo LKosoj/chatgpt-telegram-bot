@@ -65,6 +65,15 @@ class DummyDB:
         self.saved_contexts.append((args, kwargs))
 
 
+class MultiSessionDB(DummyDB):
+    def __init__(self, contexts):
+        super().__init__()
+        self.contexts = contexts
+
+    def get_conversation_context(self, chat_id, session_id=None, *args, **kwargs):
+        return self.contexts[session_id], None, 0.1, 80, session_id
+
+
 class DummyPluginManager:
     def __init__(self, responses, specs=None):
         self.responses = responses
@@ -545,6 +554,66 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
     tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
     assert tool_messages
     assert "/tmp/image.png" in tool_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_new_session_reloads_mode_before_deferring_direct_results():
+    contexts = {
+        "old-session": {
+            "messages": [
+                {"role": "system", "content": "plain", "mode_key": "assistant"},
+                {"role": "user", "content": "old request"},
+            ],
+        },
+        "new-session": {
+            "messages": [
+                {"role": "system", "content": "agent-mode", "mode_key": "skills_agent"},
+            ],
+        },
+    }
+    responses = {
+        "stable_diffusion.stable_diffusion": {
+            "direct_result": {
+                "kind": "photo",
+                "format": "path",
+                "value": "/tmp/image.png",
+                "add_value": "generated",
+            },
+        },
+    }
+    helper = _make_helper(
+        DummyPluginManager(responses),
+        db=MultiSessionDB(contexts),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),
+            ]),
+            FakeResponse(content="presentation ready"),
+        ]),
+    )
+    helper.conversations[1] = contexts["old-session"]["messages"]
+    helper.loaded_conversation_sessions[1] = "old-session"
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: (
+            {"defer_direct_results": True} if key == "skills_agent"
+            else {"defer_direct_results": False} if key == "assistant"
+            else None
+        ),
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="создай презентацию",
+        user_id=1,
+        session_id="new-session",
+    )
+
+    assert answer == "presentation ready"
+    assert total_tokens == 3
+    assert helper.client.calls == 2
+    assert helper.conversations[1][0]["mode_key"] == "skills_agent"
+    assert helper.loaded_conversation_sessions[1] == "new-session"
 
 
 @pytest.mark.asyncio

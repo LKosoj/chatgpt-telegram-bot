@@ -974,6 +974,7 @@ class ChatGPTTelegramBot:
                     
                     # Обновляем контекст в OpenAI и базе данных
                     self.openai.conversations[conversation_key] = current_context
+                    self.openai.loaded_conversation_sessions[conversation_key] = session_id
                     
                     # Сохраняем настройки режима в базу данных
                     self.db.save_conversation_context(
@@ -3075,6 +3076,7 @@ class ChatGPTTelegramBot:
                 current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(conversation_key, session_id)
                 if current_context and 'messages' in current_context:
                     self.openai.conversations[conversation_key] = current_context['messages']
+                    self.openai.loaded_conversation_sessions[conversation_key] = session_id
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "delete":
@@ -3087,6 +3089,7 @@ class ChatGPTTelegramBot:
                 current_context, _, _, _, _ = self.db.get_conversation_context(conversation_key, session_id, openai_helper=self.openai)
                 if current_context and 'messages' in current_context:
                     self.openai.conversations[conversation_key] = current_context['messages']
+                    self.openai.loaded_conversation_sessions[conversation_key] = session_id
                 await self.reset(update, context)  # Обновляем список сессий
                 
             elif action == "change_mode":
