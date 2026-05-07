@@ -964,7 +964,7 @@ class ChatGPTTelegramBot:
                     
                     # Добавляем системное сообщение в начало контекста
                     reset_content = mode_data.get('prompt_start', '')
-                    system_message = {"role": "system", "content": reset_content}
+                    system_message = {"role": "system", "content": reset_content, "mode_key": mode}
                     
                     # Если текущий контекст уже содержит системное сообщение, заменяем его
                     if current_context and current_context[0].get('role') == 'system':

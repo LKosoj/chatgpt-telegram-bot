@@ -526,9 +526,10 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
         DummyPluginManager(responses),
         client=DummyClient([FakeResponse(content="presentation ready")]),
     )
-    helper.conversations[1] = [{"role": "system", "content": "agent-mode"}]
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
     helper.chat_modes_registry = types.SimpleNamespace(
-        get_mode_by_system_prompt=lambda content: {"defer_direct_results": content == "agent-mode"},
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
     )
     response = FakeResponse(tool_calls=[
         FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),

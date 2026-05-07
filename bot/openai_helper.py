@@ -639,9 +639,7 @@ class OpenAIHelper:
                         None
                     )
 
-            current_mode = None
-            if system_message:
-                current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get('content', ''))
+            current_mode = self._mode_from_system_message(system_message)
 
             if current_mode and 'tools' in current_mode:
                 allowed_plugins = current_mode['tools']
@@ -705,10 +703,12 @@ class OpenAIHelper:
                         # Проверяем, что история не пуста
                         if not self.conversations[chat_id]:
                             logger.warning(f'Conversation history is empty for chat_id {chat_id}. Initializing with system message.')
-                            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt}]
+                            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt, "mode_key": mode_key}]
                         else:
                             # Заменяем системное сообщение в истории
+                            self.conversations[chat_id][0]['role'] = 'system'
                             self.conversations[chat_id][0]['content'] = new_system_prompt
+                            self.conversations[chat_id][0]['mode_key'] = mode_key
                         logger.info(f"🔄 Режим работы изменен на: {mode_key}")
                         
                         # Сохраняем обновленный контекст
@@ -896,12 +896,28 @@ class OpenAIHelper:
             ],
         })
 
+    def _mode_from_system_message(self, system_message: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not system_message:
+            return None
+
+        mode_key = system_message.get("mode_key")
+        get_mode_by_key = getattr(self.chat_modes_registry, "get_mode_by_key", None)
+        if mode_key and callable(get_mode_by_key):
+            current_mode = get_mode_by_key(mode_key)
+            if current_mode:
+                return current_mode
+
+        content = system_message.get("content", "")
+        current_mode = self.chat_modes_registry.get_mode_by_system_prompt(content)
+        if current_mode:
+            return current_mode
+
+        return None
+
     def _defer_direct_tool_results(self, chat_id: int) -> bool:
         messages = self.conversations.get(chat_id, [])
         system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
-        if not system_message:
-            return False
-        current_mode = self.chat_modes_registry.get_mode_by_system_prompt(system_message.get("content", ""))
+        current_mode = self._mode_from_system_message(system_message)
         return bool(current_mode and current_mode.get("defer_direct_results"))
 
     def _add_function_call_to_history(
