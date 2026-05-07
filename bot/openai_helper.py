@@ -60,6 +60,7 @@ HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
 THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
+RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
 
 
 def _choice_message_text(choice) -> str:
@@ -69,7 +70,10 @@ def _choice_message_text(choice) -> str:
         return ""
     content = THINK_BLOCK_RE.sub("", content)
     content = THINK_TAG_RE.sub("\n", content)
-    return content.strip()
+    content = content.strip()
+    if RAW_TOOL_RESULT_RE.match(content):
+        return ""
+    return content
 
 
 def _required_choice_message_text(choice) -> str:
@@ -864,8 +868,47 @@ class OpenAIHelper:
             request_context,
         )
 
-    def _add_function_call_to_history(self, chat_id: int, function_name: str, content: str) -> None:
-        self.__add_function_call_to_history(chat_id=chat_id, function_name=function_name, content=content)
+    def _uses_structured_tool_history(self, model_to_use: str) -> bool:
+        return model_to_use in (GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS)
+
+    def _tool_result_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except TypeError:
+            return str(content)
+
+    def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -> None:
+        self.conversations[chat_id].append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call.get("arguments") or "{}",
+                    },
+                }
+                for call in tool_calls
+            ],
+        })
+
+    def _add_function_call_to_history(
+        self,
+        chat_id: int,
+        function_name: str,
+        content: str,
+        tool_call_id: str | None = None,
+    ) -> None:
+        self.__add_function_call_to_history(
+            chat_id=chat_id,
+            function_name=function_name,
+            content=content,
+            tool_call_id=tool_call_id,
+        )
 
     def _localized_text(self, key, bot_language):
         return localized_text(key, bot_language)
@@ -1576,13 +1619,22 @@ class OpenAIHelper:
         max_age_minutes = self.config['max_conversation_age_minutes']
         return last_updated < now - datetime.timedelta(minutes=max_age_minutes)
 
-    def __add_function_call_to_history(self, chat_id, function_name, content):
+    def __add_function_call_to_history(self, chat_id, function_name, content, tool_call_id=None):
         """
         Adds a function call to the conversation history
         """
         # For models that don't support function role, add as a user message
         user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
         model_to_use = self.get_current_model(user_id)
+        content = self._tool_result_content(content)
+
+        if tool_call_id and self._uses_structured_tool_history(model_to_use):
+            self.conversations[chat_id].append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content,
+            })
+            return
 
         # Some providers either don't support (or inconsistently support) the legacy "function" role.
         # For those, we inject tool results as regular user text so the model reliably sees them.
@@ -1726,17 +1778,25 @@ class OpenAIHelper:
             num_tokens += tokens_per_message
             for key, value in message.items():
                 if key == 'content':
+                    if value is None:
+                        continue
                     if isinstance(value, str):
                         num_tokens += len(encoding.encode(value))
-                    else:
+                    elif isinstance(value, list):
                         for message1 in value:
                             if message1['type'] == 'image_url':
                                 image = decode_image(message1['image_url']['url'])
                                 num_tokens += self.__count_tokens_vision(image)
                             else:
                                 num_tokens += len(encoding.encode(message1['text']))
+                    else:
+                        num_tokens += len(encoding.encode(str(value)))
+                elif key == 'tool_calls':
+                    num_tokens += len(encoding.encode(json.dumps(value, ensure_ascii=False)))
                 else:
-                    num_tokens += len(encoding.encode(value))
+                    if value is None:
+                        continue
+                    num_tokens += len(encoding.encode(str(value)))
                     if key == "name":
                         num_tokens += tokens_per_name
         num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>

@@ -118,7 +118,8 @@ class DummyClient:
 
 
 class FakeToolCall:
-    def __init__(self, name, arguments):
+    def __init__(self, name, arguments, id=None):
+        self.id = id or f"call_{name.replace('.', '_')}"
         self.function = types.SimpleNamespace(name=name, arguments=arguments)
 
 
@@ -311,6 +312,46 @@ async def test_get_chat_response_rejects_empty_model_content():
 
 
 @pytest.mark.asyncio
+async def test_llmgateway_tool_results_use_structured_tool_history():
+    pm = DummyPluginManager({
+        "skills.get_skill_status": {"success": True, "skill": {"active": True}},
+    })
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills.get_skill_status", "{}", id="call-status"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert set(tools_used) == {"skills.get_skill_status"}
+    assert out.choices[0].message.content == "done"
+    assert helper.conversations[1][0] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call-status",
+            "type": "function",
+            "function": {
+                "name": "skills.get_skill_status",
+                "arguments": "{}",
+            },
+        }],
+    }
+    assert helper.conversations[1][1] == {
+        "role": "tool",
+        "tool_call_id": "call-status",
+        "content": '{"success": true, "skill": {"active": true}}',
+    }
+    assert not any(
+        isinstance(message.get("content"), str)
+        and message["content"].startswith("Function skills.get_skill_status returned")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
 async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     tool_spec = {
         "type": "function",
@@ -358,6 +399,38 @@ async def test_get_chat_response_strips_think_markers():
 
     assert answer == "visible\ndone"
     assert total_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_raw_tool_result_response_is_retried_instead_of_sent():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.get_skill_status",
+            "description": "Get skill status",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.get_skill_status": {"success": True, "skill": {"active": True}}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("skills.get_skill_status", "{}")], content=None),
+        FakeResponse(content='Function skills.get_skill_status returned: {"success": true}'),
+        FakeResponse(content="final answer"),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use skills",
+        user_id=1,
+    )
+
+    assert answer == "final answer"
+    assert total_tokens == 3
+    assert client.calls == 3
 
 
 @pytest.mark.asyncio
@@ -636,8 +709,8 @@ async def test_mode_restrictions_survive_tool_reentry():
     assert pm.spec_calls
     assert all(call == ["weather"] for call in pm.spec_calls)
     assert any(
-        "task_management.create_task" in message.get("content", "")
-        and "not allowed in the current chat mode" in message.get("content", "")
+        "task_management.create_task" in (message.get("content") or "")
+        and "not allowed in the current chat mode" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
 

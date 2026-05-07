@@ -73,7 +73,9 @@ async def handle_function_call(
                             logger.info("found tool calls")
                             for tc in first_choice.delta.tool_calls:
                                 idx = getattr(tc, "index", 0)
-                                entry = tool_call_parts.setdefault(idx, {"name": "", "arguments": ""})
+                                entry = tool_call_parts.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                                if getattr(tc, "id", None):
+                                    entry["id"] += tc.id
                                 if tc.function.name:
                                     entry["name"] += tc.function.name
                                 if tc.function.arguments:
@@ -87,7 +89,8 @@ async def handle_function_call(
             except openai.APIError as e:
                 logger.error(f"API Error in function call streaming: {e}")
                 return response, tools_used
-            for _, entry in sorted(tool_call_parts.items(), key=lambda x: x[0]):
+            for idx, entry in sorted(tool_call_parts.items(), key=lambda x: x[0]):
+                entry["id"] = entry["id"] or f"call_{idx}"
                 tool_calls.append(entry)
         else:
             if len(response.choices) > 0:
@@ -97,6 +100,7 @@ async def handle_function_call(
                     logger.info("found tool calls")
                     for tc in first_choice.message.tool_calls:
                         tool_calls.append({
+                            "id": getattr(tc, "id", None) or f"call_{len(tool_calls)}",
                             "name": tc.function.name or "",
                             "arguments": tc.function.arguments or "",
                         })
@@ -105,7 +109,7 @@ async def handle_function_call(
                     if legacy:
                         tool_name, arguments = legacy
                         logger.info("found legacy tool request in assistant content")
-                        tool_calls.append({"name": tool_name, "arguments": arguments})
+                        tool_calls.append({"id": None, "name": tool_name, "arguments": arguments, "legacy": True})
                     else:
                         return response, tools_used
             else:
@@ -115,17 +119,42 @@ async def handle_function_call(
             return response, tools_used
 
         model_to_use = helper.get_current_model(user_id)
+        uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
+        add_assistant_tool_calls_to_history = getattr(helper, "_add_assistant_tool_calls_to_history", None)
+        structured_tool_history = (
+            uses_structured_tool_history(model_to_use)
+            and callable(add_assistant_tool_calls_to_history)
+            and all(call.get("id") and not call.get("legacy") for call in tool_calls)
+        )
+        if structured_tool_history:
+            add_assistant_tool_calls_to_history(chat_id, tool_calls)
+
+        def add_tool_result(tool_name, tool_response, tool_call_id=None):
+            if structured_tool_history:
+                helper._add_function_call_to_history(
+                    chat_id=chat_id,
+                    function_name=tool_name,
+                    content=tool_response,
+                    tool_call_id=tool_call_id,
+                )
+            else:
+                helper._add_function_call_to_history(
+                    chat_id=chat_id,
+                    function_name=tool_name,
+                    content=tool_response,
+                )
 
         prepared = []
-        errors = {}
+        errors = []
         for call in tool_calls:
+            tool_call_id = call.get("id")
             tool_name = call["name"]
             arguments = call["arguments"]
             logger.info(f'Calling tool {tool_name} with arguments {arguments}')
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
                 logger.warning(error)
-                errors[tool_name] = json.dumps({'error': error}, ensure_ascii=False)
+                errors.append((tool_name, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
             try:
                 args = json.loads(arguments)
@@ -138,19 +167,19 @@ async def handle_function_call(
                     args['chat_id'] = str(chat_id)
                     args['user_id'] = user_id if user_id is not None else chat_id
                 arguments = json.dumps(args, ensure_ascii=False)
-                prepared.append((tool_name, arguments))
+                prepared.append((tool_name, arguments, tool_call_id))
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
-                errors[tool_name] = json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)
+                errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
         tasks = [
             helper.plugin_manager.call_function(name, helper, args, request_context=request_context)
-            for name, args in prepared
+            for name, args, _ in prepared
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         direct_result = None
-        for (tool_name, _), tool_response in zip(prepared, results):
+        for (tool_name, _, tool_call_id), tool_response in zip(prepared, results):
             if isinstance(tool_response, Exception):
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             logger.info(f'Function {tool_name} response: {tool_response}')
@@ -159,16 +188,19 @@ async def handle_function_call(
             if is_direct_result(tool_response) and direct_result is None:
                 direct_result = tool_response
             if direct_result:
-                helper._add_function_call_to_history(chat_id=chat_id, function_name=tool_name,
-                                                     content=json.dumps({'result': 'Done, the content has been sent'
-                                                                     'to the user.'}))
+                add_tool_result(
+                    tool_name,
+                    json.dumps({'result': 'Done, the content has been sent'
+                                'to the user.'}),
+                    tool_call_id,
+                )
             else:
-                helper._add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
+                add_tool_result(tool_name, tool_response, tool_call_id)
 
-        for tool_name, tool_response in errors.items():
+        for tool_name, tool_call_id, tool_response in errors:
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
-            helper._add_function_call_to_history(chat_id=chat_id, function_name=tool_name, content=tool_response)
+            add_tool_result(tool_name, tool_response, tool_call_id)
 
         if direct_result:
             return direct_result, tools_used
