@@ -335,7 +335,8 @@ async def handle_function_call(
             else:
                 if is_dr and should_defer:
                     logger.info("Deferring direct result from tool %s to model reentry", tool_name)
-                    deferred_direct_results.append(tool_response)
+                    if tool_name == "skills.publish_artifact":
+                        deferred_direct_results.append(tool_response)
                 add_tool_result(tool_name, tool_response, tool_call_id)
 
         for tool_name, tool_call_id, tool_response in errors:

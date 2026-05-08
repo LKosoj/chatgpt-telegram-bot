@@ -597,11 +597,11 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
 
     assert helper.client.calls == 1
     assert set(tools_used) == {"stable_diffusion.stable_diffusion"}
-    assert isinstance(out, dict)
-    assert out["direct_result"]["kind"] == "final"
-    assert out["direct_result"]["text"] == "presentation ready"
-    artifact_values = [a.get("value") for a in out["direct_result"]["artifacts"]]
-    assert artifact_values == ["/tmp/image.png"]
+    # Intermediate direct_result tools (image generation etc.) are deferred only
+    # into the tool history so the model can reference them. They must not be
+    # re-delivered alongside the final answer, otherwise the user receives helper
+    # images before the actual artifact (e.g. images before the final pptx).
+    assert out.choices[0].message.content == "presentation ready"
     tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
     assert tool_messages
     assert "/tmp/image.png" in tool_messages[0]["content"]
@@ -660,12 +660,8 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
         session_id="new-session",
     )
 
-    assert isinstance(answer, dict)
-    assert answer["direct_result"]["kind"] == "final"
-    assert answer["direct_result"]["text"] == "presentation ready"
-    artifact_values = [a.get("value") for a in answer["direct_result"]["artifacts"]]
-    assert artifact_values == ["/tmp/image.png"]
-    assert total_tokens is not None
+    assert answer == "presentation ready"
+    assert total_tokens == 3
     assert helper.client.calls == 2
     assert helper.conversations[1][0]["mode_key"] == "skills_agent"
     assert helper.loaded_conversation_sessions[1] == "new-session"
