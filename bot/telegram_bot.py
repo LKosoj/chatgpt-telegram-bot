@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import io
+import tempfile
 import requests
 import json
 import sys
@@ -146,6 +147,91 @@ class ChatGPTTelegramBot:
         if document and document.mime_type and document.mime_type.startswith('image/'):
             return document.file_id
         return None
+
+    def _document_file_from_message(self, message):
+        if not message:
+            return None
+        document = getattr(message, 'document', None)
+        if not document:
+            return None
+        mime_type = getattr(document, 'mime_type', None) or ''
+        if mime_type.startswith('image/'):
+            return None
+        return document
+
+    @staticmethod
+    def _safe_reply_file_name(document) -> str:
+        fallback = f"telegram-file-{getattr(document, 'file_unique_id', '') or getattr(document, 'file_id', 'file')}"
+        raw_name = os.path.basename(getattr(document, 'file_name', None) or fallback).strip()
+        raw_name = raw_name or fallback
+        safe_name = re.sub(r"[^\w.\- ]+", "_", raw_name, flags=re.UNICODE).strip(" ._")
+        return safe_name or fallback
+
+    async def _download_replied_file_for_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict | None:
+        message = update.effective_message
+        replied_message = getattr(message, 'reply_to_message', None)
+        document = self._document_file_from_message(replied_message)
+        if not document:
+            return None
+
+        file_name = self._safe_reply_file_name(document)
+        temp_dir = tempfile.mkdtemp(prefix="telegram_reply_file_")
+        local_path = os.path.join(temp_dir, file_name)
+        try:
+            telegram_file = await context.bot.get_file(document.file_id)
+            await telegram_file.download_to_drive(local_path)
+        except Exception:
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                os.rmdir(temp_dir)
+            except OSError:
+                logger.debug("Could not clean up failed replied file download at %s", local_path, exc_info=True)
+            raise
+        logger.info(
+            "Downloaded replied Telegram file for model use: file_id=%s path=%s",
+            document.file_id,
+            local_path,
+        )
+        return {
+            "local_path": local_path,
+            "file_name": getattr(document, 'file_name', None) or file_name,
+            "mime_type": getattr(document, 'mime_type', None) or "unknown",
+            "file_size": getattr(document, 'file_size', None),
+        }
+
+    @staticmethod
+    def _prompt_with_replied_file_context(prompt: str, file_context: dict) -> str:
+        size = file_context.get("file_size")
+        size_text = str(size) if size is not None else "unknown"
+        return (
+            f"{prompt}\n\n"
+            "Telegram reply context:\n"
+            "The user replied to a file. It has been downloaded locally for this request.\n"
+            f"- local_path: {file_context['local_path']}\n"
+            f"- file_name: {file_context['file_name']}\n"
+            f"- mime_type: {file_context['mime_type']}\n"
+            f"- size_bytes: {size_text}\n\n"
+            "Use local_path as the source file. If the user asks to edit, convert, or analyze it, "
+            "work from this file and return the resulting file to the user. Do not ask the user to "
+            "resend the file unless reading local_path fails."
+        )
+
+    @staticmethod
+    def _cleanup_replied_file_context(file_context: dict | None) -> None:
+        if not file_context:
+            return
+        local_path = file_context.get("local_path")
+        if not local_path:
+            return
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            temp_dir = os.path.dirname(local_path)
+            if temp_dir:
+                os.rmdir(temp_dir)
+        except OSError:
+            logger.debug("Could not clean up replied file context at %s", local_path, exc_info=True)
 
     def _reply_context_kind(self, update: Update) -> str | None:
         message = update.effective_message
@@ -1817,8 +1903,13 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _describe, constants.ChatAction.TYPING)
                 return
 
+        replied_file_context = None
+        analytics_prompt = prompt
         try:
             total_tokens = 0
+            replied_file_context = await self._download_replied_file_for_model(update, context)
+            if replied_file_context:
+                prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
             model_to_use = self.openai.get_current_model(user_id)
                 
@@ -1953,7 +2044,7 @@ class ChatGPTTelegramBot:
                             analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
                             if analytics_plugin:
                                 message_data = {
-                                    'text': prompt,
+                                    'text': analytics_prompt,
                                     'tokens': total_tokens,
                                     'user_id': user_id
                                 }
@@ -1998,7 +2089,7 @@ class ChatGPTTelegramBot:
             analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
             if analytics_plugin:
                 message_data = {
-                    'text': prompt,
+                    'text': analytics_prompt,
                     'tokens': total_tokens,
                     'user_id': user_id
                 }
@@ -2018,6 +2109,8 @@ class ChatGPTTelegramBot:
                 text=f"{localized_text('chat_fail', self.config['bot_language'])} {error_message}",
                 parse_mode=constants.ParseMode.MARKDOWN
             )
+        finally:
+            self._cleanup_replied_file_context(replied_file_context)
 
     async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """

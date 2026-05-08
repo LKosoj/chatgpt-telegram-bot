@@ -2,6 +2,7 @@ import importlib.util
 import logging
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -92,6 +93,16 @@ class FakeDB:
         return self.conversation_context
 
 
+class FakeTelegramFile:
+    def __init__(self, content=b"file-content"):
+        self.content = content
+        self.downloaded_paths = []
+
+    async def download_to_drive(self, path):
+        self.downloaded_paths.append(path)
+        Path(path).write_bytes(self.content)
+
+
 class FakeMessage:
     def __init__(self, chat_id=1234, user_id=42, message_id=7, reply_side_effects=None):
         self.chat_id = chat_id
@@ -126,13 +137,14 @@ class FakeUpdate:
         self.effective_user = message.from_user
 
 
-def _make_context():
-    return SimpleNamespace(
-        bot=SimpleNamespace(
-            id=999,
-            delete_message=AsyncMock(),
-        )
+def _make_context(telegram_file=None):
+    bot = SimpleNamespace(
+        id=999,
+        delete_message=AsyncMock(),
     )
+    if telegram_file is not None:
+        bot.get_file = AsyncMock(return_value=telegram_file)
+    return SimpleNamespace(bot=bot, user_data={})
 
 
 def _make_bot(chunks, conversation_context):
@@ -259,6 +271,49 @@ async def test_reply_to_image_edit_request_still_edits_image(monkeypatch):
         "telegram-image-file",
     )
     assert bot.openai.stream_requests == []
+
+
+@pytest.mark.asyncio
+async def test_reply_to_document_adds_downloaded_file_context_to_chat_request(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Done", "1"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    telegram_file = FakeTelegramFile(b"pptx-bytes")
+    context = _make_context(telegram_file)
+    message = FakeMessage()
+    message.reply_to_message = SimpleNamespace(
+        photo=[],
+        document=SimpleNamespace(
+            file_id="telegram-doc-file",
+            file_unique_id="telegram-doc-unique",
+            file_name="deck.pptx",
+            mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            file_size=10,
+        ),
+        text=None,
+        caption=None,
+    )
+    update = FakeUpdate(message)
+
+    await bot.process_message("сделай заголовок черным", update, context)
+
+    context.bot.get_file.assert_awaited_once_with("telegram-doc-file")
+    assert telegram_file.downloaded_paths
+    local_path = telegram_file.downloaded_paths[0]
+    query = bot.openai.stream_requests[0]["query"]
+    assert "сделай заголовок черным" in query
+    assert "Telegram reply context:" in query
+    assert f"- local_path: {local_path}" in query
+    assert "- file_name: deck.pptx" in query
+    assert "- size_bytes: 10" in query
+    assert not Path(local_path).exists()
+    assert not Path(local_path).parent.exists()
 
 
 @pytest.mark.asyncio
