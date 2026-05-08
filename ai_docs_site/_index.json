@@ -1,0 +1,571 @@
+{
+  "sections": [
+    {
+      "id": "architecture",
+      "title": "Архитектура",
+      "path": "architecture.md"
+    },
+    {
+      "id": "runtime",
+      "title": "Запуск и окружение",
+      "path": "runtime.md"
+    },
+    {
+      "id": "dependencies",
+      "title": "Зависимости",
+      "path": "dependencies.md"
+    },
+    {
+      "id": "testing",
+      "title": "Тестирование",
+      "path": "testing.md"
+    },
+    {
+      "id": "conventions",
+      "title": "Соглашения",
+      "path": "conventions.md"
+    },
+    {
+      "id": "glossary",
+      "title": "Глоссарий",
+      "path": "glossary.md"
+    },
+    {
+      "id": "configs",
+      "title": "Конфигурация проекта",
+      "path": "configs/index.md"
+    }
+  ],
+  "modules": [
+    {
+      "name": "bot/request_context",
+      "path": "modules/bot/request_context.md",
+      "source_path": "bot/request_context.py",
+      "summary": "Модуль предоставляет класс неизменяемого контекста запроса для хранения идентификаторов, связанных с обработкой сообщений в чате. Поддерживает базовые идентификаторы чата и пользователя, а также опциональные идентификаторы сообщения, сессии и запроса. Включает свойство для совместимости с плагинной системой."
+    },
+    {
+      "name": "bot/chat_modes_registry",
+      "path": "modules/bot/chat_modes_registry.md",
+      "source_path": "bot/chat_modes_registry.py",
+      "summary": "Модуль реализует реестр чат-режимов с \"ленивой\" загрузкой из YAML-файла и автоматической перезагрузкой при изменении файла. Поддерживает поиск режимов по ключу, по содержимому системного промпта (с точным и маркерным совпадением), получение списка режимов с приветственными сообщениями и валидацию требуемых инструментов."
+    },
+    {
+      "name": "bot/model_constants",
+      "path": "modules/bot/model_constants.md",
+      "source_path": "bot/model_constants.py",
+      "summary": "Константы и группы моделей LLM Gateway для маршрутизации запросов к сервисам генеративного ИИ. Модуль определяет идентификаторы чат-моделей, специализированных моделей (генерация изображений, веб-поиск, TTS, транскрипция), а также поддерживает пустые группы провайдеров для обратной совместимости с устаревшими компонентами."
+    },
+    {
+      "name": "bot/usage_tracker",
+      "path": "modules/bot/usage_tracker.md",
+      "source_path": "bot/usage_tracker.py",
+      "summary": "Модуль отслеживания использования ресурсов пользователями бота. Предоставляет класс UsageTracker для учёта потребления токенов чата, изображений, vision-токенов, TTS-символов, транскрипции и других ресурсов с сохранением истории в JSON-файлы. Поддерживает расчёт дневных, месячных и общих затрат с применением модель-зависимых тарифов и агрегации статистики за различные периоды."
+    },
+    {
+      "name": "bot/i18n",
+      "path": "modules/bot/i18n.md",
+      "source_path": "bot/i18n.py",
+      "summary": "Модуль управления локализацией и переводами бота. Предоставляет механизмы определения текущего языка, нормализации языковых кодов с поддержкой алиасов, а также получения локализованного текста по ключу из JSON-файла переводов. Использует `ContextVar` для хранения языкового контекста и `lru_cache` для кэширования нормализации языковых кодов."
+    },
+    {
+      "name": "bot/html_utils",
+      "path": "modules/bot/html_utils.md",
+      "source_path": "bot/html_utils.py",
+      "summary": "Комплексный модуль для создания расширенной HTML-визуализации с поддержкой Markdown, Mermaid-диаграмм, PlantUML, библиографических ссылок и интерактивного клиентского интерфейса. Модуль реализует полный конвейер обработки: извлечение и защита Mermaid-диаграмм через плейсхолдеры, Markdown-конвертацию с помощью markdown2, многоуровневую постобработку HTML для восстановления диаграмм и исправления URL, генерацию интерактивных HTML-контейнеров с панелями управления, а также CSS-стили и JavaScript-функционал для масштабирования, экспорта и переключения тем."
+    },
+    {
+      "name": "bot/database",
+      "path": "modules/bot/database.md",
+      "source_path": "bot/database.py",
+      "summary": "Модуль предоставляет потокобезопасный singleton-класс Database для работы с SQLite. Реализует хранение пользовательских настроек, контекста разговоров с поддержкой сессий, информации об изображениях и фоновых задач finalize. Каждый поток получает собственное соединение через thread-local storage; транзакции управляются через контекстный менеджер с автоматическим commit/rollback."
+    },
+    {
+      "name": "bot/hindsight_client",
+      "path": "modules/bot/hindsight_client.md",
+      "source_path": "bot/hindsight_client.py",
+      "summary": "Клиентская библиотека для взаимодействия с Hindsight API — сервисом семантической памяти. Предоставляет асинхронный HTTP-клиент для операций recall (поиск по памяти), retain (сохранение), list (перечисление) и stats (статистика) в рамках именованных банков памяти. Включает вспомогательную функцию форматирования результатов поиска в человекочитаемый вид."
+    },
+    {
+      "name": "bot/plugin_manager",
+      "path": "modules/bot/plugin_manager.md",
+      "source_path": "bot/plugin_manager.py",
+      "summary": "Менеджер плагинов, отвечающий за динамическую загрузку Python-модулей, их регистрацию, инициализацию с зависимостями, формирование спецификаций функций для LLM-моделей и асинхронное выполнение вызовов с валидацией аргументов. Обеспечивает разрешение имён функций по префиксам, фильтрацию разрешённых плагинов, нормализацию спецификаций инструментов и управление жизненным циклом экземпляров с кешированием. Поддерживает сценарии делегирования функций субагентам с явными списками блокировки."
+    },
+    {
+      "name": "bot/openai_helper",
+      "path": "modules/bot/openai_helper.md",
+      "source_path": "bot/openai_helper.py",
+      "summary": "Модуль реализует центральный компонент для работы с языковыми моделями — инициализацию клиентов, управление историей диалогов, интеграцию с системой плагинов, долгосрочную память (Hindsight), классификацию намерений пользователя, обработку изображений, TTS, транскрипцию и вспомогательные функции для обработки ответов моделей и управления лимитами токенов."
+    },
+    {
+      "name": "bot/validation",
+      "path": "modules/bot/validation.md",
+      "source_path": "bot/validation.py",
+      "summary": "Модуль предоставляет средства валидации конфигурации OpenAI и аргументов функций на основе JSON Schema. Реализует проверку обязательных полей и типов конфигурации OpenAI, а также валидацию аргументов функций с форматированием понятных сообщений об ошибках."
+    },
+    {
+      "name": "bot/__init__",
+      "path": "modules/bot/__init__.md",
+      "source_path": "bot/__init__.py",
+      "summary": ""
+    },
+    {
+      "name": "bot/telegram_bot",
+      "path": "modules/bot/telegram_bot.md",
+      "source_path": "bot/telegram_bot.py",
+      "summary": "Модуль `bot` реализует основной класс Telegram-бота `ChatGPTTelegramBot` (алиас `TelegramBot`), интегрирующий OpenAI API и альтернативные провайдеры LLM с платформой Telegram. Поддерживает мультиязычность, плагиновую архитектуру, генерацию изображений (DALL·E), голосовых сообщений (TTS), транскрипцию аудио (Whisper), интерпретацию изображений (Vision), отслеживание использования токенов и бюджета, управление пользовательскими сессиями через базу данных, буферизацию сообщений с группировкой по времени, потоковую и пакетную генерацию ответов, inline-запросы с кешированием, интерактивные настройки с пагинацией и интеграцию с агентскими инструментами."
+    },
+    {
+      "name": "bot/conversation_key",
+      "path": "modules/bot/conversation_key.md",
+      "source_path": "bot/conversation_key.py",
+      "summary": "Модуль предоставляет вспомогательную функцию для определения ключа идентификации разговора в Telegram-боте. Ключ выбирается на основе типа чата: для групп и супергрупп используется идентификатор чата, для личных сообщений — идентификатор пользователя."
+    },
+    {
+      "name": "bot/utils",
+      "path": "modules/bot/utils.md",
+      "source_path": "bot/utils.py",
+      "summary": "Модуль предоставляет вспомогательные функции и классы для Telegram-бота. Включает утилиты для обработки сообщений, проверки членства пользователей в группах, управления статусными сообщениями о прогрессе длительных операций с поддержкой отображения плана выполнения, разбиения длинного текста на фрагменты с сохранением Markdown-форматирования, обёртки асинхронных операций с индикаторами чата, редактирования сообщений с fallback-логикой, обработки ошибок, проверки доступа пользователей, управления бюджетами и отслеживания использования токенов, а также вспомогательные функции для работы с изображениями, медиа-контентом, конвертации Markdown в HTML и отправки длинных ответов в виде файлов."
+    },
+    {
+      "name": "bot/openai_tool_handler",
+      "path": "modules/bot/openai_tool_handler.md",
+      "source_path": "bot/openai_tool_handler.py",
+      "summary": "Модуль обработки вызовов функций LLM. Реализует парсинг tool calls из потоковых и непотоковых ответов, валидацию аргументов, маршрутизацию к плагинам, управление историей диалога, механизм принудительного выполнения обязательных инструментов (delivery contract), а также обработку прямых результатов: отложенную доставку, компактизацию ответов для контекста LLM, слияние результатов и принудительную отправку финального ответа через `agent_tools.deliver_to_user` в режиме skills_agent."
+    },
+    {
+      "name": "bot/__main__",
+      "path": "modules/bot/__main__.md",
+      "source_path": "bot/__main__.py",
+      "summary": "Модуль точки входа для Telegram-бота на базе ChatGPT. Считывает переменные окружения, валидирует параметры подключения к Telegram API, формирует конфигурационные структуры для компонентов OpenAI и Telegram, инициализирует плагин-менеджер, базу данных, вспомогательные классы и запускает основной цикл бота."
+    },
+    {
+      "name": "bot/skill_script_routing",
+      "path": "modules/bot/skill_script_routing.md",
+      "source_path": "bot/skill_script_routing.py",
+      "summary": "Модуль предоставляет внутренние хелперы для маршрутизации и блокировки вызовов `codeinterpreter.deep_analysis` при работе со скриптами навыков. Реализует проверку режима skills_agent, обнаружение ссылок на активные скрипты навыков и формирование структурированных ответов-перенаправлений с предпочтительными инструментами и доступными парами skill_name/script_name."
+    },
+    {
+      "name": "bot/user_settings",
+      "path": "modules/bot/user_settings.md",
+      "source_path": "bot/user_settings.py",
+      "summary": "Модуль содержит константы ключей пользовательских настроек и вспомогательные функции для безопасного чтения, нормализации и изменения настроек. Основное назначение — абстрагировать работу с хранилищем пользовательских предпочтений и обеспечить консистентность форматов данных, особенно для списков строковых идентификаторов."
+    },
+    {
+      "name": "bot/plugins/website_content",
+      "path": "modules/bot/plugins/website_content.md",
+      "source_path": "bot/plugins/website_content.py",
+      "summary": "Плагин для получения и очистки текстового содержимого веб-страниц через LLMGateway. Реализует базовый интерфейс Plugin, предоставляя функцию `website_content`, которая извлекает заголовок и основной текст по заданному URL с использованием метода `web_read` клиента шлюза. Обрабатывает отсутствие URL и непредвиденные исключения, возвращая структурированный результат или сообщение об ошибке."
+    },
+    {
+      "name": "bot/plugins/terminal",
+      "path": "modules/bot/plugins/terminal.md",
+      "source_path": "bot/plugins/terminal.py",
+      "summary": "Модуль предоставляет плагин для выполнения shell-команд или прямого запуска программ с возвратом stdout, stderr и кода возврата. Поддерживает настраиваемый рабочий каталог, таймаут, ограничение размера вывода и выбор между shell-режимом и прямым выполнением."
+    },
+    {
+      "name": "bot/plugins/whois_",
+      "path": "modules/bot/plugins/whois_.md",
+      "source_path": "bot/plugins/whois_.py",
+      "summary": "Плагин для выполнения WHOIS-запросов к доменам. Расширяет базовый класс Plugin, предоставляя функцию получения регистрационной информации и сроков действия доменных имён через внешнюю библиотеку whois."
+    },
+    {
+      "name": "bot/plugins/worldtimeapi",
+      "path": "modules/bot/plugins/worldtimeapi.md",
+      "source_path": "bot/plugins/worldtimeapi.py",
+      "summary": "Плагин для получения текущего времени в заданном часовом поясе с использованием публичного API WorldTimeAPI. При инициализации загружает часовой пояс по умолчанию из переменной окружения WORLDTIME_DEFAULT_TIMEZONE. Формирует спецификацию функции для интеграции с системой плагинов и выполняет HTTP-запросы к API с парсингом ответа."
+    },
+    {
+      "name": "bot/plugins/language_learning",
+      "path": "modules/bot/plugins/language_learning.md",
+      "source_path": "bot/plugins/language_learning.py",
+      "summary": "LanguageLearningPlugin is a plugin for language learning features with daily exercises and progress tracking. It supports six languages with three proficiency levels and three exercise types, generates contextual prompts for ChatGPT-based exercise creation, and persists user progress including streak tracking in JSON storage."
+    },
+    {
+      "name": "bot/plugins/youtube_transcript",
+      "path": "modules/bot/plugins/youtube_transcript.md",
+      "source_path": "bot/plugins/youtube_transcript.py",
+      "summary": "Модуль предоставляет плагин для интеграции с LLMGateway, позволяющий извлекать текстовые транскрипты YouTube-видео по их идентификатору или URL. Реализует стандартный интерфейс Plugin с объявлением инструмента и асинхронным выполнением запроса."
+    },
+    {
+      "name": "bot/plugins/crypto",
+      "path": "modules/bot/plugins/crypto.md",
+      "source_path": "bot/plugins/crypto.py",
+      "summary": "Плагин для получения текущих курсов криптовалют через публичный API CoinCap. Реализует асинхронное HTTP-взаимодействие с обработкой ошибок таймаута, HTTP-статусов и парсинга JSON. Предоставляет единственную функцию `get_crypto_rate` для запроса курса указанного криптоактива."
+    },
+    {
+      "name": "bot/plugins/mcp_server",
+      "path": "modules/bot/plugins/mcp_server.md",
+      "source_path": "bot/plugins/mcp_server.py",
+      "summary": "Модуль интеграции с MCP (Model Context Protocol) серверами. Поддерживает два транспорта — stdio для локальных процессов и HTTP для удалённых серверов. Предоставляет API для регистрации серверов, получения инструментов, выполнения функций с проверкой прав доступа, а также Telegram-интерфейс для управления серверами. Реализована ролевая модель с разделением прав между обычными пользователями и администраторами."
+    },
+    {
+      "name": "bot/plugins/prompt_perfect",
+      "path": "modules/bot/plugins/prompt_perfect.md",
+      "source_path": "bot/plugins/prompt_perfect.py",
+      "summary": "Плагин для оптимизации пользовательских промптов с целью повышения качества ответов ChatGPT."
+    },
+    {
+      "name": "bot/plugins/ask_your_pdf",
+      "path": "modules/bot/plugins/ask_your_pdf.md",
+      "source_path": "bot/plugins/ask_your_pdf.py",
+      "summary": "Модуль `ask_your_pdf` реализует плагин `AskYourPDFPlugin` и инструмент `AskYourPDFTool` для извлечения текста из PDF-документов и его анализа через OpenAI API / LLM."
+    },
+    {
+      "name": "bot/plugins/deepl",
+      "path": "modules/bot/plugins/deepl.md",
+      "source_path": "bot/plugins/deepl.py",
+      "summary": "Плагин для интеграции с сервисом перевода DeepL API. Предоставляет функцию перевода текста на указанный язык через асинхронные HTTP-запросы. Автоматически определяет тип аккаунта (бесплатный или платный) по формату API-ключа."
+    },
+    {
+      "name": "bot/plugins/movie_info",
+      "path": "modules/bot/plugins/movie_info.md",
+      "source_path": "bot/plugins/movie_info.py",
+      "summary": "Плагин для поиска и анализа информации о фильмах через интеграцию с TMDb API и рекомендательной системой на базе OpenAI GPT. Предоставляет инструменты для получения списка новинок проката, рекомендаций по жанрам, детальной информации о фильмах, пользовательских отзывов и генерации интеллектуальных рекомендаций на естественном языке на основе анализа описаний, рейтингов и отзывов критиков. Реализует внутреннюю фильтрацию по жанрам и форматирование данных для русскоязычного представления."
+    },
+    {
+      "name": "bot/plugins/github_analysis",
+      "path": "modules/bot/plugins/github_analysis.md",
+      "source_path": "bot/plugins/github_analysis.py",
+      "summary": "Модуль реализует плагин для интеллектуального анализа исходного кода, размещённого в GitHub-репозиториях. Плагин интегрируется с GitHub Contents API для получения файлов, использует Pygments для автоматического определения языка программирования и выполняет анализ через LLM-шлюз на базе OpenAI API. Поддерживает обработку как отдельных файлов, так и содержимого директорий с фильтрацией по распознанным языкам."
+    },
+    {
+      "name": "bot/plugins/webshot",
+      "path": "modules/bot/plugins/webshot.md",
+      "source_path": "bot/plugins/webshot.py",
+      "summary": "Плагин для создания скриншотов веб-сайтов. Реализует интерфейс Plugin, предоставляя функцию screenshot_website, которая генерирует изображение страницы через сервис image.thum.io и возвращает путь к сохранённому файлу."
+    },
+    {
+      "name": "bot/plugins/agent_tools",
+      "path": "modules/bot/plugins/agent_tools.md",
+      "source_path": "bot/plugins/agent_tools.py",
+      "summary": "Lightweight agent-support tools for the existing function-calling loop. Provides task planning management, interactive user questioning, artifact delivery, and subagent orchestration with deduplication, TTL, and isolation mechanisms."
+    },
+    {
+      "name": "bot/plugins/reminders",
+      "path": "modules/bot/plugins/reminders.md",
+      "source_path": "bot/plugins/reminders.py",
+      "summary": "Модуль системы напоминаний с интерактивным Telegram-интерфейсом. Поддерживает создание, удаление и просмотр напоминаний с сохранением в локальное хранилище. Реализует обработку callback-запросов для управления списком напоминаний через inline-кнопки, включая просмотр деталей, удаление и закрытие меню."
+    },
+    {
+      "name": "bot/plugins/iplocation",
+      "path": "modules/bot/plugins/iplocation.md",
+      "source_path": "bot/plugins/iplocation.py",
+      "summary": "Плагин для получения геолокационной и сетевой информации по IP-адресу через API IP.FM."
+    },
+    {
+      "name": "bot/plugins/plugin",
+      "path": "modules/bot/plugins/plugin.md",
+      "source_path": "bot/plugins/plugin.py",
+      "summary": "Абстрактный базовый класс Plugin определяет интерфейс для создания плагинов к ChatGPT API. Предоставляет механизмы идентификации плагина, локализации, жизненного цикла и интеграции с Telegram-ботом через команды, обработчики сообщений и inline-запросов."
+    },
+    {
+      "name": "bot/plugins/youtube_audio_extractor",
+      "path": "modules/bot/plugins/youtube_audio_extractor.md",
+      "source_path": "bot/plugins/youtube_audio_extractor.py",
+      "summary": "Плагин `YouTubeAudioExtractorPlugin` предоставляет инструмент для извлечения аудио из видеороликов YouTube. Реализует стандартный интерфейс `Plugin`, регистрирует функцию `extract_youtube_audio` и возвращает скачанный аудиофайл в виде локального пути."
+    },
+    {
+      "name": "bot/plugins/wolfram_alpha",
+      "path": "modules/bot/plugins/wolfram_alpha.md",
+      "source_path": "bot/plugins/wolfram_alpha.py",
+      "summary": "A plugin to answer questions using WolframAlpha. Integrates with the WolframAlpha computational knowledge engine to resolve factual and mathematical queries. Provides a single tool specification for LLM function calling with automatic result extraction from WolframAlpha pods."
+    },
+    {
+      "name": "bot/plugins/task_management",
+      "path": "modules/bot/plugins/task_management.md",
+      "source_path": "bot/plugins/task_management.py",
+      "summary": "Плагин для управления задачами пользователей в Telegram-боте. Поддерживает создание задач с приоритетом и дедлайном, фильтрацию списка по статусу/приоритету/тегу, а также обновление полей задачи. Данные сохраняются в JSON-файле с изоляцией по user_id."
+    },
+    {
+      "name": "bot/plugins/reaction",
+      "path": "modules/bot/plugins/reaction.md",
+      "source_path": "bot/plugins/reaction.py",
+      "summary": "Plugin для автоматизации установки emoji-реакций на сообщения в Telegram. Предоставляет инструмент `react_with_emoji`, который позволяет выбрать реакцию из предопределённого набора `ReactionEmoji`. Включает защиту от некорректного ввода: при отсутствии или невалидности эмодзи автоматически подставляется `THUMBS_UP`."
+    },
+    {
+      "name": "bot/plugins/auto_tts",
+      "path": "modules/bot/plugins/auto_tts.md",
+      "source_path": "bot/plugins/auto_tts.py",
+      "summary": "Плагин для преобразования текста в речь с использованием OpenAI Speech API. Генерирует аудиофайл из входного текста и возвращает путь к временному файлу в формате, настраиваемом через конфигурацию TTS."
+    },
+    {
+      "name": "bot/plugins/dice",
+      "path": "modules/bot/plugins/dice.md",
+      "source_path": "bot/plugins/dice.py",
+      "summary": "Модуль содержит плагин DicePlugin для интеграции с системой плагинов. Плагин позволяет отправлять в чат анимированный кубик с выбором эмодзи, определяющим тип игры и диапазон возможных значений. Поддерживаются шесть вариантов эмодзи с различными диапазонами случайных чисел."
+    },
+    {
+      "name": "bot/plugins/web_research",
+      "path": "modules/bot/plugins/web_research.md",
+      "source_path": "bot/plugins/web_research.py",
+      "summary": "Плагин для выполнения веб-исследований через LLMGateway с автоматическим выбором режима исследования."
+    },
+    {
+      "name": "bot/plugins/gtts_text_to_speech",
+      "path": "modules/bot/plugins/gtts_text_to_speech.md",
+      "source_path": "bot/plugins/gtts_text_to_speech.py",
+      "summary": "Backward-compatible text-to-speech plugin backed by LLMGateway. Implements the Plugin interface to expose a single `google_translate_text_to_speech` tool that generates speech audio through the gateway's Silero TTS service. Results are returned as temporary file paths in the configured audio format."
+    },
+    {
+      "name": "bot/plugins/vkusvill",
+      "path": "modules/bot/plugins/vkusvill.md",
+      "source_path": "bot/plugins/vkusvill.py",
+      "summary": "Adapter plugin for the VkusVill remote MCP server. Provides a set of tools for interacting with VkusVill services including shop search, product search and details, discount listings, analogs, cart link generation, and recipe browsing. Handles MCP protocol communication, argument mapping with defaults, and result transformation for integration into the plugin framework. Supports recipe filtering by categories, complexity, cooking time, preparation method, and allergen exclusion with pagination and sorting capabilities."
+    },
+    {
+      "name": "bot/plugins/google_web_search",
+      "path": "modules/bot/plugins/google_web_search.md",
+      "source_path": "bot/plugins/google_web_search.py",
+      "summary": "Плагин для выполнения веб-поиска с использованием Google Custom Search API. Предоставляет спецификацию функции web_search и обрабатывает её выполнение с форматированием результатов. Включает обработку ошибок API, валидацию параметров и логирование операций поиска."
+    },
+    {
+      "name": "bot/plugins/show_me_diagrams",
+      "path": "modules/bot/plugins/show_me_diagrams.md",
+      "source_path": "bot/plugins/show_me_diagrams.py",
+      "summary": "Плагин для генерации различных диаграмм и визуализаций с использованием PlantUML."
+    },
+    {
+      "name": "bot/plugins/ddg_image_search",
+      "path": "modules/bot/plugins/ddg_image_search.md",
+      "source_path": "bot/plugins/ddg_image_search.py",
+      "summary": "Модуль реализует плагин поиска изображений `DDGImageSearchPlugin`, обеспечивающий обратную совместимость с устаревшим интерфейсом DuckDuckGo. Плагин делегирует выполнение поиска клиенту LLMGateway, извлекает URL изображения из результатов и возвращает его в стандартизированном формате прямого результата. Поддерживает фильтрацию по типу изображения и региональные настройки языка."
+    },
+    {
+      "name": "bot/plugins/weather",
+      "path": "modules/bot/plugins/weather.md",
+      "source_path": "bot/plugins/weather.py",
+      "summary": "Модуль реализует плагин WeatherPlugin для получения текущей погоды и прогноза на 7 дней через API Open-Meteo. Предоставляет два инструмента: get_current_weather для текущих условий и get_forecast_weather для ежедневного прогноза с настраиваемым количеством дней."
+    },
+    {
+      "name": "bot/plugins/skills",
+      "path": "modules/bot/plugins/skills.md",
+      "source_path": "bot/plugins/skills.py",
+      "summary": "Модуль реализует плагин SkillsPlugin, который интегрирует локальные Codex-стилизованные навыки (skills) в цикл function-calling бота. Плагин предоставляет инструменты для обнаружения, установки, активации и выполнения навыков с поддержкой скриптов, аудита и управления состоянием через файловую систему и CLI. Конфигурация осуществляется через переменные окружения и файлы состояния в хранилище бота."
+    },
+    {
+      "name": "bot/plugins/hindsight_memory",
+      "path": "modules/bot/plugins/hindsight_memory.md",
+      "source_path": "bot/plugins/hindsight_memory.py",
+      "summary": "Plugin for querying and managing Hindsight long-term memory for Telegram users. Exposes three functions to AI agents: recall for semantic memory search, list_memories for browsing recent entries, and stats for retrieving memory bank metrics. All operations are scoped to a per-user memory bank and require Hindsight integration to be enabled in the helper configuration."
+    },
+    {
+      "name": "bot/plugins/stable_diffusion",
+      "path": "modules/bot/plugins/stable_diffusion.md",
+      "source_path": "bot/plugins/stable_diffusion.py",
+      "summary": "Модуль реализует плагин StableDiffusionPlugin для интеграции с LLMGateway на основе унифицированного интерфейса Plugin. Поддерживает генерацию изображений по текстовому промпту и их редактирование по URL, обеспечивая обратную совместимость с legacy-кодом, ориентированным на Stable Diffusion."
+    },
+    {
+      "name": "bot/plugins/jina_web_search",
+      "path": "modules/bot/plugins/jina_web_search.md",
+      "source_path": "bot/plugins/jina_web_search.py",
+      "summary": "Модуль `jina_web_search_plugin` предоставляет реализацию плагина `JinaWebSearchPlugin` для выполнения веб-поиска через Jina AI Search API. Плагин поддерживает конфигурацию через переменные окружения, валидацию параметров запроса, форматирование результатов и комплексную обработку сетевых ошибок с информативными сообщениями для пользователя."
+    },
+    {
+      "name": "bot/plugins/spotify",
+      "path": "modules/bot/plugins/spotify.md",
+      "source_path": "bot/plugins/spotify.py",
+      "summary": "Плагин для получения информации из Spotify через Web API."
+    },
+    {
+      "name": "bot/plugins/ddg_web_search",
+      "path": "modules/bot/plugins/ddg_web_search.md",
+      "source_path": "bot/plugins/ddg_web_search.py",
+      "summary": "Модуль реализует плагин веб-поиска `DDGWebSearchPlugin`, обеспечивающий обратную совместимость с DuckDuckGo за счёт делегирования запросов к LLMGateway. Поддерживает настройку языка поиска через региональный код и ограничение количества результатов. Включает вспомогательную функцию для определения языка из строки региона."
+    },
+    {
+      "name": "bot/plugins/codeinterpreter",
+      "path": "modules/bot/plugins/codeinterpreter.md",
+      "source_path": "bot/plugins/codeinterpreter.py",
+      "summary": "Модуль реализует плагин интерпретатора кода для выполнения Python-кода с поддержкой анализа данных, визуализации и интеграции с LLM для генерации кода. Предоставляет механизмы безопасного выполнения с тайм-аутом, обработку исключений и работу с различными форматами данных."
+    },
+    {
+      "name": "bot/plugins/conversation_analytics",
+      "path": "modules/bot/plugins/conversation_analytics.md",
+      "source_path": "bot/plugins/conversation_analytics.py",
+      "summary": "Плагин для сбора, хранения и анализа статистики чат-диалогов. Модуль предоставляет плагин `ConversationAnalyticsPlugin` для анализа паттернов диалогов и генерации инсайтов из истории чатов. Собирает статистику по сообщениям, использованию токенов, темам, настроениям и часам активности. Поддерживает временные периоды анализа (день, неделя, месяц) и типы рекомендаций (темы, обучение, формат контента, стиль взаимодействия). Данные хранятся в JSON-файле с автоматической очисткой записей старше 30 дней. Включает инструменты для извлечения технических терминов, анализа предпочтений формата контента и паттернов взаимодействия, а также статистического анализа длины сообщений с выявлением аномалий. Результаты анализа форматируются в читаемый текст с эмодзи-разметкой."
+    },
+    {
+      "name": "bot/plugins/haiper_image_to_video",
+      "path": "modules/bot/plugins/haiper_image_to_video.md",
+      "source_path": "bot/plugins/haiper_image_to_video.py",
+      "summary": "Модуль интеграции с API Haiper для генерации видео из статичных изображений в Telegram-боте. Предоставляет плагин `HaiperImageToVideoPlugin` с асинхронной обработкой очереди задач, диалоговым конструктором промптов, интерактивным выбором параметров анимации и автоматической доставкой результатов пользователям."
+    },
+    {
+      "name": "bot/plugins/chief",
+      "path": "modules/bot/plugins/chief.md",
+      "source_path": "bot/plugins/chief.py",
+      "summary": "ChiefPlugin — плагин для создания рецептов и кулинарных рекомендаций с использованием API Edamam и OpenAI. Предоставляет инструменты для поиска рецептов по ингредиентам и диетическим ограничениям, а также для планирования меню на заданное количество дней. Включает механизмы кэширования, повторных попыток при ошибках парсинга, автоматический перевод запросов с русского языка и форматирование результатов в Markdown с эмодзи."
+    },
+    {
+      "name": "bot/plugins/text_document_qa",
+      "path": "modules/bot/plugins/text_document_qa.md",
+      "source_path": "bot/plugins/text_document_qa.py",
+      "summary": "Модуль реализует плагин документного Q&A на базе AnythingLLM с изоляцией данных по чатам. Каждый чат получает персональный workspace, куда загружаются документы; плагин предоставляет команды для просмотра списка документов, задания вопросов по их содержимому и удаления устаревших файлов. Включает фоновую задачу очистки документов старше 30 дней с предупреждением за сутки до удаления. Конфигурация осуществляется через переменные окружения с префиксом ANYTHINGLLM_."
+    },
+    {
+      "name": "bot/plugins/text_summarizer",
+      "path": "modules/bot/plugins/text_summarizer.md",
+      "source_path": "bot/plugins/text_summarizer.py",
+      "summary": "Плагин для суммаризации текста с использованием внешних сервисов. Реализует асинхронное извлечение содержимого веб-страниц и генерацию кратких сводок через API Яндекса. Поддерживает приоритетное извлечение текста из специальных HTML-контейнеров с fallback на алгоритм readability."
+    },
+    {
+      "name": "bot/plugins/ddg_translate",
+      "path": "modules/bot/plugins/ddg_translate.md",
+      "source_path": "bot/plugins/ddg_translate.py",
+      "summary": "Плагин для перевода текста с использованием API DuckDuckGo. Реализует базовый класс Plugin, предоставляя функцию translate для перевода строк на указанный целевой язык."
+    },
+    {
+      "name": "examples/mcp_stdio_client",
+      "path": "modules/examples/mcp_stdio_client.md",
+      "source_path": "examples/mcp_stdio_client.py",
+      "summary": "Модуль предоставляет асинхронный MCP-клиент для тестирования взаимодействия с MCP-сервером через stdio-транспорт. Реализует подключение к серверу, инициализацию сессии, получение списка инструментов и вызов демонстрационных функций (сложение, умножение, деление, приветствие). Включает настройку логирования и обработку ошибок соединения."
+    },
+    {
+      "name": "examples/mcp_stdio_server",
+      "path": "modules/examples/mcp_stdio_server.md",
+      "source_path": "examples/mcp_stdio_server.py",
+      "summary": "Модуль реализует MCP-сервер на базе библиотеки FastMCP, предоставляющий инструменты для выполнения базовых арифметических операций и генерации приветственных сообщений. Сервер настраивает логирование, создаёт экземпляр FastMCP с именем \"Example MCP Server\" и регистрирует четыре инструмента через декоратор `@mcp.tool()`. При запуске в основном режиме сервер использует stdio-транспорт для обработки входящих запросов."
+    },
+    {
+      "name": "examples/mcp_server_example",
+      "path": "modules/examples/mcp_server_example.md",
+      "source_path": "examples/mcp_server_example.py",
+      "summary": "Модуль реализует пример MCP-сервера на базе FastAPI для интеграции с Telegram-ботом. Предоставляет REST API для получения списка доступных инструментов (погода, конвертация валют, генерация идентификаторов) и их выполнения по запросу. Включает модели данных Pydantic, in-memory хранилища примерных данных и базовую авторизацию через заголовки."
+    }
+  ],
+  "configs": [
+    {
+      "name": "pytest.ini",
+      "path": "configs/files/pytest__ini.md",
+      "source_path": "pytest.ini",
+      "summary": "Секция [pytest] конфигурационного файла pytest, предназначенная для настройки параметров плагина pytest-asyncio при тестировании асинхронного кода. Устанавливает автоматический режим обработки корутин без явных маркеров и определяет уровень изоляции цикла событий для фикстур."
+    },
+    {
+      "name": "environment.yml",
+      "path": "configs/files/environment__yml.md",
+      "source_path": "environment.yml",
+      "summary": "Файл описывает окружение Conda с именем myenv, которое формирует среду выполнения для асинхронного Telegram-бота с расширенными возможностями: голосовое взаимодействие, работа с нейросетевыми API, веб-скрапинг, обработка изображений и аудио, а также интеграция с внешними сервисами поиска и вычислений. Структура включает три канала пакетов и двухуровневую систему зависимостей — базовые через conda и дополнительные через pip."
+    },
+    {
+      "name": "bot/chat_modes.yml",
+      "path": "configs/files/bot/chat_modes__yml.md",
+      "source_path": "bot/chat_modes.yml",
+      "summary": "Конфигурационный файл описывает два ассистента: универсального помощника по общим вопросам и специализированного улучшателя текста. Параметры задают модель генерации, системные инструкции, приветственные сообщения и доступные инструменты. Формат файла основан на секциях с вложенными ключами, где каждая секция соответствует отдельному ассистенту."
+    },
+    {
+      "name": "bot/plugins/agent_config.yml",
+      "path": "configs/files/bot/plugins/agent_config__yml.md",
+      "source_path": "bot/plugins/agent_config.yml",
+      "summary": "Файл конфигурации задаёт параметры подключения к языковой модели, описывает поведение и инструментарий двух автономных агентов, и устанавливает параметры хранения данных и журналирования."
+    },
+    {
+      "name": "bot/plugins/pdf_cache/cache_metadata.json",
+      "path": "configs/files/bot/plugins/pdf_cache/cache_metadata__json.md",
+      "source_path": "bot/plugins/pdf_cache/cache_metadata.json",
+      "summary": "Конфигурационный файл в формате JSON, предназначенный для хранения информации о файловой структуре и суммарном размере данных. В текущем состоянии файл содержит только пустые инициализированные значения, ожидающие заполнения при эксплуатации системы."
+    }
+  ],
+  "files": [
+    "_index.json",
+    "architecture.md",
+    "changes.md",
+    "configs/docker.md",
+    "configs/files/bot/chat_modes__yml.md",
+    "configs/files/bot/plugins/agent_config__yml.md",
+    "configs/files/bot/plugins/pdf_cache/cache_metadata__json.md",
+    "configs/files/environment__yml.md",
+    "configs/files/pytest__ini.md",
+    "configs/index.md",
+    "configs/service_mesh.md",
+    "conventions.md",
+    "dependencies.md",
+    "glossary.md",
+    "index.md",
+    "modules/bot/__init____py.md",
+    "modules/bot/__main____py.md",
+    "modules/bot/chat_modes_registry__py.md",
+    "modules/bot/conversation_key__py.md",
+    "modules/bot/database__py.md",
+    "modules/bot/hindsight_client__py.md",
+    "modules/bot/html_utils__py.md",
+    "modules/bot/i18n__py.md",
+    "modules/bot/model_constants__py.md",
+    "modules/bot/openai_helper__py.md",
+    "modules/bot/openai_tool_handler__py.md",
+    "modules/bot/plugin_manager__py.md",
+    "modules/bot/plugins/agent_tools__py.md",
+    "modules/bot/plugins/ask_your_pdf__py.md",
+    "modules/bot/plugins/auto_tts__py.md",
+    "modules/bot/plugins/chief__py.md",
+    "modules/bot/plugins/codeinterpreter__py.md",
+    "modules/bot/plugins/conversation_analytics__py.md",
+    "modules/bot/plugins/crypto__py.md",
+    "modules/bot/plugins/ddg_image_search__py.md",
+    "modules/bot/plugins/ddg_translate__py.md",
+    "modules/bot/plugins/ddg_web_search__py.md",
+    "modules/bot/plugins/deepl__py.md",
+    "modules/bot/plugins/dice__py.md",
+    "modules/bot/plugins/github_analysis__py.md",
+    "modules/bot/plugins/google_web_search__py.md",
+    "modules/bot/plugins/gtts_text_to_speech__py.md",
+    "modules/bot/plugins/haiper_image_to_video__py.md",
+    "modules/bot/plugins/hindsight_memory__py.md",
+    "modules/bot/plugins/iplocation__py.md",
+    "modules/bot/plugins/jina_web_search__py.md",
+    "modules/bot/plugins/language_learning__py.md",
+    "modules/bot/plugins/mcp_server__py.md",
+    "modules/bot/plugins/movie_info__py.md",
+    "modules/bot/plugins/plugin__py.md",
+    "modules/bot/plugins/prompt_perfect__py.md",
+    "modules/bot/plugins/reaction__py.md",
+    "modules/bot/plugins/reminders__py.md",
+    "modules/bot/plugins/show_me_diagrams__py.md",
+    "modules/bot/plugins/skills__py.md",
+    "modules/bot/plugins/spotify__py.md",
+    "modules/bot/plugins/stable_diffusion__py.md",
+    "modules/bot/plugins/task_management__py.md",
+    "modules/bot/plugins/terminal__py.md",
+    "modules/bot/plugins/text_document_qa__py.md",
+    "modules/bot/plugins/text_summarizer__py.md",
+    "modules/bot/plugins/vkusvill__py.md",
+    "modules/bot/plugins/weather__py.md",
+    "modules/bot/plugins/web_research__py.md",
+    "modules/bot/plugins/webshot__py.md",
+    "modules/bot/plugins/website_content__py.md",
+    "modules/bot/plugins/whois___py.md",
+    "modules/bot/plugins/wolfram_alpha__py.md",
+    "modules/bot/plugins/worldtimeapi__py.md",
+    "modules/bot/plugins/youtube_audio_extractor__py.md",
+    "modules/bot/plugins/youtube_transcript__py.md",
+    "modules/bot/request_context__py.md",
+    "modules/bot/skill_script_routing__py.md",
+    "modules/bot/telegram_bot__py.md",
+    "modules/bot/usage_tracker__py.md",
+    "modules/bot/user_settings__py.md",
+    "modules/bot/utils__py.md",
+    "modules/bot/validation__py.md",
+    "modules/examples/mcp_server_example__py.md",
+    "modules/examples/mcp_stdio_client__py.md",
+    "modules/examples/mcp_stdio_server__py.md",
+    "modules/index.md",
+    "overview.md",
+    "runtime.md",
+    "testing.md"
+  ],
+  "generated_at": "2026-05-08T23:04:36.365218Z",
+  "docs_dir": ".ai-docs",
+  "rules": {
+    "priority": [
+      "modules/index.md",
+      "modules/*",
+      "configs/index.md",
+      "configs/files/*",
+      "index.md",
+      "architecture.md",
+      "conventions.md"
+    ],
+    "ranking": "keyword frequency + file priority",
+    "usage": "use this index to choose a narrow route before reading full docs"
+  }
+}

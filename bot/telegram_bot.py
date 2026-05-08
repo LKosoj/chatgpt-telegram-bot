@@ -337,6 +337,29 @@ class ChatGPTTelegramBot:
             except Exception:
                 logger.warning("Failed to store sent image file_id for user %s chat %s", user.id, chat.id, exc_info=True)
 
+    def _get_agent_tools_plugin(self):
+        plugin_manager = getattr(self.openai, "plugin_manager", None)
+        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
+        if not callable(get_plugin):
+            return None
+        try:
+            return get_plugin("agent_tools")
+        except Exception:
+            logger.debug("Failed to get agent_tools plugin", exc_info=True)
+            return None
+
+    def _clear_agent_plan(self, chat_id, user_id, *, reason: str, terminal_only: bool = False) -> None:
+        agent_tools_plugin = self._get_agent_tools_plugin()
+        method_name = "clear_terminal_plan_tasks" if terminal_only else "clear_plan_tasks"
+        clear_plan_tasks = getattr(agent_tools_plugin, method_name, None) if agent_tools_plugin else None
+        if not callable(clear_plan_tasks):
+            return
+        try:
+            if clear_plan_tasks(chat_id=chat_id, user_id=user_id):
+                logger.info("Cleared agent plan for chat_id=%s user_id=%s reason=%s", chat_id, user_id, reason)
+        except Exception:
+            logger.exception("Failed to clear agent plan for chat_id=%s user_id=%s", chat_id, user_id)
+
     def _build_plan_status_provider(self, chat_id, user_id):
         """
         Return (plan_provider, interval) for BusyStatusMessage. The provider yields
@@ -344,14 +367,7 @@ class ChatGPTTelegramBot:
         can render step progress; falls back to (None, default_interval) when the
         agent_tools plugin is unavailable.
         """
-        plugin_manager = getattr(self.openai, "plugin_manager", None)
-        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
-        if not callable(get_plugin):
-            return None, 30.0
-        try:
-            agent_tools_plugin = get_plugin("agent_tools")
-        except Exception:
-            return None, 30.0
+        agent_tools_plugin = self._get_agent_tools_plugin()
         get_plan_tasks = getattr(agent_tools_plugin, "get_plan_tasks", None) if agent_tools_plugin else None
         if not callable(get_plan_tasks):
             return None, 30.0
@@ -393,6 +409,14 @@ class ChatGPTTelegramBot:
             return
         if not sent_messages:
             logger.warning("handle_direct_result returned no messages; nothing was delivered to user")
+            return
+        chat = getattr(update, "effective_chat", None)
+        user = getattr(update, "effective_user", None)
+        self._clear_agent_plan(
+            getattr(chat, "id", None),
+            getattr(user, "id", None),
+            reason="final_delivery",
+        )
 
     async def _run_post_delivery_cleanup(self, response):
         try:
@@ -2029,6 +2053,7 @@ class ChatGPTTelegramBot:
                         }
                     else:
                         kwargs = {}
+                    self._clear_agent_plan(chat_id, user_id, reason="request_start", terminal_only=True)
                     response, total_tokens = await self.openai.get_chat_response(
                         chat_id=chat_id,
                         query=transcript,
@@ -2518,6 +2543,7 @@ class ChatGPTTelegramBot:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
             model_to_use = self.openai.get_current_model(user_id)
+            self._clear_agent_plan(chat_id, user_id, reason="request_start", terminal_only=True)
                 
             if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
 
@@ -2799,6 +2825,7 @@ class ChatGPTTelegramBot:
 
                 model_to_use = self.openai.get_current_model(user_id)
                 request_context = RequestContext(chat_id=user_id, user_id=user_id)
+                self._clear_agent_plan(user_id, user_id, reason="request_start", terminal_only=True)
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):

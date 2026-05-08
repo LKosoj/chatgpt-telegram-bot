@@ -236,6 +236,66 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_clear_plan_tasks_removes_open_plan(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T1", "content": "Create presentation", "status": "in_progress"}],
+    )
+    assert added["success"] is True
+
+    assert plugin.clear_plan_tasks(chat_id=10, user_id=42) is True
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42) == []
+    assert plugin.clear_plan_tasks(chat_id=10, user_id=42) is False
+
+
+@pytest.mark.asyncio
+async def test_clear_terminal_plan_tasks_preserves_open_plan(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T1", "content": "Create presentation", "status": "in_progress"}],
+    )
+    assert added["success"] is True
+
+    assert plugin.clear_terminal_plan_tasks(chat_id=10, user_id=42) is False
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42) == [
+        {"id": "T1", "content": "Create presentation", "status": "in_progress"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T1", "content": "Create presentation", "status": "completed"}],
+    )
+    assert added["success"] is True
+
+    assert plugin.clear_terminal_plan_tasks(chat_id=10, user_id=42) is True
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42) == []
+
+
+@pytest.mark.asyncio
 async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))

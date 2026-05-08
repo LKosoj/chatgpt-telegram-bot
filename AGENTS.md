@@ -38,21 +38,6 @@ rules from the current session.
 - `requirements.txt` is the primary dependency list. `environment.yml` is an alternate Conda
   environment and must not be treated as an exact mirror.
 
-## Codebase Map Workflow
-
-Before edits, use the generated map as the entrypoint:
-
-1. Read `.cli-proxy/.codebase_map/INDEX.md`.
-2. Open only the relevant node files under `.cli-proxy/.codebase_map/nodes/*.md`.
-3. Inspect the real source files before changing behavior.
-4. If a change touches a mapped area, update the relevant node metadata, especially
-   `Last reviewed`.
-5. If map repair is needed, run the targeted `update-node`/`repair` workflow documented by
-   the map tooling.
-
-Current map routing covers `bot/**`, `tests/**`, `examples/**`, and selected root config/data
-files. A pure `AGENTS.md` edit has no mapped node unless routing is updated later.
-
 ## Plugin And Tool Rules
 
 - Plugins subclass `bot.plugins.plugin.Plugin` and implement `get_source_name()`,

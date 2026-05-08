@@ -539,6 +539,27 @@ class AgentToolsPlugin(Plugin):
             for task in tasks
         ]
 
+    def clear_plan_tasks(self, chat_id=None, user_id=None) -> bool:
+        """Remove all plan tasks for the given scope."""
+        scope = compute_scope_key(chat_id, user_id)
+        if scope not in self.tasks:
+            return False
+        self.tasks.pop(scope, None)
+        self.save_tasks()
+        return True
+
+    def clear_terminal_plan_tasks(self, chat_id=None, user_id=None) -> bool:
+        """Remove the plan only when every task in the scope is already closed."""
+        scope = compute_scope_key(chat_id, user_id)
+        tasks = self.tasks.get(scope) or []
+        if not tasks:
+            return False
+        if any(task.get("status") not in CLOSED_STATUSES for task in tasks):
+            return False
+        self.tasks.pop(scope, None)
+        self.save_tasks()
+        return True
+
     @staticmethod
     def _copy_plan_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [dict(task) for task in tasks]

@@ -4,6 +4,7 @@ __pycache__
 .DS_Store
 /usage_logs
 venv
+.venv/
 /.cache
 .vscode/lua.booster.lint.json
 private.txt
@@ -26,3 +27,5 @@ presentation_analysis_*.txt
 # SpecStory explanation file
 .specstory/.what-is-this.md
 .cli-proxy/
+.ai_docs_cache/
+.ai-docs/

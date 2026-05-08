@@ -1,0 +1,117 @@
+site_name: chatgpt-telegram-bot
+docs_dir: .ai-docs
+site_dir: ai_docs_site
+plugins:
+- search
+- mermaid2:
+    javascript: js/mermaid.min.js
+markdown_extensions:
+- tables
+- sane_lists
+- attr_list
+- def_list
+- footnotes
+- admonition
+- fenced_code
+- pymdownx.superfences:
+    custom_fences:
+    - name: mermaid
+      class: mermaid
+      format: !!python/name:mermaid2.fence_mermaid ''
+nav:
+- Главная: index.md
+- Обзор:
+  - Обзор проекта: overview.md
+- Архитектура: architecture.md
+- Запуск: runtime.md
+- Зависимости: dependencies.md
+- Тестирование: testing.md
+- Соглашения: conventions.md
+- Глоссарий: glossary.md
+- Конфиги:
+  - Docker: configs/docker.md
+  - service_mesh: configs/service_mesh.md
+- Конфигурация проекта:
+  - Обзор: configs/index.md
+  - /bot:
+    - /plugins:
+      - /pdf_cache:
+        - cache_metadata.json: configs/files/bot/plugins/pdf_cache/cache_metadata__json.md
+      - agent_config.yml: configs/files/bot/plugins/agent_config__yml.md
+    - chat_modes.yml: configs/files/bot/chat_modes__yml.md
+  - environment.yml: configs/files/environment__yml.md
+  - pytest.ini: configs/files/pytest__ini.md
+- Модули:
+  - Обзор: modules/index.md
+  - /bot:
+    - /plugins:
+      - agent_tools.py: modules/bot/plugins/agent_tools__py.md
+      - ask_your_pdf.py: modules/bot/plugins/ask_your_pdf__py.md
+      - auto_tts.py: modules/bot/plugins/auto_tts__py.md
+      - chief.py: modules/bot/plugins/chief__py.md
+      - codeinterpreter.py: modules/bot/plugins/codeinterpreter__py.md
+      - conversation_analytics.py: modules/bot/plugins/conversation_analytics__py.md
+      - crypto.py: modules/bot/plugins/crypto__py.md
+      - ddg_image_search.py: modules/bot/plugins/ddg_image_search__py.md
+      - ddg_translate.py: modules/bot/plugins/ddg_translate__py.md
+      - ddg_web_search.py: modules/bot/plugins/ddg_web_search__py.md
+      - deepl.py: modules/bot/plugins/deepl__py.md
+      - dice.py: modules/bot/plugins/dice__py.md
+      - github_analysis.py: modules/bot/plugins/github_analysis__py.md
+      - google_web_search.py: modules/bot/plugins/google_web_search__py.md
+      - gtts_text_to_speech.py: modules/bot/plugins/gtts_text_to_speech__py.md
+      - haiper_image_to_video.py: modules/bot/plugins/haiper_image_to_video__py.md
+      - hindsight_memory.py: modules/bot/plugins/hindsight_memory__py.md
+      - iplocation.py: modules/bot/plugins/iplocation__py.md
+      - jina_web_search.py: modules/bot/plugins/jina_web_search__py.md
+      - language_learning.py: modules/bot/plugins/language_learning__py.md
+      - mcp_server.py: modules/bot/plugins/mcp_server__py.md
+      - movie_info.py: modules/bot/plugins/movie_info__py.md
+      - plugin.py: modules/bot/plugins/plugin__py.md
+      - prompt_perfect.py: modules/bot/plugins/prompt_perfect__py.md
+      - reaction.py: modules/bot/plugins/reaction__py.md
+      - reminders.py: modules/bot/plugins/reminders__py.md
+      - show_me_diagrams.py: modules/bot/plugins/show_me_diagrams__py.md
+      - skills.py: modules/bot/plugins/skills__py.md
+      - spotify.py: modules/bot/plugins/spotify__py.md
+      - stable_diffusion.py: modules/bot/plugins/stable_diffusion__py.md
+      - task_management.py: modules/bot/plugins/task_management__py.md
+      - terminal.py: modules/bot/plugins/terminal__py.md
+      - text_document_qa.py: modules/bot/plugins/text_document_qa__py.md
+      - text_summarizer.py: modules/bot/plugins/text_summarizer__py.md
+      - vkusvill.py: modules/bot/plugins/vkusvill__py.md
+      - weather.py: modules/bot/plugins/weather__py.md
+      - web_research.py: modules/bot/plugins/web_research__py.md
+      - webshot.py: modules/bot/plugins/webshot__py.md
+      - website_content.py: modules/bot/plugins/website_content__py.md
+      - whois_.py: modules/bot/plugins/whois___py.md
+      - wolfram_alpha.py: modules/bot/plugins/wolfram_alpha__py.md
+      - worldtimeapi.py: modules/bot/plugins/worldtimeapi__py.md
+      - youtube_audio_extractor.py: modules/bot/plugins/youtube_audio_extractor__py.md
+      - youtube_transcript.py: modules/bot/plugins/youtube_transcript__py.md
+    - __init__.py: modules/bot/__init____py.md
+    - __main__.py: modules/bot/__main____py.md
+    - chat_modes_registry.py: modules/bot/chat_modes_registry__py.md
+    - conversation_key.py: modules/bot/conversation_key__py.md
+    - database.py: modules/bot/database__py.md
+    - hindsight_client.py: modules/bot/hindsight_client__py.md
+    - html_utils.py: modules/bot/html_utils__py.md
+    - i18n.py: modules/bot/i18n__py.md
+    - model_constants.py: modules/bot/model_constants__py.md
+    - openai_helper.py: modules/bot/openai_helper__py.md
+    - openai_tool_handler.py: modules/bot/openai_tool_handler__py.md
+    - plugin_manager.py: modules/bot/plugin_manager__py.md
+    - request_context.py: modules/bot/request_context__py.md
+    - skill_script_routing.py: modules/bot/skill_script_routing__py.md
+    - telegram_bot.py: modules/bot/telegram_bot__py.md
+    - usage_tracker.py: modules/bot/usage_tracker__py.md
+    - user_settings.py: modules/bot/user_settings__py.md
+    - utils.py: modules/bot/utils__py.md
+    - validation.py: modules/bot/validation__py.md
+  - /examples:
+    - mcp_server_example.py: modules/examples/mcp_server_example__py.md
+    - mcp_stdio_client.py: modules/examples/mcp_stdio_client__py.md
+    - mcp_stdio_server.py: modules/examples/mcp_stdio_server__py.md
+- Изменения: changes.md
+site_url: ''
+use_directory_urls: false

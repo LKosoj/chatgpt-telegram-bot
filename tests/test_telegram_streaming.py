@@ -59,15 +59,40 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
+class FakeAgentTools:
+    def __init__(self, terminal_clear_result=True):
+        self.clear_calls = []
+        self.terminal_clear_calls = []
+        self.plan_calls = []
+        self.terminal_clear_result = terminal_clear_result
+
+    def clear_plan_tasks(self, chat_id=None, user_id=None):
+        self.clear_calls.append((chat_id, user_id))
+        return True
+
+    def clear_terminal_plan_tasks(self, chat_id=None, user_id=None):
+        self.terminal_clear_calls.append((chat_id, user_id))
+        return self.terminal_clear_result
+
+    def get_plan_tasks(self, chat_id=None, user_id=None):
+        self.plan_calls.append((chat_id, user_id))
+        return []
+
+
 class FakePluginManager:
+    def __init__(self, agent_tools=None):
+        self.agent_tools = agent_tools
+
     def get_plugin(self, name):
+        if name == "agent_tools":
+            return self.agent_tools
         return None
 
 
 class FakeOpenAI:
-    def __init__(self, chunks):
+    def __init__(self, chunks, agent_tools=None):
         self.chunks = chunks
-        self.plugin_manager = FakePluginManager()
+        self.plugin_manager = FakePluginManager(agent_tools)
         self.stream_requests = []
 
     def get_current_model(self, user_id):
@@ -147,7 +172,7 @@ def _make_context(telegram_file=None):
     return SimpleNamespace(bot=bot, user_data={})
 
 
-def _make_bot(chunks, conversation_context):
+def _make_bot(chunks, conversation_context, agent_tools=None):
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {
         "allowed_user_ids": "*",
@@ -159,11 +184,53 @@ def _make_bot(chunks, conversation_context):
         "token_price": 0.0,
     }
     bot.db = FakeDB(conversation_context)
-    bot.openai = FakeOpenAI(chunks)
+    bot.openai = FakeOpenAI(chunks, agent_tools)
     bot.last_message = {}
     bot.usage = {}
     bot._classify_reply_intent = AsyncMock(return_value=None)
     return bot
+
+
+@pytest.mark.asyncio
+async def test_process_message_clears_terminal_plan_before_agent_request(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+    agent_tools = FakeAgentTools()
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "1"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        agent_tools=agent_tools,
+    )
+
+    await bot.process_message("hello", FakeUpdate(FakeMessage()), _make_context())
+
+    assert agent_tools.terminal_clear_calls == [(1234, 42)]
+    assert agent_tools.clear_calls == []
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
+    agent_tools = FakeAgentTools()
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.config = {"bot_language": "en"}
+    bot.openai = SimpleNamespace(plugin_manager=FakePluginManager(agent_tools))
+    bot._remember_sent_image_messages = Mock()
+    bot._run_post_delivery_cleanup = AsyncMock()
+    sent_messages = [SimpleNamespace(message_id=200)]
+    monkeypatch.setattr(
+        telegram_bot,
+        "handle_direct_result",
+        AsyncMock(return_value=sent_messages),
+    )
+
+    await bot._handle_direct_result(
+        FakeUpdate(FakeMessage()),
+        {"direct_result": {"kind": "final", "format": "mixed", "text": "ok"}},
+    )
+
+    assert agent_tools.clear_calls == [(1234, 42)]
 
 
 @pytest.mark.asyncio
