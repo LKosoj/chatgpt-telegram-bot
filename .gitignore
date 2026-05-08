@@ -19,6 +19,15 @@ bot/user_data.db-shm
 bot/user_data.db-wal
 *.html
 /.vscode
+bot/config/agent_pending_questions.json
+bot/config/agent_tasks.json
+bot/config/anythingllm_workspaces.json
+bot/config/document_metadata/*.json
+bot/config/skills_audit.jsonl
+bot/config/skills_state.json
+bot/skills/
+presentation_analysis_*.json
+presentation_analysis_*.txt
 # SpecStory explanation file
 .specstory/.what-is-this.md
 .cli-proxy/

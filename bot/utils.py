@@ -517,18 +517,20 @@ def get_reply_to_message_id(config, update: Update):
 
 def is_direct_result(response: any) -> bool:
     """
-    Checks if the dict contains a direct result that can be sent directly to the user
-    :param response: The response value
-    :return: Boolean indicating if the result is a direct result
+    Checks if the dict contains a structurally valid direct_result payload that can be
+    sent directly to the user. Requires a dict with a non-empty `kind` field.
     """
     if type(response) is not dict:
         try:
-            json_response = json.loads(response)
-            return json_response.get('direct_result', False)
-        except:
+            response = json.loads(response)
+        except Exception:
             return False
-    else:
-        return response.get('direct_result', False)
+    if not isinstance(response, dict):
+        return False
+    direct_result = response.get('direct_result')
+    if not isinstance(direct_result, dict):
+        return False
+    return bool(direct_result.get('kind'))
 
 def escape_markdown(text: str, exclude_code_blocks: bool = True) -> str:
     """
@@ -613,8 +615,14 @@ async def handle_direct_result(config, update: Update, response: any):
     if type(response) is not dict:
         response = json.loads(response)
 
-    result = response['direct_result']
-    kind = result['kind']
+    result = response.get('direct_result') if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        logging.warning("handle_direct_result called without a direct_result payload: %r", response)
+        return []
+    kind = result.get('kind')
+    if not kind:
+        logging.warning("handle_direct_result payload missing 'kind': %r", result)
+        return []
     result_format = result.get('format')
     value = result.get('value')
     add_value = result.get('add_value', None)
@@ -654,27 +662,38 @@ async def handle_direct_result(config, update: Update, response: any):
                 sent_messages.extend(artifact_messages)
         return sent_messages
 
+    caption = result.get('caption')
+    caption_kwargs = {'caption': str(caption)} if caption else {}
+
     if kind == 'photo':
         if result_format == 'url':
-            sent_messages.append(await message.reply_photo(**common_args, photo=value))
+            sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
         elif result_format == 'path':
             try:
                 if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
                     # Пробуем отправить как документ
-                    sent_messages.append(await message.reply_document(**common_args, document=open(value, 'rb')))
+                    with open(value, 'rb') as fh:
+                        sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
                 else:
                     # Пробуем отправить как фото
-                    sent_messages.append(await message.reply_photo(**common_args, photo=value))
+                    sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
             except Exception as e:
                 logging.error(f"Error handling photo: {e}")
                 # Проверяем и изменяем размеры изображения при необходимости
                 photo_file, photo_format = resize_image_if_needed(value)
-                sent_messages.append(await message.reply_photo(**common_args, photo=photo_file))
-    elif kind == 'gif' or kind == 'file':
+                sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=photo_file))
+    elif kind == 'gif':
         if result_format == 'url':
-            sent_messages.append(await message.reply_document(**common_args, document=value))
-        if result_format == 'path':
-            sent_messages.append(await message.reply_document(**common_args, document=open(value, 'rb')))
+            sent_messages.append(await message.reply_animation(**common_args, **caption_kwargs, animation=value))
+        elif result_format == 'path':
+            with open(value, 'rb') as fh:
+                sent_messages.append(await message.reply_animation(**common_args, **caption_kwargs, animation=fh))
+    elif kind == 'file':
+        if result_format == 'url':
+            sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=value))
+        elif result_format == 'path':
+            with open(value, 'rb') as fh:
+                sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
     elif kind == 'dice':
         sent_messages.append(await message.reply_dice(**common_args, emoji=value))
     elif kind == 'reaction':

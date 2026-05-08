@@ -29,6 +29,10 @@ class Plugin(ABC):
         """Optional lifecycle hook for plugin shutdown."""
         return None
 
+    async def on_startup(self, application: Any) -> None:
+        """Optional async hook called once after the Telegram application is ready."""
+        return None
+
     def get_bot_language(self) -> str:
         if getattr(self, "openai", None) and getattr(self.openai, "config", None):
             return self.openai.config.get("bot_language", "en")

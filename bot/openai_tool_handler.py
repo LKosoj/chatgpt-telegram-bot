@@ -3,24 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 
 import openai
 
-from .utils import is_direct_result, escape_markdown
+from .skill_script_routing import (
+    SCRIPT_FILE_CREATION_RE,
+    SKILL_SCRIPT_PATH_RE,
+    _active_skill_scripts,
+    _is_skills_agent_mode,
+    _refers_to_active_script,
+    _skill_script_routing_error,
+    _skill_script_routing_payload,
+    _system_message,
+)
+from .utils import is_direct_result
 
 logger = logging.getLogger(__name__)
-
-SKILL_SCRIPT_PATH_RE = re.compile(
-    r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\][^\s'\"`/\\]+[/\\]scripts[/\\][^\s'\"`]+",
-    re.IGNORECASE,
-)
-SCRIPT_FILE_CREATION_RE = re.compile(
-    r"\b(?:write|create|save)\b[\s\S]{0,240}\b(?:javascript|js|python|shell|bash|node)\b"
-    r"[\s\S]{0,240}(?:/tmp/|\.js\b|\.py\b|\.sh\b)"
-    r"|\bfs\.writeFileSync\b",
-    re.IGNORECASE,
-)
 
 
 async def _prepend_stream_item(first_item, response):
@@ -39,13 +37,80 @@ def _direct_result_payload(response) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-def _should_defer_direct_result(response, defer_direct_results: bool) -> bool:
+def _should_defer_direct_result(
+    response,
+    defer_direct_results: bool,
+    tool_name: str | None = None,
+) -> bool:
     if not defer_direct_results:
         return False
+    if tool_name == "skills.publish_artifact":
+        return True
     direct_result = _direct_result_payload(response)
     if direct_result and direct_result.get("defer") is False:
         return False
     return True
+
+
+def _merge_direct_results_into_final(direct_results: list) -> dict:
+    text_parts: list[str] = []
+    artifacts: list[dict] = []
+    cleanup_directives: list[dict] = []
+    for tool_response in direct_results:
+        payload = tool_response
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                continue
+        if not isinstance(payload, dict):
+            continue
+        direct_result = payload.get("direct_result")
+        if not isinstance(direct_result, dict):
+            continue
+
+        single_cleanup = direct_result.get("cleanup_skill")
+        if isinstance(single_cleanup, dict):
+            cleanup_directives.append(single_cleanup)
+        many_cleanup = direct_result.get("cleanup_skills")
+        if isinstance(many_cleanup, list):
+            cleanup_directives.extend(item for item in many_cleanup if isinstance(item, dict))
+
+        kind = direct_result.get("kind")
+        if kind == "final":
+            text = direct_result.get("text")
+            if text:
+                text_parts.append(str(text))
+            for artifact in direct_result.get("artifacts") or []:
+                if isinstance(artifact, dict):
+                    artifacts.append(artifact)
+            continue
+        if kind == "text":
+            value = direct_result.get("value")
+            if value:
+                text_parts.append(str(value))
+            continue
+        if kind in ("file", "photo", "gif"):
+            artifacts.append({
+                key: direct_result.get(key)
+                for key in ("kind", "format", "value", "add_value", "file_size")
+                if direct_result.get(key) is not None
+            })
+            continue
+        artifacts.append({k: v for k, v in direct_result.items() if k not in ("cleanup_skill", "cleanup_skills")})
+
+    merged: dict = {
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "defer": False,
+            "text": "\n\n".join(text_parts),
+            "artifacts": artifacts,
+        }
+    }
+    if cleanup_directives:
+        merged["direct_result"]["cleanup_skills"] = cleanup_directives
+    return merged
 
 
 def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
@@ -79,104 +144,19 @@ def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
         return None
 
 
-def _system_message(helper, chat_id: int) -> dict | None:
-    messages = getattr(helper, "conversations", {}).get(chat_id, [])
-    return next((msg for msg in messages if msg.get("role") == "system"), None)
-
-
-def _is_skills_agent_mode(helper, chat_id: int) -> bool:
-    system_message = _system_message(helper, chat_id)
-    if not system_message:
-        return False
-    if system_message.get("mode_key") == "skills_agent":
-        return True
-
-    mode_from_system_message = getattr(helper, "_mode_from_system_message", None)
-    registry = getattr(helper, "chat_modes_registry", None)
-    get_mode_by_key = getattr(registry, "get_mode_by_key", None)
-    if not callable(mode_from_system_message) or not callable(get_mode_by_key):
-        return False
-
-    current_mode = mode_from_system_message(system_message)
-    skills_mode = get_mode_by_key("skills_agent")
-    return bool(current_mode and skills_mode and current_mode == skills_mode)
-
-
-def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
-    plugin_manager = getattr(helper, "plugin_manager", None)
-    get_plugin = getattr(plugin_manager, "get_plugin", None)
-    if not callable(get_plugin):
-        return []
-
-    skills_plugin = get_plugin("skills")
-    if not skills_plugin:
-        return []
-
-    scope_key = getattr(skills_plugin, "_scope_key", None)
-    if not callable(scope_key):
-        return []
-
-    scope = scope_key(tool_args)
-    active_skills = getattr(skills_plugin, "active_skills", {}).get(scope, {})
-    available_skills = getattr(skills_plugin, "available_skills", {})
-    scripts = []
-    for skill_id in sorted(active_skills):
-        for script_name in available_skills.get(skill_id, {}).get("scripts", []):
-            scripts.append({
-                "skill_name": str(skill_id),
-                "script_name": str(script_name),
-            })
-    return scripts
-
-
-def _skill_script_routing_payload(error: str, active_scripts: list[dict] | None = None) -> dict:
-    payload = {
-        "error": error,
-        "required_tool": "skills.run_skill_script",
-    }
-    if active_scripts:
-        payload["call_instruction"] = (
-            "Call skills.run_skill_script with one of the available skill_name/script_name pairs."
-        )
-        payload["available_skill_scripts"] = active_scripts
-        if len(active_scripts) == 1:
-            payload["suggested_tool_call"] = {
-                "tool_name": "skills.run_skill_script",
-                "arguments": active_scripts[0],
-            }
-    return payload
-
-
-def _skill_script_routing_error(helper, chat_id: int, tool_name: str, tool_args: dict) -> dict | None:
-    if tool_name != "codeinterpreter.deep_analysis" or not _is_skills_agent_mode(helper, chat_id):
-        return None
-
-    text = "\n".join(
-        str(tool_args.get(field) or "")
-        for field in ("code_prompt", "data_path")
+def _wrap_with_deferred(response, deferred_direct_results, tools_used):
+    if not deferred_direct_results:
+        return response, tools_used
+    text = ""
+    if hasattr(response, "choices") and getattr(response, "choices", None):
+        msg = getattr(response.choices[0], "message", None)
+        text = (getattr(msg, "content", None) or "") if msg else ""
+    pseudo_final = json.dumps(
+        {"direct_result": {"kind": "final", "text": text}},
+        ensure_ascii=False,
     )
-    active_scripts = _active_skill_scripts(helper, tool_args)
-    if active_scripts:
-        return _skill_script_routing_payload(
-            "Routing denied in skills_agent: an active skill provides scripts, so code "
-            "execution must go through skills.run_skill_script, not codeinterpreter.deep_analysis.",
-            active_scripts,
-        )
-
-    if SKILL_SCRIPT_PATH_RE.search(text):
-        return _skill_script_routing_payload(
-            "Routing denied in skills_agent: skill scripts must be executed through "
-            "skills.run_skill_script, not codeinterpreter.deep_analysis."
-        )
-
-    if SCRIPT_FILE_CREATION_RE.search(text):
-        return _skill_script_routing_payload(
-            "Routing denied in skills_agent: ad-hoc script files must not be created or "
-            "executed through codeinterpreter.deep_analysis. Use active skill scripts via "
-            "skills.run_skill_script, then publish artifacts through skills.publish_result."
-        )
-
-    return None
+    merged = _merge_direct_results_into_final(deferred_direct_results + [pseudo_final])
+    return merged, tools_used
 
 
 async def handle_function_call(
@@ -189,8 +169,11 @@ async def handle_function_call(
     allowed_plugins=None,
     user_id=None,
     request_context=None,
+    deferred_direct_results=None,
 ):
     tool_calls = []
+    if deferred_direct_results is None:
+        deferred_direct_results = []
     try:
         if request_context is not None:
             chat_id = request_context.chat_id
@@ -249,12 +232,12 @@ async def handle_function_call(
                         logger.info("found legacy tool request in assistant content")
                         tool_calls.append({"id": None, "name": tool_name, "arguments": arguments, "legacy": True})
                     else:
-                        return response, tools_used
+                        return _wrap_with_deferred(response, deferred_direct_results, tools_used)
             else:
-                return response, tools_used
+                return _wrap_with_deferred(response, deferred_direct_results, tools_used)
 
         if not tool_calls:
-            return response, tools_used
+            return _wrap_with_deferred(response, deferred_direct_results, tools_used)
 
         model_to_use = helper.get_current_model(user_id)
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
@@ -330,32 +313,44 @@ async def handle_function_call(
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        direct_result = None
+        direct_results_collected: list = []
         for (tool_name, _, tool_call_id), tool_response in zip(prepared, results):
             if isinstance(tool_response, Exception):
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             logger.info(f'Function {tool_name} response: {tool_response}')
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
-            if is_direct_result(tool_response):
-                if _should_defer_direct_result(tool_response, defer_direct_results):
-                    logger.info("Deferring direct result from tool %s to model reentry", tool_name)
-                elif direct_result is None:
-                    direct_result = tool_response
-            if direct_result:
+            is_dr = is_direct_result(tool_response)
+            should_defer = (
+                is_dr
+                and _should_defer_direct_result(tool_response, defer_direct_results, tool_name=tool_name)
+            )
+            if is_dr and not should_defer:
+                direct_results_collected.append(tool_response)
                 add_tool_result(
                     tool_name,
-                    json.dumps({'result': 'Done, the content has been sent'
-                                'to the user.'}),
+                    json.dumps({'result': 'Done, the content has been sent to the user.'}),
                     tool_call_id,
                 )
             else:
+                if is_dr and should_defer:
+                    logger.info("Deferring direct result from tool %s to model reentry", tool_name)
+                    deferred_direct_results.append(tool_response)
                 add_tool_result(tool_name, tool_response, tool_call_id)
 
         for tool_name, tool_call_id, tool_response in errors:
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             add_tool_result(tool_name, tool_response, tool_call_id)
+
+        direct_result = None
+        if direct_results_collected:
+            combined = deferred_direct_results + direct_results_collected
+            if len(combined) == 1:
+                direct_result = combined[0]
+            else:
+                direct_result = _merge_direct_results_into_final(combined)
+            deferred_direct_results = []
 
         if direct_result:
             return direct_result, tools_used
@@ -388,9 +383,8 @@ async def handle_function_call(
             allowed_plugins,
             user_id,
             request_context,
+            deferred_direct_results=deferred_direct_results,
         )
-    except Exception as e:
-        logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
-        bot_language = helper.config['bot_language']
-        error_message = escape_markdown(str(e))
-        raise Exception(f"⚠️ _{helper._localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
+    except Exception:
+        logger.error('Error in function call handling', exc_info=True)
+        raise

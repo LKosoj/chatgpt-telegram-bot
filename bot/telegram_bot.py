@@ -200,6 +200,44 @@ class ChatGPTTelegramBot:
     async def _handle_direct_result(self, update: Update, response):
         sent_messages = await handle_direct_result(self.config, update, response)
         self._remember_sent_image_messages(update, sent_messages)
+        if sent_messages:
+            await self._run_post_delivery_cleanup(response)
+
+    async def _run_post_delivery_cleanup(self, response):
+        try:
+            payload = response if isinstance(response, dict) else json.loads(response)
+        except Exception:
+            return
+        direct_result = payload.get("direct_result") if isinstance(payload, dict) else None
+        if not isinstance(direct_result, dict):
+            return
+        directives = []
+        single = direct_result.get("cleanup_skill")
+        if isinstance(single, dict):
+            directives.append(single)
+        many = direct_result.get("cleanup_skills")
+        if isinstance(many, list):
+            directives.extend(item for item in many if isinstance(item, dict))
+        if not directives:
+            return
+        plugin_manager = getattr(self.openai, "plugin_manager", None)
+        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
+        if not callable(get_plugin):
+            return
+        for directive in directives:
+            plugin_id = directive.get("plugin_id")
+            if not plugin_id:
+                continue
+            plugin = get_plugin(plugin_id)
+            cleanup = getattr(plugin, "cleanup_after_delivery", None) if plugin else None
+            if not callable(cleanup):
+                continue
+            try:
+                result = cleanup(directive)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception("Post-delivery cleanup failed for %s", directive)
 
     async def _enqueue_hindsight_session_finalize_before_delete(self, user_id: int, session_id: str | None) -> int:
         if not session_id:
@@ -2413,6 +2451,18 @@ class ChatGPTTelegramBot:
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
         application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
         application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
+
+        for plugin_instance in getattr(self.openai.plugin_manager, "plugin_instances", {}).values():
+            startup_hook = getattr(plugin_instance, "on_startup", None)
+            if not startup_hook:
+                continue
+            try:
+                await startup_hook(application)
+            except Exception:
+                logging.exception(
+                    "on_startup hook failed for plugin %s",
+                    plugin_instance.get_plugin_id(),
+                )
 
     async def handle_plugin_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         query = update.callback_query

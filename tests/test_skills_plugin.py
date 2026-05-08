@@ -1,5 +1,7 @@
+import json
 import logging
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -72,7 +74,9 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
         "skills.get_skill",
         "skills.activate_skill",
         "skills.get_skill_status",
+        "skills.list_active_skills",
         "skills.update_skill_progress",
+        "skills.deactivate_skill",
         "skills.run_skill_script",
         "skills.publish_artifact",
         "skills.publish_result",
@@ -186,6 +190,27 @@ async def test_list_skills_refreshes_by_default(tmp_path, monkeypatch):
     assert {skill["id"] for skill in listed["skills"]} == {"demo", "later"}
 
 
+@pytest.mark.asyncio
+async def test_list_skills_marks_allow_scripts_per_skill(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    _write_skill(tmp_path / "skills", name="no_scripts", allow_scripts=False)
+
+    listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
+    by_id = {skill["id"]: skill for skill in listed["skills"]}
+
+    assert by_id["demo"]["allow_scripts"] is True
+    assert by_id["no_scripts"]["allow_scripts"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_skills_disables_allow_scripts_when_global_off(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
+
+    listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
+    assert listed["skills"][0]["allow_scripts"] is False
+    assert listed["scripts_enabled"] is False
+
+
 def test_skill_scan_lists_nested_and_non_python_scripts(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)
     scripts_dir = tmp_path / "skills" / "demo" / "scripts"
@@ -201,6 +226,26 @@ def test_skill_scan_lists_nested_and_non_python_scripts(tmp_path, monkeypatch):
     plugin.available_skills = plugin._scan_skills()
 
     assert plugin.available_skills["demo"]["scripts"] == ["echo.py", "run.sh", "tools/build.js"]
+
+
+def test_skill_scan_returns_cached_result_when_unchanged(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    first = plugin._scan_skills()
+    second = plugin._scan_skills()
+
+    assert second is first
+
+
+def test_skill_scan_invalidates_cache_when_script_added(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    first = plugin._scan_skills()
+
+    new_script = tmp_path / "skills" / "demo" / "scripts" / "extra.py"
+    new_script.write_text("print('extra')\n", encoding="utf-8")
+
+    second = plugin._scan_skills()
+    assert second is not first
+    assert "extra.py" in second["demo"]["scripts"]
 
 
 @pytest.mark.asyncio
@@ -507,7 +552,7 @@ async def test_publish_artifact_requires_active_skill_not_script_admin(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_publish_artifact_rejects_path_outside_controlled_storage(tmp_path, monkeypatch):
+async def test_publish_artifact_accepts_tmp_path(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
     outside_dir = tmp_path.parent / f"{tmp_path.name}_outside"
     outside_dir.mkdir(exist_ok=True)
@@ -524,12 +569,12 @@ async def test_publish_artifact_rejects_path_outside_controlled_storage(tmp_path
         user_id=42,
     )
 
-    assert result["success"] is False
-    assert "controlled skill storage" in result["error"]
+    assert result["success"] is True
+    assert result["direct_result"]["value"] == str(outside_artifact)
 
 
 @pytest.mark.asyncio
-async def test_publish_result_rejects_artifact_outside_controlled_storage(tmp_path, monkeypatch):
+async def test_publish_result_accepts_tmp_artifact_path(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=False)
     outside_dir = tmp_path.parent / f"{tmp_path.name}_outside_result"
     outside_dir.mkdir(exist_ok=True)
@@ -547,8 +592,8 @@ async def test_publish_result_rejects_artifact_outside_controlled_storage(tmp_pa
         user_id=42,
     )
 
-    assert result["success"] is False
-    assert "controlled skill storage" in result["error"]
+    assert result["success"] is True
+    assert result["direct_result"]["artifacts"][0]["value"] == str(outside_artifact)
 
 
 @pytest.mark.asyncio
@@ -568,6 +613,81 @@ async def test_skill_script_execution_is_admin_restricted(tmp_path, monkeypatch)
 
     assert result["success"] is False
     assert "restricted" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_deactivate_skill_clears_state(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    deactivated = await plugin.execute(
+        "deactivate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42,
+    )
+    assert deactivated["success"] is True
+    assert deactivated["deactivated"] is True
+
+    status = await plugin.execute(
+        "get_skill_status", helper=None, skill_name="demo", chat_id=10, user_id=42,
+    )
+    assert status["success"] is False
+    assert "is not active" in status["error"]
+
+
+@pytest.mark.asyncio
+async def test_publish_result_propagates_artifact_caption(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
+    artifact_path = tmp_path / "storage" / "report.pptx"
+    artifact_path.write_bytes(b"pptx-data")
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_result",
+        helper=None,
+        skill_name="demo",
+        artifacts=[{"file_path": str(artifact_path), "caption": "Sales overview"}],
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    artifact = result["direct_result"]["artifacts"][0]
+    assert artifact["caption"] == "Sales overview"
+
+
+@pytest.mark.asyncio
+async def test_publish_result_emits_cleanup_directive_without_inline_deactivation(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "publish_result", helper=None, skill_name="demo",
+        text="Готово", chat_id=10, user_id=42,
+    )
+    assert result["success"] is True
+    cleanup = result["direct_result"]["cleanup_skill"]
+    assert cleanup["plugin_id"] == "skills"
+    assert cleanup["scope"] == "chat:10"
+    assert cleanup["skill_id"] == "demo"
+
+    status = await plugin.execute(
+        "get_skill_status", helper=None, skill_name="demo", chat_id=10, user_id=42,
+    )
+    assert status["success"] is True
+
+    assert plugin.cleanup_after_delivery(cleanup) is True
+
+    status_after = await plugin.execute(
+        "get_skill_status", helper=None, skill_name="demo", chat_id=10, user_id=42,
+    )
+    assert status_after["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_cleanup_after_delivery_idempotent_for_unknown_skill(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    assert plugin.cleanup_after_delivery({"scope": "chat:10", "skill_id": "missing"}) is False
+    assert plugin.cleanup_after_delivery({}) is False
+    assert plugin.cleanup_after_delivery(None) is False
 
 
 @pytest.mark.asyncio
@@ -594,3 +714,126 @@ async def test_skill_script_timeout_kills_process(tmp_path, monkeypatch):
 
     assert result["success"] is False
     assert "timed out" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_list_active_skills_returns_compact_summary(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute(
+        "activate_skill",
+        helper=None,
+        skill_name="demo",
+        initial_context='{"task": "x"}',
+        chat_id=10,
+        user_id=42,
+    )
+
+    result = await plugin.execute(
+        "list_active_skills",
+        helper=None,
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    [entry] = result["active_skills"]
+    assert entry["id"] == "demo"
+    assert "current_step" in entry
+    assert "context" not in entry
+
+
+@pytest.mark.asyncio
+async def test_audit_log_records_lifecycle_events(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="*")
+    await plugin.execute(
+        "activate_skill",
+        helper=None,
+        skill_name="demo",
+        chat_id=10,
+        user_id=42,
+    )
+    await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="echo.py",
+        chat_id=10,
+        user_id=42,
+    )
+    await plugin.execute(
+        "deactivate_skill",
+        helper=None,
+        skill_name="demo",
+        chat_id=10,
+        user_id=42,
+    )
+
+    audit_path = tmp_path / "storage" / "skills_audit.jsonl"
+    assert audit_path.exists()
+    actions = [
+        json.loads(line)["action"]
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert "activate_skill" in actions
+    assert "run_skill_script" in actions
+    assert "deactivate_skill" in actions
+
+
+@pytest.mark.asyncio
+async def test_skill_script_receives_workdir_env(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="*")
+    scripts_dir = tmp_path / "skills" / "demo" / "scripts"
+    (scripts_dir / "show_workdir.py").write_text(
+        (
+            "import os\n"
+            "print('SKILL_WORKDIR=' + os.environ.get('SKILL_WORKDIR', ''))\n"
+            "print('SKILL_ID=' + os.environ.get('SKILL_ID', ''))\n"
+            "print('SKILL_SCOPE=' + os.environ.get('SKILL_SCOPE', ''))\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="show_workdir.py",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["workdir"] is not None
+    workdir_path = Path(result["workdir"])
+    assert workdir_path.exists()
+    assert "SKILL_WORKDIR=" in result["stdout"]
+    assert str(workdir_path) in result["stdout"]
+    assert "SKILL_ID=demo" in result["stdout"]
+    assert "SKILL_SCOPE=chat:10" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_accepts_workdir_path(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    workdir = plugin._ensure_skill_workdir("demo", "chat:10")
+    assert workdir is not None
+    artifact = workdir / "report.txt"
+    artifact.write_text("hello", encoding="utf-8")
+
+    result = await plugin.execute(
+        "publish_artifact",
+        helper=None,
+        skill_name="demo",
+        file_path=str(artifact),
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["direct_result"]["value"] == str(artifact)

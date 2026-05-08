@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -32,6 +33,8 @@ class SkillsPlugin(Plugin):
     def __init__(self):
         self.skills_dir: Path | None = None
         self.state_file: Path | None = None
+        self.workdir_root: Path | None = None
+        self.audit_file: Path | None = None
         self.available_skills: Dict[str, Dict[str, Any]] = {}
         self.active_skills: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.allow_scripts = False
@@ -39,7 +42,10 @@ class SkillsPlugin(Plugin):
         self.script_admin_all = False
         self.script_timeout = 120
         self.output_max_chars = 12000
+        self.interim_after_seconds = 20
         self._state_lock = threading.RLock()
+        self._audit_lock = threading.Lock()
+        self._scan_cache: tuple[tuple, Dict[str, Dict[str, Any]]] | None = None
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
@@ -49,9 +55,20 @@ class SkillsPlugin(Plugin):
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
         self.state_file = storage_path / "skills_state.json"
+        workdir_env = os.getenv("SKILLS_WORKDIR")
+        self.workdir_root = (
+            Path(workdir_env).expanduser().resolve()
+            if workdir_env
+            else storage_path / "skill_workdir"
+        )
+        self.workdir_root.mkdir(parents=True, exist_ok=True)
+        self.audit_file = storage_path / "skills_audit.jsonl"
         self.allow_scripts = self._env_flag("SKILLS_ALLOW_SCRIPTS", default=False)
         self.script_timeout = self._env_int("SKILLS_SCRIPT_TIMEOUT", default=120, minimum=1)
         self.output_max_chars = self._env_int("SKILLS_SCRIPT_OUTPUT_MAX_CHARS", default=12000, minimum=1000)
+        self.interim_after_seconds = self._env_int(
+            "SKILLS_SCRIPT_INTERIM_AFTER_SECONDS", default=20, minimum=5
+        )
         self.script_admin_ids, self.script_admin_all = self._parse_admin_ids(
             os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", "")
         )
@@ -127,6 +144,14 @@ class SkillsPlugin(Plugin):
                 },
             },
             {
+                "name": "list_active_skills",
+                "description": (
+                    "List skills currently active for this Telegram chat/user. "
+                    "Returns a compact summary without internal context details."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
                 "name": "update_skill_progress",
                 "description": "Update active skill progress and merge additional JSON/text context.",
                 "parameters": {
@@ -177,10 +202,31 @@ class SkillsPlugin(Plugin):
                 },
             },
             {
+                "name": "deactivate_skill",
+                "description": (
+                    "Mark an active skill as completed and free its in-memory state. "
+                    "Use when the skill workflow is finished without publish_result, "
+                    "or to abandon a skill the user no longer needs."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill directory id or metadata name.",
+                        }
+                    },
+                    "required": ["skill_name"],
+                },
+            },
+            {
                 "name": "publish_artifact",
                 "description": (
-                    "Publish a completed artifact file created by an active skill to the Telegram user. "
-                    "Use this after a final requested file is ready; do not just mention the local file path."
+                    "Send an INTERMEDIATE artifact file produced by an active skill to the user. "
+                    "Use during the workflow if you want the user to see a draft. "
+                    "This does NOT finish the skill: the active skill stays active and you must "
+                    "still call publish_result to deliver the final answer. In skills_agent mode the "
+                    "file is held until publish_result is called and is delivered together with the final result."
                 ),
                 "parameters": {
                     "type": "object",
@@ -200,8 +246,10 @@ class SkillsPlugin(Plugin):
             {
                 "name": "publish_result",
                 "description": (
-                    "Publish the final skill result to Telegram. Supports optional text plus zero or more "
-                    "artifact files. Use this for final answers that include long text, artifacts, or both."
+                    "FINAL delivery: send the final skill answer to the Telegram user. "
+                    "Supports optional text plus zero or more artifact files. After this call the "
+                    "skill is automatically deactivated once delivery succeeds. Always end a skill "
+                    "workflow with publish_result (or deactivate_skill if there is nothing to deliver)."
                 ),
                 "parameters": {
                     "type": "object",
@@ -224,6 +272,10 @@ class SkillsPlugin(Plugin):
                                         "type": "string",
                                         "description": "Absolute or relative local path to an artifact file.",
                                     },
+                                    "caption": {
+                                        "type": "string",
+                                        "description": "Optional short caption shown next to the file in Telegram.",
+                                    },
                                 },
                                 "required": ["file_path"],
                             },
@@ -236,6 +288,7 @@ class SkillsPlugin(Plugin):
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         self._ensure_ready()
+        kwargs.pop("request_context", None)
         if function_name == "list_skills":
             return self._list_skills(refresh=self._bool_arg(kwargs.get("refresh"), default=True))
         if function_name == "get_skill":
@@ -253,6 +306,8 @@ class SkillsPlugin(Plugin):
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
             return self._get_skill_status(skill_name, **call_kwargs)
+        if function_name == "list_active_skills":
+            return self._list_active_skills(**kwargs)
         if function_name == "update_skill_progress":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
@@ -264,6 +319,10 @@ class SkillsPlugin(Plugin):
                 context_update,
                 **call_kwargs,
             )
+        if function_name == "deactivate_skill":
+            call_kwargs = dict(kwargs)
+            skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            return self._deactivate_skill(skill_name, **call_kwargs)
         if function_name == "run_skill_script":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
@@ -307,6 +366,10 @@ class SkillsPlugin(Plugin):
 
     def _scan_skills(self) -> Dict[str, Dict[str, Any]]:
         self._ensure_paths()
+        signature = self._scan_signature()
+        if self._scan_cache is not None and self._scan_cache[0] == signature:
+            return self._scan_cache[1]
+
         skills: Dict[str, Dict[str, Any]] = {}
         for skill_path in sorted(self.skills_dir.iterdir(), key=lambda p: p.name):
             if not skill_path.is_dir():
@@ -331,9 +394,45 @@ class SkillsPlugin(Plugin):
                 }
             except Exception as exc:
                 logger.warning("Failed to parse skill %s: %s", md_file, exc)
+        self._scan_cache = (signature, skills)
         return skills
 
+    def _scan_signature(self) -> tuple:
+        if self.skills_dir is None or not self.skills_dir.exists():
+            return ()
+        entries: List[tuple] = []
+        try:
+            for skill_path in sorted(self.skills_dir.iterdir(), key=lambda p: p.name):
+                if not skill_path.is_dir():
+                    continue
+                md_file = skill_path / "SKILL.md"
+                if not md_file.exists():
+                    continue
+                try:
+                    md_mtime = md_file.stat().st_mtime_ns
+                except OSError:
+                    continue
+                scripts_dir = skill_path / "scripts"
+                script_entries: List[tuple] = []
+                if scripts_dir.exists() and scripts_dir.is_dir():
+                    for path in sorted(scripts_dir.rglob("*")):
+                        try:
+                            if not path.is_file():
+                                continue
+                        except OSError:
+                            continue
+                        try:
+                            script_entries.append((str(path.relative_to(scripts_dir)), path.stat().st_mtime_ns))
+                        except OSError:
+                            continue
+                entries.append((skill_path.name, md_mtime, tuple(script_entries)))
+        except OSError:
+            return ()
+        return tuple(entries)
+
     def _parse_skill_markdown(self, content: str) -> tuple[Dict[str, Any], str]:
+        if content.startswith("﻿"):
+            content = content[1:]
         if content.startswith("---"):
             parts = content.split("---", 2)
             if len(parts) == 3 and not parts[0].strip():
@@ -407,12 +506,20 @@ class SkillsPlugin(Plugin):
                     "name": info["name"],
                     "description": info["description"],
                     "scripts": info["scripts"],
+                    "allow_scripts": self._skill_scripts_allowed(info),
                 }
                 for skill_id, info in self.available_skills.items()
             ],
             "scripts_enabled": self.allow_scripts,
             "scripts_admin_restricted": not self.script_admin_all,
         }
+
+    def _skill_scripts_allowed(self, info: Dict[str, Any]) -> bool:
+        if not self.allow_scripts:
+            return False
+        if not info.get("scripts"):
+            return False
+        return info.get("metadata", {}).get("allow_scripts") is not False
 
     def _script_tool_calls(self, skill_id: str) -> List[Dict[str, Any]]:
         info = self.available_skills.get(skill_id)
@@ -493,6 +600,7 @@ class SkillsPlugin(Plugin):
             self._save_state()
 
         info = self.available_skills[skill_id]
+        self._audit("activate_skill", skill=skill_id, scope=scope, user_id=kwargs.get("user_id"))
         return {
             "success": True,
             "skill": {
@@ -504,6 +612,27 @@ class SkillsPlugin(Plugin):
                 "script_tool_calls": self._script_tool_calls(skill_id),
             },
             "scope": scope,
+        }
+
+    def _list_active_skills(self, **kwargs) -> Dict[str, Any]:
+        scope = self._scope_key(kwargs)
+        with self._state_lock:
+            scope_state = self.active_skills.get(scope, {})
+            entries = []
+            for skill_id, state in scope_state.items():
+                info = self.available_skills.get(skill_id, {})
+                entries.append({
+                    "id": skill_id,
+                    "name": info.get("name", skill_id),
+                    "current_step": state.get("current_step", 0),
+                    "activated_at": state.get("activated_at"),
+                    "updated_at": state.get("updated_at"),
+                })
+        return {
+            "success": True,
+            "scope": scope,
+            "active_skills": entries,
+            "count": len(entries),
         }
 
     def _get_skill_status(self, skill_name: str = "", **kwargs) -> Dict[str, Any]:
@@ -555,6 +684,22 @@ class SkillsPlugin(Plugin):
             self._save_state()
             return {"success": True, "scope": scope, "skill": skill_id, "state": state}
 
+    def _deactivate_skill(self, skill_name: str, **kwargs) -> Dict[str, Any]:
+        scope = self._scope_key(kwargs)
+        skill_id = self._resolve_skill_id(skill_name)
+        if not skill_id:
+            return {"success": False, "error": f"Skill '{skill_name}' not found"}
+        with self._state_lock:
+            scope_state = self.active_skills.get(scope, {})
+            removed = scope_state.pop(skill_id, None)
+            if removed is None:
+                return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
+            if not scope_state:
+                self.active_skills.pop(scope, None)
+            self._save_state()
+        self._audit("deactivate_skill", skill=skill_id, scope=scope, user_id=kwargs.get("user_id"))
+        return {"success": True, "scope": scope, "skill": skill_id, "deactivated": True}
+
     async def _run_skill_script(
         self,
         skill_name: str,
@@ -593,6 +738,12 @@ class SkillsPlugin(Plugin):
         script_path = (scripts_dir / script_name).resolve()
         if not self._is_relative_to(script_path, scripts_dir):
             return {"success": False, "error": "Invalid script path"}
+        try:
+            mode = script_path.lstat().st_mode
+        except OSError as exc:
+            return {"success": False, "error": f"Cannot stat script '{script_name}': {exc}"}
+        if not stat.S_ISREG(mode):
+            return {"success": False, "error": f"Script '{script_name}' is not a regular file"}
 
         try:
             argv = self._parse_script_args(args_json)
@@ -617,6 +768,9 @@ class SkillsPlugin(Plugin):
             user_id,
             scope,
         )
+        workdir = self._ensure_skill_workdir(skill_id, scope)
+        chat_id = kwargs.get("chat_id")
+        interim_task = self._spawn_interim_notice(chat_id, skill_id, script_name)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -624,7 +778,7 @@ class SkillsPlugin(Plugin):
                 cwd=str(skill_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._script_env(),
+                env=self._script_env(skill_id=skill_id, scope=scope, workdir=workdir),
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
@@ -636,9 +790,33 @@ class SkillsPlugin(Plugin):
                 await process.wait()
             except Exception:
                 pass
+            self._audit(
+                "run_skill_script",
+                skill=skill_id,
+                script=script_name,
+                runtime=runtime,
+                scope=scope,
+                user_id=user_id,
+                returncode=None,
+                error="timeout",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             return {"success": False, "error": f"Script '{script_name}' timed out"}
         except Exception as exc:
+            self._audit(
+                "run_skill_script",
+                skill=skill_id,
+                script=script_name,
+                runtime=runtime,
+                scope=scope,
+                user_id=user_id,
+                error=str(exc),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             return {"success": False, "error": f"Failed to run script '{script_name}': {exc}"}
+        finally:
+            if interim_task is not None:
+                interim_task.cancel()
 
         duration_ms = int((time.monotonic() - started) * 1000)
         stdout = self._truncate(stdout_bytes.decode("utf-8", errors="replace"))
@@ -651,6 +829,16 @@ class SkillsPlugin(Plugin):
             process.returncode,
             duration_ms,
         )
+        self._audit(
+            "run_skill_script",
+            skill=skill_id,
+            script=script_name,
+            runtime=runtime,
+            scope=scope,
+            user_id=user_id,
+            returncode=process.returncode,
+            duration_ms=duration_ms,
+        )
         return {
             "success": process.returncode == 0,
             "skill": skill_id,
@@ -660,6 +848,7 @@ class SkillsPlugin(Plugin):
             "duration_ms": duration_ms,
             "stdout": stdout,
             "stderr": stderr,
+            "workdir": str(workdir) if workdir else None,
         }
 
     def _publish_artifact(self, skill_name: str, file_path: str, **kwargs) -> Dict[str, Any]:
@@ -691,6 +880,14 @@ class SkillsPlugin(Plugin):
             file_size,
             user_id,
             scope,
+        )
+        self._audit(
+            "publish_artifact",
+            skill=skill_id,
+            scope=scope,
+            user_id=user_id,
+            file_path=str(artifact_path),
+            file_size=file_size,
         )
         return {
             "success": True,
@@ -736,6 +933,14 @@ class SkillsPlugin(Plugin):
             user_id,
             scope,
         )
+        self._audit(
+            "publish_result",
+            skill=skill_id,
+            scope=scope,
+            user_id=user_id,
+            text_chars=len(final_text),
+            artifacts=len(artifact_items),
+        )
         return {
             "success": True,
             "skill": skill_id,
@@ -747,8 +952,36 @@ class SkillsPlugin(Plugin):
                 "defer": False,
                 "text": final_text,
                 "artifacts": artifact_items,
+                "cleanup_skill": {
+                    "plugin_id": self.plugin_id,
+                    "scope": scope,
+                    "skill_id": skill_id,
+                },
             },
         }
+
+    def cleanup_after_delivery(self, cleanup: Dict[str, Any]) -> bool:
+        if not isinstance(cleanup, dict):
+            return False
+        scope = cleanup.get("scope")
+        skill_id = cleanup.get("skill_id")
+        if not scope or not skill_id:
+            return False
+        with self._state_lock:
+            scope_state = self.active_skills.get(scope, {})
+            removed = scope_state.pop(skill_id, None)
+            if removed is None:
+                return False
+            if not scope_state:
+                self.active_skills.pop(scope, None)
+            self._save_state()
+        logger.info(
+            "Skill state cleaned up after delivery skill=%s scope=%s",
+            skill_id,
+            scope,
+        )
+        self._audit("cleanup_after_delivery", skill=skill_id, scope=scope)
+        return True
 
     def _normalize_artifacts(self, skill_id: str, artifacts: Any) -> tuple[List[Dict[str, Any]], str | None]:
         if artifacts is None:
@@ -766,10 +999,14 @@ class SkillsPlugin(Plugin):
 
         artifact_items = []
         for item in artifacts:
+            caption = None
             if isinstance(item, str):
                 file_path = item
             elif isinstance(item, dict):
                 file_path = item.get("file_path")
+                raw_caption = item.get("caption")
+                if raw_caption is not None:
+                    caption = str(raw_caption).strip() or None
             else:
                 return [], "Each artifact must be an object with file_path or a path string"
             if not file_path:
@@ -786,12 +1023,15 @@ class SkillsPlugin(Plugin):
             file_size = artifact_path.stat().st_size
             if file_size <= 0:
                 return [], f"Artifact file '{file_path}' is empty"
-            artifact_items.append({
+            artifact = {
                 "kind": "file",
                 "format": "path",
                 "value": str(artifact_path),
                 "file_size": file_size,
-            })
+            }
+            if caption:
+                artifact["caption"] = caption
+            artifact_items.append(artifact)
         return artifact_items, None
 
     def _script_command(self, script_path: Path) -> tuple[List[str] | None, str | None, str | None]:
@@ -834,6 +1074,18 @@ class SkillsPlugin(Plugin):
             roots.append(Path(self.storage_root).resolve())
         if self.skills_dir:
             roots.append(self.skills_dir.resolve())
+        if self.workdir_root:
+            roots.append(self.workdir_root)
+        roots.append(Path("/tmp").resolve())
+        declared = skill_info.get("metadata", {}).get("artifact_paths") or []
+        if isinstance(declared, str):
+            declared = [declared]
+        if isinstance(declared, list):
+            for raw in declared:
+                try:
+                    roots.append(Path(str(raw)).expanduser().resolve())
+                except Exception:
+                    pass
         return any(self._is_relative_to(artifact_path, root) for root in roots)
 
     def _resolve_skill_id(self, skill_name: str) -> str | None:
@@ -910,10 +1162,19 @@ class SkillsPlugin(Plugin):
         with self._state_lock:
             try:
                 data = json.loads(self.state_file.read_text(encoding="utf-8"))
-                self.active_skills = data if isinstance(data, dict) else {}
             except Exception as exc:
-                logger.warning("Failed to load skills state: %s", exc)
+                broken_path = self.state_file.with_suffix(self.state_file.suffix + ".broken")
+                logger.error(
+                    "Failed to load skills state from %s: %s. Quarantining to %s and refusing to overwrite.",
+                    self.state_file, exc, broken_path,
+                )
+                try:
+                    os.replace(self.state_file, broken_path)
+                except Exception:
+                    logger.exception("Could not move corrupted skills state to %s", broken_path)
                 self.active_skills = {}
+                return
+            self.active_skills = data if isinstance(data, dict) else {}
 
     def _save_state(self) -> None:
         if not self.state_file:
@@ -921,10 +1182,12 @@ class SkillsPlugin(Plugin):
         with self._state_lock:
             try:
                 self.state_file.parent.mkdir(parents=True, exist_ok=True)
-                self.state_file.write_text(
+                tmp_path = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+                tmp_path.write_text(
                     json.dumps(self.active_skills, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+                os.replace(tmp_path, self.state_file)
             except Exception as exc:
                 logger.warning("Failed to save skills state: %s", exc)
 
@@ -973,10 +1236,86 @@ class SkillsPlugin(Plugin):
         except (TypeError, ValueError):
             return False
 
-    def _script_env(self) -> Dict[str, str]:
+    def _script_env(
+        self,
+        skill_id: str | None = None,
+        scope: str | None = None,
+        workdir: Path | None = None,
+    ) -> Dict[str, str]:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        if workdir is not None:
+            env["SKILL_WORKDIR"] = str(workdir)
+        if skill_id:
+            env["SKILL_ID"] = skill_id
+        if scope:
+            env["SKILL_SCOPE"] = scope
         return env
+
+    def _ensure_skill_workdir(self, skill_id: str, scope: str) -> Path | None:
+        if self.workdir_root is None:
+            return None
+        safe_scope = scope.replace(":", "_").replace("/", "_") or "global"
+        workdir = (self.workdir_root / skill_id / safe_scope).resolve()
+        try:
+            workdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("Failed to create skill workdir %s: %s", workdir, exc)
+            return None
+        return workdir
+
+    def _spawn_interim_notice(
+        self,
+        chat_id: Any,
+        skill_id: str,
+        script_name: str,
+    ) -> "asyncio.Task | None":
+        bot = getattr(self, "bot", None) or getattr(getattr(self, "openai", None), "bot", None)
+        if bot is None or chat_id is None or self.interim_after_seconds <= 0:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+        delay = self.interim_after_seconds
+
+        async def _send_interim():
+            try:
+                await asyncio.sleep(delay)
+                await bot.send_message(
+                    chat_id=chat_id_int,
+                    text=(
+                        f"⏳ Скрипт «{script_name}» скила «{skill_id}» всё ещё выполняется. "
+                        "Дождитесь завершения, не отправляя новых запросов."
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Failed to send interim skill script notice", exc_info=True)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return loop.create_task(_send_interim())
+
+    def _audit(self, action: str, **fields: Any) -> None:
+        if self.audit_file is None:
+            return
+        record = {"ts": int(time.time()), "action": action}
+        for key, value in fields.items():
+            if value is None:
+                continue
+            record[key] = value
+        try:
+            with self._audit_lock:
+                self.audit_file.parent.mkdir(parents=True, exist_ok=True)
+                line = json.dumps(record, ensure_ascii=False)
+                with open(self.audit_file, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+        except Exception:
+            logger.debug("Failed to append skills audit entry", exc_info=True)
 
     def _truncate(self, value: str) -> str:
         if len(value) <= self.output_max_chars:
