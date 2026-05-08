@@ -14,6 +14,27 @@ memory, a subagent / skills runtime, and Model Context Protocol (MCP) support.
 > repo-specific. This README documents the current behaviour. Treat the source
 > (`bot/`) and `.env.example` as authoritative when in doubt.
 
+## Key Capabilities
+
+- **Tool-using Telegram assistant**: OpenAI-compatible chat runtime with
+  namespaced plugin tools, JSON-schema argument validation, per-chat-mode tool
+  allow-lists, and direct artifact delivery back to Telegram.
+- **Agents and subagents**: `agent_tools` can run bounded subagents, ask the
+  Telegram user follow-up questions, track plans, and deliver generated files,
+  images, audio, or text artifacts.
+- **Skills runtime**: local Codex-style `SKILL.md` folders are exposed as tools,
+  with optional script execution, operator allow-lists, progress updates, and
+  routing through terminal / code-interpreter style execution.
+- **Files and media workflows**: image generation/editing, vision, audio/video
+  transcription, TTS, document Q&A, and reply-to-file editing where Telegram
+  document replies are re-downloaded for tool-based changes.
+- **MCP and external integrations**: remote MCP servers can be registered and
+  re-exposed as model tools alongside built-in web, research, search,
+  translation, document, and utility plugins.
+- **Long-running memory and sessions**: named SQLite sessions, chat modes,
+  per-conversation locks, usage budgets, and optional Hindsight long-term
+  memory recall / retention.
+
 ---
 
 ## Table Of Contents
