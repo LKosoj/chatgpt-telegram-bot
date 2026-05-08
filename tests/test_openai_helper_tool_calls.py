@@ -166,9 +166,9 @@ class DummyVoiceGateway:
         self.voices = voices
         self.calls = []
 
-    async def post_json(self, path, payload, timeout=None):
-        self.calls.append((path, payload, timeout))
-        return {"voices": self.voices}
+    async def audio_voices(self, model=None):
+        self.calls.append(model)
+        return [{"voice": voice} for voice in self.voices]
 
 
 class FakeSkillsPlugin:
@@ -381,11 +381,7 @@ async def test_tts_options_are_loaded_from_api():
 
     assert await helper.get_available_tts_models() == ["llmgateway/silero-tts", "tts-1"]
     assert await helper.get_available_tts_voices("llmgateway/silero-tts") == ["alice", "bob"]
-    assert helper.gateway_client.calls[0] == (
-        "/audio/speech/voices",
-        {"model": "llmgateway/silero-tts"},
-        30.0,
-    )
+    assert helper.gateway_client.calls[0] == "llmgateway/silero-tts"
 
 
 @pytest.mark.asyncio
@@ -666,10 +662,27 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
                 "add_value": "generated",
             },
         },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "presentation ready",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
     }
     helper = _make_helper(
-        DummyPluginManager(responses),
-        client=DummyClient([FakeResponse(content="presentation ready")]),
+        DummyPluginManager(
+            responses,
+            specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
+        ),
+        client=DummyClient([
+            FakeResponse(content="presentation ready"),
+            FakeResponse(tool_calls=[
+                FakeToolCall("agent_tools.deliver_to_user", json.dumps({"text": "presentation ready"})),
+            ]),
+        ]),
     )
     helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
     helper.chat_modes_registry = types.SimpleNamespace(
@@ -684,16 +697,79 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
-    assert helper.client.calls == 1
-    assert set(tools_used) == {"stable_diffusion.stable_diffusion"}
+    assert helper.client.calls == 2
+    assert set(tools_used) == {"stable_diffusion.stable_diffusion", "agent_tools.deliver_to_user"}
     # Intermediate direct_result tools (image generation etc.) are deferred only
     # into the tool history so the model can reference them. They must not be
     # re-delivered alongside the final answer, otherwise the user receives helper
     # images before the actual artifact (e.g. images before the final pptx).
-    assert out.choices[0].message.content == "presentation ready"
+    assert out["direct_result"]["text"] == "presentation ready"
+    assert out["direct_result"]["artifacts"] == []
     tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
     assert tool_messages
     assert "/tmp/image.png" in tool_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_retries_plain_text_final_response_through_delivery_tool():
+    responses = {
+        "terminal.terminal": {
+            "success": True,
+            "stdout": "Presentation created: /tmp/deck.pptx\n",
+            "stderr": "",
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/deck.pptx"}],
+                "defer": False,
+            },
+        },
+    }
+    pm = DummyPluginManager(
+        responses,
+        specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
+    )
+    helper = _make_helper(
+        pm,
+        client=DummyClient([
+            FakeResponse(content="<br>\n\n> paste"),
+            FakeResponse(tool_calls=[
+                FakeToolCall("agent_tools.deliver_to_user", json.dumps({
+                    "text": "Готово",
+                    "artifacts": [{"file_path": "/tmp/deck.pptx"}],
+                }), id="call-final"),
+            ]),
+        ]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("terminal.terminal", json.dumps({"command": "node /tmp/create_pptx.js"}), id="call-terminal"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 2
+    assert helper.client.create_kwargs[1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "agent_tools.deliver_to_user"},
+    }
+    assert set(tools_used) == {"terminal.terminal", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["kind"] == "final"
+    assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/deck.pptx"
+    assert any(
+        "Protocol violation" in (message.get("content") or "")
+        and "agent_tools.deliver_to_user" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
 
 
 @pytest.mark.asyncio
@@ -720,15 +796,30 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
                 "add_value": "generated",
             },
         },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "presentation ready",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
     }
     helper = _make_helper(
-        DummyPluginManager(responses),
+        DummyPluginManager(
+            responses,
+            specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
+        ),
         db=MultiSessionDB(contexts),
         client=DummyClient([
             FakeResponse(tool_calls=[
                 FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),
             ]),
             FakeResponse(content="presentation ready"),
+            FakeResponse(tool_calls=[
+                FakeToolCall("agent_tools.deliver_to_user", json.dumps({"text": "presentation ready"})),
+            ]),
         ]),
     )
     helper.conversations[1] = contexts["old-session"]["messages"]
@@ -749,9 +840,9 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
         session_id="new-session",
     )
 
-    assert answer == "presentation ready"
-    assert total_tokens == 3
-    assert helper.client.calls == 2
+    assert answer["direct_result"]["text"] == "presentation ready"
+    assert total_tokens == "0"
+    assert helper.client.calls == 3
     assert helper.conversations[1][0]["mode_key"] == "skills_agent"
     assert helper.loaded_conversation_sessions[1] == "new-session"
 
@@ -1169,10 +1260,27 @@ async def test_deliver_to_user_carries_cleanup_directive_in_payload():
 @pytest.mark.asyncio
 async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
     pm = DummyPluginManager(
-        {"codeinterpreter.deep_analysis": {"result": "42"}},
+        {
+            "codeinterpreter.deep_analysis": {"result": "42"},
+            "agent_tools.deliver_to_user": {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "calculated",
+                    "artifacts": [],
+                    "defer": False,
+                },
+            },
+        },
+        specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
         plugins={"skills": FakeSkillsPlugin()},
     )
-    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="calculated")]))
+    helper = _make_helper(pm, client=DummyClient([
+        FakeResponse(content="calculated"),
+        FakeResponse(tool_calls=[
+            FakeToolCall("agent_tools.deliver_to_user", json.dumps({"text": "calculated"})),
+        ]),
+    ]))
     helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
     response = FakeResponse(tool_calls=[
         FakeToolCall(
@@ -1187,8 +1295,8 @@ async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
     )
 
     assert pm.calls and pm.calls[0][0] == "codeinterpreter.deep_analysis"
-    assert set(tools_used) == {"codeinterpreter.deep_analysis"}
-    assert out.choices[0].message.content == "calculated"
+    assert set(tools_used) == {"codeinterpreter.deep_analysis", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["text"] == "calculated"
 
 
 def test_model_messages_include_current_user_language_instruction():

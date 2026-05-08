@@ -1137,6 +1137,8 @@ class OpenAIHelper:
                     candidates.append(payload[key])
             if "data" in payload:
                 candidates.append(payload["data"])
+        elif isinstance(payload, list):
+            candidates.append(payload)
         else:
             data = getattr(payload, "data", None)
             if data is not None:
@@ -1195,11 +1197,7 @@ class OpenAIHelper:
         if self._cache_is_fresh(cache_entry):
             return list(cache_entry[1])
         try:
-            response = await self.gateway_client.post_json(
-                "/audio/speech/voices",
-                {"model": model_to_use},
-                timeout=30.0,
-            )
+            response = await self.gateway_client.audio_voices(model_to_use)
             voices = self._extract_option_ids(response, ("voices",))
         except Exception as exc:
             logger.warning("Failed to load TTS voices from API: %s", exc)

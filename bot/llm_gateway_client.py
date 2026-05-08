@@ -30,6 +30,24 @@ class LLMGatewayClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def get_json(self, path: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+        if not self.base_url:
+            raise LLMGatewayError("OPENAI_BASE_URL is not configured for LLMGateway requests.")
+
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-Title": "tgBot",
+        }
+        response = await self._client.get(url, headers=headers, params=params, timeout=timeout)
+        if response.status_code >= 400:
+            detail = response.text
+            raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise LLMGatewayError("LLMGateway returned a non-JSON response.") from exc
+
     async def post_json(self, path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise LLMGatewayError("OPENAI_BASE_URL is not configured for LLMGateway requests.")
@@ -165,6 +183,10 @@ class LLMGatewayClient:
             },
             timeout=300.0,
         )
+
+    async def audio_voices(self, model: str | None = None) -> Any:
+        params = {"model": model} if model else None
+        return await self.get_json("/audio/voices", params=params, timeout=30.0)
 
     async def image_edit_file(
         self,
