@@ -78,6 +78,11 @@ memory, a subagent / skills runtime, and Model Context Protocol (MCP) support.
 - **Plugin system** with namespaced tools (`<plugin_id>.<function>`), JSON-schema
   argument validation, per-mode allow-lists, plugin-contributed slash commands
   and inline menus, and automatic background task plumbing.
+- **Reply-to-file workflows**: when the user replies with text to a Telegram
+  non-image document, the bot downloads that file for the current turn and gives
+  the model a temporary local path so file-capable tools can edit, convert, or
+  analyze it and return a new artifact. Image replies keep the dedicated
+  image-edit / vision routing.
 - **Agent runtime**: `agent_tools` plugin exposes `run_subagents`,
   `ask_telegram_user`, `deliver_to_user`, and a unified `manage_plan_tasks`
   tool for plan tracking, with safety caps on rounds, scope, and artifact size.
@@ -456,8 +461,8 @@ in the `/plugins` menu.
 | `filters.PHOTO`, `filters.Document.IMAGE` | `vision()` | Vision over the image, or routed to image-edit when intent matches. |
 | `filters.AUDIO`, `filters.VOICE`, `filters.Document.AUDIO`, `filters.VIDEO`, `filters.VIDEO_NOTE`, `filters.Document.VIDEO` | `transcribe()` | Transcribe the file (extracts audio for video). Subject to `IGNORE_GROUP_TRANSCRIPTIONS`. |
 | `filters.Document.*` (txt, doc, docx, pdf, rtf, odt, md) | `handle_document()` | Upload to the `text_document_qa` plugin (one workspace per chat). |
-| `filters.REPLY & filters.TEXT` | `handle_plugin_menu_args_reply()` | Captures replies to plugin force-reply prompts. |
-| `filters.TEXT & ~filters.COMMAND & ~filters.REPLY` | `prompt()` | Catch-all chat handler. |
+| `filters.REPLY & filters.TEXT` | `handle_plugin_menu_args_reply()` | Captures replies to plugin force-reply prompts; otherwise delegates to `prompt()`. Replies to non-image documents are downloaded to a temporary local path for tool-based editing / analysis. |
+| `filters.TEXT & ~filters.COMMAND & ~filters.REPLY` | `prompt()` | Catch-all non-reply chat handler. |
 
 ### Inline Mode
 
@@ -853,6 +858,15 @@ process exits with a clear log line if either is missing.
 The bot uses the light model to classify intent on replies. Reply directly to
 the Telegram image message so the classifier sees `replied_message_kind="image"`
 and can decide between `image_edit` and `image_describe`.
+
+### File reply says the generated file was deleted from `/tmp`
+
+Reply directly to the Telegram document message. For non-image document replies,
+the bot downloads the replied file through Telegram, injects the temporary
+`local_path` into the model request, and removes that source copy after the turn.
+The active chat mode still needs file-capable tools enabled, such as `terminal`,
+`agent_tools`, `skills`, or a format-specific plugin, to modify the file and
+deliver the updated artifact.
 
 ### Hindsight shows documents but no memories
 

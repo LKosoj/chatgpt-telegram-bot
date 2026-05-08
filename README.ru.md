@@ -82,6 +82,12 @@ Protocol (MCP).
   (`<plugin_id>.<function>`), JSON-Schema-валидацией аргументов, allow-list’ом
   на уровне чат-режима, плагинными слэш-командами и inline-меню, фоновыми
   тасками.
+- **Reply-to-file сценарии**: когда пользователь отвечает текстом на
+  Telegram-документ, не являющийся изображением, бот скачивает этот файл на
+  текущий ход и передаёт модели временный локальный путь, чтобы инструменты
+  могли отредактировать, конвертировать или проанализировать файл и вернуть
+  новый артефакт. Reply на изображения остаётся в отдельной маршрутизации
+  image-edit / vision.
 - **Рантайм агентов**: плагин `agent_tools` экспонирует `run_subagents`,
   `ask_telegram_user`, `deliver_to_user` и единый инструмент
   `manage_plan_tasks` для трекинга плана; есть жёсткие лимиты на количество
@@ -462,8 +468,8 @@ deprecation warning.
 | `filters.PHOTO`, `filters.Document.IMAGE` | `vision()` | Vision над изображением или роутинг в image-edit, если намерение совпадает. |
 | `filters.AUDIO`, `filters.VOICE`, `filters.Document.AUDIO`, `filters.VIDEO`, `filters.VIDEO_NOTE`, `filters.Document.VIDEO` | `transcribe()` | Транскрипция (для видео извлекается аудио). Учитывает `IGNORE_GROUP_TRANSCRIPTIONS`. |
 | `filters.Document.*` (txt, doc, docx, pdf, rtf, odt, md) | `handle_document()` | Загрузка в плагин `text_document_qa` (один workspace на чат). |
-| `filters.REPLY & filters.TEXT` | `handle_plugin_menu_args_reply()` | Ловит ответы на force-reply-промпты плагинов. |
-| `filters.TEXT & ~filters.COMMAND & ~filters.REPLY` | `prompt()` | Catch-all обработчик чата. |
+| `filters.REPLY & filters.TEXT` | `handle_plugin_menu_args_reply()` | Ловит ответы на force-reply-промпты плагинов; остальные reply передаёт в `prompt()`. Reply на non-image документы скачивает файл во временный локальный путь для tool-based редактирования / анализа. |
+| `filters.TEXT & ~filters.COMMAND & ~filters.REPLY` | `prompt()` | Catch-all обработчик нереплайного текста. |
 
 ### Inline-режим
 
@@ -862,6 +868,15 @@ python -m py_compile bot/openai_helper.py bot/telegram_bot.py
 на сообщение Telegram с картинкой, чтобы классификатор увидел
 `replied_message_kind="image"` и выбрал между `image_edit` и
 `image_describe`.
+
+### Reply на файл говорит, что файл удалён из `/tmp`
+
+Делай reply прямо на Telegram-сообщение с документом. Для reply на non-image
+документы бот скачивает файл через Telegram, добавляет временный `local_path`
+в запрос к модели и удаляет эту исходную копию после хода. В активном
+чат-режиме всё равно должны быть включены инструменты, умеющие работать с
+файлами, например `terminal`, `agent_tools`, `skills` или форматный плагин,
+чтобы изменить файл и отправить обновлённый артефакт.
 
 ### Hindsight видит документы, но без memory
 
