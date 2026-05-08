@@ -43,8 +43,9 @@ def test_skills_agent_mode_is_registered():
     assert mode["defer_direct_results"] is True
     assert "skills.list_skills" in mode["prompt_start"]
     assert "skills.run_skill_script" in mode["prompt_start"]
-    assert "skills.publish_artifact" in mode["prompt_start"]
-    assert "skills.publish_result" in mode["prompt_start"]
+    assert "agent_tools.deliver_to_user" in mode["prompt_start"]
+    assert "skills.publish_result" not in mode["prompt_start"]
+    assert "skills.publish_artifact" not in mode["prompt_start"]
     assert "agent_tools.run_subagents" in mode["prompt_start"]
     assert "можно активировать несколько подходящих skills" in mode["prompt_start"]
     assert "обязательно верните непустой ответ" in mode["prompt_start"]

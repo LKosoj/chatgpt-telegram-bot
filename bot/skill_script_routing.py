@@ -127,7 +127,7 @@ def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict
         return _skill_script_routing_payload(
             "Routing denied in skills_agent: ad-hoc script files must not be created or "
             "executed through codeinterpreter.deep_analysis. Use active skill scripts via "
-            "skills.run_skill_script, then publish artifacts through skills.publish_result."
+            "skills.run_skill_script, then deliver artifacts through agent_tools.deliver_to_user."
         )
 
     return None

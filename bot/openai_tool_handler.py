@@ -37,15 +37,9 @@ def _direct_result_payload(response) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-def _should_defer_direct_result(
-    response,
-    defer_direct_results: bool,
-    tool_name: str | None = None,
-) -> bool:
+def _should_defer_direct_result(response, defer_direct_results: bool) -> bool:
     if not defer_direct_results:
         return False
-    if tool_name == "skills.publish_artifact":
-        return True
     direct_result = _direct_result_payload(response)
     if direct_result and direct_result.get("defer") is False:
         return False
@@ -144,21 +138,6 @@ def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
         return None
 
 
-def _wrap_with_deferred(response, deferred_direct_results, tools_used):
-    if not deferred_direct_results:
-        return response, tools_used
-    text = ""
-    if hasattr(response, "choices") and getattr(response, "choices", None):
-        msg = getattr(response.choices[0], "message", None)
-        text = (getattr(msg, "content", None) or "") if msg else ""
-    pseudo_final = json.dumps(
-        {"direct_result": {"kind": "final", "text": text}},
-        ensure_ascii=False,
-    )
-    merged = _merge_direct_results_into_final(deferred_direct_results + [pseudo_final])
-    return merged, tools_used
-
-
 async def handle_function_call(
     helper,
     chat_id,
@@ -169,11 +148,8 @@ async def handle_function_call(
     allowed_plugins=None,
     user_id=None,
     request_context=None,
-    deferred_direct_results=None,
 ):
     tool_calls = []
-    if deferred_direct_results is None:
-        deferred_direct_results = []
     try:
         if request_context is not None:
             chat_id = request_context.chat_id
@@ -232,12 +208,12 @@ async def handle_function_call(
                         logger.info("found legacy tool request in assistant content")
                         tool_calls.append({"id": None, "name": tool_name, "arguments": arguments, "legacy": True})
                     else:
-                        return _wrap_with_deferred(response, deferred_direct_results, tools_used)
+                        return response, tools_used
             else:
-                return _wrap_with_deferred(response, deferred_direct_results, tools_used)
+                return response, tools_used
 
         if not tool_calls:
-            return _wrap_with_deferred(response, deferred_direct_results, tools_used)
+            return response, tools_used
 
         model_to_use = helper.get_current_model(user_id)
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
@@ -321,11 +297,7 @@ async def handle_function_call(
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             is_dr = is_direct_result(tool_response)
-            should_defer = (
-                is_dr
-                and _should_defer_direct_result(tool_response, defer_direct_results, tool_name=tool_name)
-            )
-            if is_dr and not should_defer:
+            if is_dr and not _should_defer_direct_result(tool_response, defer_direct_results):
                 direct_results_collected.append(tool_response)
                 add_tool_result(
                     tool_name,
@@ -333,10 +305,8 @@ async def handle_function_call(
                     tool_call_id,
                 )
             else:
-                if is_dr and should_defer:
+                if is_dr:
                     logger.info("Deferring direct result from tool %s to model reentry", tool_name)
-                    if tool_name == "skills.publish_artifact":
-                        deferred_direct_results.append(tool_response)
                 add_tool_result(tool_name, tool_response, tool_call_id)
 
         for tool_name, tool_call_id, tool_response in errors:
@@ -344,17 +314,10 @@ async def handle_function_call(
                 tools_used += (tool_name,)
             add_tool_result(tool_name, tool_response, tool_call_id)
 
-        direct_result = None
         if direct_results_collected:
-            combined = deferred_direct_results + direct_results_collected
-            if len(combined) == 1:
-                direct_result = combined[0]
-            else:
-                direct_result = _merge_direct_results_into_final(combined)
-            deferred_direct_results = []
-
-        if direct_result:
-            return direct_result, tools_used
+            if len(direct_results_collected) == 1:
+                return direct_results_collected[0], tools_used
+            return _merge_direct_results_into_final(direct_results_collected), tools_used
 
         sessions = helper.db.list_user_sessions(user_id, is_active=1)
         active_session = next((s for s in sessions if s['is_active']), None)
@@ -384,7 +347,6 @@ async def handle_function_call(
             allowed_plugins,
             user_id,
             request_context,
-            deferred_direct_results=deferred_direct_results,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

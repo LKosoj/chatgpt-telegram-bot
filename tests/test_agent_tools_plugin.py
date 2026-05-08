@@ -73,8 +73,8 @@ class FakePluginManager:
             {
                 "type": "function",
                 "function": {
-                    "name": "skills.publish_result",
-                    "description": "publish final result",
+                    "name": "agent_tools.deliver_to_user",
+                    "description": "final delivery",
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
@@ -124,6 +124,7 @@ def test_agent_tools_registers_specs_and_handlers():
         "agent_tools.ask_telegram_user",
         "agent_tools.cancel_pending_question",
         "agent_tools.run_subagents",
+        "agent_tools.deliver_to_user",
     }
     ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.ask_telegram_user")
     assert ask_spec["parameters"]["required"] == ["question", "options"]
@@ -207,7 +208,7 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
         for tool in call.get("tools", [])
     }
     assert "skills.list_skills" in tool_names
-    assert "skills.publish_result" not in tool_names
+    assert "agent_tools.deliver_to_user" not in tool_names
     assert "agent_tools.run_subagents" not in tool_names
     assert [call[0] for call in helper.plugin_manager.calls] == ["skills.list_skills", "skills.list_skills"]
     assert any(
@@ -656,6 +657,87 @@ def test_internal_publish_validates_kind():
     )
     assert "kind must be one of" in response
     assert published == []
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_returns_final_direct_result(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    artifact_path = tmp_path / "report.txt"
+    artifact_path.write_text("hello", encoding="utf-8")
+
+    result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        text="Готово",
+        artifacts=[{"file_path": str(artifact_path), "caption": "summary"}],
+    )
+
+    assert result["success"] is True
+    direct_result = result["direct_result"]
+    assert direct_result["kind"] == "final"
+    assert direct_result["format"] == "mixed"
+    assert direct_result["defer"] is False
+    assert direct_result["text"] == "Готово"
+    assert direct_result["artifacts"] == [
+        {
+            "kind": "file",
+            "format": "path",
+            "value": str(artifact_path),
+            "file_size": len("hello"),
+            "caption": "summary",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_requires_text_or_artifacts(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    result = await plugin.execute("deliver_to_user", helper, chat_id=10, user_id=42)
+    assert result["success"] is False
+    assert "text or artifacts" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_rejects_missing_or_empty_files(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    missing = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        artifacts=[{"file_path": str(tmp_path / "missing.txt")}],
+    )
+    assert missing["success"] is False
+    assert "does not exist" in missing["error"]
+
+    empty_path = tmp_path / "empty.bin"
+    empty_path.write_bytes(b"")
+    empty = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        artifacts=[{"file_path": str(empty_path)}],
+    )
+    assert empty["success"] is False
+    assert "is empty" in empty["error"]
+
+
+def test_deliver_to_user_blocked_for_subagents():
+    from bot.plugins.agent_tools import SUBAGENT_BLOCKED_FUNCTIONS
+
+    assert "agent_tools.deliver_to_user" in SUBAGENT_BLOCKED_FUNCTIONS
 
 
 def test_question_markup_renders_selected_marks(tmp_path):

@@ -1490,7 +1490,7 @@ skills_agent:
     4. Для каждого активного skill ведите отдельный progress/context через skills.update_skill_progress.
     5. Следуйте инструкции из SKILL.md. Не выдумывайте отсутствующие skills, scripts или возможности.
     6. Если инструкция skill требует выполнить script, запускайте его только через skills.run_skill_script.
-    7. Если итоговая работа готова, верните ее через skills.publish_result: можно передать text, artifacts или оба поля. Для одного файла допустим skills.publish_artifact, но не ограничивайтесь текстовым сообщением с локальным путем.
+    7. Финальный ответ пользователю всегда отдавайте через agent_tools.deliver_to_user (text, artifacts или оба). Этот tool сам деактивирует все активные skills этого чата и завершает цикл. Не отвечайте пользователю простым текстом без вызова tool'а — иначе ответ останется только в логах модели.
     8. После значимого шага обновляйте состояние через skills.update_skill_progress.
     9. Для независимых подзадач можно запускать tool-capable сабагентов через agent_tools.run_subagents. Сабагенты могут использовать tools и skills, но не спрашивают пользователя, не публикуют финальные артефакты и не запускают вложенных сабагентов; вы синтезируете их результаты сами.
     10. Если нужна явная развилка, подтверждение или недостающая информация, используйте agent_tools.ask_telegram_user.
@@ -1511,7 +1511,7 @@ skills_agent:
     12. Если tool/subprocess вернул FileNotFoundError, "No such file", "command not found" или ненулевой return code, не повторяйте тот же вызов без изменения команды или входных файлов.
     13. Скрипты, принадлежащие активному skill, ЗАПРЕЩЕНО запускать через codeinterpreter.deep_analysis, subprocess в codeinterpreter, или любой другой способ выполнения кода. Единственный допустимый способ - skills.run_skill_script. codeinterpreter допустим только для расчётов/анализа, не связанных со скриптами активного skill.
     14. ЗАПРЕЩЕНО создавать новые файлы скриптов через codeinterpreter (writeFileSync, open(..., 'w'), >>, fs.writeFile и т.п.) для последующего исполнения. Если нужного скрипта нет - честно сообщите пользователю и предложите альтернативу из доступных skills.
-    15. Тулы skills.publish_result, skills.publish_artifact, skills.update_skill_progress, skills.run_skill_script, skills.deactivate_skill ОБЯЗАТЕЛЬНО требуют параметр skill_name (id активированного skill'а, тот же, что был передан в skills.activate_skill). skills.update_skill_progress дополнительно требует целочисленный step. Никогда не вызывайте эти tools без skill_name - схема отбьёт вызов и потеряете итерацию.
+    15. Тулы skills.update_skill_progress, skills.run_skill_script, skills.deactivate_skill ОБЯЗАТЕЛЬНО требуют параметр skill_name (id активированного skill'а, тот же, что был передан в skills.activate_skill). skills.update_skill_progress дополнительно требует целочисленный step. Никогда не вызывайте эти tools без skill_name - схема отбьёт вызов и потеряете итерацию.
 
   parse_mode: HTML
   defer_direct_results: true

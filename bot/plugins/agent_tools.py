@@ -24,9 +24,8 @@ DEFAULT_SUBAGENT_TEMPERATURE = 0.2
 SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.ask_telegram_user",
     "agent_tools.cancel_pending_question",
+    "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
-    "skills.publish_artifact",
-    "skills.publish_result",
     # Subagents share the parent's chat scope; activating or running skill scripts
     # mutates state and writes into directories the parent owns, so keep them out.
     "skills.activate_skill",
@@ -207,6 +206,46 @@ class AgentToolsPlugin(Plugin):
                 },
             },
             {
+                "name": "deliver_to_user",
+                "description": (
+                    "Final delivery to the Telegram user. Send optional final text and zero or "
+                    "more local files. Calling this tool ends the agent loop, delivers everything "
+                    "to the user, and automatically deactivates any skills still active in this "
+                    "chat scope. Use this as the only way to publish a final answer — do not "
+                    "address the user with plain assistant text and do not call this twice."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Optional final text shown to the user.",
+                        },
+                        "artifacts": {
+                            "type": "array",
+                            "description": (
+                                "Optional list of local files to send. Each item must be an "
+                                "object with file_path (absolute path) and an optional caption."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "Absolute path to an existing non-empty file.",
+                                    },
+                                    "caption": {
+                                        "type": "string",
+                                        "description": "Optional caption sent with the file.",
+                                    },
+                                },
+                                "required": ["file_path"],
+                            },
+                        },
+                    },
+                },
+            },
+            {
                 "name": "run_subagents",
                 "description": (
                     "Run independent tool-capable subagents in parallel for bounded subtasks. "
@@ -303,6 +342,8 @@ class AgentToolsPlugin(Plugin):
             return await self._cancel_pending_question(helper, **kwargs)
         if function_name == "run_subagents":
             return await self._run_subagents(helper, **kwargs)
+        if function_name == "deliver_to_user":
+            return await self._deliver_to_user(helper, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
     def load_tasks(self) -> None:
@@ -521,6 +562,128 @@ class AgentToolsPlugin(Plugin):
                 },
             },
         }
+
+    async def _deliver_to_user(self, helper, **kwargs) -> Dict:
+        text_raw = kwargs.get("text")
+        final_text = "" if text_raw is None else str(text_raw).strip()
+        artifact_items, error = self._normalize_delivery_artifacts(kwargs.get("artifacts"))
+        if error:
+            return {"success": False, "error": error}
+        if not final_text and not artifact_items:
+            return {
+                "success": False,
+                "error": "deliver_to_user requires at least one of text or artifacts",
+            }
+
+        cleanup_skills = self._cleanup_directives_for_active_skills(helper, kwargs)
+        logging.info(
+            "deliver_to_user text_chars=%s artifacts=%s cleanup_skills=%s chat_id=%s user_id=%s",
+            len(final_text),
+            len(artifact_items),
+            len(cleanup_skills),
+            kwargs.get("chat_id"),
+            kwargs.get("user_id"),
+        )
+        direct_result: Dict[str, Any] = {
+            "kind": "final",
+            "format": "mixed",
+            "defer": False,
+            "text": final_text,
+            "artifacts": artifact_items,
+        }
+        if cleanup_skills:
+            direct_result["cleanup_skills"] = cleanup_skills
+        return {
+            "success": True,
+            "text_chars": len(final_text),
+            "artifacts_count": len(artifact_items),
+            "direct_result": direct_result,
+        }
+
+    @staticmethod
+    def _cleanup_directives_for_active_skills(helper, kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        if plugin_manager is None:
+            return []
+        skills_plugin = None
+        try:
+            skills_plugin = plugin_manager.get_plugin("skills")
+        except Exception:
+            return []
+        if skills_plugin is None:
+            return []
+
+        chat_id = kwargs.get("chat_id")
+        user_id = kwargs.get("user_id")
+        if chat_id is not None:
+            scope = f"chat:{chat_id}"
+        elif user_id is not None:
+            scope = f"user:{user_id}"
+        else:
+            scope = "global"
+
+        active_skills = getattr(skills_plugin, "active_skills", None) or {}
+        scope_state = active_skills.get(scope) or {}
+        plugin_id = getattr(skills_plugin, "plugin_id", "skills")
+        return [
+            {"plugin_id": plugin_id, "scope": scope, "skill_id": skill_id}
+            for skill_id in scope_state
+        ]
+
+    @staticmethod
+    def _normalize_delivery_artifacts(
+        artifacts: Any,
+    ) -> tuple[List[Dict[str, Any]], str | None]:
+        if artifacts is None:
+            return [], None
+        if isinstance(artifacts, str):
+            text = artifacts.strip()
+            if not text:
+                return [], None
+            try:
+                artifacts = json.loads(text)
+            except json.JSONDecodeError:
+                artifacts = [{"file_path": text}]
+        if not isinstance(artifacts, list):
+            return [], "artifacts must be a list"
+
+        items: List[Dict[str, Any]] = []
+        for entry in artifacts:
+            caption: str | None = None
+            if isinstance(entry, str):
+                file_path = entry
+            elif isinstance(entry, dict):
+                file_path = entry.get("file_path")
+                raw_caption = entry.get("caption")
+                if raw_caption is not None:
+                    caption = str(raw_caption).strip() or None
+            else:
+                return [], "Each artifact must be an object with file_path or a path string"
+            if not isinstance(file_path, str) or not file_path.strip():
+                return [], "Artifact file_path is required"
+
+            resolved = os.path.expanduser(file_path)
+            if not os.path.exists(resolved):
+                return [], f"Artifact file '{file_path}' does not exist"
+            if not os.path.isfile(resolved):
+                return [], f"Artifact path '{file_path}' is not a file"
+            try:
+                file_size = os.path.getsize(resolved)
+            except OSError as exc:
+                return [], f"Failed to stat artifact '{file_path}': {exc}"
+            if file_size <= 0:
+                return [], f"Artifact file '{file_path}' is empty"
+
+            artifact: Dict[str, Any] = {
+                "kind": "file",
+                "format": "path",
+                "value": resolved,
+                "file_size": file_size,
+            }
+            if caption:
+                artifact["caption"] = caption
+            items.append(artifact)
+        return items, None
 
     async def _run_subagents(self, helper, **kwargs) -> Dict:
         subagents = kwargs.get("subagents") or []

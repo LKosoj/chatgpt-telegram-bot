@@ -205,8 +205,10 @@ class SkillsPlugin(Plugin):
                 "name": "deactivate_skill",
                 "description": (
                     "Mark an active skill as completed and free its in-memory state. "
-                    "Use when the skill workflow is finished without publish_result, "
-                    "or to abandon a skill the user no longer needs."
+                    "Use when the skill workflow is finished and you do not need its state anymore. "
+                    "Final delivery to the user is done separately via agent_tools.deliver_to_user, "
+                    "which auto-deactivates any still-active skills, so explicit deactivation is "
+                    "only needed mid-workflow."
                 ),
                 "parameters": {
                     "type": "object",
@@ -215,71 +217,6 @@ class SkillsPlugin(Plugin):
                             "type": "string",
                             "description": "Skill directory id or metadata name.",
                         }
-                    },
-                    "required": ["skill_name"],
-                },
-            },
-            {
-                "name": "publish_artifact",
-                "description": (
-                    "Send an INTERMEDIATE artifact file produced by an active skill to the user. "
-                    "Use during the workflow if you want the user to see a draft. "
-                    "This does NOT finish the skill: the active skill stays active and you must "
-                    "still call publish_result to deliver the final answer. In skills_agent mode the "
-                    "file is held until publish_result is called and is delivered together with the final result."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_name": {
-                            "type": "string",
-                            "description": "Skill directory id or metadata name.",
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute or relative local path to the completed artifact file.",
-                        },
-                    },
-                    "required": ["skill_name", "file_path"],
-                },
-            },
-            {
-                "name": "publish_result",
-                "description": (
-                    "FINAL delivery: send the final skill answer to the Telegram user. "
-                    "Supports optional text plus zero or more artifact files. After this call the "
-                    "skill is automatically deactivated once delivery succeeds. Always end a skill "
-                    "workflow with publish_result (or deactivate_skill if there is nothing to deliver)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_name": {
-                            "type": "string",
-                            "description": "Skill directory id or metadata name.",
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "Optional final text to send to the user.",
-                        },
-                        "artifacts": {
-                            "type": "array",
-                            "description": "Optional list of completed artifact files to send.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "file_path": {
-                                        "type": "string",
-                                        "description": "Absolute or relative local path to an artifact file.",
-                                    },
-                                    "caption": {
-                                        "type": "string",
-                                        "description": "Optional short caption shown next to the file in Telegram.",
-                                    },
-                                },
-                                "required": ["file_path"],
-                            },
-                        },
                     },
                     "required": ["skill_name"],
                 },
@@ -332,26 +269,6 @@ class SkillsPlugin(Plugin):
                 skill_name,
                 script_name,
                 args_json,
-                **call_kwargs,
-            )
-        if function_name == "publish_artifact":
-            call_kwargs = dict(kwargs)
-            skill_name = str(call_kwargs.pop("skill_name", "") or "")
-            file_path = str(call_kwargs.pop("file_path", "") or "")
-            return self._publish_artifact(
-                skill_name,
-                file_path,
-                **call_kwargs,
-            )
-        if function_name == "publish_result":
-            call_kwargs = dict(kwargs)
-            skill_name = str(call_kwargs.pop("skill_name", "") or "")
-            text = call_kwargs.pop("text", None)
-            artifacts = call_kwargs.pop("artifacts", None)
-            return self._publish_result(
-                skill_name,
-                text,
-                artifacts,
                 **call_kwargs,
             )
         return {"success": False, "error": f"Unknown skills tool: {function_name}"}
@@ -851,115 +768,6 @@ class SkillsPlugin(Plugin):
             "workdir": str(workdir) if workdir else None,
         }
 
-    def _publish_artifact(self, skill_name: str, file_path: str, **kwargs) -> Dict[str, Any]:
-        user_id = kwargs.get("user_id")
-        scope = self._scope_key(kwargs)
-        skill_id = self._resolve_skill_id(skill_name)
-        if not skill_id:
-            return {"success": False, "error": f"Skill '{skill_name}' not found"}
-        with self._state_lock:
-            if skill_id not in self.active_skills.get(scope, {}):
-                return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
-
-        artifact_path = self._resolve_artifact_path(file_path)
-        if not self._is_allowed_artifact_path(skill_id, artifact_path):
-            return {"success": False, "error": "Artifact path is outside controlled skill storage"}
-        if not artifact_path.exists():
-            return {"success": False, "error": f"Artifact file '{file_path}' does not exist"}
-        if not artifact_path.is_file():
-            return {"success": False, "error": f"Artifact path '{file_path}' is not a file"}
-
-        file_size = artifact_path.stat().st_size
-        if file_size <= 0:
-            return {"success": False, "error": f"Artifact file '{file_path}' is empty"}
-
-        logger.info(
-            "Publishing skill artifact skill=%s path=%s size=%s user_id=%s scope=%s",
-            skill_id,
-            artifact_path,
-            file_size,
-            user_id,
-            scope,
-        )
-        self._audit(
-            "publish_artifact",
-            skill=skill_id,
-            scope=scope,
-            user_id=user_id,
-            file_path=str(artifact_path),
-            file_size=file_size,
-        )
-        return {
-            "success": True,
-            "skill": skill_id,
-            "file_path": str(artifact_path),
-            "file_size": file_size,
-            "direct_result": {
-                "kind": "file",
-                "format": "path",
-                "value": str(artifact_path),
-                "defer": False,
-            },
-        }
-
-    def _publish_result(
-        self,
-        skill_name: str,
-        text: Any = None,
-        artifacts: Any = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        user_id = kwargs.get("user_id")
-        scope = self._scope_key(kwargs)
-        skill_id = self._resolve_skill_id(skill_name)
-        if not skill_id:
-            return {"success": False, "error": f"Skill '{skill_name}' not found"}
-        with self._state_lock:
-            if skill_id not in self.active_skills.get(scope, {}):
-                return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
-
-        final_text = "" if text is None else str(text).strip()
-        artifact_items, artifact_error = self._normalize_artifacts(skill_id, artifacts)
-        if artifact_error:
-            return {"success": False, "error": artifact_error}
-        if not final_text and not artifact_items:
-            return {"success": False, "error": "Final result must include text, artifacts, or both"}
-
-        logger.info(
-            "Publishing skill result skill=%s text_chars=%s artifacts=%s user_id=%s scope=%s",
-            skill_id,
-            len(final_text),
-            len(artifact_items),
-            user_id,
-            scope,
-        )
-        self._audit(
-            "publish_result",
-            skill=skill_id,
-            scope=scope,
-            user_id=user_id,
-            text_chars=len(final_text),
-            artifacts=len(artifact_items),
-        )
-        return {
-            "success": True,
-            "skill": skill_id,
-            "text_chars": len(final_text),
-            "artifacts_count": len(artifact_items),
-            "direct_result": {
-                "kind": "final",
-                "format": "mixed",
-                "defer": False,
-                "text": final_text,
-                "artifacts": artifact_items,
-                "cleanup_skill": {
-                    "plugin_id": self.plugin_id,
-                    "scope": scope,
-                    "skill_id": skill_id,
-                },
-            },
-        }
-
     def cleanup_after_delivery(self, cleanup: Dict[str, Any]) -> bool:
         if not isinstance(cleanup, dict):
             return False
@@ -982,57 +790,6 @@ class SkillsPlugin(Plugin):
         )
         self._audit("cleanup_after_delivery", skill=skill_id, scope=scope)
         return True
-
-    def _normalize_artifacts(self, skill_id: str, artifacts: Any) -> tuple[List[Dict[str, Any]], str | None]:
-        if artifacts is None:
-            return [], None
-        if isinstance(artifacts, str):
-            text = artifacts.strip()
-            if not text:
-                return [], None
-            try:
-                artifacts = json.loads(text)
-            except json.JSONDecodeError:
-                artifacts = [{"file_path": text}]
-        if not isinstance(artifacts, list):
-            return [], "Artifacts must be a list"
-
-        artifact_items = []
-        for item in artifacts:
-            caption = None
-            if isinstance(item, str):
-                file_path = item
-            elif isinstance(item, dict):
-                file_path = item.get("file_path")
-                raw_caption = item.get("caption")
-                if raw_caption is not None:
-                    caption = str(raw_caption).strip() or None
-            else:
-                return [], "Each artifact must be an object with file_path or a path string"
-            if not file_path:
-                return [], "Artifact file_path is required"
-
-            artifact_path = self._resolve_artifact_path(str(file_path))
-            if not self._is_allowed_artifact_path(skill_id, artifact_path):
-                return [], "Artifact path is outside controlled skill storage"
-            if not artifact_path.exists():
-                return [], f"Artifact file '{file_path}' does not exist"
-            if not artifact_path.is_file():
-                return [], f"Artifact path '{file_path}' is not a file"
-
-            file_size = artifact_path.stat().st_size
-            if file_size <= 0:
-                return [], f"Artifact file '{file_path}' is empty"
-            artifact = {
-                "kind": "file",
-                "format": "path",
-                "value": str(artifact_path),
-                "file_size": file_size,
-            }
-            if caption:
-                artifact["caption"] = caption
-            artifact_items.append(artifact)
-        return artifact_items, None
 
     def _script_command(self, script_path: Path) -> tuple[List[str] | None, str | None, str | None]:
         suffix = script_path.suffix.lower()
@@ -1058,35 +815,6 @@ class SkillsPlugin(Plugin):
                 "Supported scripts: .py, .js/.mjs/.cjs, .sh, or executable files."
             ),
         )
-
-    def _resolve_artifact_path(self, file_path: str) -> Path:
-        artifact_path = Path(file_path).expanduser()
-        if not artifact_path.is_absolute():
-            artifact_path = Path.cwd() / artifact_path
-        return artifact_path.resolve()
-
-    def _is_allowed_artifact_path(self, skill_id: str, artifact_path: Path) -> bool:
-        roots = []
-        skill_info = self.available_skills.get(skill_id, {})
-        if skill_info.get("path"):
-            roots.append(Path(skill_info["path"]).resolve())
-        if getattr(self, "storage_root", None):
-            roots.append(Path(self.storage_root).resolve())
-        if self.skills_dir:
-            roots.append(self.skills_dir.resolve())
-        if self.workdir_root:
-            roots.append(self.workdir_root)
-        roots.append(Path("/tmp").resolve())
-        declared = skill_info.get("metadata", {}).get("artifact_paths") or []
-        if isinstance(declared, str):
-            declared = [declared]
-        if isinstance(declared, list):
-            for raw in declared:
-                try:
-                    roots.append(Path(str(raw)).expanduser().resolve())
-                except Exception:
-                    pass
-        return any(self._is_relative_to(artifact_path, root) for root in roots)
 
     def _resolve_skill_id(self, skill_name: str) -> str | None:
         normalized = (skill_name or "").strip()

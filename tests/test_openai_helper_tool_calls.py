@@ -670,7 +670,7 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
 @pytest.mark.asyncio
 async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
     responses = {
-        "skills.publish_result": {
+        "agent_tools.deliver_to_user": {
             "direct_result": {
                 "kind": "final",
                 "format": "mixed",
@@ -696,7 +696,7 @@ async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
         get_mode_by_system_prompt=lambda _content: None,
     )
     response = FakeResponse(tool_calls=[
-        FakeToolCall("skills.publish_result", "{}", id="call-artifact"),
+        FakeToolCall("agent_tools.deliver_to_user", "{}", id="call-artifact"),
     ])
 
     out, tools_used = await helper._OpenAIHelper__handle_function_call(
@@ -704,7 +704,7 @@ async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
     )
 
     assert helper.client.calls == 0
-    assert set(tools_used) == {"skills.publish_result"}
+    assert set(tools_used) == {"agent_tools.deliver_to_user"}
     assert out["direct_result"]["text"] == "ready"
     assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/silver_analysis.pptx"
 
@@ -1024,7 +1024,7 @@ async def test_skills_agent_rejects_ad_hoc_tmp_script_creation_via_codeinterpret
     assert pm.calls == []
     assert any(
         "ad-hoc script files" in (message.get("content") or "")
-        and "skills.publish_result" in (message.get("content") or "")
+        and "agent_tools.deliver_to_user" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
 
@@ -1059,54 +1059,6 @@ async def test_active_skill_script_reference_blocks_codeinterpreter_in_any_mode(
 
 
 @pytest.mark.asyncio
-async def test_skills_agent_force_defers_publish_artifact_until_publish_result():
-    responses = {
-        "skills.publish_artifact": {
-            "success": True,
-            "skill": "pptx",
-            "file_path": "/tmp/intermediate.pptx",
-            "file_size": 1234,
-            "direct_result": {
-                "kind": "file",
-                "format": "path",
-                "value": "/tmp/intermediate.pptx",
-                "defer": False,
-            },
-        },
-    }
-    helper = _make_helper(
-        DummyPluginManager(responses),
-        client=DummyClient([FakeResponse(content="will publish_result next")]),
-    )
-    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
-    helper.chat_modes_registry = types.SimpleNamespace(
-        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
-        get_mode_by_system_prompt=lambda _content: None,
-    )
-    response = FakeResponse(tool_calls=[
-        FakeToolCall("skills.publish_artifact", "{}", id="call-art"),
-    ])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert helper.client.calls == 1
-    assert set(tools_used) == {"skills.publish_artifact"}
-    # Deferred publish_artifact must not be lost: when the model finishes with plain
-    # text (no follow-up publish_result), the handler wraps the artifact + text into
-    # a final direct_result so the user receives both.
-    assert isinstance(out, dict)
-    assert out["direct_result"]["kind"] == "final"
-    assert out["direct_result"]["text"] == "will publish_result next"
-    artifact_values = [a.get("value") for a in out["direct_result"]["artifacts"]]
-    assert artifact_values == ["/tmp/intermediate.pptx"]
-    tool_messages = [m for m in helper.conversations[1] if m.get("role") == "tool"]
-    assert tool_messages
-    assert "/tmp/intermediate.pptx" in tool_messages[0]["content"]
-
-
-@pytest.mark.asyncio
 async def test_ordinary_mode_merges_multiple_direct_results_into_final():
     responses = {
         "stable_diffusion.first": {
@@ -1134,16 +1086,18 @@ async def test_ordinary_mode_merges_multiple_direct_results_into_final():
 
 
 @pytest.mark.asyncio
-async def test_publish_result_carries_cleanup_directive_in_payload():
+async def test_deliver_to_user_carries_cleanup_directive_in_payload():
     responses = {
-        "skills.publish_result": {
+        "agent_tools.deliver_to_user": {
             "direct_result": {
                 "kind": "final",
                 "format": "mixed",
                 "text": "ready",
                 "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/out.pptx"}],
                 "defer": False,
-                "cleanup_skill": {"plugin_id": "skills", "scope": "chat:1", "skill_id": "pptx"},
+                "cleanup_skills": [
+                    {"plugin_id": "skills", "scope": "chat:1", "skill_id": "pptx"},
+                ],
             },
         },
     }
@@ -1157,59 +1111,15 @@ async def test_publish_result_carries_cleanup_directive_in_payload():
         get_mode_by_system_prompt=lambda _content: None,
     )
     response = FakeResponse(tool_calls=[
-        FakeToolCall("skills.publish_result", "{}", id="call-final"),
+        FakeToolCall("agent_tools.deliver_to_user", "{}", id="call-final"),
     ])
 
     out, _tools_used = await helper._OpenAIHelper__handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
-    assert out["direct_result"]["cleanup_skill"]["skill_id"] == "pptx"
-    assert out["direct_result"]["cleanup_skill"]["scope"] == "chat:1"
-
-
-@pytest.mark.asyncio
-async def test_deferred_publish_artifact_merges_with_followup_publish_result():
-    responses = {
-        "skills.publish_artifact": {
-            "direct_result": {
-                "kind": "file",
-                "format": "path",
-                "value": "/tmp/intermediate.pptx",
-            },
-        },
-        "skills.publish_result": {
-            "direct_result": {
-                "kind": "final",
-                "format": "mixed",
-                "text": "all done",
-                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/final.pptx"}],
-                "defer": False,
-            },
-        },
-    }
-    follow_up = FakeResponse(tool_calls=[
-        FakeToolCall("skills.publish_result", "{}", id="call-final"),
-    ])
-    helper = _make_helper(DummyPluginManager(responses), client=DummyClient([follow_up]))
-    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
-    helper.chat_modes_registry = types.SimpleNamespace(
-        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
-        get_mode_by_system_prompt=lambda _content: None,
-    )
-    response = FakeResponse(tool_calls=[
-        FakeToolCall("skills.publish_artifact", "{}", id="call-art"),
-    ])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert set(tools_used) == {"skills.publish_artifact", "skills.publish_result"}
-    assert out["direct_result"]["kind"] == "final"
-    assert out["direct_result"]["text"] == "all done"
-    artifact_values = [a.get("value") for a in out["direct_result"]["artifacts"]]
-    assert artifact_values == ["/tmp/intermediate.pptx", "/tmp/final.pptx"]
+    assert out["direct_result"]["cleanup_skills"][0]["skill_id"] == "pptx"
+    assert out["direct_result"]["cleanup_skills"][0]["scope"] == "chat:1"
 
 
 @pytest.mark.asyncio
