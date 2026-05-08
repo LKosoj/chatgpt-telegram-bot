@@ -82,6 +82,7 @@ class AgentToolsPlugin(Plugin):
         self.pending_by_chat: Dict[int, str] = {}
         self._orphaned_pending: List[Dict[str, Any]] = []
         self._recent_deliveries: Dict[str, float] = {}
+        self._background_subagent_tasks: set[asyncio.Task] = set()
         self.load_tasks()
         self._load_orphaned_pending()
 
@@ -114,6 +115,9 @@ class AgentToolsPlugin(Plugin):
                         self._clear_question_markup(bot, chat_id, message_id)
                     )
         self.pending_by_chat.clear()
+        for task in list(self._background_subagent_tasks):
+            task.cancel()
+        self._background_subagent_tasks.clear()
 
     @staticmethod
     async def _clear_question_markup(bot, chat_id: int, message_id: int) -> None:
@@ -285,6 +289,14 @@ class AgentToolsPlugin(Plugin):
                                 "for harder tasks. Each round is one model call followed by parallel tool execution."
                             ),
                         },
+                        "background": {
+                            "type": "boolean",
+                            "description": (
+                                "When true, schedule subagents and return immediately. Use only for non-user-facing "
+                                "background reflection or cleanup work."
+                            ),
+                            "default": False,
+                        },
                         "subagents": {
                             "type": "array",
                             "description": "Subagents to run in parallel.",
@@ -361,7 +373,7 @@ class AgentToolsPlugin(Plugin):
         if function_name == "run_subagents":
             return await self._run_subagents(helper, request_context=request_context, **kwargs)
         if function_name == "deliver_to_user":
-            return await self._deliver_to_user(helper, **kwargs)
+            return await self._deliver_to_user(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
     def load_tasks(self) -> None:
@@ -609,7 +621,7 @@ class AgentToolsPlugin(Plugin):
             },
         }
 
-    async def _deliver_to_user(self, helper, **kwargs) -> Dict:
+    async def _deliver_to_user(self, helper, *, request_context=None, **kwargs) -> Dict:
         text_raw = kwargs.get("text")
         final_text = "" if text_raw is None else str(text_raw).strip()
         allowed_roots = self._allowed_artifact_roots(helper)
@@ -626,11 +638,12 @@ class AgentToolsPlugin(Plugin):
 
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         now = time.monotonic()
-        last_delivery_at = self._recent_deliveries.get(scope)
+        dedup_key = self._delivery_dedup_key(kwargs, request_context)
+        last_delivery_at = self._recent_deliveries.get(dedup_key) if dedup_key else None
         if last_delivery_at is not None and (now - last_delivery_at) < self.DELIVERY_DEDUP_WINDOW_SECONDS:
             logging.warning(
-                "deliver_to_user duplicate suppressed scope=%s elapsed=%.1fs",
-                scope, now - last_delivery_at,
+                "deliver_to_user duplicate suppressed scope=%s dedup_key=%s elapsed=%.1fs",
+                scope, dedup_key, now - last_delivery_at,
             )
             return {
                 "success": True,
@@ -656,13 +669,25 @@ class AgentToolsPlugin(Plugin):
         }
         if cleanup_skills:
             direct_result["cleanup_skills"] = cleanup_skills
-        self._recent_deliveries[scope] = now
+        if dedup_key:
+            self._recent_deliveries[dedup_key] = now
         return {
             "success": True,
             "text_chars": len(final_text),
             "artifacts_count": len(artifact_items),
             "direct_result": direct_result,
         }
+
+    @staticmethod
+    def _delivery_dedup_key(kwargs: Dict[str, Any], request_context=None) -> str | None:
+        request_id = getattr(request_context, "request_id", None) if request_context is not None else None
+        if request_id:
+            return f"request:{request_id}"
+        message_id = kwargs.get("message_id")
+        chat_id = kwargs.get("chat_id")
+        if chat_id is not None and message_id is not None:
+            return f"message:{chat_id}:{message_id}"
+        return None
 
     @staticmethod
     def _cleanup_directives_for_active_skills(helper, kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -809,6 +834,23 @@ class AgentToolsPlugin(Plugin):
             )
             for item in subagents
         ]
+        if self._bool_arg(kwargs.get("background"), default=False):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return {"success": False, "error": "No running event loop for background subagents"}
+            scheduled = []
+            for item, task_coro in zip(subagents, tasks):
+                task = loop.create_task(task_coro)
+                self._background_subagent_tasks.add(task)
+                task.add_done_callback(self._background_subagent_done)
+                scheduled.append(str(item.get("id") or "subagent").strip() or "subagent")
+            return {
+                "success": True,
+                "background": True,
+                "scheduled": len(scheduled),
+                "subagents": scheduled,
+            }
         results = await asyncio.gather(*tasks, return_exceptions=True)
         normalized_results = []
         for item, result in zip(subagents, results):
@@ -828,6 +870,21 @@ class AgentToolsPlugin(Plugin):
             "success": True,
             "subagents": normalized_results,
         }
+
+    def _background_subagent_done(self, task: asyncio.Task) -> None:
+        self._background_subagent_tasks.discard(task)
+        try:
+            result = task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logging.exception("Background subagent failed")
+            return
+        logging.info(
+            "Background subagent finished id=%s status=%s",
+            result.get("id"),
+            result.get("status"),
+        )
 
     @staticmethod
     def _resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -> List[str]:
@@ -950,6 +1007,16 @@ class AgentToolsPlugin(Plugin):
             return DEFAULT_SUBAGENT_TEMPERATURE
         return max(0.0, min(requested, 2.0))
 
+    @staticmethod
+    def _bool_arg(value: Any, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     async def _run_subagent_completion_loop(
         self,
         helper,
@@ -985,8 +1052,8 @@ class AgentToolsPlugin(Plugin):
             tool_calls = self._extract_tool_calls(choice)
             if tool_calls and not is_final_round:
                 messages.append(self._assistant_tool_calls_message(choice, tool_calls))
-                for call in tool_calls:
-                    tool_response = await self._call_subagent_tool(
+                tool_responses = await asyncio.gather(*[
+                    self._call_subagent_tool(
                         helper,
                         call,
                         allowed_function_names,
@@ -994,6 +1061,9 @@ class AgentToolsPlugin(Plugin):
                         published=published,
                         request_context=request_context,
                     )
+                    for call in tool_calls
+                ])
+                for call, tool_response in zip(tool_calls, tool_responses):
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],

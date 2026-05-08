@@ -43,6 +43,10 @@ def test_skills_agent_mode_is_registered():
     assert mode["defer_direct_results"] is True
     assert "skills.list_skills" in mode["prompt_start"]
     assert "skills.run_skill_script" in mode["prompt_start"]
+    assert "skills.record_skill_reflection" in mode["prompt_start"]
+    assert "skills.find_installable_skills" in mode["prompt_start"]
+    assert "skills.install_skill" in mode["prompt_start"]
+    assert "terminal.terminal" in mode["prompt_start"]
     assert "agent_tools.deliver_to_user" in mode["prompt_start"]
     assert "skills.publish_result" not in mode["prompt_start"]
     assert "skills.publish_artifact" not in mode["prompt_start"]

@@ -6,6 +6,7 @@ import pytest
 
 from bot.plugin_manager import PluginManager
 from bot.plugins.agent_tools import AgentToolsPlugin
+from bot.request_context import RequestContext
 
 
 class FakeBot:
@@ -22,8 +23,19 @@ class FakeBot:
 
 
 class FakeCompletions:
-    def __init__(self):
+    def __init__(self, tool_calls=None):
         self.calls = []
+        if tool_calls is None:
+            tool_calls = [
+                SimpleNamespace(
+                    id="tool_1",
+                    function=SimpleNamespace(
+                        name="skills.list_skills",
+                        arguments="{}",
+                    ),
+                )
+            ]
+        self.tool_calls = tool_calls
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -33,15 +45,7 @@ class FakeCompletions:
                     SimpleNamespace(
                         message=SimpleNamespace(
                             content=None,
-                            tool_calls=[
-                                SimpleNamespace(
-                                    id="tool_1",
-                                    function=SimpleNamespace(
-                                        name="skills.list_skills",
-                                        arguments="{}",
-                                    ),
-                                )
-                            ],
+                            tool_calls=self.tool_calls,
                         )
                     )
                 ]
@@ -67,6 +71,14 @@ class FakePluginManager:
                 "function": {
                     "name": "skills.list_skills",
                     "description": "list skills",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.get_skill",
+                    "description": "get skill",
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
@@ -113,13 +125,38 @@ class FakePluginManager:
 
 
 class FakeLLMHelper:
-    def __init__(self):
-        self.completions = FakeCompletions()
+    def __init__(self, completions=None, plugin_manager=None, model_name="llmgateway/high"):
+        self.completions = completions or FakeCompletions()
         self.client = SimpleNamespace(chat=SimpleNamespace(completions=self.completions))
-        self.plugin_manager = FakePluginManager()
+        self.plugin_manager = plugin_manager or FakePluginManager()
+        self.model_name = model_name
 
     def get_current_model(self, user_id):
-        return "llmgateway/high"
+        return self.model_name
+
+
+class ParallelToolPluginManager(FakePluginManager):
+    def __init__(self):
+        super().__init__()
+        self.running = 0
+        self.overlapped = False
+
+    async def call_function(self, function_name, helper, arguments, request_context=None):
+        self.running += 1
+        if self.running > 1:
+            self.overlapped = True
+        try:
+            await asyncio.sleep(0.01)
+            self.calls.append((function_name, json.loads(arguments)))
+            return json.dumps({"success": True}, ensure_ascii=False)
+        finally:
+            self.running -= 1
+
+
+class SlowFakeCompletions(FakeCompletions):
+    async def create(self, **kwargs):
+        await asyncio.sleep(0.01)
+        return await super().create(**kwargs)
 
 
 class FakeMessage:
@@ -256,6 +293,80 @@ async def test_run_subagents_applies_per_subagent_overrides(tmp_path):
 
     assert helper.completions.calls
     assert helper.completions.calls[0]["temperature"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_executes_same_round_tool_calls_in_parallel(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(
+        completions=FakeCompletions([
+            SimpleNamespace(
+                id="tool_a",
+                function=SimpleNamespace(name="skills.list_skills", arguments="{}"),
+            ),
+            SimpleNamespace(
+                id="tool_b",
+                function=SimpleNamespace(
+                    name="skills.get_skill",
+                    arguments='{"skill_name":"demo"}',
+                ),
+            ),
+        ]),
+        plugin_manager=ParallelToolPluginManager(),
+    )
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "worker", "task": "use two tools"}],
+    )
+
+    assert result["success"] is True
+    assert helper.plugin_manager.overlapped is True
+    assert {name for name, _args in helper.plugin_manager.calls} == {
+        "skills.list_skills",
+        "skills.get_skill",
+    }
+    tool_messages = [
+        message for message in helper.completions.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == ["tool_a", "tool_b"]
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_can_schedule_background_workers(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(
+        completions=SlowFakeCompletions(),
+        model_name="llmgateway/env-main",
+    )
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        background=True,
+        subagents=[{"id": "reflect", "role": "skill_reflector", "task": "record reflection"}],
+    )
+
+    assert result == {
+        "success": True,
+        "background": True,
+        "scheduled": 1,
+        "subagents": ["reflect"],
+    }
+    tasks = list(plugin._background_subagent_tasks)
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+    assert plugin._background_subagent_tasks == set()
+    assert helper.completions.calls[0]["model"] == "llmgateway/env-main"
+    assert [call[0] for call in helper.plugin_manager.calls] == ["skills.list_skills"]
 
 
 @pytest.mark.asyncio
@@ -414,6 +525,7 @@ async def test_subagent_routing_guard_blocks_active_skill_script_via_codeinterpr
     ]
     assert tool_messages
     assert any("skills.run_skill_script" in content for content in tool_messages)
+    assert any("terminal.terminal" in content for content in tool_messages)
     assert any('"script_name": "build.py"' in content for content in tool_messages)
 
 
@@ -710,6 +822,47 @@ async def test_deliver_to_user_returns_final_direct_result(tmp_path):
             "caption": "summary",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_deduplicates_only_within_same_request(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    first_context = RequestContext(chat_id=10, user_id=42, message_id=1, request_id="10_1")
+    second_context = RequestContext(chat_id=10, user_id=42, message_id=2, request_id="10_2")
+
+    first = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        text="first",
+        request_context=first_context,
+    )
+    duplicate = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        text="duplicate",
+        request_context=first_context,
+    )
+    second = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        text="second",
+        request_context=second_context,
+    )
+
+    assert first["success"] is True
+    assert duplicate["success"] is True
+    assert duplicate["skipped"] is True
+    assert second["success"] is True
+    assert "skipped" not in second
 
 
 @pytest.mark.asyncio

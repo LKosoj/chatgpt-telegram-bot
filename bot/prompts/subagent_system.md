@@ -7,8 +7,9 @@ Boundaries:
 
 Skill usage:
 - List/get/activate the relevant skill before running its scripts.
-- If a script belongs to an active skill, you MUST run it through `skills.run_skill_script`; never reimplement or invoke that script through `codeinterpreter.deep_analysis`.
+- If a script belongs to an active skill, run it through `skills.run_skill_script` or `terminal.terminal`; never reimplement or invoke that script through `codeinterpreter.deep_analysis`.
 - If your assigned subtask is broader than the skills the parent already activated, you may activate additional skills yourself with `skills.activate_skill`.
+- If your assigned subtask is skill reflection after a failure, call `skills.record_skill_reflection` once with one concise clarification proposal.
 
 Output:
 - Return concise findings for the parent agent to synthesize.

@@ -915,6 +915,7 @@ async def test_skills_agent_routes_skill_scripts_away_from_codeinterpreter():
     assert out.choices[0].message.content == "use run_skill_script"
     assert any(
         "skills.run_skill_script" in (message.get("content") or "")
+        and "terminal.terminal" in (message.get("content") or "")
         and "codeinterpreter.deep_analysis" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
@@ -943,6 +944,7 @@ async def test_skills_agent_routes_active_skill_script_names_away_from_codeinter
     assert pm.calls == []
     assert any(
         "skills.run_skill_script" in (message.get("content") or "")
+        and "terminal.terminal" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
 
@@ -972,6 +974,7 @@ async def test_skills_agent_rejects_ad_hoc_tmp_script_creation_via_codeinterpret
     assert pm.calls == []
     assert any(
         "ad-hoc script files" in (message.get("content") or "")
+        and "terminal.terminal" in (message.get("content") or "")
         and "agent_tools.deliver_to_user" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
@@ -1000,6 +1003,7 @@ async def test_active_skill_script_reference_blocks_codeinterpreter_in_any_mode(
     assert pm.calls == []
     assert any(
         "skills.run_skill_script" in (message.get("content") or "")
+        and "terminal.terminal" in (message.get("content") or "")
         and '"script_name": "build.py"' in (message.get("content") or "")
         and "suggested_tool_call" in (message.get("content") or "")
         for message in helper.conversations[1]

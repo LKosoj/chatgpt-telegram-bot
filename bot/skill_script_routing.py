@@ -65,11 +65,13 @@ def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
 def _skill_script_routing_payload(error: str, active_scripts: list[dict] | None = None) -> dict:
     payload = {
         "error": error,
-        "required_tool": "skills.run_skill_script",
+        "preferred_tool": "skills.run_skill_script",
+        "allowed_tools": ["skills.run_skill_script", "terminal.terminal"],
     }
     if active_scripts:
         payload["call_instruction"] = (
-            "Call skills.run_skill_script with one of the available skill_name/script_name pairs."
+            "Call skills.run_skill_script with one of the available skill_name/script_name pairs, "
+            "or terminal.terminal when shell execution is explicitly needed."
         )
         payload["available_skill_scripts"] = active_scripts
         if len(active_scripts) == 1:
@@ -108,7 +110,7 @@ def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict
     if active_scripts and _refers_to_active_script(text, active_scripts):
         return _skill_script_routing_payload(
             "Routing denied: this script belongs to an active skill and must be run "
-            "through skills.run_skill_script, not codeinterpreter.deep_analysis.",
+            "through skills.run_skill_script or terminal.terminal, not codeinterpreter.deep_analysis.",
             active_scripts,
         )
 
@@ -118,14 +120,15 @@ def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict
     if SKILL_SCRIPT_PATH_RE.search(text):
         return _skill_script_routing_payload(
             "Routing denied in skills_agent: skill scripts must be executed through "
-            "skills.run_skill_script, not codeinterpreter.deep_analysis."
+            "skills.run_skill_script or terminal.terminal, not codeinterpreter.deep_analysis."
         )
 
     if SCRIPT_FILE_CREATION_RE.search(text):
         return _skill_script_routing_payload(
             "Routing denied in skills_agent: ad-hoc script files must not be created or "
             "executed through codeinterpreter.deep_analysis. Use active skill scripts via "
-            "skills.run_skill_script, then deliver artifacts through agent_tools.deliver_to_user."
+            "skills.run_skill_script or terminal.terminal, then deliver artifacts through "
+            "agent_tools.deliver_to_user."
         )
 
     return None

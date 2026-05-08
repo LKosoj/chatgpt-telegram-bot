@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
@@ -21,6 +23,12 @@ from .plugin import Plugin
 logger = logging.getLogger(__name__)
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
+SCRIPT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
+REFLECTION_REPEAT_THRESHOLD = 3
+REFLECTION_MAX_TEXT_CHARS = 1200
+SKILLS_CLI_TIMEOUT_SECONDS = 180
+SKILLS_CLI_AGENT = "codex"
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 class SkillsPlugin(Plugin):
@@ -34,17 +42,24 @@ class SkillsPlugin(Plugin):
     def __init__(self):
         self.skills_dir: Path | None = None
         self.state_file: Path | None = None
+        self.reflections_file: Path | None = None
         self.workdir_root: Path | None = None
         self.audit_file: Path | None = None
         self.available_skills: Dict[str, Dict[str, Any]] = {}
         self.active_skills: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.skill_reflections: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.allow_scripts = False
+        self.allow_installs = False
         self.script_admin_ids: set[int] = set()
         self.script_admin_all = False
+        self.install_admin_ids: set[int] = set()
+        self.install_admin_all = False
         self.script_timeout = 120
+        self.install_timeout = SKILLS_CLI_TIMEOUT_SECONDS
         self.output_max_chars = 12000
         self.interim_after_seconds = 20
         self._state_lock = threading.RLock()
+        self._reflection_lock = threading.RLock()
         self._audit_lock = threading.Lock()
         self._scan_cache: tuple[tuple, Dict[str, Dict[str, Any]]] | None = None
 
@@ -56,6 +71,7 @@ class SkillsPlugin(Plugin):
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
         self.state_file = storage_path / "skills_state.json"
+        self.reflections_file = storage_path / "skill_reflections.json"
         workdir_env = os.getenv("SKILLS_WORKDIR")
         self.workdir_root = (
             Path(workdir_env).expanduser().resolve()
@@ -66,17 +82,29 @@ class SkillsPlugin(Plugin):
         self.audit_file = storage_path / "skills_audit.jsonl"
         self.allow_scripts = self._env_flag("SKILLS_ALLOW_SCRIPTS", default=False)
         self.script_timeout = self._env_int("SKILLS_SCRIPT_TIMEOUT", default=120, minimum=1)
+        self.install_timeout = self._env_int(
+            "SKILLS_INSTALL_TIMEOUT",
+            default=SKILLS_CLI_TIMEOUT_SECONDS,
+            minimum=10,
+        )
         self.output_max_chars = self._env_int("SKILLS_SCRIPT_OUTPUT_MAX_CHARS", default=12000, minimum=1000)
         self.interim_after_seconds = self._env_int(
             "SKILLS_SCRIPT_INTERIM_AFTER_SECONDS", default=20, minimum=5
         )
         self.script_admin_ids, self.script_admin_all = self._parse_admin_ids(
-            os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", "")
+            os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", ""),
+            env_name="SKILLS_SCRIPT_ADMIN_USER_IDS",
+        )
+        self.allow_installs = self._env_flag("SKILLS_ALLOW_INSTALLS", default=False)
+        self.install_admin_ids, self.install_admin_all = self._parse_admin_ids(
+            os.getenv("SKILLS_INSTALL_ADMIN_USER_IDS", os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", "")),
+            env_name="SKILLS_INSTALL_ADMIN_USER_IDS",
         )
 
         self.available_skills = self._scan_skills()
         self._log_available_skills()
         self._load_state()
+        self._load_reflections()
 
     def get_source_name(self) -> str:
         return "Skills"
@@ -109,6 +137,50 @@ class SkillsPlugin(Plugin):
                         }
                     },
                     "required": ["skill_name"],
+                },
+            },
+            {
+                "name": "find_installable_skills",
+                "description": (
+                    "Search skills.sh through the `skills` CLI for new skills that can be installed. "
+                    "Returns package ids like owner/repo@skill for skills.install_skill."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query, for example 'testing', 'pptx', or 'github review'.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "install_skill",
+                "description": (
+                    "Install a skill package found by skills.find_installable_skills, then sync it into "
+                    "SKILLS_DIR and refresh the local skill registry. Requires SKILLS_ALLOW_INSTALLS=true, "
+                    "an allowed caller in SKILLS_INSTALL_ADMIN_USER_IDS, and confirmed=true after explicit "
+                    "user approval."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "package": {
+                            "type": "string",
+                            "description": "Install package id, usually owner/repo@skill from skills.find_installable_skills.",
+                        },
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Optional target skill directory name. Required when package does not include @skill.",
+                        },
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "Must be true only after the user explicitly approved this exact package install.",
+                        },
+                    },
+                    "required": ["package", "confirmed"],
                 },
             },
             {
@@ -203,6 +275,36 @@ class SkillsPlugin(Plugin):
                 },
             },
             {
+                "name": "record_skill_reflection",
+                "description": (
+                    "Record a reflection proposal after a skill failure. "
+                    "Repeated identical proposals are accumulated; when the repeat count is greater "
+                    "than three, the proposal is appended to that skill's SKILL.md as a learned clarification."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill directory id or metadata name.",
+                        },
+                        "proposal": {
+                            "type": "string",
+                            "description": "One concise instruction that should be added to SKILL.md if it repeats.",
+                        },
+                        "failure_mode": {
+                            "type": "string",
+                            "description": "Optional short description of the failure that motivated this proposal.",
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": "Optional short evidence from the failed run.",
+                        },
+                    },
+                    "required": ["skill_name", "proposal"],
+                },
+            },
+            {
                 "name": "deactivate_skill",
                 "description": (
                     "Mark an active skill as completed and free its in-memory state. "
@@ -231,6 +333,19 @@ class SkillsPlugin(Plugin):
             return self._list_skills(refresh=self._bool_arg(kwargs.get("refresh"), default=True))
         if function_name == "get_skill":
             return self._get_skill(str(kwargs.get("skill_name") or ""))
+        if function_name == "find_installable_skills":
+            return await self._find_installable_skills(str(kwargs.get("query") or ""))
+        if function_name == "install_skill":
+            call_kwargs = dict(kwargs)
+            package = str(call_kwargs.pop("package", "") or "")
+            skill_name = call_kwargs.pop("skill_name", None)
+            confirmed = self._bool_arg(call_kwargs.pop("confirmed", False), default=False)
+            return await self._install_skill(
+                package,
+                skill_name=str(skill_name or "") if skill_name is not None else None,
+                confirmed=confirmed,
+                **call_kwargs,
+            )
         if function_name == "activate_skill":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
@@ -272,6 +387,19 @@ class SkillsPlugin(Plugin):
                 args_json,
                 **call_kwargs,
             )
+        if function_name == "record_skill_reflection":
+            call_kwargs = dict(kwargs)
+            skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            proposal = str(call_kwargs.pop("proposal", "") or "")
+            failure_mode = call_kwargs.pop("failure_mode", None)
+            evidence = call_kwargs.pop("evidence", None)
+            return self._record_skill_reflection(
+                skill_name,
+                proposal,
+                failure_mode=failure_mode,
+                evidence=evidence,
+                **call_kwargs,
+            )
         return {"success": False, "error": f"Unknown skills tool: {function_name}"}
 
     def _ensure_ready(self) -> None:
@@ -299,7 +427,7 @@ class SkillsPlugin(Plugin):
             try:
                 content = md_file.read_text(encoding="utf-8")
                 metadata, body = self._parse_skill_markdown(content)
-                scripts = self._list_skill_scripts(skill_path)
+                scripts = self._list_skill_scripts(skill_path, metadata)
                 skill_id = skill_path.name
                 skills[skill_id] = {
                     "id": skill_id,
@@ -335,7 +463,7 @@ class SkillsPlugin(Plugin):
                 if scripts_dir.exists() and scripts_dir.is_dir():
                     for path in sorted(scripts_dir.rglob("*")):
                         try:
-                            if not path.is_file():
+                            if not path.is_file() or not self._is_script_entrypoint(path, scripts_dir):
                                 continue
                         except OSError:
                             continue
@@ -395,23 +523,104 @@ class SkillsPlugin(Plugin):
             return False
         return value
 
-    def _list_skill_scripts(self, skill_path: Path) -> List[str]:
+    def _list_skill_scripts(
+        self, skill_path: Path, metadata: Dict[str, Any] | None = None
+    ) -> List[str]:
         scripts_dir = skill_path / "scripts"
         if not scripts_dir.exists() or not scripts_dir.is_dir():
             return []
-        scripts = []
+
+        explicit = self._resolve_explicit_entrypoints(metadata or {}, scripts_dir)
+        if explicit is not None:
+            return explicit
+
+        scripts: List[str] = []
         for path in scripts_dir.rglob("*"):
             if not path.is_file():
                 continue
-            relative_path = path.relative_to(scripts_dir)
-            if "__pycache__" in relative_path.parts:
+            if not self._is_script_entrypoint(path, scripts_dir):
                 continue
-            if any(part.startswith(".") for part in relative_path.parts):
-                continue
-            if path.suffix == ".pyc":
-                continue
-            scripts.append(relative_path.as_posix())
+            scripts.append(path.relative_to(scripts_dir).as_posix())
         return sorted(scripts)
+
+    def _resolve_explicit_entrypoints(
+        self, metadata: Dict[str, Any], scripts_dir: Path
+    ) -> List[str] | None:
+        """
+        If SKILL.md frontmatter declares `entrypoints`, treat it as the
+        authoritative list of runnable scripts. Returns ``None`` when no
+        explicit declaration is present, so the caller falls back to the
+        suffix/executable heuristic.
+        """
+        if "entrypoints" not in metadata:
+            return None
+
+        raw = metadata["entrypoints"]
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            logger.warning(
+                "Skill %s has invalid 'entrypoints' (expected list, got %s); "
+                "falling back to heuristic",
+                scripts_dir.parent.name,
+                type(raw).__name__,
+            )
+            return None
+
+        try:
+            scripts_dir_resolved = scripts_dir.resolve()
+        except OSError:
+            return []
+
+        resolved: List[str] = []
+        seen: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, str):
+                logger.warning(
+                    "Skill %s entrypoint must be a string, skipping %r",
+                    scripts_dir.parent.name, entry,
+                )
+                continue
+            normalized = entry.strip().lstrip("/")
+            if not normalized or ".." in Path(normalized).parts:
+                logger.warning(
+                    "Skill %s entrypoint %r is invalid (empty or traversal), skipping",
+                    scripts_dir.parent.name, entry,
+                )
+                continue
+            candidate = (scripts_dir / normalized).resolve()
+            if not self._is_relative_to(candidate, scripts_dir_resolved):
+                logger.warning(
+                    "Skill %s entrypoint %r escapes scripts/, skipping",
+                    scripts_dir.parent.name, entry,
+                )
+                continue
+            if not candidate.is_file():
+                logger.warning(
+                    "Skill %s entrypoint %r does not exist under scripts/, skipping",
+                    scripts_dir.parent.name, entry,
+                )
+                continue
+            posix = candidate.relative_to(scripts_dir_resolved).as_posix()
+            if posix in seen:
+                continue
+            seen.add(posix)
+            resolved.append(posix)
+        return resolved
+
+    def _is_script_entrypoint(self, path: Path, scripts_dir: Path) -> bool:
+        relative_path = path.relative_to(scripts_dir)
+        if "__pycache__" in relative_path.parts:
+            return False
+        if any(part.startswith(".") for part in relative_path.parts):
+            return False
+        if path.name == "__init__.py" or path.suffix == ".pyc":
+            return False
+        if path.suffix.lower() in SCRIPT_SUFFIXES:
+            return True
+        return os.access(path, os.X_OK)
 
     def _list_skills(self, *, refresh: bool = False) -> Dict[str, Any]:
         if refresh:
@@ -431,6 +640,303 @@ class SkillsPlugin(Plugin):
             "scripts_enabled": self.allow_scripts,
             "scripts_admin_restricted": not self.script_admin_all,
         }
+
+    async def _find_installable_skills(self, query: str) -> Dict[str, Any]:
+        search_query = " ".join((query or "").split())
+        if not search_query:
+            return {"success": False, "error": "query must be a non-empty string"}
+
+        result = await self._run_skills_cli(
+            ["find", search_query],
+            timeout=self.install_timeout,
+        )
+        stdout = self._strip_ansi(result.get("stdout", ""))
+        stderr = self._strip_ansi(result.get("stderr", ""))
+        return {
+            "success": bool(result.get("success")),
+            "query": search_query,
+            "results": self._parse_installable_skill_results(stdout),
+            "stdout": self._truncate(stdout),
+            "stderr": self._truncate(stderr),
+            "returncode": result.get("returncode"),
+        }
+
+    async def _install_skill(
+        self,
+        package: str,
+        *,
+        skill_name: str | None,
+        confirmed: bool,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        user_id = kwargs.get("user_id")
+        if not self.allow_installs:
+            return {
+                "success": False,
+                "error": "Skill installation is disabled. Set SKILLS_ALLOW_INSTALLS=true to enable it.",
+            }
+        if not self._is_install_admin(user_id):
+            return {
+                "success": False,
+                "error": "Skill installation is restricted by SKILLS_INSTALL_ADMIN_USER_IDS.",
+            }
+        if not confirmed:
+            return {
+                "success": False,
+                "error": "confirmed must be true after explicit user approval for this package.",
+            }
+
+        package_id = (package or "").strip()
+        if not package_id or any(char.isspace() for char in package_id):
+            return {"success": False, "error": "package must be a non-empty skills package id without whitespace"}
+
+        target_name = (skill_name or "").strip() or self._infer_skill_name_from_package(package_id)
+        if not target_name:
+            return {
+                "success": False,
+                "error": "skill_name is required when package does not include an @skill suffix.",
+            }
+        name_error = self._validate_skill_dir_name(target_name)
+        if name_error:
+            return {"success": False, "error": name_error}
+
+        self._ensure_paths()
+        target_path = (self.skills_dir / target_name).resolve()
+        if target_path.exists():
+            return {
+                "success": False,
+                "error": f"Skill '{target_name}' already exists in SKILLS_DIR.",
+                "path": str(target_path),
+            }
+
+        install_result = await self._run_skills_cli(
+            ["add", package_id, "-g", "--agent", SKILLS_CLI_AGENT, "--copy", "-y"],
+            timeout=self.install_timeout,
+        )
+        install_stdout = self._strip_ansi(install_result.get("stdout", ""))
+        install_stderr = self._strip_ansi(install_result.get("stderr", ""))
+        if not install_result.get("success"):
+            source_path, list_result = await self._find_cli_installed_skill_path(target_name)
+            if source_path is not None:
+                sync_mode, sync_error = self._sync_installed_skill(source_path, target_path)
+                if sync_error is None:
+                    self._scan_cache = None
+                    self.available_skills = self._scan_skills()
+                    self._audit(
+                        "install_skill",
+                        skill=target_name,
+                        package=package_id,
+                        user_id=user_id,
+                        source_path=str(source_path),
+                        path=str(target_path),
+                        reused_existing=True,
+                    )
+                    return {
+                        "success": True,
+                        "package": package_id,
+                        "skill": target_name,
+                        "source_path": str(source_path),
+                        "path": str(target_path),
+                        "sync": sync_mode,
+                        "warning": "skills CLI did not install a new copy, but an existing CLI install was synced into SKILLS_DIR.",
+                        "stdout": self._truncate(install_stdout),
+                        "stderr": self._truncate(install_stderr),
+                        "available": target_name in self.available_skills,
+                    }
+            return {
+                "success": False,
+                "package": package_id,
+                "skill": target_name,
+                "returncode": install_result.get("returncode"),
+                "stdout": self._truncate(install_stdout),
+                "stderr": self._truncate(install_stderr),
+                "error": "skills CLI failed to install the package.",
+                "list_result": list_result,
+            }
+
+        source_path, list_result = await self._find_cli_installed_skill_path(target_name)
+        if source_path is None:
+            return {
+                "success": False,
+                "package": package_id,
+                "skill": target_name,
+                "stdout": self._truncate(install_stdout),
+                "stderr": self._truncate(install_stderr),
+                "error": "skills CLI reported success, but the installed skill path was not found.",
+                "list_result": list_result,
+            }
+
+        sync_mode, sync_error = self._sync_installed_skill(source_path, target_path)
+        if sync_error is not None:
+            return {
+                "success": False,
+                "package": package_id,
+                "skill": target_name,
+                "source_path": str(source_path),
+                "path": str(target_path),
+                "error": sync_error,
+            }
+
+        self._scan_cache = None
+        self.available_skills = self._scan_skills()
+        self._audit(
+            "install_skill",
+            skill=target_name,
+            package=package_id,
+            user_id=user_id,
+            source_path=str(source_path),
+            path=str(target_path),
+        )
+        return {
+            "success": True,
+            "package": package_id,
+            "skill": target_name,
+            "source_path": str(source_path),
+            "path": str(target_path),
+            "sync": sync_mode,
+            "stdout": self._truncate(install_stdout),
+            "stderr": self._truncate(install_stderr),
+            "available": target_name in self.available_skills,
+        }
+
+    def _sync_installed_skill(self, source_path: Path, target_path: Path) -> tuple[str, str | None]:
+        try:
+            if source_path.resolve() == target_path:
+                return "already_in_skills_dir", None
+            shutil.copytree(source_path, target_path, symlinks=True)
+            return "copied_to_skills_dir", None
+        except OSError as exc:
+            return "", f"Failed to sync installed skill into SKILLS_DIR: {exc}"
+
+    async def _run_skills_cli(self, args: List[str], *, timeout: int) -> Dict[str, Any]:
+        npx_path = shutil.which("npx")
+        if not npx_path:
+            return {"success": False, "returncode": None, "stdout": "", "stderr": "npx executable not found"}
+
+        self._ensure_paths()
+        command = [npx_path, "-y", "skills", *args]
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        env["FORCE_COLOR"] = "0"
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(self.skills_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+        except Exception as exc:
+            return {"success": False, "returncode": None, "stdout": "", "stderr": f"Failed to start skills CLI: {exc}"}
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"skills CLI timed out after {timeout}s",
+            }
+
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        return {
+            "success": process.returncode == 0,
+            "returncode": process.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    def _parse_installable_skill_results(self, stdout: str) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        lines = [line.strip() for line in stdout.splitlines()]
+        for index, line in enumerate(lines):
+            match = re.match(r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+)(?:\s+(.*))?$", line)
+            if not match:
+                continue
+            package = match.group(1)
+            url = ""
+            for next_line in lines[index + 1:index + 4]:
+                if "http://" in next_line or "https://" in next_line:
+                    url = next_line.lstrip("└- ").strip()
+                    break
+            results.append({
+                "package": package,
+                "skill_name": self._infer_skill_name_from_package(package),
+                "summary": (match.group(2) or "").strip(),
+                "url": url,
+            })
+        return results
+
+    async def _find_cli_installed_skill_path(self, skill_name: str) -> tuple[Path | None, Dict[str, Any]]:
+        list_result = await self._run_skills_cli(["ls", "-g", "--json"], timeout=self.install_timeout)
+        stdout = self._strip_ansi(list_result.get("stdout", ""))
+        if list_result.get("success"):
+            try:
+                entries = json.loads(stdout or "[]")
+            except json.JSONDecodeError:
+                entries = []
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict) or entry.get("name") != skill_name:
+                        continue
+                    path_text = entry.get("path")
+                    if not path_text:
+                        continue
+                    path = Path(str(path_text)).expanduser().resolve()
+                    if path.exists():
+                        return path, {
+                            "success": True,
+                            "returncode": list_result.get("returncode"),
+                        }
+
+        for path in self._installed_skill_path_candidates(skill_name):
+            if path.exists():
+                return path, {
+                    "success": bool(list_result.get("success")),
+                    "returncode": list_result.get("returncode"),
+                    "fallback": True,
+                }
+
+        return None, {
+            "success": bool(list_result.get("success")),
+            "returncode": list_result.get("returncode"),
+            "stdout": self._truncate(stdout),
+            "stderr": self._truncate(self._strip_ansi(list_result.get("stderr", ""))),
+        }
+
+    def _installed_skill_path_candidates(self, skill_name: str) -> List[Path]:
+        candidates: List[Path] = []
+        codex_home = os.getenv("CODEX_HOME")
+        if codex_home:
+            candidates.append(Path(codex_home).expanduser() / "skills" / skill_name)
+        candidates.append(Path.home() / ".codex" / "skills" / skill_name)
+        candidates.append(Path.home() / ".agents" / "skills" / skill_name)
+        return [candidate.resolve() for candidate in candidates]
+
+    def _infer_skill_name_from_package(self, package: str) -> str:
+        if "@" not in package:
+            return ""
+        return package.rsplit("@", 1)[-1].strip()
+
+    def _validate_skill_dir_name(self, value: str) -> str | None:
+        if not value or value in {".", ".."}:
+            return "skill_name must be a non-empty directory name"
+        altsep = os.path.altsep
+        if os.path.sep in value or (altsep and altsep in value):
+            return "skill_name must be a single directory name, not a path"
+        if any(char.isspace() for char in value):
+            return "skill_name must not contain whitespace"
+        return None
+
+    def _strip_ansi(self, value: str) -> str:
+        return ANSI_ESCAPE_RE.sub("", value or "")
 
     def _skill_scripts_allowed(self, info: Dict[str, Any]) -> bool:
         if not self.allow_scripts:
@@ -769,6 +1275,113 @@ class SkillsPlugin(Plugin):
             "workdir": str(workdir) if workdir else None,
         }
 
+    def _record_skill_reflection(
+        self,
+        skill_name: str,
+        proposal: str,
+        *,
+        failure_mode: Any = None,
+        evidence: Any = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        skill_id = self._resolve_skill_id(skill_name)
+        if not skill_id:
+            return {"success": False, "error": f"Skill '{skill_name}' not found"}
+
+        proposal_text = self._normalize_reflection_text(proposal)
+        if not proposal_text:
+            return {"success": False, "error": "Reflection proposal must be non-empty"}
+
+        now = int(time.time())
+        proposal_id = self._reflection_id(proposal_text)
+        edit_result = {"applied": False, "already_present": False}
+        with self._reflection_lock:
+            skill_entries = self.skill_reflections.setdefault(skill_id, {})
+            entry = skill_entries.setdefault(proposal_id, {
+                "proposal": proposal_text,
+                "count": 0,
+                "created_at": now,
+                "examples": [],
+            })
+            entry["proposal"] = proposal_text
+            entry["count"] = int(entry.get("count", 0)) + 1
+            entry["updated_at"] = now
+            failure_text = self._normalize_reflection_text(failure_mode)
+            if failure_text:
+                entry["failure_mode"] = failure_text
+            evidence_text = self._normalize_reflection_text(evidence)
+            if evidence_text:
+                examples = entry.setdefault("examples", [])
+                examples.append({
+                    "ts": now,
+                    "scope": compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id")),
+                    "evidence": evidence_text,
+                })
+                del examples[:-3]
+
+            if entry["count"] > REFLECTION_REPEAT_THRESHOLD and not entry.get("applied_at"):
+                edit_result = self._append_skill_reflection(skill_id, proposal_text)
+                if edit_result.get("error"):
+                    entry["last_apply_error"] = edit_result["error"]
+                else:
+                    entry["applied_at"] = now
+                    entry["applied"] = bool(edit_result.get("applied"))
+                    if edit_result.get("already_present"):
+                        entry["already_present"] = True
+                    entry.pop("last_apply_error", None)
+            self._save_reflections()
+
+        self._audit(
+            "record_skill_reflection",
+            skill=skill_id,
+            proposal_id=proposal_id,
+            count=entry["count"],
+            applied=edit_result.get("applied"),
+            user_id=kwargs.get("user_id"),
+        )
+        result = {
+            "success": not bool(edit_result.get("error")),
+            "skill": skill_id,
+            "proposal_id": proposal_id,
+            "count": entry["count"],
+            "threshold": REFLECTION_REPEAT_THRESHOLD,
+            "threshold_reached": entry["count"] > REFLECTION_REPEAT_THRESHOLD,
+            "applied": bool(edit_result.get("applied")),
+            "already_present": bool(edit_result.get("already_present")),
+        }
+        if edit_result.get("error"):
+            result["error"] = edit_result["error"]
+        return result
+
+    def _append_skill_reflection(self, skill_id: str, proposal_text: str) -> Dict[str, Any]:
+        info = self.available_skills.get(skill_id)
+        if not info:
+            return {"applied": False, "error": f"Skill '{skill_id}' not found"}
+        md_path = Path(info["path"]) / "SKILL.md"
+        try:
+            content = md_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"applied": False, "error": f"Cannot read {md_path}: {exc}"}
+        if proposal_text in content:
+            return {"applied": False, "already_present": True}
+
+        updated = content.rstrip()
+        if "## Learned Clarifications" not in updated:
+            updated += "\n\n## Learned Clarifications\n"
+        elif not updated.endswith("\n"):
+            updated += "\n"
+        updated += f"- {proposal_text}\n"
+        try:
+            tmp_path = md_path.with_suffix(md_path.suffix + ".tmp")
+            tmp_path.write_text(updated, encoding="utf-8")
+            os.replace(tmp_path, md_path)
+        except OSError as exc:
+            return {"applied": False, "error": f"Cannot update {md_path}: {exc}"}
+
+        self._scan_cache = None
+        self.available_skills = self._scan_skills()
+        return {"applied": True, "already_present": False}
+
     def cleanup_after_delivery(self, cleanup: Dict[str, Any]) -> bool:
         if not isinstance(cleanup, dict):
             return False
@@ -875,6 +1488,50 @@ class SkillsPlugin(Plugin):
             return json.dumps(value, ensure_ascii=False)
         return str(value)
 
+    def _normalize_reflection_text(self, value: Any) -> str:
+        text = " ".join(str(value or "").split())
+        return text[:REFLECTION_MAX_TEXT_CHARS]
+
+    def _reflection_id(self, proposal_text: str) -> str:
+        normalized = proposal_text.casefold()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+    def _load_reflections(self) -> None:
+        if not self.reflections_file or not self.reflections_file.exists():
+            self.skill_reflections = {}
+            return
+        with self._reflection_lock:
+            try:
+                data = json.loads(self.reflections_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                broken_path = self.reflections_file.with_suffix(self.reflections_file.suffix + ".broken")
+                logger.error(
+                    "Failed to load skill reflections from %s: %s. Quarantining to %s.",
+                    self.reflections_file, exc, broken_path,
+                )
+                try:
+                    os.replace(self.reflections_file, broken_path)
+                except Exception:
+                    logger.exception("Could not move corrupted skill reflections to %s", broken_path)
+                self.skill_reflections = {}
+                return
+            self.skill_reflections = data if isinstance(data, dict) else {}
+
+    def _save_reflections(self) -> None:
+        if not self.reflections_file:
+            return
+        with self._reflection_lock:
+            try:
+                self.reflections_file.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = self.reflections_file.with_suffix(self.reflections_file.suffix + ".tmp")
+                tmp_path.write_text(
+                    json.dumps(self.skill_reflections, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                os.replace(tmp_path, self.reflections_file)
+            except Exception as exc:
+                logger.warning("Failed to save skill reflections: %s", exc)
+
     def _load_state(self) -> None:
         if not self.state_file or not self.state_file.exists():
             self.active_skills = {}
@@ -933,7 +1590,7 @@ class SkillsPlugin(Plugin):
             return default
         return max(minimum, value)
 
-    def _parse_admin_ids(self, raw: str) -> tuple[set[int], bool]:
+    def _parse_admin_ids(self, raw: str, *, env_name: str = "SKILLS_SCRIPT_ADMIN_USER_IDS") -> tuple[set[int], bool]:
         value = (raw or "").strip()
         if value == "*":
             return set(), True
@@ -945,7 +1602,7 @@ class SkillsPlugin(Plugin):
             try:
                 ids.add(int(item))
             except ValueError:
-                logger.warning("Ignoring invalid SKILLS_SCRIPT_ADMIN_USER_IDS entry: %s", item)
+                logger.warning("Ignoring invalid %s entry: %s", env_name, item)
         return ids, False
 
     def _is_script_admin(self, user_id: Any) -> bool:
@@ -953,6 +1610,14 @@ class SkillsPlugin(Plugin):
             return True
         try:
             return int(user_id) in self.script_admin_ids
+        except (TypeError, ValueError):
+            return False
+
+    def _is_install_admin(self, user_id: Any) -> bool:
+        if self.install_admin_all:
+            return True
+        try:
+            return int(user_id) in self.install_admin_ids
         except (TypeError, ValueError):
             return False
 

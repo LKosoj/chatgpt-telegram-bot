@@ -72,12 +72,15 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
     assert names == {
         "skills.list_skills",
         "skills.get_skill",
+        "skills.find_installable_skills",
+        "skills.install_skill",
         "skills.activate_skill",
         "skills.get_skill_status",
         "skills.list_active_skills",
         "skills.update_skill_progress",
         "skills.deactivate_skill",
         "skills.run_skill_script",
+        "skills.record_skill_reflection",
     }
 
 
@@ -216,6 +219,9 @@ def test_skill_scan_lists_nested_and_non_python_scripts(tmp_path, monkeypatch):
     tools_dir.mkdir()
     (tools_dir / "build.js").write_text("console.log('ok')\n", encoding="utf-8")
     (scripts_dir / "run.sh").write_text("echo ok\n", encoding="utf-8")
+    (scripts_dir / "__init__.py").write_text("", encoding="utf-8")
+    (scripts_dir / "schema.xsd").write_text("<schema />\n", encoding="utf-8")
+    (scripts_dir / "library.jar").write_bytes(b"jar")
     (scripts_dir / ".hidden.py").write_text("print('hidden')\n", encoding="utf-8")
     cache_dir = scripts_dir / "__pycache__"
     cache_dir.mkdir()
@@ -244,6 +250,203 @@ def test_skill_scan_invalidates_cache_when_script_added(tmp_path, monkeypatch):
     second = plugin._scan_skills()
     assert second is not first
     assert "extra.py" in second["demo"]["scripts"]
+
+
+@pytest.mark.asyncio
+async def test_skill_reflection_applies_repeated_proposal_after_threshold(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    proposal = "If a referenced helper is missing, inspect available scripts before choosing a fallback."
+
+    for count in range(1, 4):
+        result = await plugin.execute(
+            "record_skill_reflection",
+            helper=None,
+            skill_name="demo",
+            proposal=proposal,
+            failure_mode="missing helper",
+            evidence=f"attempt {count}",
+            chat_id=10,
+            user_id=42,
+        )
+        assert result["success"] is True
+        assert result["count"] == count
+        assert result["threshold_reached"] is False
+        assert result["applied"] is False
+
+    skill_md = tmp_path / "skills" / "demo" / "SKILL.md"
+    assert "Learned Clarifications" not in skill_md.read_text(encoding="utf-8")
+
+    applied = await plugin.execute(
+        "record_skill_reflection",
+        helper=None,
+        skill_name="demo",
+        proposal=proposal,
+        failure_mode="missing helper",
+        evidence="attempt 4",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert applied["success"] is True
+    assert applied["count"] == 4
+    assert applied["threshold"] == 3
+    assert applied["threshold_reached"] is True
+    assert applied["applied"] is True
+
+    content = skill_md.read_text(encoding="utf-8")
+    assert "## Learned Clarifications" in content
+    assert f"- {proposal}" in content
+
+    details = await plugin.execute("get_skill", helper=None, skill_name="demo")
+    assert proposal in details["skill"]["body"]
+
+    stored = json.loads((tmp_path / "storage" / "skill_reflections.json").read_text(encoding="utf-8"))
+    [entry] = stored["demo"].values()
+    assert entry["count"] == 4
+    assert entry["applied"] is True
+    assert len(entry["examples"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_find_installable_skills_parses_cli_results(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    async def fake_run(args, *, timeout):
+        assert args == ["find", "testing"]
+        return {
+            "success": True,
+            "returncode": 0,
+            "stdout": (
+                "Install with npx skills add <owner/repo@skill>\n\n"
+                "anthropics/skills@webapp-testing 63K installs\n"
+                "└ https://skills.sh/anthropics/skills/webapp-testing\n"
+            ),
+            "stderr": "",
+        }
+
+    plugin._run_skills_cli = fake_run
+
+    result = await plugin.execute("find_installable_skills", helper=None, query="testing")
+
+    assert result["success"] is True
+    assert result["results"] == [{
+        "package": "anthropics/skills@webapp-testing",
+        "skill_name": "webapp-testing",
+        "summary": "63K installs",
+        "url": "https://skills.sh/anthropics/skills/webapp-testing",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_is_disabled_by_default(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="anthropics/skills@webapp-testing",
+        confirmed=True,
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "disabled" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_copies_cli_install_to_skills_dir(tmp_path, monkeypatch):
+    installed_dir = tmp_path / "global" / "webapp-testing"
+    installed_dir.mkdir(parents=True)
+    (installed_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: webapp-testing\n"
+            "description: Browser testing skill\n"
+            "---\n"
+            "# Webapp Testing\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "true")
+    monkeypatch.setenv("SKILLS_INSTALL_ADMIN_USER_IDS", "42")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    async def fake_run(args, *, timeout):
+        if args[:2] == ["add", "anthropics/skills@webapp-testing"]:
+            return {"success": True, "returncode": 0, "stdout": "installed\n", "stderr": ""}
+        if args == ["ls", "-g", "--json"]:
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": json.dumps([{"name": "webapp-testing", "path": str(installed_dir)}]),
+                "stderr": "",
+            }
+        raise AssertionError(f"Unexpected skills CLI args: {args}")
+
+    plugin._run_skills_cli = fake_run
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="anthropics/skills@webapp-testing",
+        confirmed=True,
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["skill"] == "webapp-testing"
+    assert result["sync"] == "copied_to_skills_dir"
+    assert "webapp-testing" in plugin.available_skills
+    assert (tmp_path / "skills" / "webapp-testing" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_syncs_existing_cli_install_when_add_fails(tmp_path, monkeypatch):
+    installed_dir = tmp_path / "global" / "existing-skill"
+    installed_dir.mkdir(parents=True)
+    (installed_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: existing-skill\n"
+            "description: Already installed globally\n"
+            "---\n"
+            "# Existing Skill\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "true")
+    monkeypatch.setenv("SKILLS_INSTALL_ADMIN_USER_IDS", "42")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    async def fake_run(args, *, timeout):
+        if args[:2] == ["add", "owner/repo@existing-skill"]:
+            return {"success": False, "returncode": 1, "stdout": "", "stderr": "already installed\n"}
+        if args == ["ls", "-g", "--json"]:
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": json.dumps([{"name": "existing-skill", "path": str(installed_dir)}]),
+                "stderr": "",
+            }
+        raise AssertionError(f"Unexpected skills CLI args: {args}")
+
+    plugin._run_skills_cli = fake_run
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="owner/repo@existing-skill",
+        confirmed=True,
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["sync"] == "copied_to_skills_dir"
+    assert "warning" in result
+    assert "existing-skill" in plugin.available_skills
 
 
 @pytest.mark.asyncio
@@ -591,3 +794,142 @@ async def test_skill_script_receives_workdir_env(tmp_path, monkeypatch):
     assert "SKILL_SCOPE=chat:10" in result["stdout"]
 
 
+def _write_skill_with_entrypoints(root, *, name="ep", entrypoints_block: str):
+    """Helper for entrypoint tests: skill with two scripts and configurable frontmatter."""
+    skill_dir = root / name
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            f"name: {name}\n"
+            "description: Skill with explicit entrypoints\n"
+            f"{entrypoints_block}"
+            "---\n"
+            "Body.\n"
+        ),
+        encoding="utf-8",
+    )
+    (scripts_dir / "main.py").write_text("print('main')\n", encoding="utf-8")
+    (scripts_dir / "helper.py").write_text("print('helper')\n", encoding="utf-8")
+    return skill_dir
+
+
+def test_explicit_entrypoints_filter_helpers(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(
+        skills_dir, entrypoints_block="entrypoints:\n  - main.py\n"
+    )
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == ["main.py"]
+
+
+def test_no_entrypoints_falls_back_to_heuristic(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(skills_dir, entrypoints_block="")
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == ["helper.py", "main.py"]
+
+
+def test_empty_entrypoints_list_yields_no_scripts(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(skills_dir, entrypoints_block="entrypoints: []\n")
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == []
+
+
+def test_entrypoint_string_treated_as_single_item(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(
+        skills_dir, entrypoints_block="entrypoints: main.py\n"
+    )
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == ["main.py"]
+
+
+def test_entrypoint_traversal_is_rejected(tmp_path, monkeypatch, caplog):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(
+        skills_dir, entrypoints_block="entrypoints:\n  - ../../etc/passwd\n  - main.py\n"
+    )
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+    caplog.set_level(logging.WARNING, logger="bot.plugins.skills")
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == ["main.py"]
+    assert "traversal" in caplog.text or "invalid" in caplog.text.lower()
+
+
+def test_entrypoint_missing_file_is_skipped(tmp_path, monkeypatch, caplog):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    _write_skill_with_entrypoints(
+        skills_dir, entrypoints_block="entrypoints:\n  - missing.py\n  - main.py\n"
+    )
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+    caplog.set_level(logging.WARNING, logger="bot.plugins.skills")
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["ep"]["scripts"] == ["main.py"]
+    assert "does not exist" in caplog.text
+
+
+def test_entrypoint_subpath_is_allowed(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    skill_dir = skills_dir / "nested"
+    scripts_dir = skill_dir / "scripts"
+    (scripts_dir / "tools").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: nested\n"
+            "description: nested entrypoint\n"
+            "entrypoints:\n"
+            "  - tools/run.py\n"
+            "---\n"
+            "Body.\n"
+        ),
+        encoding="utf-8",
+    )
+    (scripts_dir / "tools" / "run.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts_dir / "lib.py").write_text("# library\n", encoding="utf-8")
+
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    assert plugin.available_skills["nested"]["scripts"] == ["tools/run.py"]
