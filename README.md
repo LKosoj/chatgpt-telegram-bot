@@ -454,6 +454,7 @@ controlled by `Bot.set_my_commands()`.
 | `/stats` | private + groups | Token / image / TTS / transcription usage and current session info. |
 | `/resend` | private + groups | Resend the last user prompt. |
 | `/plugins` | private + groups | Open the paginated plugin menu (commands + button actions). |
+| `/settings` | private + groups | Open user settings: language, TTS model/voice, plugin toggles, skill toggles. |
 | `/image <prompt>` | private + groups | Generate an image (only when `ENABLE_IMAGE_GENERATION=true`). |
 | `/tts <text>` | private + groups | Synthesise speech (only when `ENABLE_TTS_GENERATION=true`). |
 | `/chat <prompt>` | groups only | Address the bot explicitly in a group chat. |
@@ -471,6 +472,7 @@ in the `/plugins` menu.
 | Session menu | `^session` | Buttons: preview active session, new session, switch, delete, change mode, export, close. |
 | Mode picker | `^prompt`, `^promptgroup`, `^promptback` | Two-level picker (group → mode), launched from the session menu. |
 | Plugin menu | `^pluginmenu:` | Paginated list of plugins → commands. Each command runs directly or asks for arguments via a force-reply prompt captured by `handle_plugin_menu_args_reply()`. |
+| Settings menu | `^settings` | User-level settings. TTS model and voice are loaded from the API; plugin and skill toggles disable only that user's access. |
 | Inline-query response | `^gpt:` | Single button on inline-query results, fetches a reply asynchronously. |
 
 ### Media Handlers
@@ -528,6 +530,8 @@ declares:
 initialisation; missing references are logged. When a request is prepared, the
 active mode constrains `allowed_plugins` (defaulting to `["All"]` when the
 mode declares no `tools`). See `bot/openai_helper.py:520` for the wiring.
+User-level plugin disables from `/settings` are applied after the chat-mode
+allow-list, so they can only narrow the available tools.
 
 The current chat-mode catalogue is grouped as follows:
 

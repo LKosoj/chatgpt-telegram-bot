@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from bot.plugin_manager import PluginManager
+from bot.i18n import localized_text
 from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.request_context import RequestContext
 
@@ -570,8 +571,9 @@ async def test_ask_telegram_user_timeout_clears_markup_and_notifies(tmp_path):
     assert "Timed out" in result["error"]
     assert bot.markup_edits and bot.markup_edits[0]["reply_markup"] is None
     assert bot.markup_edits[0]["chat_id"] == 10
+    timeout_notice = localized_text("agent_tools_question_timeout_notice", "en")
     notification = next(
-        (m for m in bot.messages if "истекло" in str(m.get("text", ""))),
+        (m for m in bot.messages if timeout_notice == m.get("text")),
         None,
     )
     assert notification is not None
@@ -678,8 +680,12 @@ async def test_cancel_pending_question_clears_markup_and_resolves(tmp_path):
     assert cancel_result["success"] is True
     assert plugin.pending_by_chat == {}
 
+    cancel_text = localized_text(
+        "agent_tools_question_cancelled",
+        "en",
+    ).format(reason="Решили иначе")
     cancel_notice = next(
-        (m for m in bot.messages if "отменён" in str(m.get("text", ""))),
+        (m for m in bot.messages if cancel_text == m.get("text")),
         None,
     )
     assert cancel_notice is not None
@@ -972,6 +978,7 @@ async def test_pending_question_persisted_and_recovered_on_startup(tmp_path):
 
     assert new_plugin._orphaned_pending == []
     assert any(edit.get("reply_markup") is None for edit in bot.markup_edits)
-    notice = next((m for m in bot.messages if "перезапущен" in str(m.get("text", ""))), None)
+    orphaned_notice = localized_text("agent_tools_orphaned_question_inactive", "en")
+    notice = next((m for m in bot.messages if orphaned_notice == m.get("text")), None)
     assert notice is not None
     assert not pending_file.exists()

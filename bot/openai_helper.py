@@ -5,6 +5,7 @@ import os
 import asyncio
 import uuid
 import re
+import time
 from typing import Any, Optional
 from datetime import datetime as dt
 
@@ -52,7 +53,14 @@ from .hindsight_client import HindsightClient, format_recall_results
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
-from .i18n import localized_text
+from .i18n import get_current_language, language_name, localized_text
+from .user_settings import (
+    USER_DISABLED_PLUGINS_SETTING,
+    USER_TTS_MODEL_SETTING,
+    USER_TTS_VOICE_SETTING,
+    get_user_settings,
+    normalize_string_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +69,7 @@ EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой отве�
 THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
+TTS_OPTIONS_CACHE_SECONDS = 300
 
 
 def _choice_message_text(choice) -> str:
@@ -200,6 +209,8 @@ class OpenAIHelper:
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
+        self._tts_models_cache: tuple[float, list[str]] | None = None
+        self._tts_voices_cache: dict[str, tuple[float, list[str]]] = {}
         self.bot = None
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.chat_modes_registry = ChatModesRegistry(os.path.join(current_dir, 'chat_modes.yml'))
@@ -412,7 +423,7 @@ class OpenAIHelper:
             )
             
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
-                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
+                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 response, plugins_used = await self.__handle_function_call(
                     chat_id,
                     response,
@@ -565,7 +576,7 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 try:
-                    allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
+                    allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
                     response, plugins_used = await self.__handle_function_call(
                         chat_id,
                         response,
@@ -620,7 +631,23 @@ class OpenAIHelper:
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
-    def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None):
+    def _disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
+        settings = get_user_settings(self.db, user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+
+    def _apply_user_disabled_plugins(self, allowed_plugins, user_id: int | None):
+        disabled_plugins = self._disabled_plugins_for_user(user_id)
+        if not disabled_plugins:
+            return allowed_plugins
+        if allowed_plugins == ['All']:
+            return [
+                plugin_name
+                for plugin_name in self.plugin_manager.plugins.keys()
+                if plugin_name not in disabled_plugins
+            ]
+        return [plugin_name for plugin_name in allowed_plugins if plugin_name not in disabled_plugins]
+
+    def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None, user_id: int | None = None):
         saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
         allowed_plugins = ['All']
 
@@ -648,6 +675,7 @@ class OpenAIHelper:
             if current_mode and 'tools' in current_mode:
                 allowed_plugins = current_mode['tools']
 
+        allowed_plugins = self._apply_user_disabled_plugins(allowed_plugins, user_id)
         return self.plugin_manager.filter_allowed_plugins(allowed_plugins)
 
     @retry(
@@ -811,7 +839,7 @@ class OpenAIHelper:
                 })
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id)
+                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
                 if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):
@@ -1093,7 +1121,103 @@ class OpenAIHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
-    async def generate_speech(self, text: str) -> tuple[any, int]:
+    @staticmethod
+    def _cache_is_fresh(cache_entry: tuple[float, list[str]] | None) -> bool:
+        return bool(cache_entry and time.monotonic() - cache_entry[0] < TTS_OPTIONS_CACHE_SECONDS)
+
+    @staticmethod
+    def _extract_option_ids(payload: Any, preferred_keys: tuple[str, ...]) -> list[str]:
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump()
+
+        candidates: list[Any] = []
+        if isinstance(payload, dict):
+            for key in preferred_keys:
+                if key in payload:
+                    candidates.append(payload[key])
+            if "data" in payload:
+                candidates.append(payload["data"])
+        else:
+            data = getattr(payload, "data", None)
+            if data is not None:
+                candidates.append(data)
+
+        values: list[str] = []
+        index = 0
+        while index < len(candidates):
+            candidate = candidates[index]
+            index += 1
+            if isinstance(candidate, dict):
+                for key in preferred_keys:
+                    nested = candidate.get(key)
+                    if nested is not None:
+                        candidates.append(nested)
+                continue
+            if not isinstance(candidate, list):
+                continue
+            for item in candidate:
+                if isinstance(item, str):
+                    values.append(item)
+                    continue
+                if isinstance(item, dict):
+                    value = item.get("id") or item.get("name") or item.get("voice")
+                else:
+                    value = getattr(item, "id", None) or getattr(item, "name", None)
+                if value:
+                    values.append(str(value))
+
+        return sorted({value.strip() for value in values if value and value.strip()})
+
+    @staticmethod
+    def _is_tts_model_id(model_id: str) -> bool:
+        lowered = model_id.lower()
+        return "tts" in lowered or "speech" in lowered or "silero" in lowered
+
+    async def get_available_tts_models(self) -> list[str]:
+        if self._cache_is_fresh(self._tts_models_cache):
+            return list(self._tts_models_cache[1])
+        try:
+            response = await self.client.models.list()
+            models = [
+                model
+                for model in self._extract_option_ids(response, ("models",))
+                if self._is_tts_model_id(model)
+            ]
+        except Exception as exc:
+            logger.warning("Failed to load TTS models from API: %s", exc)
+            return []
+        self._tts_models_cache = (time.monotonic(), models)
+        return list(models)
+
+    async def get_available_tts_voices(self, model: str | None = None) -> list[str]:
+        model_to_use = model or self.config.get('tts_model', LLMGATEWAY_TTS_MODEL)
+        cache_entry = self._tts_voices_cache.get(model_to_use)
+        if self._cache_is_fresh(cache_entry):
+            return list(cache_entry[1])
+        try:
+            response = await self.gateway_client.post_json(
+                "/audio/speech/voices",
+                {"model": model_to_use},
+                timeout=30.0,
+            )
+            voices = self._extract_option_ids(response, ("voices",))
+        except Exception as exc:
+            logger.warning("Failed to load TTS voices from API: %s", exc)
+            return []
+        self._tts_voices_cache[model_to_use] = (time.monotonic(), voices)
+        return list(voices)
+
+    def get_user_tts_model(self, user_id: int | None = None) -> str:
+        settings = get_user_settings(self.db, user_id)
+        model = str(settings.get(USER_TTS_MODEL_SETTING) or "").strip()
+        return model or self.config['tts_model']
+
+    def get_user_tts_voice(self, user_id: int | None = None) -> str:
+        settings = get_user_settings(self.db, user_id)
+        voice = str(settings.get(USER_TTS_VOICE_SETTING) or "").strip()
+        return voice or str(self.config['tts_voice']).lower()
+
+    async def generate_speech(self, text: str, user_id: int | None = None) -> tuple[any, int]:
         """
         Generates an audio from the given text using TTS model.
         :param prompt: The text to send to the model
@@ -1102,8 +1226,8 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         try:
             response = await self.client.audio.speech.create(
-                model=self.config['tts_model'],
-                voice=str(self.config['tts_voice']).lower(),
+                model=self.get_user_tts_model(user_id),
+                voice=self.get_user_tts_voice(user_id).lower(),
                 input=text,
                 response_format=self.config.get('tts_response_format', 'wav'),
                 extra_headers={ "X-Title": "tgBot" },
@@ -1198,7 +1322,7 @@ class OpenAIHelper:
 
             common_args = {
                 'model': vision_model,
-                'messages': self.conversations[chat_id][:-1] + [message],
+                'messages': self._messages_with_language_instruction(self.conversations[chat_id][:-1] + [message]),
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': self.config['vision_max_tokens'],
@@ -1417,8 +1541,22 @@ class OpenAIHelper:
         else:
             messages.insert(0, memory_message)
 
+    @staticmethod
+    def _messages_with_language_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        language = get_current_language()
+        language_instruction = {
+            "role": "system",
+            "content": (
+                f"Reply to the user in {language_name(language)} "
+                "unless the user explicitly asks for another language."
+            ),
+        }
+        if messages and messages[0].get("role") == "system":
+            return [messages[0], language_instruction, *messages[1:]]
+        return [language_instruction, *messages]
+
     def _messages_with_hindsight_context(self, chat_id: int) -> list[dict[str, Any]]:
-        return self.conversations[chat_id]
+        return self._messages_with_language_instruction(self.conversations[chat_id])
 
     async def finalize_hindsight_session_memory(
         self,

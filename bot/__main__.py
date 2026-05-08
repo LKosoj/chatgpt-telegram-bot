@@ -16,6 +16,7 @@ from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from .telegram_bot import ChatGPTTelegramBot
 from .database import Database
+from .i18n import configured_language
 
 
 DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
@@ -71,6 +72,8 @@ def main():
     api_key = os.environ['OPENAI_API_KEY']
     hindsight_base_url = os.environ.get('HINDSIGHT_BASE_URL', '')
     hindsight_api_token = os.environ.get('HINDSIGHT_API_TOKEN', '')
+    bot_language = configured_language(os.environ.get('BOT_LANGUAGE', 'auto'))
+
     openai_config = {
         'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
         'api_key': api_key,
@@ -94,7 +97,7 @@ def main():
         'functions_max_consecutive_calls': int(os.environ.get('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10)),
         'presence_penalty': float(os.environ.get('PRESENCE_PENALTY', 0.0)),
         'frequency_penalty': float(os.environ.get('FREQUENCY_PENALTY', 0.0)),
-        'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+        'bot_language': bot_language,
         'show_plugins_used': os.environ.get('SHOW_PLUGINS_USED', 'false').lower() == 'true',
         'whisper_prompt': os.environ.get('WHISPER_PROMPT', ''),
         'vision_model': os.environ.get('VISION_MODEL', LLMGATEWAY_BIG_CONTEXT_MODEL),
@@ -174,7 +177,7 @@ def main():
         'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'tts_prices': [float(i) for i in os.environ.get('TTS_PRICES', "0.015,0.030").split(",")],
         'transcription_price': float(os.environ.get('TRANSCRIPTION_PRICE', 0.006)),
-        'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+        'bot_language': bot_language,
         'max_sessions': int(os.environ.get('MAX_SESSIONS', 5)),
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
         'telegram_download_bot_id': os.environ.get('TELEGRAM_DOWNLOAD_BOT_ID', ''),

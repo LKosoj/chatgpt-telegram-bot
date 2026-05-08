@@ -44,6 +44,7 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
@@ -54,6 +55,7 @@ class DummyDB:
     def __init__(self, context=None):
         self.context = context or {}
         self.saved_contexts = []
+        self.user_settings = {}
 
     def list_user_sessions(self, user_id, is_active=1):
         return []
@@ -63,6 +65,9 @@ class DummyDB:
 
     def save_conversation_context(self, *args, **kwargs):
         self.saved_contexts.append((args, kwargs))
+
+    def get_user_settings(self, user_id):
+        return self.user_settings.get(user_id)
 
 
 class MultiSessionDB(DummyDB):
@@ -128,6 +133,42 @@ class DummyClient:
         if self.responses:
             return self.responses.pop(0)
         return FakeResponse(tool_calls=None, content="done")
+
+
+class DummyModelsClient(DummyClient):
+    def __init__(self, models):
+        super().__init__()
+        self.models = types.SimpleNamespace(list=self._list_models)
+        self._models = models
+
+    async def _list_models(self):
+        return types.SimpleNamespace(data=[types.SimpleNamespace(id=model) for model in self._models])
+
+
+class DummySpeechResponse:
+    def read(self):
+        return b"speech-bytes"
+
+
+class DummySpeechClient(DummyClient):
+    def __init__(self):
+        super().__init__()
+        self.speech_kwargs = []
+        self.audio = types.SimpleNamespace(speech=types.SimpleNamespace(create=self._create_speech))
+
+    async def _create_speech(self, **kwargs):
+        self.speech_kwargs.append(kwargs)
+        return DummySpeechResponse()
+
+
+class DummyVoiceGateway:
+    def __init__(self, voices):
+        self.voices = voices
+        self.calls = []
+
+    async def post_json(self, path, payload, timeout=None):
+        self.calls.append((path, payload, timeout))
+        return {"voices": self.voices}
 
 
 class FakeSkillsPlugin:
@@ -311,6 +352,57 @@ def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
     assert pm.filtered[-1] == ["All"]
 
 
+def test_resolve_allowed_plugins_removes_user_disabled_plugins():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "tools"},
+        ],
+    }
+    db = DummyDB(saved_context)
+    db.user_settings[42] = {"disabled_plugins": ["weather"]}
+    pm = DummyPluginManager({})
+    helper = _make_helper(pm, db=db)
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: {"tools": ["weather", "time"]},
+    )
+
+    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1", user_id=42) == ["time"]
+    assert pm.filtered[-1] == ["time"]
+
+
+@pytest.mark.asyncio
+async def test_tts_options_are_loaded_from_api():
+    helper = _make_helper(DummyPluginManager({}), client=DummyModelsClient([
+        "llmgateway/high",
+        "llmgateway/silero-tts",
+        "tts-1",
+    ]))
+    helper.gateway_client = DummyVoiceGateway(["alice", "bob"])
+
+    assert await helper.get_available_tts_models() == ["llmgateway/silero-tts", "tts-1"]
+    assert await helper.get_available_tts_voices("llmgateway/silero-tts") == ["alice", "bob"]
+    assert helper.gateway_client.calls[0] == (
+        "/audio/speech/voices",
+        {"model": "llmgateway/silero-tts"},
+        30.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_speech_uses_user_tts_settings():
+    db = DummyDB()
+    db.user_settings[42] = {"tts_model": "tts-1", "tts_voice": "bob"}
+    client = DummySpeechClient()
+    helper = _make_helper(DummyPluginManager({}), db=db, client=client)
+
+    speech_file, text_length = await helper.generate_speech("hello", user_id=42)
+
+    assert speech_file.getvalue() == b"speech-bytes"
+    assert text_length == 5
+    assert client.speech_kwargs[0]["model"] == "tts-1"
+    assert client.speech_kwargs[0]["voice"] == "bob"
+
+
 @pytest.mark.asyncio
 async def test_stream_without_tool_calls_preserves_first_chunk():
     helper = _make_helper(DummyPluginManager({}))
@@ -337,7 +429,7 @@ async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     monkeypatch.setattr(
         helper,
         "resolve_allowed_plugins",
-        lambda chat_id, session_id=None: ["weather"],
+        lambda chat_id, session_id=None, user_id=None: ["weather"],
     )
 
     answer, total_tokens = await helper.get_chat_response(
@@ -1097,3 +1189,19 @@ async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
     assert pm.calls and pm.calls[0][0] == "codeinterpreter.deep_analysis"
     assert set(tools_used) == {"codeinterpreter.deep_analysis"}
     assert out.choices[0].message.content == "calculated"
+
+
+def test_model_messages_include_current_user_language_instruction():
+    token = set_current_language("ru")
+    try:
+        messages = OpenAIHelper._messages_with_language_instruction([
+            {"role": "system", "content": "base prompt"},
+            {"role": "user", "content": "hello"},
+        ])
+    finally:
+        reset_current_language(token)
+
+    assert messages[0] == {"role": "system", "content": "base prompt"}
+    assert messages[1]["role"] == "system"
+    assert "Русский" in messages[1]["content"]
+    assert messages[2] == {"role": "user", "content": "hello"}

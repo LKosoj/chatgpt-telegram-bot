@@ -21,12 +21,12 @@ import hashlib
 class HTMLVisualizer:
     """Утилита для создания расширенной HTML-визуализации"""
     
-    def __init__(self, plots_dir='plots'):
+    def __init__(self, plots_dir='output/plots'):
         """
         Инициализация визуализатора
-        
+
         Args:
-            plots_dir (str, optional): Директория для сохранения графиков. По умолчанию 'plots'.
+            plots_dir (str, optional): Директория для сохранения графиков. По умолчанию 'output/plots'.
         """
         self.plots_dir = plots_dir
         self.diagrams_found = 0
@@ -583,9 +583,10 @@ class HTMLVisualizer:
             str: Путь к созданному HTML-файлу
         """
         output_path=f"output/interactive_plots_{session_id}.html"
+        os.makedirs("output", exist_ok=True)
         try:
             # Проверяем наличие директории с графиками
-            plots_dir = 'plots'
+            plots_dir = 'output/plots'
             os.makedirs(plots_dir, exist_ok=True)
 
             # Добавляем MD файлы
@@ -1705,21 +1706,21 @@ class HTMLVisualizer:
 
     def clean_data(self, session_id):
         #return
-        """Удаляет файлы с суффиксом _{session_id} в каталогах data и plots."""
+        """Удаляет файлы с суффиксом _{session_id} в каталогах data и output/plots."""
         for file in os.listdir('data'):
             if f'_{session_id}' in file:
                 os.remove(os.path.join('data', file))
-        for file in os.listdir('plots'):
+        for file in os.listdir('output/plots'):
             if f'_{session_id}' in file:
-                os.remove(os.path.join('plots', file))
+                os.remove(os.path.join('output/plots', file))
 
     def _generate_plantuml(self, session_id: str) -> str:
         """Генерирует изображение из PlantUML кода"""
 
-        plantuml_files = [f for f in os.listdir('plots') if f'_{session_id}.puml' in f]
+        plantuml_files = [f for f in os.listdir('output/plots') if f'_{session_id}.puml' in f]
         if plantuml_files:
             for file_name in plantuml_files:
-                file_name = os.path.join('plots', file_name)
+                file_name = os.path.join('output/plots', file_name)
                 # Запускаем PlantUML для генерации изображения
                 try:
                     result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', file_name], 

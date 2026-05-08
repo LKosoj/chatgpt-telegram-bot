@@ -67,17 +67,22 @@ class FakeCallbackMessage:
 
 
 class FakeCallbackQuery:
-    def __init__(self, data, user_id=999, chat_id=1234):
+    def __init__(self, data, user_id=999, chat_id=1234, language_code="en"):
         self.data = data
-        self.from_user = SimpleNamespace(id=user_id, name=f"user-{user_id}")
+        self.from_user = SimpleNamespace(id=user_id, name=f"user-{user_id}", language_code=language_code)
         self.message = FakeCallbackMessage(chat_id=chat_id)
         self.answer = AsyncMock()
         self.edit_message_text = AsyncMock()
 
 
 class FakeCallbackUpdate:
-    def __init__(self, data, user_id=999, chat_id=1234):
-        self.callback_query = FakeCallbackQuery(data, user_id=user_id, chat_id=chat_id)
+    def __init__(self, data, user_id=999, chat_id=1234, language_code="en"):
+        self.callback_query = FakeCallbackQuery(
+            data,
+            user_id=user_id,
+            chat_id=chat_id,
+            language_code=language_code,
+        )
         self.message = None
         self.effective_chat = SimpleNamespace(id=chat_id, type="private")
         self.effective_user = self.callback_query.from_user
@@ -95,6 +100,8 @@ def _make_db():
         switch_active_session=MagicMock(),
         delete_session=MagicMock(),
         export_sessions_to_yaml=MagicMock(return_value=None),
+        get_user_settings=MagicMock(return_value=None),
+        save_user_settings=MagicMock(),
         save_conversation_context=MagicMock(),
         get_conversation_context=MagicMock(return_value=({"messages": []}, "HTML", 0.1, 80, "session-1")),
         get_active_session_id=MagicMock(return_value="session-1"),
@@ -105,12 +112,31 @@ def _make_db():
 
 def _make_openai():
     return SimpleNamespace(
-        config={"temperature": 0.1},
+        config={"temperature": 0.1, "tts_model": "tts-a", "tts_voice": "alice"},
         conversations={},
         is_hindsight_enabled=MagicMock(return_value=False),
         get_current_model=MagicMock(return_value="gpt-test"),
+        get_user_tts_model=MagicMock(return_value="tts-a"),
+        get_user_tts_voice=MagicMock(return_value="alice"),
+        get_available_tts_models=AsyncMock(return_value=["tts-a", "tts-b"]),
+        get_available_tts_voices=AsyncMock(return_value=["alice", "bob"]),
         reset_chat_history=MagicMock(),
     )
+
+
+class FakeSettingsPluginManager:
+    plugins = {"alpha": object(), "beta": object(), "skills": object()}
+
+    def __init__(self):
+        self.skills_plugin = SimpleNamespace(available_skills={"docx": {}, "pptx": {}})
+
+    def has_plugin(self, plugin_name):
+        return plugin_name in self.plugins
+
+    def get_plugin(self, plugin_name):
+        if plugin_name == "skills":
+            return self.skills_plugin
+        return None
 
 
 def _make_bot(allowed_user_ids):
@@ -124,6 +150,7 @@ def _make_bot(allowed_user_ids):
     bot.db = _make_db()
     bot.openai = _make_openai()
     bot.usage = {}
+    bot._user_language_cache = {}
     bot.get_chat_modes = MagicMock(return_value={
         "assistant": {
             "name": "Assistant",
@@ -238,3 +265,123 @@ async def test_unauthorized_plugin_callback_query_does_not_call_plugin_handler()
     update.callback_query.edit_message_text.assert_awaited_once_with(
         text=localized_text("access_denied_command", "en")
     )
+
+
+def test_auto_language_detects_persists_and_caches_first_contact():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.config["bot_language"] = "auto"
+    update = FakeCallbackUpdate("settings:root", user_id=999, language_code="de-DE")
+
+    assert bot._get_user_language(update) == "de"
+    bot.db.save_user_settings.assert_called_once_with(999, {"language": "de"})
+
+    bot.db.get_user_settings.reset_mock()
+    update.effective_user.language_code = "ru"
+
+    assert bot._get_user_language(update) == "de"
+    bot.db.get_user_settings.assert_not_called()
+
+
+def test_explicit_bot_language_is_default_and_user_setting_can_override():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.config["bot_language"] = "ru"
+    update = FakeCallbackUpdate("settings:root", user_id=999, language_code="de")
+
+    assert bot._get_user_language(update) == "ru"
+    bot.db.save_user_settings.assert_not_called()
+
+    bot._user_language_cache.clear()
+    bot.db.get_user_settings.return_value = {"language": "de"}
+
+    assert bot._get_user_language(update) == "de"
+
+
+def test_language_settings_menu_uses_two_languages_per_row():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.config["bot_language"] = "auto"
+
+    markup = bot._build_language_settings_menu(page=0, current_language="ru")
+    rows = markup.inline_keyboard
+    language_rows = rows[:5]
+
+    assert all(len(row) == 2 for row in language_rows)
+    assert rows[-1][0].callback_data == "settings:root"
+
+
+@pytest.mark.asyncio
+async def test_settings_language_selection_saves_user_language():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.config["bot_language"] = "en"
+    bot.db.get_user_settings.return_value = {}
+    update = FakeCallbackUpdate("settings:lang_set:ru", user_id=999, language_code="en")
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    assert bot._user_language_cache[999] == "ru"
+    bot.db.save_user_settings.assert_called_with(999, {"language": "ru"})
+    update.callback_query.answer.assert_any_await("Язык сохранён.")
+    text = update.callback_query.edit_message_text.await_args.kwargs["text"]
+    assert "Настройки" in text
+
+
+@pytest.mark.asyncio
+async def test_settings_tts_model_selection_saves_user_model():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.db.get_user_settings.return_value = {}
+    update = FakeCallbackUpdate("settings:tts_model_set:0:1", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    bot.db.save_user_settings.assert_called_with(999, {"tts_model": "tts-b"})
+    update.callback_query.answer.assert_any_await("TTS model saved.")
+
+
+@pytest.mark.asyncio
+async def test_settings_tts_voice_selection_saves_user_voice():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.db.get_user_settings.return_value = {}
+    update = FakeCallbackUpdate("settings:tts_voice_set:0:1", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    bot.db.save_user_settings.assert_called_with(999, {"tts_voice": "bob"})
+    update.callback_query.answer.assert_any_await("TTS voice saved.")
+
+
+@pytest.mark.asyncio
+async def test_settings_plugin_toggle_saves_disabled_plugins():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    bot.db.get_user_settings.return_value = {}
+    update = FakeCallbackUpdate("settings:plugin_toggle:0:0", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    bot.db.save_user_settings.assert_called_with(999, {"disabled_plugins": ["alpha"]})
+    update.callback_query.answer.assert_any_await("Plugin disabled: alpha")
+
+
+@pytest.mark.asyncio
+async def test_settings_plugin_toggle_can_reenable_plugin():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    bot.db.get_user_settings.return_value = {"disabled_plugins": ["alpha"]}
+    update = FakeCallbackUpdate("settings:plugin_toggle:0:0", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    bot.db.save_user_settings.assert_called_with(999, {"disabled_plugins": []})
+    update.callback_query.answer.assert_any_await("Plugin enabled: alpha")
+
+
+@pytest.mark.asyncio
+async def test_settings_skill_toggle_saves_disabled_skills():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    bot.db.get_user_settings.return_value = {}
+    update = FakeCallbackUpdate("settings:skill_toggle:0:1", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    bot.db.save_user_settings.assert_called_with(999, {"disabled_skills": ["pptx"]})
+    update.callback_query.answer.assert_any_await("Skill disabled: pptx")

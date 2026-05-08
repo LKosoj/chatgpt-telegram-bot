@@ -82,8 +82,8 @@ class FakeApplication:
         self.error_handlers = []
         self.run_polling_calls = 0
 
-    def add_handler(self, handler):
-        self.handlers.append(handler)
+    def add_handler(self, handler, group=0):
+        self.handlers.append((handler, group))
 
     def add_error_handler(self, handler):
         self.error_handlers.append(handler)
@@ -225,6 +225,26 @@ def test_main_defaults_telegram_local_bot_api_config(monkeypatch):
     assert bot.config["telegram_local_mode"] is True
     assert bot.config["telegram_base_url"] == "http://localhost:8081/bot"
     assert bot.run_calls == 1
+
+
+def test_main_defaults_bot_language_to_auto(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_LANGUAGE", raising=False)
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.config["bot_language"] == "auto"
+    assert bot.openai.config["bot_language"] == "auto"
+
+
+def test_main_normalizes_explicit_bot_language(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("BOT_LANGUAGE", "pt_BR")
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.config["bot_language"] == "pt-br"
+    assert bot.openai.config["bot_language"] == "pt-br"
 
 
 def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):

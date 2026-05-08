@@ -76,7 +76,7 @@ class FakeApplication:
         self.owner = None
         self.run_polling_calls = 0
 
-    def add_handler(self, handler):
+    def add_handler(self, handler, group=0):
         self.handlers.append(handler)
 
     def add_error_handler(self, handler):

@@ -166,8 +166,8 @@ class CodeInterpreterPlugin(Plugin):
             
             if isinstance(result, str):
                 # Проверяем, есть ли сгенерированный HTML файл
-                html_file = f"interactive_plots_{session_id}.html"
-                
+                html_file = f"output/interactive_plots_{session_id}.html"
+
                 if os.path.exists(html_file):
                     return {
                         "result": result,
@@ -227,7 +227,7 @@ class CodeInterpreterPlugin(Plugin):
         - Код должен содержать if __name__ == "__main__": для получения результата
         - В ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!
         - Если передан файл на вход, необходимо сгенерировать функцию для получения имен колонок из файла, названия колонок case sensitive.
-        - Если в коде используется построение графиков - сделай их сохранение в каталог 'plots'.
+        - Если в коде используется построение графиков - сделай их сохранение в каталог 'output/plots'.
         - Во всех именах файлов обязательно используй суффикс _{session_id}
 
         Задача:
@@ -505,10 +505,11 @@ class CodeInterpreterPlugin(Plugin):
         Args:
             output_path (str): Путь для сохранения HTML файла с графиками
         """
-        output_path=f"interactive_plots_{session_id}.html"
+        output_path=f"output/interactive_plots_{session_id}.html"
+        os.makedirs("output", exist_ok=True)
         try:
             # Проверяем наличие директории с графиками
-            plots_dir = 'plots'
+            plots_dir = 'output/plots'
             os.makedirs(plots_dir, exist_ok=True)
 
             plot_files = []
@@ -642,8 +643,8 @@ class CodeInterpreterPlugin(Plugin):
         return matches[0].strip() if matches else text
     
     def clean_data(self, session_id):
-        """Удаляет файлы с суффиксом _{session_id} в каталогах data и plots."""
-        for directory in ('data', 'plots'):
+        """Удаляет файлы с суффиксом _{session_id} в каталогах data и output/plots."""
+        for directory in ('data', 'output/plots'):
             if not os.path.isdir(directory):
                 continue
             for file in os.listdir(directory):

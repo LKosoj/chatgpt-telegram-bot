@@ -19,7 +19,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResu
 from telegram import InputTextMessageContent, BotCommand, ForceReply
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
-    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext
+    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, TypeHandler
 
 from pydub import AudioSegment
 from PIL import Image
@@ -29,12 +29,22 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
-from .i18n import localized_text
+from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
 from .database import Database
 from .conversation_key import get_conversation_key
 from .request_context import RequestContext
+from .user_settings import (
+    USER_DISABLED_PLUGINS_SETTING,
+    USER_DISABLED_SKILLS_SETTING,
+    USER_LANGUAGE_SETTING,
+    USER_TTS_MODEL_SETTING,
+    USER_TTS_VOICE_SETTING,
+    get_user_settings,
+    normalize_string_list,
+    set_disabled_value,
+)
 
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,6 +57,8 @@ HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS = 60
 HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS = 900
 HINDSIGHT_FINALIZE_WORKER_ACTIVE_SECONDS = 2
 HINDSIGHT_FINALIZE_WORKER_IDLE_SECONDS = 30
+LANGUAGE_MENU_PAGE_SIZE = 10
+SETTINGS_MENU_PAGE_SIZE = 10
 
 
 class ChatGPTTelegramBot:
@@ -69,6 +81,7 @@ class ChatGPTTelegramBot:
         self.db = db
         self.openai = openai
         self.openai.bot = None
+        self._user_language_cache = {}
         # Устанавливаем openai в plugin_manager
         self.openai.plugin_manager.set_openai(self.openai)
         
@@ -82,6 +95,7 @@ class ChatGPTTelegramBot:
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
             BotCommand(command='plugins', description=localized_text('plugins_description', bot_language)),
+            BotCommand(command='settings', description=localized_text('settings_description', bot_language)),
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -94,8 +108,6 @@ class ChatGPTTelegramBot:
         self.group_commands = [BotCommand(
             command='chat', description=localized_text('chat_description', bot_language)
         )] + self.commands
-        self.disallowed_message = localized_text('disallowed', bot_language)
-        self.budget_limit_message = localized_text('budget_limit', bot_language)
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
@@ -112,6 +124,48 @@ class ChatGPTTelegramBot:
         self._cleanup_called = False
         self._plugin_message_handlers_registered = False
         self._message_tail_handlers_registered = False
+
+    def _is_auto_language_enabled(self) -> bool:
+        return is_auto_language(self.config.get('bot_language', DEFAULT_LANGUAGE))
+
+    def _configured_language(self) -> str:
+        if self._is_auto_language_enabled():
+            return DEFAULT_LANGUAGE
+        return normalize_language(self.config.get('bot_language', DEFAULT_LANGUAGE))
+
+    def _detect_user_language(self, update: Update) -> str:
+        user = getattr(update, 'effective_user', None)
+        return normalize_language(getattr(user, 'language_code', None))
+
+    def _get_user_language(self, update: Update) -> str:
+        user = getattr(update, 'effective_user', None)
+        user_id = getattr(user, 'id', None)
+        if user_id is None:
+            return self._configured_language()
+
+        cached_language = self._user_language_cache.get(user_id)
+        if cached_language:
+            return cached_language
+
+        settings = self.db.get_user_settings(user_id) or {}
+        if not isinstance(settings, dict):
+            settings = {}
+
+        language = settings.get(USER_LANGUAGE_SETTING)
+        if language:
+            language = normalize_language(language)
+        elif self._is_auto_language_enabled():
+            language = self._detect_user_language(update)
+            settings[USER_LANGUAGE_SETTING] = language
+            self.db.save_user_settings(user_id, settings)
+        else:
+            language = self._configured_language()
+
+        self._user_language_cache[user_id] = language
+        return language
+
+    async def prepare_user_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        set_current_language(self._get_user_language(update))
 
     def get_chat_modes(self):
         """
@@ -323,7 +377,10 @@ class ChatGPTTelegramBot:
                 effective_message = update.effective_message
                 if effective_message is not None:
                     await effective_message.reply_text(
-                        f"Не удалось доставить ответ агента: {exc}"
+                        localized_text(
+                            "direct_result_delivery_error",
+                            self.config['bot_language']
+                        ).format(error=exc)
                     )
             except Exception:
                 logger.exception("Failed to notify user about delivery error")
@@ -507,7 +564,7 @@ class ChatGPTTelegramBot:
                 "kind": "photo",
                 "format": image_format,
                 "value": image_value,
-                "add_value": "Изображение отредактировано через LLMGateway.",
+                "add_value": localized_text("image_edit_success", self.config['bot_language']),
             }
         })
 
@@ -794,6 +851,554 @@ class ChatGPTTelegramBot:
             message.text = self.last_message.pop(chat_id)
 
         await self.prompt(update=update, context=context)
+
+    async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        set_current_language(self._get_user_language(update))
+        bot_language = self._get_user_language(update)
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=self._settings_text(bot_language, user_id),
+            reply_markup=self._build_settings_menu(bot_language, user_id),
+        )
+
+    async def handle_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query:
+            return
+
+        set_current_language(self._get_user_language(update))
+        bot_language = self._get_user_language(update)
+        user = getattr(update, 'effective_user', None)
+        user_id = getattr(user, 'id', None)
+
+        if not await is_allowed(self.config, update, context):
+            await query.answer()
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return
+
+        parts = str(query.data or '').split(':')
+        action = parts[1] if len(parts) > 1 else 'root'
+
+        if action == 'close':
+            await query.answer()
+            await query.message.delete()
+            return
+
+        if action == 'root':
+            await query.answer()
+            await query.edit_message_text(
+                text=self._settings_text(bot_language, user_id),
+                reply_markup=self._build_settings_menu(bot_language, user_id),
+            )
+            return
+
+        if action == 'language':
+            await query.answer()
+            page = self._settings_page(parts)
+            await query.edit_message_text(
+                text=localized_text('settings_language_choose', self.config['bot_language']),
+                reply_markup=self._build_language_settings_menu(page, bot_language),
+            )
+            return
+
+        if action == 'lang_page':
+            await query.answer()
+            page = self._settings_page(parts)
+            await query.edit_message_text(
+                text=localized_text('settings_language_choose', self.config['bot_language']),
+                reply_markup=self._build_language_settings_menu(page, bot_language),
+            )
+            return
+
+        if action == 'lang_set' and len(parts) >= 3:
+            if user_id is None:
+                await query.answer()
+                return
+            new_language = normalize_language(parts[2])
+            settings = self.db.get_user_settings(user_id) or {}
+            if not isinstance(settings, dict):
+                settings = {}
+            settings[USER_LANGUAGE_SETTING] = new_language
+            self.db.save_user_settings(user_id, settings)
+            self._user_language_cache[user_id] = new_language
+            set_current_language(new_language)
+            await query.answer(localized_text('settings_language_saved', self.config['bot_language']))
+            await query.edit_message_text(
+                text=self._settings_text(new_language, user_id),
+                reply_markup=self._build_settings_menu(new_language, user_id),
+            )
+            return
+
+        if action in {'tts_model', 'tts_model_page'}:
+            await query.answer()
+            page = self._settings_page(parts)
+            await self._show_tts_model_settings(query, page, user_id)
+            return
+
+        if action == 'tts_model_set' and len(parts) >= 4:
+            await self._set_tts_model_setting(query, parts, user_id, bot_language)
+            return
+
+        if action in {'tts_voice', 'tts_voice_page'}:
+            await query.answer()
+            page = self._settings_page(parts)
+            await self._show_tts_voice_settings(query, page, user_id)
+            return
+
+        if action == 'tts_voice_set' and len(parts) >= 4:
+            await self._set_tts_voice_setting(query, parts, user_id, bot_language)
+            return
+
+        if action in {'plugins', 'plugin_page'}:
+            await query.answer()
+            page = self._settings_page(parts)
+            await query.edit_message_text(
+                text=localized_text('settings_plugins_choose', self.config['bot_language']),
+                reply_markup=self._build_plugin_settings_menu(page, user_id),
+            )
+            return
+
+        if action == 'plugin_toggle' and len(parts) >= 4:
+            await self._toggle_plugin_setting(query, parts, user_id)
+            return
+
+        if action in {'skills', 'skill_page'}:
+            await query.answer()
+            page = self._settings_page(parts)
+            await query.edit_message_text(
+                text=localized_text('settings_skills_choose', self.config['bot_language']),
+                reply_markup=self._build_skill_settings_menu(page, user_id),
+            )
+            return
+
+        if action == 'skill_toggle' and len(parts) >= 4:
+            await self._toggle_skill_setting(query, parts, user_id)
+            return
+
+        await query.answer()
+
+    @staticmethod
+    def _settings_page(parts: list[str]) -> int:
+        try:
+            return max(0, int(parts[2]))
+        except (IndexError, TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _settings_index(parts: list[str]) -> int | None:
+        try:
+            return max(0, int(parts[3]))
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _settings_label(value: str, max_chars: int = 34) -> str:
+        value = str(value)
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars - 3] + "..."
+
+    def _settings_for_user(self, user_id: int | None) -> dict:
+        if not getattr(self, 'db', None):
+            return {}
+        return get_user_settings(self.db, user_id)
+
+    def _settings_text(self, bot_language: str, user_id: int | None = None) -> str:
+        settings = self._settings_for_user(user_id)
+        tts_model = str(settings.get(USER_TTS_MODEL_SETTING) or self.openai.config.get('tts_model', ''))
+        tts_voice = str(settings.get(USER_TTS_VOICE_SETTING) or self.openai.config.get('tts_voice', ''))
+        disabled_plugins = normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING))
+        disabled_skills = normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING))
+        return (
+            localized_text('settings_title', self.config['bot_language'])
+            + "\n\n"
+            + localized_text('settings_language_current', self.config['bot_language']).format(
+                language=language_name(bot_language)
+            )
+            + "\n"
+            + localized_text('settings_tts_model_current', self.config['bot_language']).format(model=tts_model)
+            + "\n"
+            + localized_text('settings_tts_voice_current', self.config['bot_language']).format(voice=tts_voice)
+            + "\n"
+            + localized_text('settings_disabled_plugins_current', self.config['bot_language']).format(
+                count=len(disabled_plugins)
+            )
+            + "\n"
+            + localized_text('settings_disabled_skills_current', self.config['bot_language']).format(
+                count=len(disabled_skills)
+            )
+        )
+
+    def _build_settings_menu(self, bot_language: str, user_id: int | None = None) -> InlineKeyboardMarkup:
+        settings = self._settings_for_user(user_id)
+        tts_model = str(settings.get(USER_TTS_MODEL_SETTING) or self.openai.config.get('tts_model', ''))
+        tts_voice = str(settings.get(USER_TTS_VOICE_SETTING) or self.openai.config.get('tts_voice', ''))
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_language_button', self.config['bot_language']).format(
+                        language=language_name(bot_language)
+                    ),
+                    callback_data='settings:language:0',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_tts_model_button', self.config['bot_language']).format(
+                        model=self._settings_label(tts_model)
+                    ),
+                    callback_data='settings:tts_model:0',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_tts_voice_button', self.config['bot_language']).format(
+                        voice=self._settings_label(tts_voice)
+                    ),
+                    callback_data='settings:tts_voice:0',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_plugins_button', self.config['bot_language']),
+                    callback_data='settings:plugins:0',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_skills_button', self.config['bot_language']),
+                    callback_data='settings:skills:0',
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    localized_text('settings_close', self.config['bot_language']),
+                    callback_data='settings:close',
+                )
+            ],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_language_settings_menu(self, page: int, current_language: str) -> InlineKeyboardMarkup:
+        languages = list(supported_languages())
+        page_size = LANGUAGE_MENU_PAGE_SIZE
+        total_pages = max(1, (len(languages) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = start + page_size
+        page_languages = languages[start:end]
+
+        keyboard = []
+        for index in range(0, len(page_languages), 2):
+            row = []
+            for language in page_languages[index:index + 2]:
+                prefix = "✓ " if language == current_language else ""
+                row.append(InlineKeyboardButton(
+                    f"{prefix}{language_name(language)}",
+                    callback_data=f"settings:lang_set:{language}",
+                ))
+            keyboard.append(row)
+
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"settings:lang_page:{page - 1}"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"settings:lang_page:{page + 1}"))
+        if nav_row:
+            nav_row.append(InlineKeyboardButton(
+                localized_text('settings_page', self.config['bot_language']).format(
+                    current=page + 1,
+                    total=total_pages,
+                ),
+                callback_data=f"settings:lang_page:{page}",
+            ))
+            keyboard.append(nav_row)
+
+        keyboard.append([
+            InlineKeyboardButton(
+                localized_text('settings_back', self.config['bot_language']),
+                callback_data='settings:root',
+            )
+        ])
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_option_settings_menu(
+        self,
+        items: list[str],
+        *,
+        page: int,
+        current_value: str | None,
+        page_action: str,
+        set_action: str,
+    ) -> InlineKeyboardMarkup:
+        page_size = SETTINGS_MENU_PAGE_SIZE
+        total_pages = max(1, (len(items) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        page_items = items[start:start + page_size]
+
+        keyboard = []
+        for index in range(0, len(page_items), 2):
+            row = []
+            for offset, item in enumerate(page_items[index:index + 2]):
+                global_index = start + index + offset
+                prefix = "✓ " if item == current_value else ""
+                row.append(InlineKeyboardButton(
+                    f"{prefix}{self._settings_label(item)}",
+                    callback_data=f"settings:{set_action}:{page}:{global_index}",
+                ))
+            keyboard.append(row)
+
+        self._append_settings_nav_rows(keyboard, page, total_pages, page_action)
+        return InlineKeyboardMarkup(keyboard)
+
+    def _build_toggle_settings_menu(
+        self,
+        items: list[str],
+        *,
+        page: int,
+        disabled_values: list[str],
+        page_action: str,
+        toggle_action: str,
+    ) -> InlineKeyboardMarkup:
+        page_size = SETTINGS_MENU_PAGE_SIZE
+        total_pages = max(1, (len(items) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        page_items = items[start:start + page_size]
+        disabled = set(disabled_values)
+
+        keyboard = []
+        for index in range(0, len(page_items), 2):
+            row = []
+            for offset, item in enumerate(page_items[index:index + 2]):
+                global_index = start + index + offset
+                status_key = 'settings_toggle_disabled' if item in disabled else 'settings_toggle_enabled'
+                row.append(InlineKeyboardButton(
+                    localized_text(status_key, self.config['bot_language']).format(
+                        item=self._settings_label(item)
+                    ),
+                    callback_data=f"settings:{toggle_action}:{page}:{global_index}",
+                ))
+            keyboard.append(row)
+
+        self._append_settings_nav_rows(keyboard, page, total_pages, page_action)
+        return InlineKeyboardMarkup(keyboard)
+
+    def _append_settings_nav_rows(self, keyboard: list, page: int, total_pages: int, page_action: str) -> None:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"settings:{page_action}:{page - 1}"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("➡️", callback_data=f"settings:{page_action}:{page + 1}"))
+        if nav_row:
+            nav_row.append(InlineKeyboardButton(
+                localized_text('settings_page', self.config['bot_language']).format(
+                    current=page + 1,
+                    total=total_pages,
+                ),
+                callback_data=f"settings:{page_action}:{page}",
+            ))
+            keyboard.append(nav_row)
+
+        keyboard.append([
+            InlineKeyboardButton(
+                localized_text('settings_back', self.config['bot_language']),
+                callback_data='settings:root',
+            )
+        ])
+
+    async def _show_tts_model_settings(self, query, page: int, user_id: int | None) -> None:
+        models = await self.openai.get_available_tts_models()
+        if not models:
+            await query.edit_message_text(
+                text=localized_text('settings_api_list_failed', self.config['bot_language']),
+                reply_markup=self._build_back_settings_menu(),
+            )
+            return
+        current_model = self.openai.get_user_tts_model(user_id)
+        await query.edit_message_text(
+            text=localized_text('settings_tts_model_choose', self.config['bot_language']),
+            reply_markup=self._build_option_settings_menu(
+                models,
+                page=page,
+                current_value=current_model,
+                page_action='tts_model_page',
+                set_action='tts_model_set',
+            ),
+        )
+
+    async def _set_tts_model_setting(self, query, parts: list[str], user_id: int | None, bot_language: str) -> None:
+        if user_id is None:
+            await query.answer()
+            return
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        models = await self.openai.get_available_tts_models()
+        if index is None or index >= len(models):
+            await query.answer()
+            await self._show_tts_model_settings(query, page, user_id)
+            return
+        settings = self._settings_for_user(user_id)
+        settings[USER_TTS_MODEL_SETTING] = models[index]
+        self.db.save_user_settings(user_id, settings)
+        await query.answer(localized_text('settings_tts_model_saved', self.config['bot_language']))
+        await query.edit_message_text(
+            text=self._settings_text(bot_language, user_id),
+            reply_markup=self._build_settings_menu(bot_language, user_id),
+        )
+
+    async def _show_tts_voice_settings(self, query, page: int, user_id: int | None) -> None:
+        model = self.openai.get_user_tts_model(user_id)
+        voices = await self.openai.get_available_tts_voices(model)
+        if not voices:
+            await query.edit_message_text(
+                text=localized_text('settings_api_list_failed', self.config['bot_language']),
+                reply_markup=self._build_back_settings_menu(),
+            )
+            return
+        current_voice = self.openai.get_user_tts_voice(user_id)
+        await query.edit_message_text(
+            text=localized_text('settings_tts_voice_choose', self.config['bot_language']),
+            reply_markup=self._build_option_settings_menu(
+                voices,
+                page=page,
+                current_value=current_voice,
+                page_action='tts_voice_page',
+                set_action='tts_voice_set',
+            ),
+        )
+
+    async def _set_tts_voice_setting(self, query, parts: list[str], user_id: int | None, bot_language: str) -> None:
+        if user_id is None:
+            await query.answer()
+            return
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        voices = await self.openai.get_available_tts_voices(self.openai.get_user_tts_model(user_id))
+        if index is None or index >= len(voices):
+            await query.answer()
+            await self._show_tts_voice_settings(query, page, user_id)
+            return
+        settings = self._settings_for_user(user_id)
+        settings[USER_TTS_VOICE_SETTING] = voices[index]
+        self.db.save_user_settings(user_id, settings)
+        await query.answer(localized_text('settings_tts_voice_saved', self.config['bot_language']))
+        await query.edit_message_text(
+            text=self._settings_text(bot_language, user_id),
+            reply_markup=self._build_settings_menu(bot_language, user_id),
+        )
+
+    def _available_plugin_names(self) -> list[str]:
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        plugins = getattr(plugin_manager, 'plugins', {}) or {}
+        return sorted(str(name) for name in plugins.keys())
+
+    def _disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
+        settings = self._settings_for_user(user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+
+    def _is_plugin_disabled_for_user(self, plugin_name: str | None, user_id: int | None) -> bool:
+        return bool(plugin_name and plugin_name in self._disabled_plugins_for_user(user_id))
+
+    def _available_skill_names(self) -> list[str]:
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        has_plugin = getattr(plugin_manager, 'has_plugin', None)
+        get_plugin = getattr(plugin_manager, 'get_plugin', None)
+        skills_plugin = (
+            get_plugin('skills')
+            if callable(has_plugin) and callable(get_plugin) and has_plugin('skills')
+            else None
+        )
+        available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
+        return sorted(str(name) for name in available_skills.keys())
+
+    def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
+        settings = self._settings_for_user(user_id)
+        plugins = self._available_plugin_names()
+        if not plugins:
+            return self._build_back_settings_menu()
+        return self._build_toggle_settings_menu(
+            plugins,
+            page=page,
+            disabled_values=normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)),
+            page_action='plugin_page',
+            toggle_action='plugin_toggle',
+        )
+
+    def _build_skill_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
+        settings = self._settings_for_user(user_id)
+        skills = self._available_skill_names()
+        if not skills:
+            return self._build_back_settings_menu()
+        return self._build_toggle_settings_menu(
+            skills,
+            page=page,
+            disabled_values=normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)),
+            page_action='skill_page',
+            toggle_action='skill_toggle',
+        )
+
+    async def _toggle_plugin_setting(self, query, parts: list[str], user_id: int | None) -> None:
+        if user_id is None:
+            await query.answer()
+            return
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        plugins = self._available_plugin_names()
+        if index is None or index >= len(plugins):
+            await query.answer()
+            return
+        settings = self._settings_for_user(user_id)
+        disabled = plugins[index] not in set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+        set_disabled_value(settings, USER_DISABLED_PLUGINS_SETTING, plugins[index], disabled)
+        self.db.save_user_settings(user_id, settings)
+        await query.answer(localized_text(
+            'settings_plugin_disabled' if disabled else 'settings_plugin_enabled',
+            self.config['bot_language'],
+        ).format(plugin=plugins[index]))
+        await query.edit_message_text(
+            text=localized_text('settings_plugins_choose', self.config['bot_language']),
+            reply_markup=self._build_plugin_settings_menu(page, user_id),
+        )
+
+    async def _toggle_skill_setting(self, query, parts: list[str], user_id: int | None) -> None:
+        if user_id is None:
+            await query.answer()
+            return
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        skills = self._available_skill_names()
+        if index is None or index >= len(skills):
+            await query.answer()
+            return
+        settings = self._settings_for_user(user_id)
+        disabled = skills[index] not in set(normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)))
+        set_disabled_value(settings, USER_DISABLED_SKILLS_SETTING, skills[index], disabled)
+        self.db.save_user_settings(user_id, settings)
+        await query.answer(localized_text(
+            'settings_skill_disabled' if disabled else 'settings_skill_enabled',
+            self.config['bot_language'],
+        ).format(skill=skills[index]))
+        await query.edit_message_text(
+            text=localized_text('settings_skills_choose', self.config['bot_language']),
+            reply_markup=self._build_skill_settings_menu(page, user_id),
+        )
+
+    def _build_back_settings_menu(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                localized_text('settings_back', self.config['bot_language']),
+                callback_data='settings:root',
+            )
+        ]])
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error: bool = False):
         """
@@ -1257,7 +1862,9 @@ class ChatGPTTelegramBot:
 
         async def _generate():
             try:
-                speech_file, text_length = await self.openai.generate_speech(text=tts_query)
+                user_id = update.message.from_user.id
+                tts_model = self.openai.get_user_tts_model(user_id)
+                speech_file, text_length = await self.openai.generate_speech(text=tts_query, user_id=user_id)
 
                 audio_format = self.openai.config.get('tts_response_format', 'wav')
                 reply_args = {
@@ -1276,11 +1883,10 @@ class ChatGPTTelegramBot:
                     )
                 speech_file.close()
                 # add image request to users usage tracker
-                user_id = update.message.from_user.id
-                self.usage[user_id].add_tts_request(text_length, self.config['tts_model'], self.config['tts_prices'])
+                self.usage[user_id].add_tts_request(text_length, tts_model, self.config['tts_prices'])
                 # add guest chat request to guest usage tracker
                 if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
-                    self.usage["guests"].add_tts_request(text_length, self.config['tts_model'],
+                    self.usage["guests"].add_tts_request(text_length, tts_model,
                                                          self.config['tts_prices'])
 
             except Exception as e:
@@ -2024,7 +2630,7 @@ class ChatGPTTelegramBot:
                     busy_status = BusyStatusMessage(
                         update,
                         context,
-                        "Готовлю ответ...",
+                        localized_text("busy_status_preparing", self.config['bot_language']),
                         config=self.config,
                         plan_provider=plan_provider,
                         interval=plan_interval,
@@ -2337,6 +2943,7 @@ class ChatGPTTelegramBot:
         """
         Sends the disallowed message to the user.
         """
+        disallowed_message = localized_text('disallowed', self.config['bot_language'])
         if not is_inline:
             #chat_id = update.effective_chat.id
             #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
@@ -2344,17 +2951,18 @@ class ChatGPTTelegramBot:
             if message:
                 await message.reply_text(
                     message_thread_id=get_thread_id(update),
-                    text=self.disallowed_message,
+                    text=disallowed_message,
                     disable_web_page_preview=True
                 )
         else:
             result_id = str(uuid4())
-            await self.send_inline_query_result(update, result_id, message_content=self.disallowed_message)
+            await self.send_inline_query_result(update, result_id, message_content=disallowed_message)
 
     async def send_budget_reached_message(self, update: Update, _: ContextTypes.DEFAULT_TYPE, is_inline=False):
         """
         Sends the budget reached message to the user.
         """
+        budget_limit_message = localized_text('budget_limit', self.config['bot_language'])
         if not is_inline:
             #chat_id = update.effective_chat.id
             #chat_context, parse_mode, temperature = self.db.get_conversation_context(chat_id) or {}
@@ -2362,11 +2970,11 @@ class ChatGPTTelegramBot:
             if message:
                 await message.reply_text(
                     message_thread_id=get_thread_id(update),
-                    text=self.budget_limit_message,
+                    text=budget_limit_message,
                 )
         else:
             result_id = str(uuid4())
-            await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
+            await self.send_inline_query_result(update, result_id, message_content=budget_limit_message)
 
     def _register_plugin_message_handlers(
         self,
@@ -2525,6 +3133,7 @@ class ChatGPTTelegramBot:
         # Регистрируем стандартные обработчики callback_query
         application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
         application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
+        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^settings"))
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
         application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
         application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
@@ -2549,6 +3158,16 @@ class ChatGPTTelegramBot:
                     text=localized_text('access_denied_command', self.config['bot_language'])
                 )
             return
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        plugin_name = cmd.get('plugin_name')
+        if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            if query:
+                await query.edit_message_text(
+                    text=localized_text('settings_plugin_disabled', self.config['bot_language']).format(
+                        plugin=plugin_name
+                    )
+                )
+            return
         return await cmd['callback_query_handler'](update, context)
 
     async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
@@ -2561,10 +3180,21 @@ class ChatGPTTelegramBot:
                 await self.send_disallowed_message(update, context)
                 return
 
+            user_id = getattr(getattr(update_for_handler, 'effective_user', None), 'id', None)
+            plugin_name = cmd.get('plugin_name')
+            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+                if message:
+                    await message.reply_text(
+                        localized_text('settings_plugin_disabled', self.config['bot_language']).format(
+                            plugin=plugin_name
+                        )
+                    )
+                return
+
             # Получаем существующий инстанс плагина
-            plugin_instance = self.openai.plugin_manager.get_plugin(cmd.get('plugin_name'))
+            plugin_instance = self.openai.plugin_manager.get_plugin(plugin_name)
             if not plugin_instance:
-                raise ValueError(f"Plugin {cmd.get('plugin_name')} not found")
+                raise ValueError(f"Plugin {plugin_name} not found")
 
             handler = getattr(plugin_instance, cmd.get('handler').__name__)
             if not handler:
@@ -2675,10 +3305,13 @@ class ChatGPTTelegramBot:
             return
 
         bot_language = self.config['bot_language']
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        disabled_plugins = self._disabled_plugins_for_user(user_id)
         plugin_commands = self.openai.plugin_manager.build_bot_commands()["plugin_commands"]
         menu_entries = [
             cmd for cmd in plugin_commands
             if cmd.get("add_to_menu") and cmd.get("command") and cmd.get("description")
+            and cmd.get("plugin_name") not in disabled_plugins
         ]
         self.plugin_menu_entries = menu_entries
         if not self.plugin_menu_entries:
@@ -2743,6 +3376,12 @@ class ChatGPTTelegramBot:
                     localized_text('plugins_menu_command_unavailable', bot_language)
                 )
                 return
+            user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+                await query.edit_message_text(
+                    localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
+                )
+                return
             prompt_message = await query.message.reply_text(
                 localized_text('plugins_menu_enter_params_prompt', bot_language).format(
                     command=cmd.get('command') or cmd.get('name') or '',
@@ -2765,6 +3404,12 @@ class ChatGPTTelegramBot:
         if not cmd:
             await query.edit_message_text(
                 localized_text('plugins_menu_command_unavailable', bot_language)
+            )
+            return
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            await query.edit_message_text(
+                localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
             )
             return
 
@@ -3351,9 +3996,11 @@ class ChatGPTTelegramBot:
             self._plugin_message_handlers_registered = False
             self._message_tail_handlers_registered = False
 
+            application.add_handler(TypeHandler(Update, self.prepare_user_language), group=-100)
             application.add_handler(CommandHandler('restart', self.restart))
             application.add_handler(CommandHandler('reset', self.reset))
             application.add_handler(CommandHandler('help', self.help))
+            application.add_handler(CommandHandler('settings', self.settings))
             application.add_handler(CommandHandler('image', self.image))
             application.add_handler(CommandHandler('tts', self.tts))
             application.add_handler(CommandHandler('start', self.help))

@@ -177,11 +177,13 @@ class BusyStatusMessage:
     def _text(self) -> str:
         elapsed_seconds = max(0, int(time.monotonic() - self._started_at))
         minutes, seconds = divmod(elapsed_seconds, 60)
-        header = f"{self.description}\nВремя ожидания: {minutes:02d}:{seconds:02d}"
+        bot_language = (self.config or {}).get("bot_language", "en")
+        elapsed_label = localized_text("busy_status_elapsed", bot_language)
+        header = f"{self.description}\n{elapsed_label}: {minutes:02d}:{seconds:02d}"
         plan_lines = self._plan_lines()
         if not plan_lines:
             return header
-        return header + "\n\n📋 План:\n" + "\n".join(plan_lines)
+        return header + f"\n\n📋 {localized_text('busy_status_plan', bot_language)}:\n" + "\n".join(plan_lines)
 
     def _plan_lines(self) -> list[str]:
         provider = self.plan_provider
@@ -775,7 +777,10 @@ async def handle_direct_result(config, update: Update, response: any):
         sent_messages.append(await message.reply_text(
             message_thread_id=get_thread_id(update),
             reply_to_message_id=get_reply_to_message_id(config, update),
-            text=f"Reaction: {value}",
+            text=localized_text(
+                "direct_result_reaction",
+                config.get("bot_language", "en")
+            ).format(value=value),
             parse_mode=None
         ))
         return sent_messages

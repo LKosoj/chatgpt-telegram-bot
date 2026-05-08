@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 import yaml
 
 from ..utils import compute_scope_key
+from ..user_settings import USER_DISABLED_SKILLS_SETTING, get_user_settings, normalize_string_list
 from .plugin import Plugin
 
 
@@ -329,10 +330,19 @@ class SkillsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         self._ensure_ready()
         kwargs.pop("request_context", None)
+        user_id = kwargs.get("user_id")
+        disabled_skills = self._disabled_skills_for_user(helper, user_id)
         if function_name == "list_skills":
-            return self._list_skills(refresh=self._bool_arg(kwargs.get("refresh"), default=True))
+            return self._list_skills(
+                refresh=self._bool_arg(kwargs.get("refresh"), default=True),
+                disabled_skills=disabled_skills,
+            )
         if function_name == "get_skill":
-            return self._get_skill(str(kwargs.get("skill_name") or ""))
+            skill_name = str(kwargs.get("skill_name") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
+            return self._get_skill(skill_name)
         if function_name == "find_installable_skills":
             return await self._find_installable_skills(str(kwargs.get("query") or ""))
         if function_name == "install_skill":
@@ -349,6 +359,9 @@ class SkillsPlugin(Plugin):
         if function_name == "activate_skill":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
             initial_context = call_kwargs.pop("initial_context", None)
             return self._activate_skill(
                 skill_name,
@@ -358,12 +371,18 @@ class SkillsPlugin(Plugin):
         if function_name == "get_skill_status":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
-            return self._get_skill_status(skill_name, **call_kwargs)
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills) if skill_name else None
+            if disabled_error:
+                return disabled_error
+            return self._get_skill_status(skill_name, disabled_skills=disabled_skills, **call_kwargs)
         if function_name == "list_active_skills":
-            return self._list_active_skills(**kwargs)
+            return self._list_active_skills(disabled_skills=disabled_skills, **kwargs)
         if function_name == "update_skill_progress":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
             step = int(call_kwargs.pop("step", 0) or 0)
             context_update = call_kwargs.pop("context_update", None)
             return self._update_skill_progress(
@@ -375,10 +394,16 @@ class SkillsPlugin(Plugin):
         if function_name == "deactivate_skill":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
             return self._deactivate_skill(skill_name, **call_kwargs)
         if function_name == "run_skill_script":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
             script_name = str(call_kwargs.pop("script_name", "") or "")
             args_json = call_kwargs.pop("args_json", None)
             return await self._run_skill_script(
@@ -409,6 +434,21 @@ class SkillsPlugin(Plugin):
                 bot=getattr(self, "bot", None),
                 storage_root=getattr(self, "storage_root", None),
             )
+
+    def _disabled_skills_for_user(self, helper, user_id: int | None) -> set[str]:
+        if user_id is None or helper is None or not getattr(helper, "db", None):
+            return set()
+        settings = get_user_settings(helper.db, user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)))
+
+    def _disabled_skill_error(self, skill_name: str, disabled_skills: set[str]) -> Dict[str, Any] | None:
+        skill_id = self._resolve_skill_id(skill_name)
+        if skill_id and skill_id in disabled_skills:
+            return {
+                "success": False,
+                "error": f"Skill '{skill_id}' is disabled in your user settings.",
+            }
+        return None
 
     def _scan_skills(self) -> Dict[str, Dict[str, Any]]:
         self._ensure_paths()
@@ -622,9 +662,10 @@ class SkillsPlugin(Plugin):
             return True
         return os.access(path, os.X_OK)
 
-    def _list_skills(self, *, refresh: bool = False) -> Dict[str, Any]:
+    def _list_skills(self, *, refresh: bool = False, disabled_skills: set[str] | None = None) -> Dict[str, Any]:
         if refresh:
             self.available_skills = self._scan_skills()
+        disabled_skills = disabled_skills or set()
         return {
             "success": True,
             "skills": [
@@ -636,6 +677,7 @@ class SkillsPlugin(Plugin):
                     "allow_scripts": self._skill_scripts_allowed(info),
                 }
                 for skill_id, info in self.available_skills.items()
+                if skill_id not in disabled_skills
             ],
             "scripts_enabled": self.allow_scripts,
             "scripts_admin_restricted": not self.script_admin_all,
@@ -960,9 +1002,16 @@ class SkillsPlugin(Plugin):
             for script_name in info["scripts"]
         ]
 
-    def _active_script_tool_calls(self, scope_state: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _active_script_tool_calls(
+        self,
+        scope_state: Dict[str, Dict[str, Any]],
+        disabled_skills: set[str] | None = None,
+    ) -> List[Dict[str, Any]]:
+        disabled_skills = disabled_skills or set()
         calls: List[Dict[str, Any]] = []
         for skill_id in sorted(scope_state):
+            if skill_id in disabled_skills:
+                continue
             calls.extend(self._script_tool_calls(skill_id))
         return calls
 
@@ -1038,12 +1087,15 @@ class SkillsPlugin(Plugin):
             "scope": scope,
         }
 
-    def _list_active_skills(self, **kwargs) -> Dict[str, Any]:
+    def _list_active_skills(self, disabled_skills: set[str] | None = None, **kwargs) -> Dict[str, Any]:
+        disabled_skills = disabled_skills or set()
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             entries = []
             for skill_id, state in scope_state.items():
+                if skill_id in disabled_skills:
+                    continue
                 info = self.available_skills.get(skill_id, {})
                 entries.append({
                     "id": skill_id,
@@ -1059,16 +1111,22 @@ class SkillsPlugin(Plugin):
             "count": len(entries),
         }
 
-    def _get_skill_status(self, skill_name: str = "", **kwargs) -> Dict[str, Any]:
+    def _get_skill_status(self, skill_name: str = "", disabled_skills: set[str] | None = None, **kwargs) -> Dict[str, Any]:
+        disabled_skills = disabled_skills or set()
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             if not skill_name:
+                visible_scope_state = {
+                    skill_id: state
+                    for skill_id, state in scope_state.items()
+                    if skill_id not in disabled_skills
+                }
                 return {
                     "success": True,
                     "scope": scope,
-                    "active_skills": scope_state,
-                    "active_script_tool_calls": self._active_script_tool_calls(scope_state),
+                    "active_skills": visible_scope_state,
+                    "active_script_tool_calls": self._active_script_tool_calls(scope_state, disabled_skills),
                 }
 
             skill_id = self._resolve_skill_id(skill_name)

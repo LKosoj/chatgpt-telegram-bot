@@ -481,7 +481,7 @@ class AgentToolsPlugin(Plugin):
             try:
                 await bot.send_message(
                     chat_id=int(chat_id),
-                    text="ℹ️ Бот был перезапущен — предыдущий вопрос больше не активен.",
+                    text=self.t("agent_tools_orphaned_question_inactive"),
                     reply_to_message_id=int(message_id),
                 )
             except Exception:
@@ -1298,24 +1298,24 @@ class AgentToolsPlugin(Plugin):
     async def _ask_telegram_user(self, helper, **kwargs) -> Dict:
         question = str(kwargs.get("question") or "").strip()
         if not question:
-            return {"success": False, "error": "Question is required"}
+            return {"success": False, "error": self.t("agent_tools_question_required")}
 
         chat_id = kwargs.get("chat_id")
         if chat_id is None:
-            return {"success": False, "error": "chat_id is required for Telegram interaction"}
+            return {"success": False, "error": self.t("agent_tools_chat_id_required_for_telegram")}
         chat_id = int(chat_id)
 
         bot = getattr(helper, "bot", None) or getattr(getattr(self, "openai", None), "bot", None)
         if not bot:
-            return {"success": False, "error": "Telegram bot is not configured"}
+            return {"success": False, "error": self.t("agent_tools_bot_not_configured")}
 
         self._clear_done_question_for_chat(chat_id)
         if chat_id in self.pending_by_chat:
-            return {"success": False, "error": "A Telegram question is already waiting for this chat"}
+            return {"success": False, "error": self.t("agent_tools_question_already_waiting")}
 
         options = self._normalize_options(kwargs.get("options") or [])
         if not options:
-            return {"success": False, "error": "options are required for ask_telegram_user"}
+            return {"success": False, "error": self.t("agent_tools_options_required")}
         multi_select = bool(kwargs.get("multi_select", False))
         allow_free_text = bool(kwargs.get("allow_free_text", True))
         if multi_select:
@@ -1366,7 +1366,7 @@ class AgentToolsPlugin(Plugin):
                 try:
                     await bot.send_message(
                         chat_id=chat_id,
-                        text="⏱ Время ответа истекло, вопрос закрыт.",
+                        text=self.t("agent_tools_question_timeout_notice"),
                         reply_to_message_id=message_id,
                     )
                 except Exception:
@@ -1374,7 +1374,7 @@ class AgentToolsPlugin(Plugin):
                         "Failed to send ask_telegram_user timeout notification",
                         exc_info=True,
                     )
-            return {"success": False, "error": "Timed out waiting for Telegram user answer"}
+            return {"success": False, "error": self.t("agent_tools_question_timeout_error")}
         finally:
             self._drop_question(question_id)
 
@@ -1458,7 +1458,7 @@ class AgentToolsPlugin(Plugin):
         if not answer:
             return
         if self._resolve_question(question_id, answer):
-            await message.reply_text("Answer received.")
+            await message.reply_text(self.t("agent_tools_answer_received"))
 
     async def handle_ask_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
@@ -1472,14 +1472,14 @@ class AgentToolsPlugin(Plugin):
         _, question_id, answer_key = parts
         pending = self.pending_questions.get(question_id)
         if not pending:
-            await query.answer("Question expired.", show_alert=True)
+            await query.answer(self.t("agent_tools_question_expired"), show_alert=True)
             return
         user = getattr(query, "from_user", None)
         if not self._answerer_allowed(pending, getattr(user, "id", None)):
-            await query.answer("This question is waiting for another user.", show_alert=True)
+            await query.answer(self.t("agent_tools_wrong_user"), show_alert=True)
             return
         if answer_key == "text":
-            await query.answer("Send your answer as a message.")
+            await query.answer(self.t("agent_tools_send_answer_as_message"))
             return
 
         options = pending.get("options") or []
@@ -1488,14 +1488,14 @@ class AgentToolsPlugin(Plugin):
         if multi_select and answer_key == "confirm":
             selected = pending.get("selected_indices") or set()
             if not selected:
-                await query.answer("Select at least one option.", show_alert=True)
+                await query.answer(self.t("agent_tools_select_at_least_one"), show_alert=True)
                 return
             chosen = [str(options[i]) for i in sorted(selected) if 0 <= i < len(options)]
             answer = ", ".join(chosen)
             if not self._resolve_question(question_id, answer):
-                await query.answer("Question expired.", show_alert=True)
+                await query.answer(self.t("agent_tools_question_expired"), show_alert=True)
                 return
-            await query.answer("Answer received.")
+            await query.answer(self.t("agent_tools_answer_received"))
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
             except Exception:
@@ -1507,7 +1507,7 @@ class AgentToolsPlugin(Plugin):
             if not 0 <= index < len(options):
                 raise IndexError
         except (ValueError, IndexError):
-            await query.answer("Invalid answer.", show_alert=True)
+            await query.answer(self.t("agent_tools_invalid_answer"), show_alert=True)
             return
 
         if multi_select:
@@ -1533,9 +1533,9 @@ class AgentToolsPlugin(Plugin):
 
         answer = str(options[index])
         if not self._resolve_question(question_id, answer):
-            await query.answer("Question expired.", show_alert=True)
+            await query.answer(self.t("agent_tools_question_expired"), show_alert=True)
             return
-        await query.answer("Answer received.")
+        await query.answer(self.t("agent_tools_answer_received"))
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1544,15 +1544,15 @@ class AgentToolsPlugin(Plugin):
     async def _cancel_pending_question(self, helper, **kwargs) -> Dict:
         chat_id = kwargs.get("chat_id")
         if chat_id is None:
-            return {"success": False, "error": "chat_id is required"}
+            return {"success": False, "error": self.t("agent_tools_chat_id_required")}
         try:
             chat_id_int = int(chat_id)
         except (TypeError, ValueError):
-            return {"success": False, "error": "Invalid chat_id"}
+            return {"success": False, "error": self.t("agent_tools_invalid_chat_id")}
 
         question_id = self.pending_by_chat.get(chat_id_int)
         if not question_id:
-            return {"success": False, "error": "No pending question for this chat"}
+            return {"success": False, "error": self.t("agent_tools_no_pending_question")}
         pending = self.pending_questions.get(question_id) or {}
         future = pending.get("future")
         if future and not future.done():
@@ -1566,7 +1566,7 @@ class AgentToolsPlugin(Plugin):
                 try:
                     await bot.send_message(
                         chat_id=chat_id_int,
-                        text=f"❌ Вопрос отменён: {reason}",
+                        text=self.t("agent_tools_question_cancelled", reason=reason),
                         reply_to_message_id=message_id,
                     )
                 except Exception:

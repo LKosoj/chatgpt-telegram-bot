@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,14 @@ def _make_plugin(tmp_path, monkeypatch, *, allow_scripts=False, admin_ids=""):
     plugin = SkillsPlugin()
     plugin.initialize(storage_root=str(storage_dir))
     return plugin
+
+
+class FakeSettingsDB:
+    def __init__(self, settings):
+        self.settings = settings
+
+    def get_user_settings(self, user_id):
+        return self.settings.get(user_id)
 
 
 def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
@@ -189,6 +198,22 @@ async def test_list_skills_refreshes_by_default(tmp_path, monkeypatch):
     listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
 
     assert {skill["id"] for skill in listed["skills"]} == {"demo", "later"}
+
+
+@pytest.mark.asyncio
+async def test_user_disabled_skills_are_hidden_and_rejected(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    helper = SimpleNamespace(db=FakeSettingsDB({42: {"disabled_skills": ["demo"]}}))
+
+    listed = await plugin.execute("list_skills", helper=helper, chat_id=10, user_id=42)
+    details = await plugin.execute("get_skill", helper=helper, skill_name="demo", chat_id=10, user_id=42)
+    activated = await plugin.execute("activate_skill", helper=helper, skill_name="demo", chat_id=10, user_id=42)
+
+    assert listed["skills"] == []
+    assert details["success"] is False
+    assert "disabled" in details["error"]
+    assert activated["success"] is False
+    assert "disabled" in activated["error"]
 
 
 @pytest.mark.asyncio

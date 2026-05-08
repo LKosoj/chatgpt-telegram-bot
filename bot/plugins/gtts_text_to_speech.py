@@ -34,7 +34,10 @@ class GTTSTextToSpeech(Plugin):
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
         try:
-            speech_file, _text_length = await helper.generate_speech(text=kwargs['text'])
+            speech_file, _text_length = await helper.generate_speech(
+                text=kwargs['text'],
+                user_id=kwargs.get('user_id'),
+            )
             suffix = "." + helper.config.get('tts_response_format', 'wav')
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 temp_file.write(speech_file.getvalue())
