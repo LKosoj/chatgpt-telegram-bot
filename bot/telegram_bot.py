@@ -197,11 +197,59 @@ class ChatGPTTelegramBot:
             except Exception:
                 logger.warning("Failed to store sent image file_id for user %s chat %s", user.id, chat.id, exc_info=True)
 
+    def _build_plan_status_provider(self, chat_id, user_id):
+        """
+        Return (plan_provider, interval) for BusyStatusMessage. The provider yields
+        the agent's current plan_tasks for this scope so the live status message
+        can render step progress; falls back to (None, default_interval) when the
+        agent_tools plugin is unavailable.
+        """
+        plugin_manager = getattr(self.openai, "plugin_manager", None)
+        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
+        if not callable(get_plugin):
+            return None, 30.0
+        try:
+            agent_tools_plugin = get_plugin("agent_tools")
+        except Exception:
+            return None, 30.0
+        get_plan_tasks = getattr(agent_tools_plugin, "get_plan_tasks", None) if agent_tools_plugin else None
+        if not callable(get_plan_tasks):
+            return None, 30.0
+
+        def _provider():
+            try:
+                return get_plan_tasks(chat_id=chat_id, user_id=user_id)
+            except Exception:
+                return []
+
+        return _provider, 5.0
+
     async def _handle_direct_result(self, update: Update, response):
-        sent_messages = await handle_direct_result(self.config, update, response)
-        self._remember_sent_image_messages(update, sent_messages)
-        if sent_messages:
-            await self._run_post_delivery_cleanup(response)
+        sent_messages = []
+        delivery_error: Exception | None = None
+        try:
+            sent_messages = await handle_direct_result(self.config, update, response)
+            self._remember_sent_image_messages(update, sent_messages)
+        except Exception as exc:
+            delivery_error = exc
+            logger.exception("Failed to deliver direct_result to chat")
+            try:
+                effective_message = update.effective_message
+                if effective_message is not None:
+                    await effective_message.reply_text(
+                        f"Не удалось доставить ответ агента: {exc}"
+                    )
+            except Exception:
+                logger.exception("Failed to notify user about delivery error")
+        finally:
+            try:
+                await self._run_post_delivery_cleanup(response)
+            except Exception:
+                logger.exception("Post-delivery cleanup raised unexpectedly")
+        if delivery_error is not None:
+            return
+        if not sent_messages:
+            logger.warning("handle_direct_result returned no messages; nothing was delivered to user")
 
     async def _run_post_delivery_cleanup(self, response):
         try:
@@ -1948,11 +1996,14 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
+                    plan_provider, plan_interval = self._build_plan_status_provider(chat_id, user_id)
                     busy_status = BusyStatusMessage(
                         update,
                         context,
                         "Готовлю ответ...",
                         config=self.config,
+                        plan_provider=plan_provider,
+                        interval=plan_interval,
                     )
                     await busy_status.start()
                     try:

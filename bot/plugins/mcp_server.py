@@ -42,11 +42,10 @@ class MCPServerPlugin(Plugin):
 
     def _get_config_path(self) -> Path:
         """Получает путь к файлу конфигурации MCP серверов"""
-        # Используем директорию бота для хранения конфигурации
-        bot_dir = Path(__file__).parent.parent
-        config_dir = bot_dir / "config"
-        os.makedirs(config_dir, exist_ok=True)
-        return config_dir / "mcp_servers.json"
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        data_dir = repo_root / "data"
+        os.makedirs(data_dir, exist_ok=True)
+        return data_dir / "mcp_servers.json"
 
     def _get_admin_ids(self) -> List[int]:
         """Получает список ID администраторов из переменной окружения"""

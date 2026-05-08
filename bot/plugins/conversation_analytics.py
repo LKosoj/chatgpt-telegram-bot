@@ -37,7 +37,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 "type": "object",
                 "properties": {
                     "chat_id": {
-                        "type": "string",
+                        "type": "integer",
                         "description": "ID of chat to analyze"
                     },
                     "time_period": {
@@ -61,7 +61,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 "type": "object",
                 "properties": {
                     "chat_id": {
-                        "type": "string",
+                        "type": "integer",
                         "description": "ID of chat to analyze"
                     },
                     "recommendation_type": {
@@ -132,8 +132,9 @@ class ConversationAnalyticsPlugin(Plugin):
         except Exception as e:
             logging.error(f"Failed to save conversation stats: {e}")
 
-    def update_stats(self, chat_id: str, message_data: Dict):
+    def update_stats(self, chat_id, message_data: Dict):
         """Update conversation statistics with new message data"""
+        chat_id = str(chat_id)
         # Initialize stats for new chat_id if it doesn't exist
         if chat_id not in self.conversation_stats:
             self.conversation_stats[chat_id] = {
@@ -170,7 +171,7 @@ class ConversationAnalyticsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """Execute plugin functions"""
         if function_name == "get_personalized_recommendations":
-            chat_id = kwargs['chat_id']
+            chat_id = str(kwargs['chat_id'])
             recommendation_type = kwargs['recommendation_type']
             count = kwargs.get('count', 3)
 
@@ -270,7 +271,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 "recommendation_type": recommendation_type
             }
         elif function_name == "analyze_conversation":
-            chat_id = kwargs['chat_id']
+            chat_id = str(kwargs['chat_id'])
             time_period = kwargs['time_period']
             analysis_type = kwargs.get('analysis_type', 'all')
 

@@ -160,8 +160,8 @@ async def test_tool_injected_chat_id_is_plugin_string():
 
     function_name, arguments, call_context = plugin_manager.calls[0]
     assert function_name == "text_document_qa.list_documents"
-    assert arguments["chat_id"] == "1234"
-    assert isinstance(arguments["chat_id"], str)
+    assert arguments["chat_id"] == 1234
+    assert isinstance(arguments["chat_id"], int)
     assert arguments["user_id"] == 42
     assert arguments["message_id"] == 99
     assert call_context is request_context
@@ -181,15 +181,15 @@ async def test_legacy_tool_injected_chat_id_is_plugin_string():
     )
 
     _function_name, arguments, _call_context = plugin_manager.calls[0]
-    assert arguments["chat_id"] == "1234"
-    assert isinstance(arguments["chat_id"], str)
+    assert arguments["chat_id"] == 1234
+    assert isinstance(arguments["chat_id"], int)
 
 
 @pytest.mark.asyncio
 async def test_conversation_analytics_tool_call_uses_string_chat_id(tmp_path):
     plugin = ConversationAnalyticsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    plugin.update_stats("1234", {"text": "hello", "tokens": 3, "user_id": 42})
+    plugin.update_stats(1234, {"text": "hello", "tokens": 3, "user_id": 42})
     plugin_manager = ValidatingAnalyticsPluginManager(plugin)
     helper = FakeHelper(plugin_manager)
 
@@ -206,7 +206,7 @@ async def test_conversation_analytics_tool_call_uses_string_chat_id(tmp_path):
     )
 
     assert isinstance(response, FakeResponse)
-    assert plugin_manager.calls[0]["chat_id"] == "1234"
+    assert plugin_manager.calls[0]["chat_id"] == 1234
     assert plugin_manager.plugin_calls == 1
     assert not any("Invalid args" in item[2] for item in helper.history)
 

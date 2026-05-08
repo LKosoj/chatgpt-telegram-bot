@@ -63,9 +63,19 @@ def get_thread_id(update: Update) -> int | None:
         return update.effective_message.message_thread_id
     return None
 
+_PLAN_STATUS_ICONS = {
+    "pending": "⏳",
+    "in_progress": "🔄",
+    "completed": "✅",
+    "cancelled": "⛔",
+}
+
+
 class BusyStatusMessage:
     """
     Maintains a temporary progress message for long-running chat responses.
+    If a plan_provider is supplied, the message also lists current plan steps
+    with their statuses so the user can see real-time agent progress.
     """
 
     def __init__(
@@ -76,16 +86,19 @@ class BusyStatusMessage:
         *,
         config: dict | None = None,
         interval: float = 30.0,
+        plan_provider=None,
     ):
         self.update = update
         self.context = context
         self.description = description
         self.config = config
         self.interval = interval
+        self.plan_provider = plan_provider
         self.message = None
         self._started_at = time.monotonic()
         self._task = None
         self._stopped = False
+        self._last_text: str | None = None
 
     async def start(self):
         if self._task is not None:
@@ -119,7 +132,6 @@ class BusyStatusMessage:
 
     async def _run(self):
         try:
-            await asyncio.sleep(self.interval)
             while not self._stopped:
                 if self.message is None:
                     if not await self._send():
@@ -148,10 +160,15 @@ class BusyStatusMessage:
             return False
 
     async def _edit(self):
+        text = self._text()
+        if text == self._last_text:
+            return
         try:
-            await self.message.edit_text(text=self._text())
+            await self.message.edit_text(text=text)
+            self._last_text = text
         except telegram.error.BadRequest as e:
             if str(e).startswith("Message is not modified"):
+                self._last_text = text
                 return
             logging.warning(f"Failed to edit busy status message: {e}")
         except Exception as e:
@@ -160,7 +177,34 @@ class BusyStatusMessage:
     def _text(self) -> str:
         elapsed_seconds = max(0, int(time.monotonic() - self._started_at))
         minutes, seconds = divmod(elapsed_seconds, 60)
-        return f"{self.description}\nВремя ожидания: {minutes:02d}:{seconds:02d}"
+        header = f"{self.description}\nВремя ожидания: {minutes:02d}:{seconds:02d}"
+        plan_lines = self._plan_lines()
+        if not plan_lines:
+            return header
+        return header + "\n\n📋 План:\n" + "\n".join(plan_lines)
+
+    def _plan_lines(self) -> list[str]:
+        provider = self.plan_provider
+        if not callable(provider):
+            return []
+        try:
+            tasks = provider() or []
+        except Exception:
+            logging.debug("plan_provider raised", exc_info=True)
+            return []
+        lines: list[str] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            status = str(task.get("status") or "pending")
+            icon = _PLAN_STATUS_ICONS.get(status, "•")
+            content = str(task.get("content") or "").strip()
+            if not content:
+                continue
+            task_id = str(task.get("id") or "").strip()
+            prefix = f"{icon} {task_id}. " if task_id else f"{icon} "
+            lines.append(prefix + content)
+        return lines
 
 def get_stream_cutoff_values(update: Update, content: str) -> int:
     """
@@ -514,6 +558,29 @@ def get_reply_to_message_id(config, update: Update):
         if message:
             return message.message_id
     return None
+
+def compute_scope_key(chat_id=None, user_id=None) -> str:
+    """
+    Build the canonical plugin-state scope key used by skills, agent_tools, and
+    routing helpers. Prefers chat scope, falls back to user scope, then global.
+    Both ids are coerced to int when possible so that "42" and 42 yield the same key.
+    """
+    def _to_int(value):
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+
+    chat_id = _to_int(chat_id)
+    if chat_id is not None:
+        return f"chat:{chat_id}"
+    user_id = _to_int(user_id)
+    if user_id is not None:
+        return f"user:{user_id}"
+    return "global"
+
 
 def is_direct_result(response: any) -> bool:
     """

@@ -92,6 +92,25 @@ class FakePluginManager:
         self.calls.append((function_name, json.loads(arguments)))
         return json.dumps({"success": True, "skills": ["demo"]}, ensure_ascii=False)
 
+    def get_subagent_function_specs(
+        self,
+        helper,
+        model_to_use,
+        parent_allowed_plugins=None,
+        blocked_function_names=None,
+    ):
+        blocked = set(blocked_function_names or ())
+        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ["All"])
+        filtered = []
+        names = set()
+        for tool in specs or []:
+            name = (tool.get("function") or {}).get("name")
+            if not name or name in blocked:
+                continue
+            filtered.append(tool)
+            names.add(name)
+        return filtered, names
+
 
 class FakeLLMHelper:
     def __init__(self):
@@ -319,7 +338,6 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
         self._skills_plugin = SimpleNamespace(
             active_skills={"chat:10": {"pptx": {}}},
             available_skills={"pptx": {"scripts": ["build.py"]}},
-            _scope_key=lambda kwargs: f"chat:{kwargs.get('chat_id')}",
         )
 
     def get_plugin(self, name: str):

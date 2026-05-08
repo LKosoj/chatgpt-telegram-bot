@@ -46,6 +46,47 @@ def _should_defer_direct_result(response, defer_direct_results: bool) -> bool:
     return True
 
 
+_TEXT_PREVIEW_LIMIT = 600
+
+
+def _compact_deferred_tool_response(response) -> str:
+    """
+    Replace a deferred direct_result payload with a compact summary suitable for
+    LLM history. Keeps file paths and metadata so the model can reference results
+    in subsequent steps, but drops large text bodies and binary blobs that would
+    otherwise pollute context with thousands of tokens.
+    """
+    direct_result = _direct_result_payload(response) or {}
+    compact: dict = {"result": "deferred"}
+    for key in ("kind", "format", "value", "file_path", "url", "mime_type", "caption"):
+        value = direct_result.get(key)
+        if isinstance(value, str) and value:
+            compact[key] = value
+
+    text = direct_result.get("text")
+    if isinstance(text, str) and text:
+        compact["text_chars"] = len(text)
+        if len(text) <= _TEXT_PREVIEW_LIMIT:
+            compact["text"] = text
+        else:
+            compact["text_preview"] = text[:_TEXT_PREVIEW_LIMIT]
+
+    artifacts = direct_result.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        compact["artifacts_count"] = len(artifacts)
+        compact["artifact_paths"] = [
+            str(item.get("value") or item.get("file_path") or "")
+            for item in artifacts
+            if isinstance(item, dict) and (item.get("value") or item.get("file_path"))
+        ]
+
+    cleanup_skills = direct_result.get("cleanup_skills")
+    if isinstance(cleanup_skills, list) and cleanup_skills:
+        compact["cleanup_skills_count"] = len(cleanup_skills)
+
+    return json.dumps(compact, ensure_ascii=False)
+
+
 def _merge_direct_results_into_final(direct_results: list) -> dict:
     text_parts: list[str] = []
     artifacts: list[dict] = []
@@ -105,37 +146,6 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
     if cleanup_directives:
         merged["direct_result"]["cleanup_skills"] = cleanup_directives
     return merged
-
-
-def _extract_legacy_tool_request(content: str | None) -> tuple[str, str] | None:
-    """
-    Backwards-compatible parsing for legacy prompts that ask the model to output JSON like:
-      {"tool_name": "<tool>", ...args }
-
-    Returns (tool_name, arguments_json_str) or None.
-    """
-    if not content or not isinstance(content, str):
-        return None
-    s = content.strip()
-    start = s.find("{")
-    end = s.rfind("}")
-    if start < 0 or end < 0 or end <= start:
-        return None
-    blob = s[start : end + 1]
-    try:
-        obj = json.loads(blob)
-    except Exception:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    tool_name = obj.get("tool_name")
-    if not isinstance(tool_name, str) or not tool_name.strip():
-        return None
-    args = {k: v for k, v in obj.items() if k != "tool_name"}
-    try:
-        return tool_name.strip(), json.dumps(args, ensure_ascii=False)
-    except Exception:
-        return None
 
 
 async def handle_function_call(
@@ -202,13 +212,7 @@ async def handle_function_call(
                             "arguments": tc.function.arguments or "",
                         })
                 else:
-                    legacy = _extract_legacy_tool_request(getattr(first_choice.message, "content", None))
-                    if legacy:
-                        tool_name, arguments = legacy
-                        logger.info("found legacy tool request in assistant content")
-                        tool_calls.append({"id": None, "name": tool_name, "arguments": arguments, "legacy": True})
-                    else:
-                        return response, tools_used
+                    return response, tools_used
             else:
                 return response, tools_used
 
@@ -221,7 +225,7 @@ async def handle_function_call(
         structured_tool_history = (
             uses_structured_tool_history(model_to_use)
             and callable(add_assistant_tool_calls_to_history)
-            and all(call.get("id") and not call.get("legacy") for call in tool_calls)
+            and all(call.get("id") for call in tool_calls)
         )
         if structured_tool_history:
             add_assistant_tool_calls_to_history(chat_id, tool_calls)
@@ -266,8 +270,8 @@ async def handle_function_call(
                     if request_context.message_id is not None:
                         args['message_id'] = request_context.message_id
                 else:
-                    args['chat_id'] = str(chat_id)
-                    args['user_id'] = user_id if user_id is not None else chat_id
+                    args['chat_id'] = int(chat_id) if chat_id is not None else chat_id
+                    args['user_id'] = user_id if user_id is not None else args['chat_id']
                 routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
                 if routing_error:
                     logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)
@@ -307,7 +311,13 @@ async def handle_function_call(
             else:
                 if is_dr:
                     logger.info("Deferring direct result from tool %s to model reentry", tool_name)
-                add_tool_result(tool_name, tool_response, tool_call_id)
+                    add_tool_result(
+                        tool_name,
+                        _compact_deferred_tool_response(tool_response),
+                        tool_call_id,
+                    )
+                else:
+                    add_tool_result(tool_name, tool_response, tool_call_id)
 
         for tool_name, tool_call_id, tool_response in errors:
             if tool_name not in tools_used:

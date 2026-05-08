@@ -131,11 +131,8 @@ class DummyClient:
 
 
 class FakeSkillsPlugin:
-    active_skills = {"scope": {"pptx": {}}}
+    active_skills = {"chat:1": {"pptx": {}}}
     available_skills = {"pptx": {"scripts": ["build.py"]}}
-
-    def _scope_key(self, _kwargs):
-        return "scope"
 
 
 class FakeToolCall:
@@ -710,31 +707,6 @@ async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
 
 
 @pytest.mark.asyncio
-async def test_legacy_tool_request_in_content_is_executed():
-    responses = {
-        "p1.do": {"result": "ok1"},
-    }
-    pm = DummyPluginManager(responses)
-    helper = _make_helper(pm)
-    response = FakeResponse(
-        tool_calls=None,
-        content='```json\n{"tool_name":"p1.do","x":1}\n```',
-    )
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert helper.client.calls == 1
-    assert set(tools_used) == {"p1.do"}
-    assert pm.calls and pm.calls[0][0] == "p1.do"
-    sent_args = json.loads(pm.calls[0][1])
-    assert sent_args["x"] == 1
-    assert sent_args["chat_id"] == "1"
-    assert sent_args["user_id"] == 1
-
-
-@pytest.mark.asyncio
 async def test_allowed_tool_reentry_uses_original_allowlist():
     responses = {
         "weather.get_weather": {"result": "sunny"},
@@ -807,7 +779,7 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
     assert set(tools_used) == {"p1.do"}
     assert out["direct_result"]["value"] == "ok"
     sent_args = json.loads(pm.calls[0][1])
-    assert sent_args["chat_id"] == "77"
+    assert sent_args["chat_id"] == 77
     assert sent_args["user_id"] == 42
     assert sent_args["message_id"] == 123
 
@@ -910,30 +882,6 @@ async def test_mode_restrictions_survive_tool_reentry():
     assert any(
         "task_management.create_task" in (message.get("content") or "")
         and "not allowed in the current chat mode" in (message.get("content") or "")
-        for message in helper.conversations[1]
-    )
-
-
-@pytest.mark.asyncio
-async def test_legacy_tool_request_outside_allowlist_is_rejected():
-    pm = DummyPluginManager({
-        "task_management.create_task": {"result": "created"},
-    })
-    helper = _make_helper(pm)
-    response = FakeResponse(
-        tool_calls=None,
-        content='```json\n{"tool_name":"task_management.create_task","title":"x"}\n```',
-    )
-
-    _out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["weather"], user_id=1
-    )
-
-    assert pm.calls == []
-    assert "task_management.create_task" in tools_used
-    assert any(
-        "task_management.create_task" in message.get("content", "")
-        and "not allowed in the current chat mode" in message.get("content", "")
         for message in helper.conversations[1]
     )
 

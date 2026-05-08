@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from .utils import compute_scope_key
+
 SKILL_SCRIPT_PATH_RE = re.compile(
     r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\][^\s'\"`/\\]+[/\\]scripts[/\\][^\s'\"`]+",
     re.IGNORECASE,
@@ -47,11 +49,7 @@ def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
     if not skills_plugin:
         return []
 
-    scope_key = getattr(skills_plugin, "_scope_key", None)
-    if not callable(scope_key):
-        return []
-
-    scope = scope_key(tool_args)
+    scope = compute_scope_key(tool_args.get("chat_id"), tool_args.get("user_id"))
     active_skills = getattr(skills_plugin, "active_skills", {}).get(scope, {})
     available_skills = getattr(skills_plugin, "available_skills", {})
     scripts = []

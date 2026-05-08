@@ -24,7 +24,7 @@ class PluginManager:
         self.strict_validation = str(os.getenv("PLUGIN_STRICT_VALIDATION", "false")).lower() == "true"
         self.storage_root = os.getenv("PLUGIN_STORAGE_ROOT")
         if not self.storage_root:
-            self.storage_root = str((Path(__file__).parent / "config").resolve())
+            self.storage_root = str((Path(__file__).resolve().parent.parent / "data").resolve())
         os.makedirs(self.storage_root, exist_ok=True)
 
         current_dir = Path(__file__).parent
@@ -237,6 +237,43 @@ class PluginManager:
             return False
         plugin_name = self.get_plugin_name_by_function_name(function_name)
         return plugin_name in allowed_plugins
+
+    def get_subagent_function_specs(
+        self,
+        helper,
+        model_to_use,
+        parent_allowed_plugins=None,
+        blocked_function_names=None,
+    ):
+        """
+        Return tool specs available to a subagent: same allow-list as the parent,
+        minus an explicit set of blocked function names. Always returns OpenAI-style
+        specs; subagents do not currently support the Google function_declarations form.
+        """
+        blocked = set(blocked_function_names or ())
+        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ['All'])
+        if isinstance(specs, dict):
+            return [], set()
+        filtered = []
+        allowed_function_names = set()
+        for tool in specs or []:
+            function_spec = tool.get("function") or {}
+            name = function_spec.get("name")
+            if not name or name in blocked:
+                continue
+            filtered.append(tool)
+            allowed_function_names.add(name)
+        return filtered, allowed_function_names
+
+    def is_subagent_function_allowed(
+        self,
+        function_name,
+        parent_allowed_plugins=None,
+        blocked_function_names=None,
+    ):
+        if blocked_function_names and function_name in blocked_function_names:
+            return False
+        return self.is_function_allowed(function_name, parent_allowed_plugins or ['All'])
 
     def __get_plugin_by_function_name(self, function_name):
         """

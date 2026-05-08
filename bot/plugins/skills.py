@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 import yaml
 
+from ..utils import compute_scope_key
 from .plugin import Plugin
 
 
@@ -504,7 +505,7 @@ class SkillsPlugin(Plugin):
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
 
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         now = int(time.time())
         with self._state_lock:
             scope_state = self.active_skills.setdefault(scope, {})
@@ -532,7 +533,7 @@ class SkillsPlugin(Plugin):
         }
 
     def _list_active_skills(self, **kwargs) -> Dict[str, Any]:
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             entries = []
@@ -553,7 +554,7 @@ class SkillsPlugin(Plugin):
         }
 
     def _get_skill_status(self, skill_name: str = "", **kwargs) -> Dict[str, Any]:
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             if not skill_name:
@@ -582,7 +583,7 @@ class SkillsPlugin(Plugin):
         context_update: Any = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -602,7 +603,7 @@ class SkillsPlugin(Plugin):
             return {"success": True, "scope": scope, "skill": skill_id, "state": state}
 
     def _deactivate_skill(self, skill_name: str, **kwargs) -> Dict[str, Any]:
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -636,7 +637,7 @@ class SkillsPlugin(Plugin):
                 "error": "Skill script execution is restricted by SKILLS_SCRIPT_ADMIN_USER_IDS.",
             }
 
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -828,15 +829,6 @@ class SkillsPlugin(Plugin):
                 return skill_id
         return None
 
-    def _scope_key(self, kwargs: Dict[str, Any]) -> str:
-        chat_id = kwargs.get("chat_id")
-        if chat_id is not None:
-            return f"chat:{chat_id}"
-        user_id = kwargs.get("user_id")
-        if user_id is not None:
-            return f"user:{user_id}"
-        return "global"
-
     def _decode_context(self, value: Any) -> Dict[str, Any]:
         if value is None:
             return {}
@@ -1005,28 +997,61 @@ class SkillsPlugin(Plugin):
             chat_id_int = int(chat_id)
         except (TypeError, ValueError):
             return None
-        delay = self.interim_after_seconds
+        first_delay = self.interim_after_seconds
+        repeat_delay = max(first_delay, 60)
+        typing_refresh_seconds = 4
 
-        async def _send_interim():
+        async def _watchdog():
             try:
-                await asyncio.sleep(delay)
-                await bot.send_message(
-                    chat_id=chat_id_int,
-                    text=(
-                        f"⏳ Скрипт «{script_name}» скила «{skill_id}» всё ещё выполняется. "
-                        "Дождитесь завершения, не отправляя новых запросов."
-                    ),
-                )
+                # Refresh the typing indicator every ~4s (Telegram clears it after 5s)
+                # while the skill script runs. After the configured first delay, post
+                # a textual interim notice and continue refreshing typing. Repeat the
+                # textual notice every repeat_delay seconds for very long runs.
+                elapsed = 0
+                first_notice_sent = False
+                last_notice_at = 0
+                while True:
+                    try:
+                        await bot.send_chat_action(chat_id=chat_id_int, action="typing")
+                    except Exception:
+                        logger.debug("Failed to refresh typing indicator", exc_info=True)
+                    await asyncio.sleep(typing_refresh_seconds)
+                    elapsed += typing_refresh_seconds
+                    if not first_notice_sent and elapsed >= first_delay:
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id_int,
+                                text=(
+                                    f"⏳ Скрипт «{script_name}» скила «{skill_id}» всё ещё выполняется. "
+                                    "Дождитесь завершения, не отправляя новых запросов."
+                                ),
+                            )
+                        except Exception:
+                            logger.debug("Failed to send interim skill script notice", exc_info=True)
+                        first_notice_sent = True
+                        last_notice_at = elapsed
+                    elif first_notice_sent and elapsed - last_notice_at >= repeat_delay:
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id_int,
+                                text=(
+                                    f"⏳ Скрипт «{script_name}» скила «{skill_id}» работает уже "
+                                    f"{elapsed} с. Продолжаю ждать."
+                                ),
+                            )
+                        except Exception:
+                            logger.debug("Failed to send watchdog notice", exc_info=True)
+                        last_notice_at = elapsed
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.debug("Failed to send interim skill script notice", exc_info=True)
+                logger.debug("Skill script watchdog failed", exc_info=True)
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return None
-        return loop.create_task(_send_interim())
+        return loop.create_task(_watchdog())
 
     def _audit(self, action: str, **fields: Any) -> None:
         if self.audit_file is None:

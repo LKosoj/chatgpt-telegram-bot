@@ -6,33 +6,46 @@ import logging
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..skill_script_routing import _skill_script_routing_error
+from ..utils import compute_scope_key
 from .plugin import Plugin
 
 
 CLOSED_STATUSES = {"completed", "cancelled"}
 TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 MAX_SUBAGENTS = 5
-MAX_SUBAGENT_TOOL_ROUNDS = 10
 MIN_SUBAGENT_TOOL_ROUNDS = 10
+MAX_SUBAGENT_TOOL_ROUNDS = 50
 DEFAULT_SUBAGENT_TEMPERATURE = 0.2
 SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.ask_telegram_user",
     "agent_tools.cancel_pending_question",
     "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
-    # Subagents share the parent's chat scope; activating or running skill scripts
-    # mutates state and writes into directories the parent owns, so keep them out.
-    "skills.activate_skill",
-    "skills.deactivate_skill",
-    "skills.run_skill_script",
-    "terminal.terminal",
 }
+
+_SUBAGENT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "subagent_system.md"
+_SUBAGENT_SYSTEM_PROMPT_CACHE: str | None = None
+
+
+def _load_subagent_system_prompt() -> str:
+    global _SUBAGENT_SYSTEM_PROMPT_CACHE
+    if _SUBAGENT_SYSTEM_PROMPT_CACHE is None:
+        try:
+            _SUBAGENT_SYSTEM_PROMPT_CACHE = _SUBAGENT_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logging.error("Subagent system prompt missing at %s: %s", _SUBAGENT_PROMPT_PATH, exc)
+            _SUBAGENT_SYSTEM_PROMPT_CACHE = (
+                "You are a bounded subagent. Use available tools to complete the assigned task and "
+                "return concise findings. Do not address the user directly."
+            )
+    return _SUBAGENT_SYSTEM_PROMPT_CACHE
 
 
 class _PendingAskReplyFilter(filters.MessageFilter):
@@ -57,6 +70,10 @@ class AgentToolsPlugin(Plugin):
     plugin_id = "agent_tools"
     function_prefix = "agent_tools"
 
+    DELIVERY_DEDUP_WINDOW_SECONDS = 60
+    DELIVERY_MAX_ARTIFACT_BYTES = 49 * 1024 * 1024
+    TASKS_TTL_SECONDS = 2 * 24 * 3600
+
     def __init__(self):
         self.tasks: Dict[str, List[Dict[str, Any]]] = {}
         self.tasks_file = os.path.join(os.path.dirname(__file__), "agent_tasks.json")
@@ -64,6 +81,7 @@ class AgentToolsPlugin(Plugin):
         self.pending_questions: Dict[str, Dict[str, Any]] = {}
         self.pending_by_chat: Dict[int, str] = {}
         self._orphaned_pending: List[Dict[str, Any]] = []
+        self._recent_deliveries: Dict[str, float] = {}
         self.load_tasks()
         self._load_orphaned_pending()
 
@@ -333,7 +351,7 @@ class AgentToolsPlugin(Plugin):
         ]
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
-        kwargs.pop("request_context", None)
+        request_context = kwargs.pop("request_context", None)
         if function_name == "manage_plan_tasks":
             return self._manage_plan_tasks(helper, **kwargs)
         if function_name == "ask_telegram_user":
@@ -341,7 +359,7 @@ class AgentToolsPlugin(Plugin):
         if function_name == "cancel_pending_question":
             return await self._cancel_pending_question(helper, **kwargs)
         if function_name == "run_subagents":
-            return await self._run_subagents(helper, **kwargs)
+            return await self._run_subagents(helper, request_context=request_context, **kwargs)
         if function_name == "deliver_to_user":
             return await self._deliver_to_user(helper, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
@@ -366,6 +384,27 @@ class AgentToolsPlugin(Plugin):
             self.tasks = {}
             return
         self.tasks = data if isinstance(data, dict) else {}
+        if self._prune_stale_tasks():
+            self.save_tasks()
+
+    def _prune_stale_tasks(self) -> bool:
+        cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
+        changed = False
+        for scope in list(self.tasks.keys()):
+            tasks = self.tasks.get(scope) or []
+            kept = [
+                task for task in tasks
+                if int(task.get("updated_at") or task.get("created_at") or 0) >= cutoff
+            ]
+            if len(kept) != len(tasks):
+                changed = True
+                if kept:
+                    self.tasks[scope] = kept
+                else:
+                    self.tasks.pop(scope, None)
+        if changed:
+            logging.info("Pruned stale agent tasks older than %s seconds", self.TASKS_TTL_SECONDS)
+        return changed
 
     def save_tasks(self) -> None:
         try:
@@ -445,18 +484,25 @@ class AgentToolsPlugin(Plugin):
         except OSError:
             logging.debug("Failed to remove pending questions snapshot", exc_info=True)
 
-    def _scope_key(self, kwargs: Dict[str, Any]) -> str:
-        chat_id = kwargs.get("chat_id")
-        if chat_id is not None:
-            return f"chat:{chat_id}"
-        user_id = kwargs.get("user_id")
-        if user_id is not None:
-            return f"user:{user_id}"
-        return "global"
+    def get_plan_tasks(self, chat_id=None, user_id=None) -> List[Dict[str, Any]]:
+        """
+        Return a snapshot of the current plan tasks for the given scope, ordered as stored.
+        Used by the live status message to render plan progress to the user.
+        """
+        scope = compute_scope_key(chat_id, user_id)
+        tasks = self.tasks.get(scope) or []
+        return [
+            {
+                "id": str(task.get("id") or ""),
+                "content": str(task.get("content") or ""),
+                "status": str(task.get("status") or "pending"),
+            }
+            for task in tasks
+        ]
 
     def _manage_plan_tasks(self, helper, **kwargs) -> Dict:
         action = str(kwargs.get("action") or "").strip()
-        scope = self._scope_key(kwargs)
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         tasks = self.tasks.setdefault(scope, [])
 
         if action == "add":
@@ -566,13 +612,30 @@ class AgentToolsPlugin(Plugin):
     async def _deliver_to_user(self, helper, **kwargs) -> Dict:
         text_raw = kwargs.get("text")
         final_text = "" if text_raw is None else str(text_raw).strip()
-        artifact_items, error = self._normalize_delivery_artifacts(kwargs.get("artifacts"))
+        allowed_roots = self._allowed_artifact_roots(helper)
+        artifact_items, error = self._normalize_delivery_artifacts(
+            kwargs.get("artifacts"), allowed_roots=allowed_roots,
+        )
         if error:
             return {"success": False, "error": error}
         if not final_text and not artifact_items:
             return {
                 "success": False,
                 "error": "deliver_to_user requires at least one of text or artifacts",
+            }
+
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        now = time.monotonic()
+        last_delivery_at = self._recent_deliveries.get(scope)
+        if last_delivery_at is not None and (now - last_delivery_at) < self.DELIVERY_DEDUP_WINDOW_SECONDS:
+            logging.warning(
+                "deliver_to_user duplicate suppressed scope=%s elapsed=%.1fs",
+                scope, now - last_delivery_at,
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "Already delivered to user in this turn; do not call deliver_to_user again.",
             }
 
         cleanup_skills = self._cleanup_directives_for_active_skills(helper, kwargs)
@@ -593,6 +656,7 @@ class AgentToolsPlugin(Plugin):
         }
         if cleanup_skills:
             direct_result["cleanup_skills"] = cleanup_skills
+        self._recent_deliveries[scope] = now
         return {
             "success": True,
             "text_chars": len(final_text),
@@ -613,14 +677,7 @@ class AgentToolsPlugin(Plugin):
         if skills_plugin is None:
             return []
 
-        chat_id = kwargs.get("chat_id")
-        user_id = kwargs.get("user_id")
-        if chat_id is not None:
-            scope = f"chat:{chat_id}"
-        elif user_id is not None:
-            scope = f"user:{user_id}"
-        else:
-            scope = "global"
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
 
         active_skills = getattr(skills_plugin, "active_skills", None) or {}
         scope_state = active_skills.get(scope) or {}
@@ -631,8 +688,40 @@ class AgentToolsPlugin(Plugin):
         ]
 
     @staticmethod
+    def _allowed_artifact_roots(helper) -> List[str]:
+        roots = [Path("/tmp")]
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        storage_root = getattr(plugin_manager, "storage_root", None) if plugin_manager else None
+        if storage_root:
+            roots.append(Path(storage_root))
+        if plugin_manager is not None:
+            try:
+                skills_plugin = plugin_manager.get_plugin("skills")
+            except Exception:
+                skills_plugin = None
+            if skills_plugin is not None:
+                for attr in ("skills_dir", "workdir_root"):
+                    candidate = getattr(skills_plugin, attr, None)
+                    if candidate:
+                        roots.append(Path(candidate))
+        resolved: List[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                resolved_root = str(Path(root).resolve())
+            except OSError:
+                continue
+            if resolved_root and resolved_root not in seen:
+                resolved.append(resolved_root)
+                seen.add(resolved_root)
+        return resolved
+
+    @classmethod
     def _normalize_delivery_artifacts(
+        cls,
         artifacts: Any,
+        *,
+        allowed_roots: List[str] | None = None,
     ) -> tuple[List[Dict[str, Any]], str | None]:
         if artifacts is None:
             return [], None
@@ -662,17 +751,34 @@ class AgentToolsPlugin(Plugin):
             if not isinstance(file_path, str) or not file_path.strip():
                 return [], "Artifact file_path is required"
 
-            resolved = os.path.expanduser(file_path)
+            resolved = os.path.realpath(os.path.expanduser(file_path))
             if not os.path.exists(resolved):
                 return [], f"Artifact file '{file_path}' does not exist"
             if not os.path.isfile(resolved):
                 return [], f"Artifact path '{file_path}' is not a file"
+            if allowed_roots:
+                in_allowed = any(
+                    resolved == root or resolved.startswith(root + os.sep)
+                    for root in allowed_roots
+                )
+                if not in_allowed:
+                    return [], (
+                        f"Artifact path '{file_path}' is outside allowed roots "
+                        f"({', '.join(allowed_roots)})"
+                    )
             try:
                 file_size = os.path.getsize(resolved)
             except OSError as exc:
                 return [], f"Failed to stat artifact '{file_path}': {exc}"
             if file_size <= 0:
                 return [], f"Artifact file '{file_path}' is empty"
+            if file_size > cls.DELIVERY_MAX_ARTIFACT_BYTES:
+                limit_mb = cls.DELIVERY_MAX_ARTIFACT_BYTES // (1024 * 1024)
+                actual_mb = file_size / (1024 * 1024)
+                return [], (
+                    f"Artifact '{file_path}' is {actual_mb:.1f} MB which exceeds the "
+                    f"Telegram delivery limit of {limit_mb} MB"
+                )
 
             artifact: Dict[str, Any] = {
                 "kind": "file",
@@ -685,7 +791,7 @@ class AgentToolsPlugin(Plugin):
             items.append(artifact)
         return items, None
 
-    async def _run_subagents(self, helper, **kwargs) -> Dict:
+    async def _run_subagents(self, helper, *, request_context=None, **kwargs) -> Dict:
         subagents = kwargs.get("subagents") or []
         if not isinstance(subagents, list) or not subagents:
             return {"success": False, "error": "subagents must be a non-empty list"}
@@ -694,8 +800,13 @@ class AgentToolsPlugin(Plugin):
 
         shared_context = str(kwargs.get("shared_context") or "").strip()
         parent_max_rounds = self._normalize_max_rounds(kwargs.get("max_rounds"))
+        parent_allowed_plugins = self._resolve_parent_allowed_plugins(helper, request_context, kwargs)
         tasks = [
-            self._run_one_subagent(helper, item, shared_context, kwargs, parent_max_rounds)
+            self._run_one_subagent(
+                helper, item, shared_context, kwargs, parent_max_rounds,
+                request_context=request_context,
+                parent_allowed_plugins=parent_allowed_plugins,
+            )
             for item in subagents
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -718,6 +829,22 @@ class AgentToolsPlugin(Plugin):
             "subagents": normalized_results,
         }
 
+    @staticmethod
+    def _resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -> List[str]:
+        resolver = getattr(helper, "resolve_allowed_plugins", None)
+        if not callable(resolver):
+            return ["All"]
+        chat_id = (
+            getattr(request_context, "chat_id", None) if request_context is not None else None
+        ) or kwargs.get("chat_id")
+        session_id = getattr(request_context, "session_id", None) if request_context is not None else None
+        try:
+            allowed = resolver(chat_id, session_id) if chat_id is not None else ["All"]
+        except Exception:
+            logging.exception("Failed to resolve parent allowed_plugins for subagents")
+            return ["All"]
+        return list(allowed) if allowed else ["All"]
+
     async def _run_one_subagent(
         self,
         helper,
@@ -725,6 +852,9 @@ class AgentToolsPlugin(Plugin):
         shared_context: str,
         kwargs: Dict[str, Any],
         parent_max_rounds: int,
+        *,
+        request_context=None,
+        parent_allowed_plugins: List[str] | None = None,
     ) -> Dict:
         subagent_id = str(item.get("id") or "").strip()
         role = str(item.get("role") or "").strip()
@@ -763,16 +893,7 @@ class AgentToolsPlugin(Plugin):
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are a bounded subagent. You may call available tools and skills to complete "
-                    "your assigned subtask. Do not address the Telegram user, do not ask the user "
-                    "questions, do not publish final artifacts, and do not start nested subagents. "
-                    "When using skills, list/get/activate the relevant skill, run its scripts only "
-                    "through skills.run_skill_script, and report outputs or artifact paths to the parent. "
-                    "If a script belongs to an active skill, you MUST run it through skills.run_skill_script; "
-                    "never reimplement or invoke that script through codeinterpreter.deep_analysis. "
-                    "Return concise findings for the parent agent to synthesize."
-                ),
+                "content": _load_subagent_system_prompt(),
             },
             {
                 "role": "user",
@@ -790,6 +911,8 @@ class AgentToolsPlugin(Plugin):
             result_text = await self._run_subagent_completion_loop(
                 helper, model_to_use, messages, kwargs, max_rounds, temperature,
                 published=published,
+                request_context=request_context,
+                parent_allowed_plugins=parent_allowed_plugins,
             )
             status = "completed"
             return {
@@ -815,7 +938,7 @@ class AgentToolsPlugin(Plugin):
             requested = int(value)
         except (TypeError, ValueError):
             return baseline
-        return max(MIN_SUBAGENT_TOOL_ROUNDS, requested)
+        return max(MIN_SUBAGENT_TOOL_ROUNDS, min(requested, MAX_SUBAGENT_TOOL_ROUNDS))
 
     @staticmethod
     def _normalize_temperature(value: Any) -> float:
@@ -837,8 +960,12 @@ class AgentToolsPlugin(Plugin):
         temperature: float,
         *,
         published: List[Dict[str, Any]] | None = None,
+        request_context=None,
+        parent_allowed_plugins: List[str] | None = None,
     ) -> str:
-        tools, allowed_function_names = self._subagent_tools(helper, model_to_use)
+        tools, allowed_function_names = self._subagent_tools(
+            helper, model_to_use, parent_allowed_plugins=parent_allowed_plugins,
+        )
 
         for round_index in range(max_rounds + 1):
             is_final_round = round_index == max_rounds
@@ -865,6 +992,7 @@ class AgentToolsPlugin(Plugin):
                         allowed_function_names,
                         kwargs,
                         published=published,
+                        request_context=request_context,
                     )
                     messages.append({
                         "role": "tool",
@@ -885,29 +1013,40 @@ class AgentToolsPlugin(Plugin):
 
         return ""
 
-    def _subagent_tools(self, helper, model_to_use: str) -> tuple[Any, set[str]]:
+    def _subagent_tools(
+        self,
+        helper,
+        model_to_use: str,
+        *,
+        parent_allowed_plugins: List[str] | None = None,
+    ) -> tuple[Any, set[str]]:
         plugin_manager = getattr(helper, "plugin_manager", None)
         if not plugin_manager:
             return None, set()
 
-        tools = plugin_manager.get_functions_specs(helper, model_to_use, ["All"])
-        if isinstance(tools, dict):
+        get_subagent_specs = getattr(plugin_manager, "get_subagent_function_specs", None)
+        if not callable(get_subagent_specs):
             logging.warning(
-                "Subagents do not support Google-style tool specs (model=%s); running without tools",
+                "plugin_manager has no get_subagent_function_specs; subagents disabled"
+            )
+            return None, set()
+
+        filtered_tools, allowed_function_names = get_subagent_specs(
+            helper,
+            model_to_use,
+            parent_allowed_plugins=parent_allowed_plugins,
+            blocked_function_names=SUBAGENT_BLOCKED_FUNCTIONS,
+        )
+        if not filtered_tools and not allowed_function_names:
+            logging.warning(
+                "Subagents have no callable tools (model=%s); running without tools",
                 model_to_use,
             )
             return None, set()
 
-        filtered_tools = []
-        allowed_function_names = set()
-        for tool in tools or []:
-            function_spec = tool.get("function") or {}
-            function_name = function_spec.get("name")
-            if not function_name or function_name in SUBAGENT_BLOCKED_FUNCTIONS:
-                continue
-            filtered_tools.append(tool)
-            allowed_function_names.add(function_name)
+        filtered_tools = list(filtered_tools)
         filtered_tools.append(self._internal_publish_tool_spec())
+        allowed_function_names = set(allowed_function_names)
         allowed_function_names.add("agent_tools.internal_publish")
         return filtered_tools, allowed_function_names
 
@@ -997,8 +1136,15 @@ class AgentToolsPlugin(Plugin):
         kwargs: Dict[str, Any],
         *,
         published: List[Dict[str, Any]] | None = None,
+        request_context=None,
     ) -> str:
         tool_name = call["name"]
+        if tool_name == "agent_tools.internal_publish":
+            try:
+                args = json.loads(call.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
+            return self._handle_internal_publish(args, published)
         if tool_name not in allowed_function_names:
             return json.dumps({"error": f"Tool {tool_name} is not available to subagents"}, ensure_ascii=False)
 
@@ -1024,6 +1170,7 @@ class AgentToolsPlugin(Plugin):
             tool_name,
             helper,
             json.dumps(args, ensure_ascii=False),
+            request_context=request_context,
         )
 
     @staticmethod

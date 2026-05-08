@@ -123,6 +123,6 @@ async def test_call_function_passes_request_context_to_plugin_execute(tmp_path):
     )
 
     payload = json.loads(result)
-    assert payload["chat_id"] == "77"
+    assert payload["chat_id"] == 77
     assert payload["context_user_id"] == 42
     assert payload["context_message_id"] == 123

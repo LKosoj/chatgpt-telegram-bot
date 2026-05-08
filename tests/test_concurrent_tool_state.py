@@ -362,7 +362,7 @@ async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_pa
         request_context=request_context,
     )
 
-    reminder = next(iter(plugin.reminders[request_context.plugin_chat_id].values()))
+    reminder = next(iter(plugin.reminders[str(request_context.plugin_chat_id)].values()))
     assert reminder["reply_to_message_id"] == request_context.message_id
 
 
@@ -421,8 +421,8 @@ async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_pat
 
     await asyncio.gather(first, second)
 
-    first_reminder = next(iter(plugin.reminders[first_context.plugin_chat_id].values()))
-    second_reminder = next(iter(plugin.reminders[second_context.plugin_chat_id].values()))
+    first_reminder = next(iter(plugin.reminders[str(first_context.plugin_chat_id)].values()))
+    second_reminder = next(iter(plugin.reminders[str(second_context.plugin_chat_id)].values()))
     assert first_reminder["reply_to_message_id"] == first_context.message_id
     assert second_reminder["reply_to_message_id"] == second_context.message_id
 
