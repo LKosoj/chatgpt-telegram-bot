@@ -851,9 +851,8 @@ process exits with a clear log line if either is missing.
 ### Image reply edits a new image instead of editing
 
 The bot uses the light model to classify intent on replies. Reply directly to
-the Telegram image message or refer to the last generated image clearly. There
-is also a legacy keyword fallback for unambiguous Russian phrases like
-"нарисуй … шапочку".
+the Telegram image message so the classifier sees `replied_message_kind="image"`
+and can decide between `image_edit` and `image_describe`.
 
 ### Hindsight shows documents but no memories
 

@@ -134,8 +134,9 @@ Definitions:
 - text_reply: the user asks or clarifies something about text, conversation context, or anything that should continue as normal chat.
 
 Use replied_message_kind as the source context. Do not choose image_edit or image_describe unless the user intent depends on an image.
-If replied_message_kind is "image", requests like "нарисуй коту на голове шапочку", "добавь шапочку", "put a hat on it" are image_edit.
-If replied_message_kind is "image", requests like "что на картинке?", "опиши изображение", "what is this?" are image_describe."""
+If replied_message_kind is "image" and the user asks to transform the image (add, remove, replace, restyle, redraw something in it), classify as image_edit.
+If replied_message_kind is "image" and the user asks about the visual content (description, identification, analysis), classify as image_describe.
+Otherwise classify as text_reply."""
 
 
 @lru_cache(maxsize=128)

@@ -859,9 +859,9 @@ python -m py_compile bot/openai_helper.py bot/telegram_bot.py
 ### Reply на изображение генерирует новое вместо edit’а
 
 Бот определяет намерение в reply через light-модель. Делай reply прямо
-на сообщение Telegram с картинкой или явно ссылайся на последнее
-сгенерированное изображение. Есть legacy-fallback на однозначные
-русские формулировки вида «нарисуй … шапочку».
+на сообщение Telegram с картинкой, чтобы классификатор увидел
+`replied_message_kind="image"` и выбрал между `image_edit` и
+`image_describe`.
 
 ### Hindsight видит документы, но без memory
 

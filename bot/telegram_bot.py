@@ -170,7 +170,7 @@ class ChatGPTTelegramBot:
             if intent in {"image_edit", "image_describe", "text_reply"}:
                 return intent
         except Exception:
-            logger.warning("Failed to classify reply intent with light model; using legacy routing", exc_info=True)
+            logger.warning("Failed to classify reply intent with light model", exc_info=True)
         return None
 
     def _remember_sent_image_messages(self, update: Update, sent_messages) -> None:
@@ -381,50 +381,6 @@ class ChatGPTTelegramBot:
                 logger.error(f"Error in Hindsight finalize worker: {e}", exc_info=True)
                 await asyncio.sleep(HINDSIGHT_FINALIZE_WORKER_IDLE_SECONDS)
 
-    def _is_image_edit_request(self, text: str | None) -> bool:
-        prompt = (text or '').strip().lower()
-        if not prompt:
-            return False
-        edit_markers = (
-            'отредакт', 'редакт', 'измени', 'изменить', 'поменяй', 'поменять',
-            'добавь', 'добавить', 'убери', 'убрать', 'замени', 'заменить',
-            'дорисуй', 'дорисовать', 'перерисуй', 'перерисовать',
-            'нарисуй', 'нарисовать',
-            'надень', 'одень', 'сделай ему', 'сделай ей', 'сделай им',
-            'edit', 'modify', 'change', 'draw ', 'add ', 'remove ', 'replace', 'put ',
-        )
-        return any(marker in prompt for marker in edit_markers)
-
-    def _is_image_description_request(self, text: str | None) -> bool:
-        prompt = (text or '').strip().lower()
-        if not prompt:
-            return False
-        description_markers = (
-            'опиши', 'описать', 'что на', 'что изображено', 'что тут',
-            'что здесь', 'что это', 'расскажи про изображение',
-            'разбери изображение', 'проанализируй изображение',
-            'describe', 'what is in', 'what is on', 'what\'s in',
-            'analyze this image', 'analyse this image',
-        )
-        return any(marker in prompt for marker in description_markers)
-
-    def _can_use_last_image_for_description(self, text: str | None) -> bool:
-        prompt = (text or '').strip().lower()
-        last_image_markers = (
-            'опиши', 'описать', 'что на', 'что изображено',
-            'расскажи про изображение', 'разбери изображение',
-            'проанализируй изображение', 'describe', 'what is in',
-            'what is on', 'what\'s in', 'analyze this image', 'analyse this image',
-        )
-        return any(marker in prompt for marker in last_image_markers)
-
-    def _last_saved_image_file_id(self, user_id: int, chat_id: int) -> str | None:
-        images = self.db.get_user_images(user_id, chat_id, limit=5)
-        if not images:
-            return None
-        active = next((image for image in images if image.get('status') == 'active'), None)
-        return (active or images[0]).get('file_id')
-
     def _image_edit_source_file_id(
         self,
         update: Update,
@@ -449,9 +405,7 @@ class ChatGPTTelegramBot:
         replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
         if replied_image:
             return replied_image
-        if not self._can_use_last_image_for_description(prompt):
-            return None
-        return self._last_saved_image_file_id(user_id, chat_id)
+        return None
 
     async def _telegram_image_as_png(self, file_id: str) -> io.BytesIO:
         image_bytes = await self.openai.download_file_as_bytes(file_id)
@@ -1466,15 +1420,6 @@ class ChatGPTTelegramBot:
             logger.info(f"Storing document file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
 
-        if prompt and self.config['enable_image_generation'] and self._is_image_edit_request(prompt):
-            source_file_id = self._image_edit_source_file_id(update)
-            if source_file_id:
-                async def _edit():
-                    await self._edit_image_from_context(update, prompt, source_file_id)
-
-                await wrap_with_indicator(update, context, _edit, constants.ChatAction.UPLOAD_PHOTO)
-                return
-
         if not self.config['enable_vision']:
             return
 
@@ -1852,17 +1797,8 @@ class ChatGPTTelegramBot:
                     return
 
         reply_intent = await self._classify_reply_intent(update, prompt)
-        use_legacy_image_routing = reply_intent in (None, "unknown")
 
-        reply_context_kind = self._reply_context_kind(update)
-        if self.config['enable_image_generation'] and (
-            reply_intent == "image_edit"
-            or (
-                reply_context_kind == "image"
-                and use_legacy_image_routing
-                and self._is_image_edit_request(prompt)
-            )
-        ):
+        if self.config['enable_image_generation'] and reply_intent == "image_edit":
             source_file_id = self._image_edit_source_file_id(update)
             if source_file_id:
                 async def _edit():
@@ -1872,10 +1808,7 @@ class ChatGPTTelegramBot:
                 return
             logger.info("Image edit route matched but no source image file_id was found")
 
-        if self.config['enable_vision'] and (
-            reply_intent == "image_describe"
-            or (use_legacy_image_routing and self._is_image_description_request(prompt))
-        ):
+        if self.config['enable_vision'] and reply_intent == "image_describe":
             source_file_id = self._image_description_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
                 async def _describe():
