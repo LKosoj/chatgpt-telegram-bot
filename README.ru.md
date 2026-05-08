@@ -1,10 +1,10 @@
 # ChatGPT Telegram Bot
 
+> 🌐 **Язык / Language:** **Русский** · [English](README.md)
+
 📚 **Подробная документация:**
 - [Пошаговый туториал (17 глав)](/docs/tutorial)
 - [Полная документация сайта](/ai_docs_site)
-
-> 🌐 **Язык / Language:** **Русский** · [English](README.md)
 
 Telegram-бот, построенный поверх OpenAI-совместимого рантайма **LLMGateway**.
 Проект сохраняет UX чата / изображений / аудио / vision из оригинальной линейки
