@@ -236,6 +236,92 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[
+            {"id": "T1", "content": "Collect recipes", "status": "in_progress"},
+            {"id": "T2", "content": "Create presentation", "status": "in_progress"},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "Only one plan task may be in_progress" in result["error"]
+    assert plugin.get_plan_tasks(chat_id=10) == []
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_rejects_in_progress_when_earlier_tasks_are_open(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[
+            {"id": "T1", "content": "Collect recipes", "status": "completed"},
+            {"id": "T2", "content": "Generate images", "status": "pending"},
+            {"id": "T3", "content": "Create presentation", "status": "pending"},
+        ],
+    )
+    assert added["success"] is True
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T4", "content": "Send file to user", "status": "in_progress"}],
+    )
+
+    assert result["success"] is False
+    assert "earlier tasks are still open" in result["error"]
+    assert [task["id"] for task in plugin.get_plan_tasks(chat_id=10)] == ["T1", "T2", "T3"]
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_rejects_duplicate_delivery_task(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace(user_id=42)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[
+            {"id": "T1", "content": "Collect recipes", "status": "completed"},
+            {"id": "T2", "content": "Create presentation", "status": "completed"},
+            {"id": "T3", "content": "Check and deliver presentation to user", "status": "pending"},
+        ],
+    )
+    assert added["success"] is True
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T4", "content": "Send file to user", "status": "pending"}],
+    )
+
+    assert result["success"] is False
+    assert "duplicate delivery task" in result["error"]
+    assert [task["id"] for task in plugin.get_plan_tasks(chat_id=10)] == ["T1", "T2", "T3"]
+
+
+@pytest.mark.asyncio
 async def test_run_subagents_runs_tool_capable_workers(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))

@@ -19,6 +19,30 @@ from .plugin import Plugin
 
 CLOSED_STATUSES = {"completed", "cancelled"}
 TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+DELIVERY_ACTION_WORDS = (
+    "attach",
+    "deliver",
+    "return",
+    "send",
+    "верн",
+    "достав",
+    "отправ",
+    "переда",
+    "прикреп",
+)
+DELIVERY_TARGET_WORDS = (
+    "artifact",
+    "document",
+    "file",
+    "pptx",
+    "presentation",
+    "user",
+    "артефакт",
+    "документ",
+    "пользовател",
+    "презентац",
+    "файл",
+)
 MAX_SUBAGENTS = 5
 MIN_SUBAGENT_TOOL_ROUNDS = 10
 MAX_SUBAGENT_TOOL_ROUNDS = 50
@@ -142,7 +166,10 @@ class AgentToolsPlugin(Plugin):
                 "name": "manage_plan_tasks",
                 "description": (
                     "Manage a short planning task list for complex multi-step work in the current "
-                    "Telegram chat. Use it to create a plan, inspect progress, and mark steps done."
+                    "Telegram chat. Use it to create a plan, inspect progress, and mark steps done. "
+                    "Keep task ids stable: update existing tasks instead of adding semantic duplicates. "
+                    "Only one task may be in_progress, and later tasks must not start while earlier "
+                    "tasks are still pending."
                 ),
                 "parameters": {
                     "type": "object",
@@ -512,6 +539,56 @@ class AgentToolsPlugin(Plugin):
             for task in tasks
         ]
 
+    @staticmethod
+    def _copy_plan_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [dict(task) for task in tasks]
+
+    @staticmethod
+    def _is_delivery_task(content: str) -> bool:
+        lowered = content.lower()
+        has_action = any(word in lowered for word in DELIVERY_ACTION_WORDS)
+        has_target = any(word in lowered for word in DELIVERY_TARGET_WORDS)
+        return has_action and has_target
+
+    def _validate_plan_tasks(self, tasks: List[Dict[str, Any]]) -> str | None:
+        in_progress = [
+            (index, task)
+            for index, task in enumerate(tasks)
+            if task.get("status") == "in_progress"
+        ]
+        if len(in_progress) > 1:
+            ids = ", ".join(str(task.get("id") or "") for _, task in in_progress)
+            return f"Only one plan task may be in_progress at a time: {ids}"
+
+        if in_progress:
+            active_index, active_task = in_progress[0]
+            earlier_open = [
+                str(task.get("id") or "")
+                for task in tasks[:active_index]
+                if task.get("status") not in CLOSED_STATUSES
+            ]
+            if earlier_open:
+                return (
+                    f"Cannot set {active_task.get('id')} in_progress while earlier "
+                    f"tasks are still open: {', '.join(earlier_open)}"
+                )
+
+        delivery_tasks = [
+            task
+            for task in tasks
+            if task.get("status") not in CLOSED_STATUSES
+            and self._is_delivery_task(str(task.get("content") or ""))
+        ]
+        if len(delivery_tasks) > 1:
+            first_id = delivery_tasks[0].get("id")
+            duplicate_ids = ", ".join(str(task.get("id") or "") for task in delivery_tasks[1:])
+            return (
+                f"Plan already has open delivery task {first_id}; update it instead "
+                f"of adding duplicate delivery task(s): {duplicate_ids}"
+            )
+
+        return None
+
     def _manage_plan_tasks(self, helper, **kwargs) -> Dict:
         action = str(kwargs.get("action") or "").strip()
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
@@ -521,6 +598,7 @@ class AgentToolsPlugin(Plugin):
             items = kwargs.get("tasks") or []
             if not items:
                 return {"success": False, "error": "No tasks provided"}
+            candidate_tasks = self._copy_plan_tasks(tasks)
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 content = str(item.get("content") or "").strip()
@@ -529,13 +607,13 @@ class AgentToolsPlugin(Plugin):
                     return {"success": False, "error": "Task requires id and content"}
                 if status not in TASK_STATUSES:
                     return {"success": False, "error": f"Invalid task status: {status}"}
-                existing = next((task for task in tasks if task.get("id") == task_id), None)
+                existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
                 if existing:
                     existing["content"] = content
                     existing["status"] = status
                     existing["updated_at"] = int(time.time())
                 else:
-                    tasks.append(
+                    candidate_tasks.append(
                         {
                             "id": task_id,
                             "content": content,
@@ -544,17 +622,22 @@ class AgentToolsPlugin(Plugin):
                             "updated_at": int(time.time()),
                         }
                     )
+            validation_error = self._validate_plan_tasks(candidate_tasks)
+            if validation_error:
+                return {"success": False, "error": validation_error}
+            self.tasks[scope] = candidate_tasks
             self.save_tasks()
-            return self._tasks_response(action, tasks, changed=True)
+            return self._tasks_response(action, candidate_tasks, changed=True)
 
         if action == "update":
             items = kwargs.get("tasks") or []
             if not items:
                 return {"success": False, "error": "No tasks provided"}
+            candidate_tasks = self._copy_plan_tasks(tasks)
             changed = False
             for item in items:
                 task_id = str(item.get("id") or "").strip()
-                existing = next((task for task in tasks if task.get("id") == task_id), None)
+                existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
                 if not existing:
                     continue
                 item_changed = False
@@ -574,8 +657,12 @@ class AgentToolsPlugin(Plugin):
                     existing["updated_at"] = int(time.time())
                     changed = True
             if changed:
+                validation_error = self._validate_plan_tasks(candidate_tasks)
+                if validation_error:
+                    return {"success": False, "error": validation_error}
+                self.tasks[scope] = candidate_tasks
                 self.save_tasks()
-            return self._tasks_response(action, tasks, changed=changed)
+            return self._tasks_response(action, candidate_tasks, changed=changed)
 
         if action == "list":
             return self._tasks_response(action, tasks, changed=False)
