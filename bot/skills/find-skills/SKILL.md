@@ -36,7 +36,7 @@ Use this skill when the user:
 - If skill use fails because the skill instruction is unclear, start a background reflection subagent with `agent_tools.run_subagents` and `background=true`; have it call `skills.record_skill_reflection`.
 - Do not claim that a skill is installed until it appears in `skills.list_skills` after refresh.
 - Do not call `terminal.terminal` for normal skill search/install. Use the native `skills.find_installable_skills` and `skills.install_skill` tools first. Use terminal only as an operator fallback if the native install tool is unavailable or returns a clear infrastructure error.
-- If `skills.install_skill` says installs are disabled or restricted, explain that the operator must enable `SKILLS_ALLOW_INSTALLS=true` and configure `SKILLS_INSTALL_ADMIN_USER_IDS`; do not pretend installation succeeded.
+- If `skills.install_skill` says installs are disabled, explain that `SKILLS_ALLOW_INSTALLS=false` disables installation. If it says installs are restricted, explain that the user is not in `SKILLS_INSTALL_ADMIN_USER_IDS`. The install user allow-list defaults to `*`.
 - Final user-facing answers in `skills_agent` mode must go through `agent_tools.deliver_to_user`.
 
 ## How to Help Users Find Skills
@@ -149,8 +149,11 @@ installed. Then inspect it with `skills.get_skill` and activate it if the user
 wants to use it immediately.
 
 If installation fails because installs are disabled or the caller is not
-allowed, explain the concrete gate from the tool error. Do not retry through
-terminal unless the user/operator explicitly asks for a manual fallback.
+allowed, explain the concrete gate from the tool error. By default installs are
+enabled for everyone; deployments can restrict them with
+`SKILLS_INSTALL_ADMIN_USER_IDS` or disable them with `SKILLS_ALLOW_INSTALLS=false`.
+Do not retry through terminal unless the user/operator explicitly asks for a
+manual fallback.
 
 ## Common Skill Categories
 

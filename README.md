@@ -321,8 +321,8 @@ configurable through env vars unless noted. See
 | `SKILLS_DIR` | `<storage_root>/skills` | path | Directory scanned for `SKILL.md` files. |
 | `SKILLS_WORKDIR` | `<storage_root>/skill_workdir` | path | Working directory used when running skill scripts. |
 | `SKILLS_ALLOW_SCRIPTS` | `false` | bool | Enable `skills.run_skill_script`. |
-| `SKILLS_ALLOW_INSTALLS` | `false` | bool | Enable `skills.install_skill` to install packages from `npx skills find/add`. |
-| `SKILLS_INSTALL_ADMIN_USER_IDS` | `SKILLS_SCRIPT_ADMIN_USER_IDS` | csv | User IDs allowed to install new skills. `*` allows all admins. |
+| `SKILLS_ALLOW_INSTALLS` | `true` | bool | Enable `skills.install_skill` to install packages from `npx skills find/add`; set `false` to disable installs. |
+| `SKILLS_INSTALL_ADMIN_USER_IDS` | `*` | csv | User IDs allowed to install new skills. `*` allows everyone. |
 | `SKILLS_INSTALL_TIMEOUT` | `180` | int | Timeout in seconds for `npx skills` search/install operations. |
 | `SKILLS_SCRIPT_TIMEOUT` | `120` | int | Per-script timeout in seconds. |
 | `SKILLS_SCRIPT_OUTPUT_MAX_CHARS` | `12000` | int | Max characters captured from script output. |
@@ -333,7 +333,8 @@ configurable through env vars unless noted. See
 > process. Only enable `SKILLS_ALLOW_SCRIPTS=true` with trusted skills and
 > trusted operators.
 > Skill installation also writes to the bot filesystem and shells out to
-> `npx skills`; only enable `SKILLS_ALLOW_INSTALLS=true` for trusted operators.
+> `npx skills`; restrict `SKILLS_INSTALL_ADMIN_USER_IDS` or set
+> `SKILLS_ALLOW_INSTALLS=false` if installs should not be available to everyone.
 
 ### MCP Plugin
 

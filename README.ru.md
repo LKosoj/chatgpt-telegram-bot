@@ -327,8 +327,8 @@ docker compose up
 | `SKILLS_DIR` | `<storage_root>/skills` | path | Папка, в которой ищутся `SKILL.md`. |
 | `SKILLS_WORKDIR` | `<storage_root>/skill_workdir` | path | Рабочая директория для скриптов скилов. |
 | `SKILLS_ALLOW_SCRIPTS` | `false` | bool | Включить `skills.run_skill_script`. |
-| `SKILLS_ALLOW_INSTALLS` | `false` | bool | Включить `skills.install_skill` для установки пакетов из `npx skills find/add`. |
-| `SKILLS_INSTALL_ADMIN_USER_IDS` | `SKILLS_SCRIPT_ADMIN_USER_IDS` | csv | User ID, которым разрешено устанавливать новые скилы. `*` — всем админам. |
+| `SKILLS_ALLOW_INSTALLS` | `true` | bool | Включить `skills.install_skill` для установки пакетов из `npx skills find/add`; поставь `false`, чтобы запретить установки. |
+| `SKILLS_INSTALL_ADMIN_USER_IDS` | `*` | csv | User ID, которым разрешено устанавливать новые скилы. `*` — всем пользователям. |
 | `SKILLS_INSTALL_TIMEOUT` | `180` | int | Таймаут операций `npx skills` search/install в секундах. |
 | `SKILLS_SCRIPT_TIMEOUT` | `120` | int | Таймаут скрипта в секундах. |
 | `SKILLS_SCRIPT_OUTPUT_MAX_CHARS` | `12000` | int | Максимум символов вывода скрипта. |
@@ -339,8 +339,8 @@ docker compose up
 > Включай `SKILLS_ALLOW_SCRIPTS=true` только с доверенными скилами и
 > доверенными операторами.
 > Установка скилов тоже пишет в файловую систему бота и вызывает
-> `npx skills`; включай `SKILLS_ALLOW_INSTALLS=true` только для доверенных
-> операторов.
+> `npx skills`; ограничь `SKILLS_INSTALL_ADMIN_USER_IDS` или поставь
+> `SKILLS_ALLOW_INSTALLS=false`, если установки не должны быть доступны всем.
 
 ### Плагин MCP
 

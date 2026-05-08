@@ -95,9 +95,9 @@ class SkillsPlugin(Plugin):
             os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", ""),
             env_name="SKILLS_SCRIPT_ADMIN_USER_IDS",
         )
-        self.allow_installs = self._env_flag("SKILLS_ALLOW_INSTALLS", default=False)
+        self.allow_installs = self._env_flag("SKILLS_ALLOW_INSTALLS", default=True)
         self.install_admin_ids, self.install_admin_all = self._parse_admin_ids(
-            os.getenv("SKILLS_INSTALL_ADMIN_USER_IDS", os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", "")),
+            os.getenv("SKILLS_INSTALL_ADMIN_USER_IDS", "*"),
             env_name="SKILLS_INSTALL_ADMIN_USER_IDS",
         )
 
@@ -160,9 +160,9 @@ class SkillsPlugin(Plugin):
                 "name": "install_skill",
                 "description": (
                     "Install a skill package found by skills.find_installable_skills, then sync it into "
-                    "SKILLS_DIR and refresh the local skill registry. Requires SKILLS_ALLOW_INSTALLS=true, "
-                    "an allowed caller in SKILLS_INSTALL_ADMIN_USER_IDS, and confirmed=true after explicit "
-                    "user approval."
+                    "SKILLS_DIR and refresh the local skill registry. Enabled by default unless "
+                    "SKILLS_ALLOW_INSTALLS=false. SKILLS_INSTALL_ADMIN_USER_IDS is a user allow-list "
+                    "that defaults to '*'. confirmed=true is required after explicit user approval."
                 ),
                 "parameters": {
                     "type": "object",
@@ -673,12 +673,12 @@ class SkillsPlugin(Plugin):
         if not self.allow_installs:
             return {
                 "success": False,
-                "error": "Skill installation is disabled. Set SKILLS_ALLOW_INSTALLS=true to enable it.",
+                "error": "Skill installation is disabled by SKILLS_ALLOW_INSTALLS=false. Set it to true or unset it to enable installs.",
             }
         if not self._is_install_admin(user_id):
             return {
                 "success": False,
-                "error": "Skill installation is restricted by SKILLS_INSTALL_ADMIN_USER_IDS.",
+                "error": "Skill installation is restricted by the SKILLS_INSTALL_ADMIN_USER_IDS user allow-list.",
             }
         if not confirmed:
             return {

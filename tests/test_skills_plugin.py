@@ -338,7 +338,8 @@ async def test_find_installable_skills_parses_cli_results(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_install_skill_is_disabled_by_default(tmp_path, monkeypatch):
+async def test_install_skill_can_be_disabled_by_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "false")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
     result = await plugin.execute(
@@ -355,7 +356,7 @@ async def test_install_skill_is_disabled_by_default(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_install_skill_copies_cli_install_to_skills_dir(tmp_path, monkeypatch):
+async def test_install_skill_allows_all_users_by_default(tmp_path, monkeypatch):
     installed_dir = tmp_path / "global" / "webapp-testing"
     installed_dir.mkdir(parents=True)
     (installed_dir / "SKILL.md").write_text(
@@ -368,8 +369,6 @@ async def test_install_skill_copies_cli_install_to_skills_dir(tmp_path, monkeypa
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "true")
-    monkeypatch.setenv("SKILLS_INSTALL_ADMIN_USER_IDS", "42")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
     async def fake_run(args, *, timeout):
@@ -392,7 +391,7 @@ async def test_install_skill_copies_cli_install_to_skills_dir(tmp_path, monkeypa
         package="anthropics/skills@webapp-testing",
         confirmed=True,
         chat_id=10,
-        user_id=42,
+        user_id=999,
     )
 
     assert result["success"] is True
@@ -400,6 +399,24 @@ async def test_install_skill_copies_cli_install_to_skills_dir(tmp_path, monkeypa
     assert result["sync"] == "copied_to_skills_dir"
     assert "webapp-testing" in plugin.available_skills
     assert (tmp_path / "skills" / "webapp-testing" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_restricts_to_configured_users(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILLS_INSTALL_ADMIN_USER_IDS", "42")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="owner/repo@restricted-skill",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "allow-list" in result["error"]
 
 
 @pytest.mark.asyncio
