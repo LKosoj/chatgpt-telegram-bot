@@ -1,0 +1,5590 @@
+<!DOCTYPE html>
+
+<html data-bs-theme="light" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="../img/favicon.ico" rel="shortcut icon"/>
+<title>Обзор - chatgpt-telegram-bot</title>
+<link href="../css/bootstrap.min.css" rel="stylesheet"/>
+<link href="../css/fontawesome.min.css" rel="stylesheet"/>
+<link href="../css/brands.min.css" rel="stylesheet"/>
+<link href="../css/solid.min.css" rel="stylesheet"/>
+<link href="../css/v4-font-face.min.css" rel="stylesheet"/>
+<link href="../css/base.css" rel="stylesheet"/>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" id="hljs-light" rel="stylesheet"/>
+<link disabled="" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" id="hljs-dark" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</head>
+<body>
+<div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+<div class="container">
+<a class="navbar-brand" href="../index.html">chatgpt-telegram-bot</a>
+<!-- Expander button -->
+<button aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation" class="navbar-toggler" data-bs-target="#navbar-collapse" data-bs-toggle="collapse" type="button">
+<span class="navbar-toggler-icon"></span>
+</button>
+<!-- Expanded navigation -->
+<div class="navbar-collapse collapse" id="navbar-collapse">
+<!-- Main navigation -->
+<ul class="nav navbar-nav">
+<li class="nav-item">
+<a class="nav-link" href="../index.html">Главная</a>
+</li>
+<li class="nav-item dropdown">
+<a aria-expanded="false" class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button">Обзор</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="../overview.html">Обзор проекта</a>
+</li>
+</ul>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../architecture.html">Архитектура</a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../runtime.html">Запуск</a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../dependencies.html">Зависимости</a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../testing.html">Тестирование</a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../conventions.html">Соглашения</a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../glossary.html">Глоссарий</a>
+</li>
+<li class="nav-item dropdown">
+<a aria-expanded="false" class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button">Конфиги</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="../configs/docker.html">Docker</a>
+</li>
+<li>
+<a class="dropdown-item" href="../configs/service_mesh.html">service_mesh</a>
+</li>
+</ul>
+</li>
+<li class="nav-item dropdown">
+<a aria-expanded="false" class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button">Конфигурация проекта</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="../configs/index.html">Обзор</a>
+</li>
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/bot</a>
+<ul class="dropdown-menu">
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/plugins</a>
+<ul class="dropdown-menu">
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/pdf_cache</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html">cache_metadata.json</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="dropdown-item" href="../configs/files/bot/plugins/agent_config__yml.html">agent_config.yml</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="dropdown-item" href="../configs/files/bot/chat_modes__yml.html">chat_modes.yml</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="dropdown-item" href="../configs/files/environment__yml.html">environment.yml</a>
+</li>
+<li>
+<a class="dropdown-item" href="../configs/files/pytest__ini.html">pytest.ini</a>
+</li>
+</ul>
+</li>
+<li class="nav-item dropdown">
+<a aria-current="page" aria-expanded="false" class="nav-link dropdown-toggle active" data-bs-toggle="dropdown" href="#" role="button">Модули</a>
+<ul class="dropdown-menu">
+<li>
+<a aria-current="page" class="dropdown-item active" href="index.html">Обзор</a>
+</li>
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/bot</a>
+<ul class="dropdown-menu">
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/plugins</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="bot/plugins/agent_tools__py.html">agent_tools.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/ask_your_pdf__py.html">ask_your_pdf.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/auto_tts__py.html">auto_tts.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/chief__py.html">chief.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/codeinterpreter__py.html">codeinterpreter.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/conversation_analytics__py.html">conversation_analytics.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/crypto__py.html">crypto.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/ddg_image_search__py.html">ddg_image_search.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/ddg_translate__py.html">ddg_translate.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/ddg_web_search__py.html">ddg_web_search.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/deepl__py.html">deepl.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/dice__py.html">dice.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/github_analysis__py.html">github_analysis.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/google_web_search__py.html">google_web_search.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/gtts_text_to_speech__py.html">gtts_text_to_speech.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/haiper_image_to_video__py.html">haiper_image_to_video.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/hindsight_memory__py.html">hindsight_memory.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/iplocation__py.html">iplocation.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/jina_web_search__py.html">jina_web_search.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/language_learning__py.html">language_learning.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/mcp_server__py.html">mcp_server.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/movie_info__py.html">movie_info.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/plugin__py.html">plugin.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/prompt_perfect__py.html">prompt_perfect.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/reaction__py.html">reaction.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/reminders__py.html">reminders.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/show_me_diagrams__py.html">show_me_diagrams.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/skills__py.html">skills.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/spotify__py.html">spotify.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/stable_diffusion__py.html">stable_diffusion.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/task_management__py.html">task_management.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/terminal__py.html">terminal.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/text_document_qa__py.html">text_document_qa.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/text_summarizer__py.html">text_summarizer.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/vkusvill__py.html">vkusvill.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/weather__py.html">weather.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/web_research__py.html">web_research.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/webshot__py.html">webshot.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/website_content__py.html">website_content.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/whois___py.html">whois_.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/wolfram_alpha__py.html">wolfram_alpha.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/worldtimeapi__py.html">worldtimeapi.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/youtube_audio_extractor__py.html">youtube_audio_extractor.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugins/youtube_transcript__py.html">youtube_transcript.py</a>
+</li>
+</ul>
+</li>
+<li>
+<a class="dropdown-item" href="bot/__init____py.html">__init__.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/__main____py.html">__main__.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/chat_modes_registry__py.html">chat_modes_registry.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/conversation_key__py.html">conversation_key.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/database__py.html">database.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/hindsight_client__py.html">hindsight_client.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/html_utils__py.html">html_utils.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/i18n__py.html">i18n.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/model_constants__py.html">model_constants.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/openai_helper__py.html">openai_helper.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/openai_tool_handler__py.html">openai_tool_handler.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/plugin_manager__py.html">plugin_manager.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/request_context__py.html">request_context.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/skill_script_routing__py.html">skill_script_routing.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/telegram_bot__py.html">telegram_bot.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/usage_tracker__py.html">usage_tracker.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/user_settings__py.html">user_settings.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/utils__py.html">utils.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="bot/validation__py.html">validation.py</a>
+</li>
+</ul>
+</li>
+<li class="dropdown-submenu">
+<a class="dropdown-item" href="#">/examples</a>
+<ul class="dropdown-menu">
+<li>
+<a class="dropdown-item" href="examples/mcp_server_example__py.html">mcp_server_example.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="examples/mcp_stdio_client__py.html">mcp_stdio_client.py</a>
+</li>
+<li>
+<a class="dropdown-item" href="examples/mcp_stdio_server__py.html">mcp_stdio_server.py</a>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../changes.html">Изменения</a>
+</li>
+</ul>
+<ul class="nav navbar-nav ms-md-auto">
+<li class="nav-item">
+<a class="nav-link" data-bs-target="#mkdocs_search_modal" data-bs-toggle="modal" href="#">
+<i class="fa fa-search"></i> Search
+                            </a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="../configs/files/pytest__ini.html" rel="prev">
+<i class="fa fa-arrow-left"></i> Previous
+                                </a>
+</li>
+<li class="nav-item">
+<a class="nav-link" href="bot/plugins/agent_tools__py.html" rel="next">
+                                    Next <i class="fa fa-arrow-right"></i>
+</a>
+</li>
+</ul>
+</div>
+</div>
+</div>
+<div class="container">
+<div class="row">
+<div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+<div class="navbar-header">
+<button class="navbar-toggler collapsed" data-bs-target="#toc-collapse" data-bs-toggle="collapse" title="Table of Contents" type="button">
+<span class="fa fa-angle-down"></span>
+</button>
+</div>
+<div class="navbar-collapse collapse card bg-body-tertiary" id="toc-collapse">
+<ul class="nav flex-column">
+<li class="nav-item" data-bs-level="1"><a class="nav-link" href="#_1">Модули</a>
+<ul class="nav flex-column">
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#request_context">request_context</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#chat_modes_registry">chat_modes_registry</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#llm_gateway_models">llm_gateway_models</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#usage_tracker">usage_tracker</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#localization">localization</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#html_visualizer">html_visualizer</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#database">database</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#hindsight_client">hindsight_client</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#plugin_manager">plugin_manager</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#openai_helper">openai_helper</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#validation">validation</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#bot">bot</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#utils">utils</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#function_call_handler">function_call_handler</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#main">main</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#skill_script_router">skill_script_router</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#user_settings">user_settings</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#_2">Плагины</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#mcp">MCP примеры</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#_3">Список модулей</a>
+<ul class="nav flex-column">
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</div></div>
+<div class="col-md-9" role="main">
+<h1 id="_1">Модули</h1>
+<h2 id="request_context"><code>request_context</code></h2>
+<p>Неизменяемый контекст запроса для трассировки сообщений в чате.</p>
+<h3 id="requestcontext"><code>RequestContext</code></h3>
+<p><code>@dataclass(frozen=True)</code></p>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chat_id</code></td>
+<td><code>int</code></td>
+<td>Идентификатор чата</td>
+</tr>
+<tr>
+<td><code>user_id</code></td>
+<td><code>int</code></td>
+<td>Идентификатор пользователя</td>
+</tr>
+<tr>
+<td><code>message_id</code></td>
+<td><code>int \| None</code></td>
+<td>Идентификатор сообщения (опционально)</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td><code>str \| None</code></td>
+<td>Идентификатор сессии (опционально)</td>
+</tr>
+<tr>
+<td><code>request_id</code></td>
+<td><code>str \| None</code></td>
+<td>Идентификатор запроса (опционально)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Свойство</strong> <code>plugin_chat_id: int</code> — возвращает <code>chat_id</code> для совместимости с плагинной системой.</p>
+<hr/>
+<h2 id="chat_modes_registry"><code>chat_modes_registry</code></h2>
+<p>Реестр чат-режимов с ленивой загрузкой из YAML и автоперезагрузкой по <code>mtime</code>.</p>
+<h3 id="chatmode"><code>ChatMode</code></h3>
+<p><code>@dataclass</code></p>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>key</code></td>
+<td><code>str</code></td>
+<td>Строковый идентификатор режима</td>
+</tr>
+<tr>
+<td><code>data</code></td>
+<td><code>dict</code></td>
+<td>Конфигурационные данные режима</td>
+</tr>
+</tbody>
+</table>
+<h3 id="chatmodesregistry"><code>ChatModesRegistry</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(path: str)</code></td>
+<td>Конструктор, принимает путь к YAML-файлу</td>
+</tr>
+<tr>
+<td><code>_load_if_needed</code></td>
+<td><code>() -&gt; None</code></td>
+<td>Ленивая загрузка: проверяет <code>mtime</code>, перезагружает при изменении</td>
+</tr>
+<tr>
+<td><code>all_modes</code></td>
+<td><code>() -&gt; Dict[str, Dict]</code></td>
+<td>Все загруженные режимы</td>
+</tr>
+<tr>
+<td><code>get_mode_by_key</code></td>
+<td><code>(key: str) -&gt; Optional[Dict]</code></td>
+<td>Поиск по точному ключу</td>
+</tr>
+<tr>
+<td><code>get_mode_by_system_prompt</code></td>
+<td><code>(system_content: str) -&gt; Optional[Dict]</code></td>
+<td>Поиск по <code>prompt_start</code> (точное совпадение) или <code>prompt_markers</code> (все маркеры присутствуют)</td>
+</tr>
+<tr>
+<td><code>get_all_modes_list</code></td>
+<td><code>() -&gt; List[str]</code></td>
+<td>Список строк <code>"name: &lt;key&gt;, welcome_message: &lt;message&gt;"</code></td>
+</tr>
+<tr>
+<td><code>validate_tools</code></td>
+<td><code>(plugin_manager) -&gt; None</code></td>
+<td>Проверяет доступность инструментов через <code>plugin_manager.has_plugin</code>, логирует ошибки</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="llm_gateway_models"><code>llm_gateway_models</code></h2>
+<p>Константы идентификаторов моделей LLM Gateway.</p>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LLMGATEWAY_CHAT_MODELS</code></td>
+<td><code>tuple[str, ...]</code></td>
+<td>Все чат-модели</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_HIGH_MODEL</code></td>
+<td><code>str</code></td>
+<td>Высокопроизводительная модель</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_LIGHT_MODEL</code></td>
+<td><code>str</code></td>
+<td>Легковесная модель</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_BIG_CONTEXT_MODEL</code></td>
+<td><code>str</code></td>
+<td>Модель с расширенным контекстом</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_IMAGE_GENERATION_MODEL</code></td>
+<td><code>str</code></td>
+<td>Генерация изображений</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_IMAGE_EDIT_MODEL</code></td>
+<td><code>str</code></td>
+<td>Редактирование изображений</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_WEB_SEARCH_MODEL</code></td>
+<td><code>str</code></td>
+<td>Веб-поиск</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_WEB_READ_MODEL</code></td>
+<td><code>str</code></td>
+<td>Чтение веб-страниц</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_WEB_RESEARCH_MODEL</code></td>
+<td><code>str</code></td>
+<td>Исследование веб-контента</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_WEB_DEEP_RESEARCH_MODEL</code></td>
+<td><code>str</code></td>
+<td>Глубокое исследование</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_TTS_MODEL</code></td>
+<td><code>str</code></td>
+<td>TTS</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_TRANSCRIPTION_MODEL</code></td>
+<td><code>str</code></td>
+<td>Транскрипция аудио</td>
+</tr>
+<tr>
+<td><code>GPT_4_VISION_MODELS</code> — <code>QWEN</code></td>
+<td><code>tuple[str, ...] (пустые)</code></td>
+<td>Пустые кортежи для обратной совместимости</td>
+</tr>
+<tr>
+<td><code>GPT_ALL_MODELS</code></td>
+<td>алиас на <code>LLMGATEWAY_CHAT_MODELS</code></td>
+<td>Унифицированный доступ к чат-моделям</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="usage_tracker"><code>usage_tracker</code></h2>
+<p>Учёт потребления ресурсов с сохранением в JSON.</p>
+<h3 id="year_monthdate_str"><code>year_month(date_str)</code></h3>
+<p>Извлекает <code>'YYYY-MM'</code> из даты (первые 7 символов).</p>
+<h3 id="usagetracker"><code>UsageTracker</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user_id</code></td>
+<td><code>int</code></td>
+<td>Telegram ID</td>
+</tr>
+<tr>
+<td><code>logs_dir</code></td>
+<td><code>str</code></td>
+<td>Директория логов, по умолчанию <code>"usage_logs"</code></td>
+</tr>
+<tr>
+<td><code>user_file</code></td>
+<td><code>str</code></td>
+<td>Путь к JSON-файлу пользователя</td>
+</tr>
+<tr>
+<td><code>usage</code></td>
+<td><code>dict</code></td>
+<td>Данные использования в формате JSON</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Параметры</th>
+<th>Возвращает</th>
+<th>Особенности</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>user_id, user_name, logs_dir="usage_logs"</code></td>
+<td>—</td>
+<td>Загружает или создаёт файл</td>
+</tr>
+<tr>
+<td><code>add_chat_tokens</code></td>
+<td><code>tokens, tokens_price=0.002</code></td>
+<td>—</td>
+<td>Цена за 1000 токенов</td>
+</tr>
+<tr>
+<td><code>get_current_token_usage</code></td>
+<td>—</td>
+<td><code>(usage_day, usage_month)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_image_request</code></td>
+<td><code>image_size, image_prices="0.016,0.018,0.02"</code></td>
+<td>—</td>
+<td>Размеры: <code>256x256</code>, <code>512x512</code>, <code>1024x1024</code></td>
+</tr>
+<tr>
+<td><code>get_current_image_count</code></td>
+<td>—</td>
+<td><code>(usage_day, usage_month)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_vision_tokens</code></td>
+<td><code>tokens, vision_token_price=0.01</code></td>
+<td>—</td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_current_vision_tokens</code></td>
+<td>—</td>
+<td><code>(tokens_day, tokens_month)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_tts_price_for_model</code></td>
+<td><code>tts_model, tts_prices</code></td>
+<td><code>float</code></td>
+<td>Цена за 1000 символов; <code>IndexError</code> при выходе за границы</td>
+</tr>
+<tr>
+<td><code>add_tts_request</code></td>
+<td><code>text_length, tts_model, tts_prices</code></td>
+<td>—</td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_current_tts_usage</code></td>
+<td>—</td>
+<td><code>(characters_day, characters_month)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_transcription_seconds</code></td>
+<td><code>seconds, minute_price=0.006</code></td>
+<td>—</td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_current_transcription_duration</code></td>
+<td>—</td>
+<td><code>(min_day, sec_day, min_month, sec_month)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_current_costs</code></td>
+<td><code>request_cost</code></td>
+<td>—</td>
+<td>Добавляет к дневным/месячным/общим затратам</td>
+</tr>
+<tr>
+<td><code>get_current_cost</code></td>
+<td>—</td>
+<td><code>{"cost_today", "cost_month", "cost_all_time"}</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>initialize_all_time_cost</code></td>
+<td><code>tokens_price=0.002, image_prices="0.016,0.018,0.02", minute_price=0.006, vision_token_price=0.01, tts_prices='0.015,0.030'</code></td>
+<td><code>float</code></td>
+<td>Пересчёт всей истории</td>
+</tr>
+<tr>
+<td><code>all_time_cost</code></td>
+<td>—</td>
+<td><code>float</code></td>
+<td><code>token_cost + transcription_cost + image_cost + vision_cost + tts_cost</code>, округлено до 2 знаков. <code>KeyError</code>, <code>ValueError</code> при повреждении данных</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="localization"><code>localization</code></h2>
+<p>Управление переводами через <code>ContextVar</code> и <code>lru_cache</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DEFAULT_LANGUAGE</code></td>
+<td><code>'en'</code></td>
+</tr>
+<tr>
+<td><code>AUTO_LANGUAGE</code></td>
+<td><code>'auto'</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>supported_languages</code></td>
+<td><code>() -&gt; tuple</code></td>
+<td>Коды из <code>translations.json</code></td>
+</tr>
+<tr>
+<td><code>language_name</code></td>
+<td><code>(language) -&gt; str</code></td>
+<td>Из <code>LANGUAGE_NAMES</code> или нормализованный код</td>
+</tr>
+<tr>
+<td><code>is_auto_language</code></td>
+<td><code>(bot_language) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>configured_language</code></td>
+<td><code>(bot_language) -&gt; str</code></td>
+<td><code>AUTO_LANGUAGE</code> или нормализованный код</td>
+</tr>
+<tr>
+<td><code>set_current_language</code></td>
+<td><code>(bot_language) -&gt; Token</code></td>
+<td><code>ContextVar.set()</code>, возвращает токен восстановления</td>
+</tr>
+<tr>
+<td><code>reset_current_language</code></td>
+<td><code>(token) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_current_language</code></td>
+<td><code>() -&gt; str</code></td>
+<td>Из контекста или <code>DEFAULT_LANGUAGE</code></td>
+</tr>
+<tr>
+<td><code>normalize_language</code></td>
+<td><code>(bot_language) -&gt; str</code></td>
+<td>С алиасами и fallback на <code>DEFAULT_LANGUAGE</code>; логирует предупреждение</td>
+</tr>
+<tr>
+<td><code>localized_text</code></td>
+<td><code>(key, bot_language=None) -&gt; str</code></td>
+<td>Fallback: английский → сам ключ; логирует отсутствие перевода</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="html_visualizer"><code>html_visualizer</code></h2>
+<p>Расширенная HTML-визуализация с Mermaid, PlantUML, библиографическими ссылками.</p>
+<h3 id="htmlvisualizer"><code>HTMLVisualizer</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plots_dir</code></td>
+<td><code>str</code></td>
+<td><code>'output/plots'</code></td>
+</tr>
+<tr>
+<td><code>diagrams_found</code></td>
+<td><code>int</code></td>
+<td>Счётчик диаграмм</td>
+</tr>
+<tr>
+<td><code>plantuml_jar</code></td>
+<td><code>str</code></td>
+<td>Путь к JAR-файлу PlantUML</td>
+</tr>
+<tr>
+<td><code>openai_helper</code></td>
+<td><code>Any</code></td>
+<td><code>None</code> по умолчанию</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Внутренние структуры данных:</strong>
+- <code>mermaid_blocks: dict[block_id, original_content]</code>
+- <code>mermaid_containers: dict[container_id, container_html]</code>
+- <code>mermaid_placeholders: dict[temp_id, original_placeholder]</code>
+- <code>reference_links: dict[ref_num, {url, text}]</code>
+- <code>html_content: list[str]</code>
+- <code>plot_files: list[str]</code>
+- <code>mermaid_files: list[str]</code> — отфильтрованный и отсортированный список <code>.mermaid</code></p>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__(plots_dir='output/plots')</code></td>
+<td>Создаёт директорию, ищет PlantUML JAR</td>
+</tr>
+<tr>
+<td><code>_convert_markdown(text)</code></td>
+<td>Конвертация с защитой Mermaid-блоков и библиографических ссылок</td>
+</tr>
+<tr>
+<td><code>_process_mermaid_diagrams(result)</code></td>
+<td>Извлечение → плейсхолдеры → Markdown → восстановление в HTML-контейнеры</td>
+</tr>
+<tr>
+<td><code>_create_mermaid_container(diagram_id, mermaid_code, index, title, creation_time)</code></td>
+<td>HTML-контейнер с полным функционалом</td>
+</tr>
+<tr>
+<td><code>_sort_files_by_creation_time(files, directory)</code></td>
+<td>От раннего к позднему</td>
+</tr>
+<tr>
+<td><code>advanced_visualization(result, session_id, show=False)</code></td>
+<td>HTML-страница из графиков и диаграмм</td>
+</tr>
+<tr>
+<td><code>_detect_and_save_mermaid(result, session_id)</code></td>
+<td>Замена блоков на интерактивные контейнеры</td>
+</tr>
+<tr>
+<td><code>_generate_plantuml(session_id)</code></td>
+<td>Из Markdown-файлов сессии в PNG</td>
+</tr>
+<tr>
+<td><code>generate_html_report(plot_files, plots_dir, processed_result, session_id)</code></td>
+<td>Полный HTML-отчёт</td>
+</tr>
+<tr>
+<td><code>_generate_html_report(session_id, output_path)</code></td>
+<td>С Mermaid, UML и JavaScript-интерфейсом</td>
+</tr>
+<tr>
+<td><code>create_html_page(output_path, session_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_enhance_mermaid_code(code)</code></td>
+<td>Отступы и форматирование</td>
+</tr>
+<tr>
+<td><code>_enhance_flowchart(code)</code></td>
+<td>Цветовые стили узлов</td>
+</tr>
+<tr>
+<td><code>_enhance_sequence_diagram(code)</code></td>
+<td>Стили и цвета</td>
+</tr>
+<tr>
+<td><code>_enhance_class_diagram(code)</code></td>
+<td>Цвета и стили</td>
+</tr>
+<tr>
+<td><code>_enhance_gantt(code)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_enhance_state_diagram(code)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_enhance_pie_chart(code)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_state_color(state_name)</code></td>
+<td>Hex-код цвета</td>
+</tr>
+<tr>
+<td><code>clean_data(session_id)</code></td>
+<td>Очистка данных сессии</td>
+</tr>
+<tr>
+<td><code>generate_puml_image(puml_code, output_dir, output_file, max_attempts=3)</code></td>
+<td>PNG из PlantUML с автоматическим исправлением ошибок</td>
+</tr>
+<tr>
+<td><code>visualize_agent_execution(agent, output_file="agent_execution.html")</code></td>
+<td>HTML-визуализация выполнения агента</td>
+</tr>
+</tbody>
+</table>
+<p><strong>JavaScript-функции (встроенные в HTML):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make_urls_clickable(html_content)</code></td>
+<td>Замена неоформленных URL на <code>&lt;a&gt;</code></td>
+</tr>
+<tr>
+<td><code>replace_with_link(match)</code></td>
+<td>Callback для <code>re.sub</code></td>
+</tr>
+<tr>
+<td><code>fix_url_with_underscores(match)</code></td>
+<td>Реконструкция URL, разбитого Markdown-курсивом</td>
+</tr>
+<tr>
+<td><code>fix_url_with_text_after(match)</code></td>
+<td>Слияние текста за ссылкой с URL</td>
+</tr>
+<tr>
+<td><code>fix_url_with_emphasis_before(match)</code></td>
+<td>Проверка комбинации текста + курсива на URL</td>
+</tr>
+<tr>
+<td><code>fix_description_with_emphasis(match)</code></td>
+<td>Удаление <code>&lt;em&gt;</code>, склейка описания</td>
+</tr>
+<tr>
+<td><code>fix_encoded_url(match)</code></td>
+<td>Сохранение URL-encoded символов</td>
+</tr>
+<tr>
+<td><code>json_to_readable_text(data, indent=0)</code></td>
+<td>Рекурсивное форматирование JSON</td>
+</tr>
+<tr>
+<td><code>zoomIn(content_id)</code>, <code>zoomOut(content_id)</code>, <code>resetZoom(content_id)</code></td>
+<td>Масштабирование диаграмм</td>
+</tr>
+<tr>
+<td><code>getScale(svg_element)</code></td>
+<td>Текущий коэффициент масштаба</td>
+</tr>
+<tr>
+<td><code>saveSvg(content_id, filename)</code></td>
+<td>Экспорт в SVG</td>
+</tr>
+<tr>
+<td><code>savePng(content_id, filename)</code></td>
+<td>Экспорт в PNG через canvas</td>
+</tr>
+<tr>
+<td><code>copyToClipboard(element_id)</code></td>
+<td>Копирование в буфер обмена</td>
+</tr>
+<tr>
+<td><code>toggleMdContent(element_id)</code></td>
+<td>Переключение видимости Markdown</td>
+</tr>
+<tr>
+<td><code>toggleCode(element_id)</code></td>
+<td>Переключение видимости блока кода</td>
+</tr>
+<tr>
+<td><code>showToast(message)</code></td>
+<td>Временное уведомление</td>
+</tr>
+<tr>
+<td><code>changeTheme(theme, contentId, codeId)</code></td>
+<td>Смена темы Mermaid с повторным рендерингом</td>
+</tr>
+<tr>
+<td><code>makeDraggable(element)</code></td>
+<td>Перетаскивание SVG мышью</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="database"><code>database</code></h2>
+<p>Потокобезопасный singleton для SQLite.</p>
+<h3 id="database_1"><code>Database</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_instance</code></td>
+<td><code>Database</code></td>
+<td>Singleton-экземпляр</td>
+</tr>
+<tr>
+<td><code>_lock</code></td>
+<td><code>threading.Lock</code></td>
+<td>Защита создания экземпляра</td>
+</tr>
+<tr>
+<td><code>_connection_lock</code></td>
+<td><code>threading.Lock</code></td>
+<td>Защита создания соединений</td>
+</tr>
+<tr>
+<td><code>_local</code></td>
+<td><code>threading.local</code></td>
+<td>Thread-specific соединения</td>
+</tr>
+<tr>
+<td><code>db_path</code></td>
+<td><code>str</code></td>
+<td>Путь к файлу БД</td>
+</tr>
+<tr>
+<td><code>_op_lock</code></td>
+<td><code>threading.RLock</code></td>
+<td>Защита операций в рамках одного соединения</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__new__</code></td>
+<td><code>(cls)</code></td>
+<td>Создание singleton с вызовом <code>init_db</code></td>
+</tr>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(self)</code></td>
+<td>Заглушка для предотвращения повторной инициализации</td>
+</tr>
+<tr>
+<td><code>get_connection</code></td>
+<td><code>() -&gt; Generator[sqlite3.Connection, None, None]</code></td>
+<td>Контекстный менеджер с <code>PRAGMA</code>: <code>row_factory=sqlite3.Row</code>, <code>foreign_keys=ON</code>, <code>journal_mode=WAL</code>, <code>busy_timeout</code>; автоматический <code>commit</code>/<code>rollback</code></td>
+</tr>
+<tr>
+<td><code>__del__</code></td>
+<td><code>(self)</code></td>
+<td>Закрытие thread-local соединения</td>
+</tr>
+<tr>
+<td><code>init_db</code></td>
+<td><code>(self)</code></td>
+<td>Таблицы: <code>user_settings</code>, <code>conversation_context</code>, <code>images</code>, <code>hindsight_finalize_jobs</code>; индексы</td>
+</tr>
+<tr>
+<td><code>save_user_settings</code></td>
+<td><code>(user_id: int, settings: Dict) -&gt; None</code></td>
+<td>JSON-сериализация, upsert-логика</td>
+</tr>
+<tr>
+<td><code>get_user_settings</code></td>
+<td><code>(user_id: int) -&gt; Optional[Dict]</code></td>
+<td>JSON-десериализация</td>
+</tr>
+<tr>
+<td><code>get_active_session_id</code></td>
+<td><code>(user_id: int) -&gt; Optional[str]</code></td>
+<td><code>is_active = 1</code></td>
+</tr>
+<tr>
+<td><code>_session_name_source_text</code></td>
+<td><code>(content: Any) -&gt; str</code></td>
+<td>Статический; извлекает текст из строки или списка словарей с полем <code>'text'</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="hindsight_client"><code>hindsight_client</code></h2>
+<p>Асинхронный HTTP-клиент для Hindsight API (семантическая память).</p>
+<h3 id="hindsighterror"><code>HindsightError</code></h3>
+<p>Базовое исключение клиента.</p>
+<h3 id="hindsightclient"><code>HindsightClient</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base_url</code></td>
+<td><code>str</code></td>
+<td>Без завершающего слэша</td>
+</tr>
+<tr>
+<td><code>api_token</code></td>
+<td><code>str</code></td>
+<td>Для заголовка <code>Authorization</code></td>
+</tr>
+<tr>
+<td><code>namespace</code></td>
+<td><code>str</code></td>
+<td><code>"default"</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(base_url, api_token="", *, namespace="default", timeout=30.0, transport=None)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>() -&gt; bool</code></td>
+<td><code>base_url</code> задан и не пуст</td>
+</tr>
+<tr>
+<td><code>close</code></td>
+<td><code>() -&gt; None</code></td>
+<td>Закрытие соединения</td>
+</tr>
+<tr>
+<td><code>_headers</code></td>
+<td><code>() -&gt; dict</code></td>
+<td><code>Content-Type</code>, <code>Accept</code>, опциональный <code>Authorization</code></td>
+</tr>
+<tr>
+<td><code>_bank_path</code></td>
+<td><code>(bank_id, suffix) -&gt; str</code></td>
+<td><code>/v1/{namespace}/banks/{bank_id}/{suffix}</code></td>
+</tr>
+<tr>
+<td><code>request</code></td>
+<td><code>(method, path, *, json_payload=None, params=None, timeout=None) -&gt; dict</code></td>
+<td><code>HindsightError</code> при <code>base_url</code> не сконфигурирован, статус ≥400, невалидный JSON</td>
+</tr>
+<tr>
+<td><code>recall</code></td>
+<td><code>(bank_id, query, *, budget="mid", max_tokens=4096, memory_types=None, trace=False) -&gt; dict</code></td>
+<td>Семантический поиск</td>
+</tr>
+<tr>
+<td><code>retain_memories</code></td>
+<td><code>(bank_id, items, *, async_store=True) -&gt; dict</code></td>
+<td>Сохранение фрагментов</td>
+</tr>
+<tr>
+<td><code>list_memories</code></td>
+<td><code>(bank_id, *, limit=20, offset=0, query=None, memory_type=None) -&gt; dict</code></td>
+<td>Пагинация, фильтрация</td>
+</tr>
+<tr>
+<td><code>stats</code></td>
+<td><code>(bank_id) -&gt; dict</code></td>
+<td>Статистика банка</td>
+</tr>
+</tbody>
+</table>
+<h3 id="format_recall_resultsdata-max_items8-str"><code>format_recall_results(data, *, max_items=8) -&gt; str</code></h3>
+<p>Форматирует результаты в markdown-список: <code>- text (type=...; when=...; context=...)</code> или пустая строка.</p>
+<hr/>
+<h2 id="plugin_manager"><code>plugin_manager</code></h2>
+<p>Динамическая загрузка, регистрация и выполнение плагинов.</p>
+<h3 id="plugin"><code>Plugin</code> (базовый класс)</h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plugin_id</code></td>
+<td><code>str \| None</code></td>
+<td>Стабильный идентификатор (по умолчанию имя класса)</td>
+</tr>
+<tr>
+<td><code>function_prefix</code></td>
+<td><code>str \| None</code></td>
+<td>Префикс пространства имён (по умолчанию <code>plugin_id</code>)</td>
+</tr>
+<tr>
+<td><code>openai</code></td>
+<td><code>Any</code></td>
+<td>Устанавливается при инициализации</td>
+</tr>
+<tr>
+<td><code>bot</code></td>
+<td><code>Any</code></td>
+<td>Устанавливается при инициализации</td>
+</tr>
+<tr>
+<td><code>storage_root</code></td>
+<td><code>str \| None</code></td>
+<td>Путь к корневой директории хранилища</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Возвращает</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_plugin_id()</code></td>
+<td><code>str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_function_prefix()</code></td>
+<td><code>str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>initialize(openai, bot, storage_root)</code></td>
+<td><code>None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>close()</code></td>
+<td><code>None</code></td>
+<td>Освобождение ресурсов</td>
+</tr>
+<tr>
+<td><code>on_startup(application)</code></td>
+<td><code>None</code></td>
+<td>Асинхронный хук</td>
+</tr>
+<tr>
+<td><code>get_bot_language()</code></td>
+<td><code>str</code></td>
+<td>Из конфигурации или <code>"en"</code></td>
+</tr>
+<tr>
+<td><code>t(key, **kwargs)</code></td>
+<td><code>str</code></td>
+<td>Локализация с подстановкой</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>str</code></td>
+<td><strong>Абстрактный</strong></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>[Dict]</code></td>
+<td>JSON Schema функций, <strong>абстрактный</strong></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>Dict</code></td>
+<td><strong>Абстрактный</strong></td>
+</tr>
+<tr>
+<td><code>get_commands()</code></td>
+<td><code>List[Dict]</code></td>
+<td>Telegram-команды: <code>command</code>, <code>description</code>, <code>args</code>, <code>handler</code>, <code>handler_kwargs</code></td>
+</tr>
+<tr>
+<td><code>get_message_handlers()</code></td>
+<td><code>List[Dict]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_inline_handlers()</code></td>
+<td><code>List[Dict]</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="pluginmanager"><code>PluginManager</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plugins</code></td>
+<td><code>dict[str, type[Plugin]]</code></td>
+<td>Зарегистрированные классы</td>
+</tr>
+<tr>
+<td><code>plugin_instances</code></td>
+<td><code>dict[str, Plugin]</code></td>
+<td>Кэш экземпляров</td>
+</tr>
+<tr>
+<td><code>openai</code></td>
+<td><code>Any</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>bot</code></td>
+<td><code>Any</code></td>
+<td>Извлекается из <code>openai</code></td>
+</tr>
+<tr>
+<td><code>enabled_plugins</code></td>
+<td><code>list[str]</code></td>
+<td>Из конфигурации</td>
+</tr>
+<tr>
+<td><code>strict_validation</code></td>
+<td><code>bool</code></td>
+<td>Из <code>PLUGIN_STRICT_VALIDATION</code></td>
+</tr>
+<tr>
+<td><code>storage_root</code></td>
+<td><code>str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>plugins_directory</code></td>
+<td><code>str</code></td>
+<td>Путь к директории плагинов</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(config, plugins_directory="plugins")</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>set_openai</code></td>
+<td><code>(openai)</code></td>
+<td>Переинициализация всех экземпляров</td>
+</tr>
+<tr>
+<td><code>load_plugins</code></td>
+<td><code>()</code></td>
+<td>Фильтрация по <code>enabled_plugins</code></td>
+</tr>
+<tr>
+<td><code>load_plugin_module</code></td>
+<td><code>(plugin_name) -&gt; module \| None</code></td>
+<td>По имени файла без <code>.py</code></td>
+</tr>
+<tr>
+<td><code>register_plugin</code></td>
+<td><code>(plugin_name, plugin_module)</code></td>
+<td>Первый наследник <code>Plugin</code> из модуля</td>
+</tr>
+<tr>
+<td><code>execute</code></td>
+<td><code>(plugin_name, user_id, *args)</code></td>
+<td>Асинхронный единый интерфейс</td>
+</tr>
+<tr>
+<td><code>reinitialize</code></td>
+<td><code>()</code></td>
+<td>Полная перезагрузка</td>
+</tr>
+<tr>
+<td><code>get_functions_specs</code></td>
+<td><code>(helper, model_to_use, allowed_plugins=None)</code></td>
+<td>Спецификации для LLM; <code>ValueError</code> при дубликатах в strict-режиме</td>
+</tr>
+<tr>
+<td><code>call_function</code></td>
+<td><code>(function_name, helper, arguments, request_context=None)</code></td>
+<td>Валидация аргументов, <code>json.JSONDecodeError</code></td>
+</tr>
+<tr>
+<td><code>get_plugin_source_name</code></td>
+<td><code>(function_name) -&gt; str</code></td>
+<td>Имя источника или пустая строка</td>
+</tr>
+<tr>
+<td><code>get_spec_by_function_name</code></td>
+<td><code>(function_name) -&gt; dict \| None</code></td>
+<td>Нормализованная спецификация</td>
+</tr>
+<tr>
+<td><code>get_plugin_name_by_function_name</code></td>
+<td><code>(function_name) -&gt; str \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>is_function_allowed</code></td>
+<td><code>(function_name, allowed_plugins) -&gt; bool</code></td>
+<td><code>['All']</code> — все, <code>['None']</code> — никакие</td>
+</tr>
+<tr>
+<td><code>get_subagent_function_specs</code></td>
+<td><code>(helper, model_to_use, parent_allowed_plugins=None, blocked_function_names=None)</code></td>
+<td><code>(filtered_specs, allowed_function_names)</code></td>
+</tr>
+<tr>
+<td><code>is_subagent_function_allowed</code></td>
+<td><code>(function_name, parent_allowed_plugins=None, blocked_function_names=None) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_plugin</code></td>
+<td><code>(plugin_name) -&gt; Plugin \| None</code></td>
+<td>С инициализацией и кешированием</td>
+</tr>
+<tr>
+<td><code>close_all</code></td>
+<td><code>()</code></td>
+<td>Закрытие всех экземпляров</td>
+</tr>
+<tr>
+<td><code>_normalize_specs</code></td>
+<td><code>(specs, plugin_instance) -&gt; List[Dict]</code></td>
+<td>Добавление префикса к именам без точки</td>
+</tr>
+<tr>
+<td><code>_validate_enabled_plugins</code></td>
+<td><code>()</code></td>
+<td><code>ValueError</code> при <code>strict_validation=True</code> и проблемах</td>
+</tr>
+<tr>
+<td><code>_get_available_plugin_files</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_suggest_plugin_names</code></td>
+<td><code>(name, candidates) -&gt; list[str]</code></td>
+<td>До 3 имён с коэффициентом ≥ 0.6</td>
+</tr>
+<tr>
+<td><code>filter_allowed_plugins</code></td>
+<td><code>(allowed_plugins) -&gt; list[str]</code></td>
+<td><code>ValueError</code> в strict-режиме</td>
+</tr>
+<tr>
+<td><code>get_all_plugin_descriptions</code></td>
+<td><code>() -&gt; list[dict]</code></td>
+<td><code>plugin</code>, <code>function</code>, <code>description</code></td>
+</tr>
+<tr>
+<td><code>get_plugin_spec</code></td>
+<td><code>(plugin_name) -&gt; List[Dict] \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>has_plugin</code></td>
+<td><code>(plugin_name) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_plugin_commands</code></td>
+<td><code>() -&gt; List[Dict]</code></td>
+<td>С валидацией и дедупликацией</td>
+</tr>
+<tr>
+<td><code>build_bot_commands</code></td>
+<td><code>() -&gt; dict</code></td>
+<td><code>plugin_commands</code>, <code>menu_entries</code></td>
+</tr>
+<tr>
+<td><code>_validate_and_normalize_command</code></td>
+<td><code>(cmd, plugin_name) -&gt; Dict \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_message_handlers</code></td>
+<td><code>() -&gt; List[Dict]</code></td>
+<td>С заполненным <code>plugin_name</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="openai_helper"><code>openai_helper</code></h2>
+<p>Центральный компонент для работы с LLM.</p>
+<h3 id="default_max_tokensmodelnone-int"><code>default_max_tokens(model=None) -&gt; int</code></h3>
+<h3 id="are_functions_availablemodel-bool"><code>are_functions_available(model) -&gt; bool</code></h3>
+<h3 id="openaihelper"><code>OpenAIHelper</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>client</code></td>
+<td><code>openai.AsyncOpenAI</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>gateway_client</code></td>
+<td><code>Any</code></td>
+<td>Клиент LLM Gateway</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td><code>dict</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>plugin_manager</code></td>
+<td><code>PluginManager</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>db</code></td>
+<td><code>Database</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>conversations</code></td>
+<td><code>dict[int, list]</code></td>
+<td>История сообщений</td>
+</tr>
+<tr>
+<td><code>conversations_vision</code></td>
+<td><code>dict[int, bool]</code></td>
+<td>Флаги vision-режима</td>
+</tr>
+<tr>
+<td><code>loaded_conversation_sessions</code></td>
+<td><code>dict[int, str]</code></td>
+<td>Загруженные сессии</td>
+</tr>
+<tr>
+<td><code>last_updated</code></td>
+<td><code>dict[int, datetime]</code></td>
+<td>Временные метки</td>
+</tr>
+<tr>
+<td><code>_tts_models_cache</code></td>
+<td><code>tuple[float, list[str]]</code></td>
+<td>Кэш TTS-моделей</td>
+</tr>
+<tr>
+<td><code>_tts_voices_cache</code></td>
+<td><code>dict[str, tuple[float, list[str]]]</code></td>
+<td>Кэш голосов по моделям</td>
+</tr>
+<tr>
+<td><code>chat_modes_registry</code></td>
+<td><code>ChatModesRegistry</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>common_args</code></td>
+<td><code>dict</code></td>
+<td>Динамически формируемые параметры</td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td><code>list</code></td>
+<td>Спецификации функций от <code>plugin_manager</code></td>
+</tr>
+<tr>
+<td><code>hindsight_client</code></td>
+<td><code>HindsightClient \| None</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(config, plugin_manager, db)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_chat_response</code></td>
+<td><code>(chat_id, query, request_id=None, session_id=None, user_id=None, request_context=None, **kwargs) -&gt; tuple[str, str]</code></td>
+<td>Полный ответ</td>
+</tr>
+<tr>
+<td><code>get_chat_response_stream</code></td>
+<td><code>(chat_id, query, request_id=None, session_id=None, user_id=None, request_context=None)</code></td>
+<td>Генератор <code>(ответ, токены)</code></td>
+</tr>
+<tr>
+<td><code>__common_get_chat_response</code></td>
+<td><code>(chat_id, query, stream=False, session_id=None, **kwargs)</code></td>
+<td>Внутренний; до 3 ретраев <code>RateLimitError</code> с интервалом 20с</td>
+</tr>
+<tr>
+<td><code>__common_get_chat_response_vision</code></td>
+<td><code>(chat_id, content, stream=False)</code></td>
+<td>Vision-запрос</td>
+</tr>
+<tr>
+<td><code>__handle_function_call</code></td>
+<td><code>(chat_id, response, stream, times, tools_used, allowed_plugins, user_id, request_context)</code></td>
+<td>Делегирование</td>
+</tr>
+<tr>
+<td><code>_uses_structured_tool_history</code></td>
+<td><code>(model_to_use) -&gt; bool</code></td>
+<td><code>GPT_4O_MODELS</code> и <code>LLMGATEWAY_CHAT_MODELS</code></td>
+</tr>
+<tr>
+<td><code>_tool_result_content</code></td>
+<td><code>(content) -&gt; str</code></td>
+<td>Нормализация в строку</td>
+</tr>
+<tr>
+<td><code>_add_assistant_tool_calls_to_history</code></td>
+<td><code>(chat_id, tool_calls)</code></td>
+<td>Формат OpenAI</td>
+</tr>
+<tr>
+<td><code>_mode_from_system_message</code></td>
+<td><code>(system_message) -&gt; dict \| None</code></td>
+<td>Определение режима</td>
+</tr>
+<tr>
+<td><code>_defer_direct_tool_results</code></td>
+<td><code>(chat_id) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_should_defer_direct_results</code></td>
+<td><code>(chat_id) -&gt; bool</code></td>
+<td>По системному сообщению</td>
+</tr>
+<tr>
+<td><code>_add_function_call_to_history</code></td>
+<td><code>(chat_id, function_name, content, tool_call_id=None)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_retry_empty_response_after_tools</code></td>
+<td><code>(chat_id, user_id, session_id)</code></td>
+<td>Без tools</td>
+</tr>
+<tr>
+<td><code>_retry_empty_response_with_tools</code></td>
+<td><code>(chat_id, user_id, session_id, allowed_plugins)</code></td>
+<td>С разрешёнными tools</td>
+</tr>
+<tr>
+<td><code>_create_empty_response_retry_completion</code></td>
+<td><code>(retry_kind, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>generate_image</code></td>
+<td><code>(prompt) -&gt; tuple[str, str]</code></td>
+<td>URL и размер</td>
+</tr>
+<tr>
+<td><code>edit_telegram_image</code></td>
+<td><code>(prompt, file_id) -&gt; tuple[str, str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_cache_is_fresh</code></td>
+<td><code>(cache_entry) -&gt; bool</code></td>
+<td>Статический</td>
+</tr>
+<tr>
+<td><code>_extract_option_ids</code></td>
+<td><code>(payload, preferred_keys) -&gt; list[str]</code></td>
+<td>Статический</td>
+</tr>
+<tr>
+<td><code>classify_reply_intent</code></td>
+<td><code>(user_text, replied_message_kind) -&gt; str</code></td>
+<td><code>"image_edit"</code>, <code>"image_describe"</code>, <code>"text_reply"</code>, <code>"unknown"</code></td>
+</tr>
+<tr>
+<td><code>get_conversation_stats</code></td>
+<td><code>(chat_id) -&gt; tuple[int, int]</code></td>
+<td>Сообщения и токены</td>
+</tr>
+<tr>
+<td><code>ask</code></td>
+<td><code>(prompt, user_id, assistant_prompt=None, model=None)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_disabled_plugins_for_user</code></td>
+<td><code>(user_id) -&gt; set[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_apply_user_disabled_plugins</code></td>
+<td><code>(allowed_plugins, user_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>resolve_allowed_plugins</code></td>
+<td><code>(chat_id, session_id=None, user_id=None)</code></td>
+<td>Итоговый список с учётом режима и настроек</td>
+</tr>
+<tr>
+<td><code>_localized_text</code></td>
+<td><code>(key, bot_language)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>interpret_image</code></td>
+<td><code>(chat_id, fileobj, prompt=None)</code></td>
+<td>Полный ответ vision</td>
+</tr>
+<tr>
+<td><code>interpret_image_stream</code></td>
+<td><code>(chat_id, fileobj, prompt=None)</code></td>
+<td>Потоковый vision</td>
+</tr>
+<tr>
+<td><code>is_hindsight_enabled</code></td>
+<td><code>() -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_hindsight_bank_id</code></td>
+<td><code>(user_id) -&gt; str</code></td>
+<td>Префикс с <code>user_id</code></td>
+</tr>
+<tr>
+<td><code>_hindsight_memory_types</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td>По умолчанию <code>['world', 'experience']</code></td>
+</tr>
+<tr>
+<td><code>_prepare_hindsight_session_memory_context</code></td>
+<td><code>(chat_id, user_id, query, parse_mode, temperature, max_tokens_percent, session_id)</code></td>
+<td>Автоматический recall</td>
+</tr>
+<tr>
+<td><code>_has_hindsight_memory_context</code></td>
+<td><code>(messages) -&gt; bool</code></td>
+<td>Проверка маркера</td>
+</tr>
+<tr>
+<td><code>_insert_hindsight_memory_context</code></td>
+<td><code>(chat_id, memory)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_hindsight_context</code></td>
+<td><code>(chat_id, memory)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>finalize_hindsight_session_memory</code></td>
+<td><code>(user_id, session_id, messages=None, *, raise_on_error=False, async_store=None) -&gt; int</code></td>
+<td>Количество сохранённых элементов</td>
+</tr>
+<tr>
+<td><code>_retain_hindsight_items</code></td>
+<td><code>(chat_id, user_id, items, session_id, mode, document_id, async_store)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_extract_hindsight_memory_items</code></td>
+<td><code>(transcript) -&gt; list[dict]</code></td>
+<td>Извлечение через LLM</td>
+</tr>
+<tr>
+<td><code>_parse_hindsight_memory_items</code></td>
+<td><code>(content) -&gt; list[dict]</code></td>
+<td>Парсинг и валидация JSON</td>
+</tr>
+<tr>
+<td><code>_looks_sensitive_memory</code></td>
+<td><code>(content) -&gt; bool</code></td>
+<td>Проверка на API-ключи, пароли, токены</td>
+</tr>
+<tr>
+<td><code>reset_chat_history</code></td>
+<td><code>(chat_id, content='', session_id=None)</code></td>
+<td><code>ValueError</code> при невозможности создать сессию</td>
+</tr>
+<tr>
+<td><code>__max_age_reached</code></td>
+<td><code>(chat_id) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>__add_function_call_to_history</code></td>
+<td><code>(chat_id, function_name, content, tool_call_id)</code></td>
+<td>С адаптацией под провайдера</td>
+</tr>
+<tr>
+<td><code>__add_to_history</code></td>
+<td><code>(chat_id, role, content, session_id=None)</code></td>
+<td>С сохранением в БД</td>
+</tr>
+<tr>
+<td><code>__summarise</code></td>
+<td><code>(conversation, chat_id=None, session_id=None) -&gt; str</code></td>
+<td>До 1000 символов</td>
+</tr>
+<tr>
+<td><code>__count_tokens</code></td>
+<td><code>(messages, model_to_use=None) -&gt; int</code></td>
+<td>Через <code>tiktoken</code></td>
+</tr>
+<tr>
+<td><code>num_tokens_from_messages</code></td>
+<td><code>(messages, model) -&gt; int</code></td>
+<td>С учётом служебных; <code>NotImplementedError</code></td>
+</tr>
+<tr>
+<td><code>__count_tokens_vision</code></td>
+<td><code>(image_bytes) -&gt; int</code></td>
+<td>Алгоритм OpenAI Vision</td>
+</tr>
+<tr>
+<td><code>get_file_data</code></td>
+<td><code>(file_id) -&gt; bytes</code></td>
+<td>Из Telegram</td>
+</tr>
+<tr>
+<td><code>download_file_as_bytes</code></td>
+<td><code>(file_id) -&gt; bytes</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>set_last_image_file_id</code></td>
+<td><code>(chat_id, file_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_last_image_file_id</code></td>
+<td><code>(chat_id) -&gt; str \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>generate_session_name</code></td>
+<td><code>(chat_id, first_message, session_id=None) -&gt; str</code></td>
+<td>Через LLM, до 50 символов</td>
+</tr>
+<tr>
+<td><code>ask_sync</code></td>
+<td><code>(prompt, user_id, assistant_prompt=None, model=None)</code></td>
+<td>Синхронный</td>
+</tr>
+<tr>
+<td><code>send_request</code></td>
+<td><code>(prompt, model_to_use, max_tokens, temperature) -&gt; tuple[str, int]</code></td>
+<td>Синхронный HTTP</td>
+</tr>
+<tr>
+<td><code>get_current_model</code></td>
+<td><code>(user_id=None) -&gt; str</code></td>
+<td>Приоритет: сессия → пользователь → конфиг; фильтрация по <code>LLMGATEWAY_CHAT_MODELS</code></td>
+</tr>
+<tr>
+<td><code>get_max_tokens</code></td>
+<td><code>(model_to_use, max_tokens_percent, chat_id) -&gt; int</code></td>
+<td>Для GPT-4O фиксированный лимит 32768</td>
+</tr>
+<tr>
+<td><code>get_all_modes</code></td>
+<td><code>()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_auto_chat_mode_prompt</code></td>
+<td><code>(query) -&gt; str</code></td>
+<td>Автоопределение режима</td>
+</tr>
+<tr>
+<td><code>close</code></td>
+<td><code>()</code></td>
+<td>Асинхронное закрытие клиентов</td>
+</tr>
+<tr>
+<td><code>_is_tts_model_id</code></td>
+<td><code>(model_id) -&gt; bool</code></td>
+<td><code>"tts"</code>, <code>"speech"</code>, <code>"silero"</code></td>
+</tr>
+<tr>
+<td><code>get_available_tts_models</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td>С кэшированием</td>
+</tr>
+<tr>
+<td><code>get_available_tts_voices</code></td>
+<td><code>(model) -&gt; list[str]</code></td>
+<td>С кэшированием</td>
+</tr>
+<tr>
+<td><code>get_user_tts_model</code></td>
+<td><code>(user_id) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_user_tts_voice</code></td>
+<td><code>(user_id) -&gt; str</code></td>
+<td>В нижнем регистре</td>
+</tr>
+<tr>
+<td><code>generate_speech</code></td>
+<td><code>(text, user_id) -&gt; tuple[BytesIO, int]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>transcribe</code></td>
+<td><code>(filename) -&gt; str</code></td>
+<td>Whisper</td>
+</tr>
+<tr>
+<td><code>_vision_history_content</code></td>
+<td><code>(content) -&gt; str</code></td>
+<td>Статический; извлечение текста из мультимодального</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="validation"><code>validation</code></h2>
+<p>Валидация конфигурации и аргументов функций.</p>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>validate_openai_config</code></td>
+<td><code>(config) -&gt; None</code></td>
+<td><code>ValueError</code> при отсутствии обязательных ключей или неверных типах</td>
+</tr>
+<tr>
+<td><code>validate_function_args</code></td>
+<td><code>(spec, args) -&gt; List[str]</code></td>
+<td>По JSON Schema; список ошибок</td>
+</tr>
+<tr>
+<td><code>_format_validation_error</code></td>
+<td><code>(error) -&gt; str</code></td>
+<td>Человекочитаемое сообщение</td>
+</tr>
+<tr>
+<td><code>_join_path</code></td>
+<td><code>(path) -&gt; str</code></td>
+<td>Точечная нотация: <code>foo.bar[0].baz</code></td>
+</tr>
+<tr>
+<td><code>_required_property_name</code></td>
+<td><code>(message) -&gt; str</code></td>
+<td>Извлечение имени из <code>"required"</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="bot"><code>bot</code></h2>
+<p>Основной класс Telegram-бота.</p>
+<h3 id="chatgpttelegrambot-telegrambot"><code>ChatGPTTelegramBot</code> / <code>TelegramBot</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Тип</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>config</code></td>
+<td><code>dict</code></td>
+<td><code>BotConfig</code></td>
+</tr>
+<tr>
+<td><code>application</code></td>
+<td><code>Application</code></td>
+<td>После сборки</td>
+</tr>
+<tr>
+<td><code>openai</code></td>
+<td><code>OpenAIHelper</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_background_tasks</code></td>
+<td><code>list[asyncio.Task]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_plugin_message_handlers_registered</code></td>
+<td><code>bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_message_tail_handlers_registered</code></td>
+<td><code>bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>message_buffer</code></td>
+<td><code>dict[int, buffer_data]</code></td>
+<td><code>buffer_data</code>: <code>{messages, processing, timer}</code></td>
+</tr>
+<tr>
+<td><code>plugin_menu_entries</code></td>
+<td><code>list</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>buffer_lock</code></td>
+<td><code>asyncio.Lock</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>usage</code></td>
+<td><code>dict[int, UsageTracker]</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__</code></td>
+<td><code>(config, openai, db)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_is_auto_language_enabled</code></td>
+<td><code>() -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_configured_language</code></td>
+<td><code>() -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_detect_user_language</code></td>
+<td><code>(update) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_user_language</code></td>
+<td><code>(update) -&gt; str</code></td>
+<td>С кешированием</td>
+</tr>
+<tr>
+<td><code>prepare_user_language</code></td>
+<td><code>(update, context) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_chat_modes</code></td>
+<td><code>()</code></td>
+<td>Кеширование на 5 минут</td>
+</tr>
+<tr>
+<td><code>_image_file_id_from_message</code></td>
+<td><code>(message) -&gt; str \| None</code></td>
+<td>Последнее из <code>photo</code> или <code>document</code> с <code>image/*</code></td>
+</tr>
+<tr>
+<td><code>_document_file_from_message</code></td>
+<td><code>(message) -&gt; Document \| None</code></td>
+<td>Исключая изображения</td>
+</tr>
+<tr>
+<td><code>_safe_reply_file_name</code></td>
+<td><code>(document) -&gt; str</code></td>
+<td>Очистка небезопасных символов</td>
+</tr>
+<tr>
+<td><code>_download_replied_file_for_model</code></td>
+<td><code>(update, context) -&gt; dict \| None</code></td>
+<td>Временная директория</td>
+</tr>
+<tr>
+<td><code>_prompt_with_replied_file_context</code></td>
+<td><code>(prompt, file_context) -&gt; str</code></td>
+<td>Расширенный промпт</td>
+</tr>
+<tr>
+<td><code>_cleanup_replied_file_context</code></td>
+<td><code>(file_context) -&gt; None</code></td>
+<td>Удаление временного файла</td>
+</tr>
+<tr>
+<td><code>_reply_context_kind</code></td>
+<td><code>(update) -&gt; str \| None</code></td>
+<td><code>"image"</code>, <code>"text"</code>, <code>"other"</code></td>
+</tr>
+<tr>
+<td><code>_classify_reply_intent</code></td>
+<td><code>(update, prompt) -&gt; str \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_remember_sent_image_messages</code></td>
+<td><code>(update, sent_messages)</code></td>
+<td>В БД и OpenAI</td>
+</tr>
+<tr>
+<td><code>_get_agent_tools_plugin</code></td>
+<td><code>()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_clear_agent_plan</code></td>
+<td><code>(chat_id, user_id, *, reason, terminal_only=False)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_plan_status_provider</code></td>
+<td><code>(chat_id, user_id)</code></td>
+<td><code>(provider, interval)</code></td>
+</tr>
+<tr>
+<td><code>_handle_direct_result</code></td>
+<td><code>(update, response) -&gt; None</code></td>
+<td>Доставка <code>direct_result</code></td>
+</tr>
+<tr>
+<td><code>_run_post_delivery_cleanup</code></td>
+<td><code>(response) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_enqueue_hindsight_session_finalize_before_delete</code></td>
+<td><code>(user_id, session_id) -&gt; int</code></td>
+<td><code>job_id</code> или <code>0</code></td>
+</tr>
+<tr>
+<td><code>_enqueue_hindsight_and_delete_oldest_sessions_for_limit</code></td>
+<td><code>(user_id, max_sessions)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_process_pending_hindsight_finalize_jobs</code></td>
+<td><code>(limit) -&gt; int</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>hindsight_finalize_worker</code></td>
+<td><code>() -&gt; None</code></td>
+<td>Фоновый цикл</td>
+</tr>
+<tr>
+<td><code>_image_edit_source_file_id</code></td>
+<td><code>(update, user_id, chat_id, prompt) -&gt; str \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_image_description_source_file_id</code></td>
+<td><code>(update, user_id, chat_id, prompt) -&gt; str \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_telegram_image_as_png</code></td>
+<td><code>(file_id) -&gt; BytesIO</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_edit_image_from_context</code></td>
+<td><code>(update, prompt, file_id) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_describe_image_from_context</code></td>
+<td><code>(update, prompt, file_id) -&gt; None</code></td>
+<td>Обрезан</td>
+</tr>
+<tr>
+<td><code>interpret_image</code></td>
+<td><code>(update, image_file, prompt) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>cleanup_inline_cache</code></td>
+<td><code>()</code></td>
+<td>Очистка устаревших, последние 100 каждые 10 мин</td>
+</tr>
+<tr>
+<td><code>help</code></td>
+<td><code>(update, _) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>stats</code></td>
+<td><code>(update, context) -&gt; None</code></td>
+<td><code>Access denied</code></td>
+</tr>
+<tr>
+<td><code>resend</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>settings</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_settings_callback</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_credits</code></td>
+<td><code>() -&gt; float \| str</code></td>
+<td>VSEGPT API</td>
+</tr>
+<tr>
+<td><code>_show_usage_stats</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_settings_page</code></td>
+<td><code>(parts) -&gt; int</code></td>
+<td>Из <code>callback_data</code></td>
+</tr>
+<tr>
+<td><code>_settings_text</code></td>
+<td><code>(bot_language, user_id) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_settings_menu</code></td>
+<td><code>(bot_language, user_id) -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_language_settings_menu</code></td>
+<td><code>(page, bot_language) -&gt; InlineKeyboardMarkup</code></td>
+<td>Пагинация</td>
+</tr>
+<tr>
+<td><code>_show_tts_model_settings</code></td>
+<td><code>(query, page, user_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_set_tts_model_setting</code></td>
+<td><code>(query, parts, user_id, bot_language)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_show_tts_voice_settings</code></td>
+<td><code>(query, page, user_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_set_tts_voice_setting</code></td>
+<td><code>(query, parts, user_id, bot_language)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_available_plugin_names</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_disabled_plugins_for_user</code></td>
+<td><code>(user_id) -&gt; set[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_is_plugin_disabled_for_user</code></td>
+<td><code>(plugin_name, user_id) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_available_skill_names</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_plugin_settings_menu</code></td>
+<td><code>(page, user_id) -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_skill_settings_menu</code></td>
+<td><code>(page, user_id) -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_toggle_plugin_setting</code></td>
+<td><code>(query, parts, user_id) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_toggle_skill_setting</code></td>
+<td><code>(query, parts, user_id) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_back_settings_menu</code></td>
+<td><code>() -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reset</code></td>
+<td><code>(update, context, error=False)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_prompt_selection</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>restart</code></td>
+<td><code>(update, context)</code></td>
+<td>Только администраторы</td>
+</tr>
+<tr>
+<td><code>image</code></td>
+<td><code>(update, context)</code></td>
+<td>DALL·E</td>
+</tr>
+<tr>
+<td><code>tts</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>transcribe</code></td>
+<td><code>(update, context)</code></td>
+<td>Whisper; <code>TimedOut</code> с ретраями</td>
+</tr>
+<tr>
+<td><code>vision</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td><code>(update, context)</code></td>
+<td>Основной обработчик</td>
+</tr>
+<tr>
+<td><code>_delayed_process_buffer</code></td>
+<td><code>(chat_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>process_buffer</code></td>
+<td><code>(chat_id)</code></td>
+<td>Группировка по пользователям, сортировка по времени</td>
+</tr>
+<tr>
+<td><code>process_message</code></td>
+<td><code>(prompt, update, context) -&gt; None</code></td>
+<td>С <code>conversation_lock</code></td>
+</tr>
+<tr>
+<td><code>_get_conversation_lock</code></td>
+<td><code>(conversation_key) -&gt; asyncio.Lock</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_process_message_locked</code></td>
+<td><code>(prompt, update, context)</code></td>
+<td>Классификация, маршрутизация, потоковая/пакетная генерация</td>
+</tr>
+<tr>
+<td><code>_reply</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>inline_query</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>send_inline_query_result</code></td>
+<td><code>(update, result_id, message_content, callback_data="")</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_callback_inline_query</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>edit_message_with_retry</code></td>
+<td><code>(context, chat_id, message_id, text, is_inline=False, max_retries=5)</code></td>
+<td><code>RetryAfter</code>, <code>TimedOut</code></td>
+</tr>
+<tr>
+<td><code>wrap_with_indicator</code></td>
+<td><code>(update, context, coroutine, chat_action, is_inline=False)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>check_allowed_and_within_budget</code></td>
+<td><code>(update, context, is_inline=False) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>send_disallowed_message</code></td>
+<td><code>(update, _, is_inline=False)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>send_budget_reached_message</code></td>
+<td><code>(update, _, is_inline=False)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_register_plugin_message_handlers</code></td>
+<td><code>(application, source)</code></td>
+<td>Защита от повторной регистрации</td>
+</tr>
+<tr>
+<td><code>_register_message_tail_handlers</code></td>
+<td><code>(application)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>post_init</code></td>
+<td><code>(application)</code></td>
+<td>Установка команд, фоновые задачи</td>
+</tr>
+<tr>
+<td><code>handle_plugin_callback_query</code></td>
+<td><code>(update, context, cmd)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_plugin_command</code></td>
+<td><code>(update, context, cmd)</code></td>
+<td><code>ValueError</code></td>
+</tr>
+<tr>
+<td><code>handle_plugins_menu</code></td>
+<td><code>(update, context)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_plugin_menu_callback</code></td>
+<td><code>(update, context)</code></td>
+<td>Маршрутизация <code>page</code>/<code>plugin</code>/<code>input</code>/<code>cmd</code></td>
+</tr>
+<tr>
+<td><code>handle_plugin_menu_args_reply</code></td>
+<td><code>(update, context)</code></td>
+<td><code>ForceReply</code></td>
+</tr>
+<tr>
+<td><code>_build_plugins_menu</code></td>
+<td><code>(page=0, plugin=None) -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_build_plugin_keyboard</code></td>
+<td><code>(page, plugin=None) -&gt; InlineKeyboardMarkup</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_plugins_list</code></td>
+<td><code>() -&gt; list[str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_plugin_commands</code></td>
+<td><code>(plugin_name) -&gt; list[tuple]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_plugin_command</code></td>
+<td><code>(plugin_name, cmd_id) -&gt; dict \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_format_plugin_title</code></td>
+<td><code>(plugin_name) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_page_for_command_id</code></td>
+<td><code>(cmd_id) -&gt; int</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>cleanup</code></td>
+<td><code>()</code></td>
+<td>Graceful shutdown</td>
+</tr>
+<tr>
+<td><code>_post_shutdown</code></td>
+<td><code>(application)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>buffer_data_checker</code></td>
+<td><code>()</code></td>
+<td>Цикл 1 сек</td>
+</tr>
+<tr>
+<td><code>start_reminder_checker</code></td>
+<td><code>(plugin_manager)</code></td>
+<td>Цикл 60 сек</td>
+</tr>
+<tr>
+<td><code>handle_document</code></td>
+<td><code>(update, context)</code></td>
+<td>Плагин <code>text_document_qa</code></td>
+</tr>
+<tr>
+<td><code>upload_document</code></td>
+<td><code>(update, context, document, file_content)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_session_callback</code></td>
+<td><code>(update, context)</code></td>
+<td>Универсальный обработчик</td>
+</tr>
+<tr>
+<td><code>run</code></td>
+<td><code>()</code></td>
+<td>Блокирующий запуск</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="utils"><code>utils</code></h2>
+<p>Вспомогательные функции для Telegram-бота.</p>
+<table>
+<thead>
+<tr>
+<th>Функция/Класс</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>message_text</code></td>
+<td><code>(message) -&gt; str</code></td>
+<td>Без команд бота</td>
+</tr>
+<tr>
+<td><code>is_user_in_group</code></td>
+<td><code>(update, context, user_id) -&gt; bool</code></td>
+<td>Владелец, админ, член; <code>BadRequest</code></td>
+</tr>
+<tr>
+<td><code>get_thread_id</code></td>
+<td><code>(update) -&gt; int \| None</code></td>
+<td><code>message_thread_id</code></td>
+</tr>
+<tr>
+<td><code>BusyStatusMessage</code></td>
+<td>класс</td>
+<td>Статусное сообщение с планом задач</td>
+</tr>
+<tr>
+<td><code>get_stream_cutoff_values</code></td>
+<td><code>(update, content) -&gt; int</code></td>
+<td>Порог потоковой передачи</td>
+</tr>
+<tr>
+<td><code>is_group_chat</code></td>
+<td><code>(update) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>split_into_chunks</code></td>
+<td><code>(text, chunk_size=4096) -&gt; list[str]</code></td>
+<td>С сохранением Markdown</td>
+</tr>
+<tr>
+<td><code>wrap_with_indicator</code></td>
+<td><code>(update, context, coroutine, chat_action, is_inline=False)</code></td>
+<td><code>TimedOut</code> при &gt;2000с</td>
+</tr>
+<tr>
+<td><code>edit_message_with_retry</code></td>
+<td><code>(context, chat_id, message_id, text, markdown=True, is_inline=False)</code></td>
+<td>Fallback без Markdown</td>
+</tr>
+<tr>
+<td><code>error_handler</code></td>
+<td><code>(_, context) -&gt; None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>is_allowed</code></td>
+<td><code>(config, update, context, is_inline=False) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>is_admin</code></td>
+<td><code>(config, user_id, log_no_admin=False) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_user_budget</code></td>
+<td><code>(config, user_id) -&gt; float \| None</code></td>
+<td><code>inf</code> для админов или <code>'*'</code></td>
+</tr>
+<tr>
+<td><code>get_remaining_budget</code></td>
+<td><code>(config, usage, update, is_inline=False) -&gt; float</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>is_within_budget</code></td>
+<td><code>(config, usage, update, is_inline=False) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>add_chat_request_to_usage_tracker</code></td>
+<td><code>(usage, config, user_id, used_tokens) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_reply_to_message_id</code></td>
+<td><code>(config, update) -&gt; int \| None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_scope_key</code></td>
+<td><code>(chat_id=None, user_id=None) -&gt; str</code></td>
+<td><code>"chat:&lt;id&gt;"</code>, <code>"user:&lt;id&gt;"</code>, <code>"global"</code></td>
+</tr>
+<tr>
+<td><code>is_direct_result</code></td>
+<td><code>(response) -&gt; bool</code></td>
+<td>Проверка <code>direct_result</code> с <code>kind</code></td>
+</tr>
+<tr>
+<td><code>escape_markdown</code></td>
+<td><code>(text, exclude_code_blocks=True) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_image_size</code></td>
+<td><code>(image_path) -&gt; tuple[int, int]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>resize_image_if_needed</code></td>
+<td><code>(image_path, max_dimension=10000) -&gt; tuple[BytesIO, str]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>handle_direct_result</code></td>
+<td><code>(config, update, response)</code></td>
+<td>Асинхронная обработка</td>
+</tr>
+<tr>
+<td><code>cleanup_intermediate_files</code></td>
+<td><code>(response)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>encode_image</code></td>
+<td><code>(fileobj) -&gt; str</code></td>
+<td><code>data:image/jpeg;base64,...</code></td>
+</tr>
+<tr>
+<td><code>decode_image</code></td>
+<td><code>(imgbase64) -&gt; bytes</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>markdown_to_html</code></td>
+<td><code>(text) -&gt; str</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>send_long_response_as_file</code></td>
+<td><code>(config, update, response, session_name='response')</code></td>
+<td>Через <code>HTMLVisualizer</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="function_call_handler"><code>function_call_handler</code></h2>
+<p>Обработка вызовов функций LLM.</p>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_prepend_stream_item</code></td>
+<td><code>(first_item, response)</code></td>
+<td>Вставка в начало потока</td>
+</tr>
+<tr>
+<td><code>_direct_result_payload</code></td>
+<td><code>(response) -&gt; dict \| None</code></td>
+<td>Извлечение <code>direct_result</code></td>
+</tr>
+<tr>
+<td><code>_should_defer_direct_result</code></td>
+<td><code>(response, defer_direct_results) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_compact_deferred_tool_response</code></td>
+<td><code>(response) -&gt; str</code></td>
+<td>JSON-представление для истории</td>
+</tr>
+<tr>
+<td><code>_merge_direct_results_into_final</code></td>
+<td><code>(direct_results) -&gt; dict</code></td>
+<td>Объединение в <code>kind="final"</code></td>
+</tr>
+<tr>
+<td><code>_delivery_contract_required</code></td>
+<td><code>(helper, chat_id, final_delivery_required) -&gt; bool</code></td>
+<td>Проверка необходимости <code>DELIVERY_TOOL_NAME</code></td>
+</tr>
+<tr>
+<td><code>_tool_response_succeeded</code></td>
+<td><code>(response) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_delivery_tool_is_allowed</code></td>
+<td><code>(helper, allowed_plugins) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_delivery_tool_choice</code></td>
+<td><code>(tools)</code></td>
+<td>Принудительный выбор или <code>"auto"</code></td>
+</tr>
+<tr>
+<td><code>_delivery_contract_error</code></td>
+<td><code>() -&gt; dict</code></td>
+<td>Ошибка на русском</td>
+</tr>
+<tr>
+<td><code>_retry_missing_delivery_tool</code></td>
+<td><code>(helper, chat_id, stream, times, tools_used, allowed_plugins, user_id, request_context)</code></td>
+<td>Повторный запрос при нарушении протокола</td>
+</tr>
+<tr>
+<td><code>handle_function_call</code></td>
+<td><code>(helper, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None, request_context=None, delivery_retry_attempted=False, final_delivery_required=False)</code></td>
+<td>Главная функция</td>
+</tr>
+<tr>
+<td><code>add_tool_result</code></td>
+<td><code>(tool_name, tool_response, tool_call_id)</code></td>
+<td>В контекст разговора</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="main"><code>main</code></h2>
+<p>Точка входа.</p>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>parse_bool_env</code></td>
+<td><code>(name, default)</code></td>
+<td><code>ValueError</code> при невалидном значении</td>
+</tr>
+<tr>
+<td><code>validate_telegram_base_url</code></td>
+<td><code>(value) -&gt; str</code></td>
+<td><code>ValueError</code> при не-HTTP(S) URL</td>
+</tr>
+<tr>
+<td><code>main</code></td>
+<td><code>()</code></td>
+<td>Загрузка <code>.env</code>, проверка <code>TELEGRAM_BOT_TOKEN</code>, сборка конфигураций, инициализация, запуск</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="skill_script_router"><code>skill_script_router</code></h2>
+<p>Маршрутизация и блокировка <code>codeinterpreter.deep_analysis</code> для скриптов навыков.</p>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_system_message</code></td>
+<td><code>(helper, chat_id) -&gt; dict \| None</code></td>
+<td>Извлечение из истории</td>
+</tr>
+<tr>
+<td><code>_is_skills_agent_mode</code></td>
+<td><code>(helper, chat_id) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_active_skill_scripts</code></td>
+<td><code>(helper, tool_args) -&gt; list[dict]</code></td>
+<td><code>skill_name</code>, <code>script_name</code></td>
+</tr>
+<tr>
+<td><code>_skill_script_routing_payload</code></td>
+<td><code>(error, active_scripts=None) -&gt; dict</code></td>
+<td><code>preferred_tool</code>, <code>allowed_tools</code>, <code>call_instruction</code></td>
+</tr>
+<tr>
+<td><code>_refers_to_active_script</code></td>
+<td><code>(text, active_scripts) -&gt; bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_skill_script_routing_error</code></td>
+<td><code>(helper, chat_id, tool_name, tool_args) -&gt; dict \| None</code></td>
+<td>Блокировка только для <code>codeinterpreter.deep_analysis</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="user_settings"><code>user_settings</code></h2>
+<p>Константы и утилиты для настроек пользователя.</p>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>USER_LANGUAGE_SETTING</code></td>
+<td><code>"language"</code></td>
+</tr>
+<tr>
+<td><code>USER_TTS_MODEL_SETTING</code></td>
+<td><code>"tts_model"</code></td>
+</tr>
+<tr>
+<td><code>USER_TTS_VOICE_SETTING</code></td>
+<td><code>"tts_voice"</code></td>
+</tr>
+<tr>
+<td><code>USER_DISABLED_PLUGINS_SETTING</code></td>
+<td><code>"disabled_plugins"</code></td>
+</tr>
+<tr>
+<td><code>USER_DISABLED_SKILLS_SETTING</code></td>
+<td><code>"disabled_skills"</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Сигнатура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ensure_settings_dict</code></td>
+<td><code>(settings) -&gt; dict</code></td>
+<td>Гарантия словаря</td>
+</tr>
+<tr>
+<td><code>normalize_string_list</code></td>
+<td><code>(value) -&gt; list[str]</code></td>
+<td>Уникальные непустые строки, отсортированные</td>
+</tr>
+<tr>
+<td><code>get_user_settings</code></td>
+<td><code>(db, user_id) -&gt; dict</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>set_disabled_value</code></td>
+<td><code>(settings, key, value, disabled) -&gt; None</code></td>
+<td>In-place модификация</td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="_2">Плагины</h2>
+<h3 id="website_content"><code>website_content</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway Web Read'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>website_content</code>: параметр <code>url</code> (обязательный)</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>gateway_client.web_read</code>; возвращает <code>{'title', 'summary'}</code> или <code>{'result'}</code>/<code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="terminal"><code>terminal</code></h3>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DEFAULT_TIMEOUT_SECONDS</code></td>
+<td><code>260</code></td>
+</tr>
+<tr>
+<td><code>DEFAULT_CWD</code></td>
+<td><code>"/tmp"</code></td>
+</tr>
+<tr>
+<td><code>OUTPUT_BYTE_LIMIT</code></td>
+<td><code>32768</code> (32 КиБ)</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Terminal'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>terminal</code>: <code>command</code>, <code>shell</code> (bool), <code>cwd</code>, <code>timeout</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>asyncio.create_subprocess_shell</code>/<code>exec</code>; <code>{'success', 'returncode', 'stdout', 'stderr', 'cwd', 'shell'}</code> или <code>{'error'}</code></td>
+</tr>
+<tr>
+<td><code>_truncate(text)</code></td>
+<td>Обрезка до <code>OUTPUT_BYTE_LIMIT</code> с <code>"\\n... [truncated]"</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="whois"><code>whois</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>get_whois</code>: <code>domain</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Все исключения → <code>{'error': ...}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="worldtimeapi"><code>worldtimeapi</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>default_timezone</code></td>
+<td>Из <code>WORLDTIME_DEFAULT_TIMEZONE</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии <code>WORLDTIME_DEFAULT_TIMEZONE</code></td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'WorldTimeAPI'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>worldtimeapi</code>: <code>timezone</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'24hr', '12hr'}</code> или <code>{'result': 'No result was found'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="language_learning"><code>language_learning</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>users_progress</code></td>
+<td><code>{user_id: {language: {exercises_completed, last_practice, streak}}}</code></td>
+</tr>
+<tr>
+<td><code>supported_languages</code></td>
+<td>Отображение названий на ISO-коды</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td>Загрузка прогресса</td>
+</tr>
+<tr>
+<td><code>initialize(openai, bot, storage_root)</code></td>
+<td>Перенастройка путей</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LanguageLearning'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>daily_practice</code>, <code>track_progress</code></td>
+</tr>
+<tr>
+<td><code>load_progress()</code> / <code>save_progress()</code></td>
+<td>JSON-файл</td>
+</tr>
+<tr>
+<td><code>_get_owner_user_id(kwargs)</code></td>
+<td>Из <code>request_context</code> или <code>user_id</code></td>
+</tr>
+<tr>
+<td><code>get_exercise_prompt(language, level, exercise_type)</code></td>
+<td>Случайная тема</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Маршрутизация</td>
+</tr>
+</tbody>
+</table>
+<h3 id="youtube_transcript"><code>youtube_transcript</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway YouTube Transcript'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>youtube_video_transcript</code>: <code>video_id</code> (YouTube ID или URL)</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'model_response': 'Видео: {title}\\n\\nТранскрипт:\\n{content}'}</code> или <code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="crypto"><code>crypto</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code></td>
+<td>Не используется (публичный API)</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'CoinCap'</code></td>
+</tr>
+<tr>
+<td><code>_get_json(url)</code></td>
+<td><code>httpx</code> с таймаутом; <code>{'error': ...}</code> при исключении</td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>get_crypto_rate</code>: <code>asset</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="mcp_server"><code>mcp_server</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>servers</code></td>
+<td><code>{name: config}</code></td>
+</tr>
+<tr>
+<td><code>sessions</code></td>
+<td><code>{name: ClientSession}</code></td>
+</tr>
+<tr>
+<td><code>connections</code></td>
+<td><code>{name: MCPConnection}</code></td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td><code>{function_name: MCPTool}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__(config)</code></td>
+<td>Загрузка конфигурации серверов</td>
+</tr>
+<tr>
+<td><code>initialize(openai, bot, storage_root)</code></td>
+<td>Переопределение пути конфигурации</td>
+</tr>
+<tr>
+<td><code>load_servers_config()</code></td>
+<td>Из файла или <code>DEFAULT_MCP_SERVERS</code></td>
+</tr>
+<tr>
+<td><code>is_user_allowed(user_id)</code></td>
+<td>Приоритет администраторов</td>
+</tr>
+<tr>
+<td><code>is_admin(user_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>register_server(server_name, user_id, **kwargs)</code></td>
+<td>Только администраторы</td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td>Спецификации от всех серверов</td>
+</tr>
+<tr>
+<td><code>call_mcp_function(server_name, function_name, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Маршрутизация с проверкой прав</td>
+</tr>
+</tbody>
+</table>
+<h3 id="prompt_perfect"><code>prompt_perfect</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Prompt Perfect'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>optimize_prompt</code>: <code>original_prompt</code> (обязательный), <code>context</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'optimized_prompt', 'model_response'}</code> или <code>{'error'}</code></td>
+</tr>
+<tr>
+<td><code>_optimize_prompt(chat_id, original_prompt, context, helper)</code></td>
+<td>Через LLM с инструкцией на русском; fallback на оригинал</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ask_your_pdf"><code>ask_your_pdf</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>temp_dir</code></td>
+<td>Временные PDF</td>
+</tr>
+<tr>
+<td><code>cache_dir</code></td>
+<td>Кэш извлечённого текста</td>
+</tr>
+<tr>
+<td><code>cache_metadata_path</code></td>
+<td>JSON метаданных кэша</td>
+</tr>
+<tr>
+<td><code>max_cache_size_mb</code></td>
+<td><code>500</code></td>
+</tr>
+<tr>
+<td><code>max_cache_age_days</code></td>
+<td><code>10</code></td>
+</tr>
+<tr>
+<td><code>max_extracted_text_chars</code></td>
+<td><code>50000</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>generate_file_hash(file_path)</code></td>
+<td>MD5 по первым/последним 1024 байтам, размеру, mtime</td>
+</tr>
+<tr>
+<td><code>_cache_key(file_hash, query)</code></td>
+<td><code>SHA256</code> запроса</td>
+</tr>
+<tr>
+<td><code>load_cache(file_hash, query)</code></td>
+<td>С проверкой возраста</td>
+</tr>
+<tr>
+<td><code>save_cache(file_hash, query, result)</code></td>
+<td>С обновлением метаданных</td>
+</tr>
+<tr>
+<td><code>_extract_pdf_text(file_path)</code></td>
+<td>PyPDF2 → textract → pdfminer.six; <code>ValueError</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>upload_pdf</code> или <code>analyze_pdf</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="deepl_translate"><code>deepl_translate</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code></td>
+<td><code>DEEPL_API_KEY</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии ключа</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'DeepL Translate'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>translate</code>: <code>text</code>, <code>to_language</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Автоопределение типа аккаунта по формату ключа</td>
+</tr>
+</tbody>
+</table>
+<h3 id="movie_info"><code>movie_info</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TMDB_API_KEY</code></td>
+<td>Из окружения</td>
+</tr>
+<tr>
+<td><code>GENRES</code></td>
+<td><code>{id: русское_название}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии ключа</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Movie Information'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>get_new_movies</code>, <code>get_movie_recommendations</code></td>
+</tr>
+<tr>
+<td><code>_get_genre_id(genre_name)</code></td>
+<td>Нечувствительный к регистру</td>
+</tr>
+<tr>
+<td><code>_get_new_movies(genre, count)</code></td>
+<td>Текущий прокат</td>
+</tr>
+<tr>
+<td><code>_get_movie_details(movie_id)</code></td>
+<td>С датой выхода</td>
+</tr>
+<tr>
+<td><code>_get_movie_reviews(movie_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_discover_movies(genre, count)</code></td>
+<td>Случайная сортировка</td>
+</tr>
+</tbody>
+</table>
+<h3 id="github_code_analysis"><code>github_code_analysis</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>client</code></td>
+<td><code>OpenAI</code></td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>LLMGATEWAY_HIGH_MODEL</code></td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td>Из <code>MAX_TOKENS</code>, по умолчанию <code>1000</code></td>
+</tr>
+<tr>
+<td><code>temperature</code></td>
+<td>Из <code>TEMPERATURE</code>, по умолчанию <code>1.0</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>KeyError</code> при отсутствии <code>OPENAI_API_KEY</code></td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'GitHub Code Analysis'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>analyze_github_code</code>: <code>owner</code>, <code>repo</code>, <code>path</code>, <code>prompt</code></td>
+</tr>
+<tr>
+<td><code>analyze_github_code(owner, repo, path, prompt)</code></td>
+<td>Contents API + Pygments + LLM</td>
+</tr>
+<tr>
+<td><code>detect_language(filename, code)</code></td>
+<td>Белый список поддерживаемых языков</td>
+</tr>
+<tr>
+<td><code>analyze_code_with_chatgpt(code, language, prompt)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="webshot"><code>webshot</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'WebShot'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>screenshot_website</code>: <code>url</code></td>
+</tr>
+<tr>
+<td><code>generate_random_string(length)</code></td>
+<td><code>a-zA-Z0-9</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>image.thum.io</code> → <code>{'direct_result': {kind: 'photo', format: 'path', value}}</code> или <code>{'result': ...}</code>; очистка при ошибке</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent_tools"><code>agent_tools</code></h3>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CLOSED_STATUSES</code></td>
+<td><code>{"completed", "cancelled"}</code></td>
+</tr>
+<tr>
+<td><code>TASK_STATUSES</code></td>
+<td><code>{"pending", "in_progress", "completed", "cancelled"}</code></td>
+</tr>
+<tr>
+<td><code>MAX_SUBAGENTS</code></td>
+<td><code>5</code></td>
+</tr>
+<tr>
+<td><code>MIN_SUBAGENT_TOOL_ROUNDS</code></td>
+<td><code>10</code></td>
+</tr>
+<tr>
+<td><code>MAX_SUBAGENT_TOOL_ROUNDS</code></td>
+<td><code>50</code></td>
+</tr>
+<tr>
+<td><code>DEFAULT_SUBAGENT_TEMPERATURE</code></td>
+<td><code>0.2</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DELIVERY_DEDUP_WINDOW_SECONDS</code></td>
+<td><code>60</code></td>
+</tr>
+<tr>
+<td><code>DELIVERY_MAX_ARTIFACT_BYTES</code></td>
+<td><code>49*1024*1024</code> (~49 МБ)</td>
+</tr>
+<tr>
+<td><code>TASKS_TTL_SECONDS</code></td>
+<td><code>2*24*3600</code> (2 дня)</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td><code>{scope: [task, ...]}</code></td>
+</tr>
+<tr>
+<td><code>pending_questions</code></td>
+<td><code>{question_id: state}</code></td>
+</tr>
+<tr>
+<td><code>pending_by_chat</code></td>
+<td><code>{chat_id: question_id}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_tasks()</code> / <code>save_tasks()</code></td>
+<td>JSON с обработкой повреждений</td>
+</tr>
+<tr>
+<td><code>_prune_stale_tasks()</code></td>
+<td>Удаление старше <code>TASKS_TTL_SECONDS</code></td>
+</tr>
+<tr>
+<td><code>_load_orphaned_pending()</code> / <code>_load_pending_snapshot()</code></td>
+<td>Восстановление состояния</td>
+</tr>
+<tr>
+<td><code>_save_pending_snapshot()</code></td>
+<td>Атомарно через временный файл</td>
+</tr>
+<tr>
+<td><code>on_startup(application)</code></td>
+<td>Очистка "осиротевших" вопросов</td>
+</tr>
+<tr>
+<td><code>get_plan_tasks(chat_id, user_id)</code></td>
+<td>Снимок текущих</td>
+</tr>
+<tr>
+<td><code>clear_plan_tasks(chat_id, user_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>clear_terminal_plan_tasks(chat_id, user_id)</code></td>
+<td>Только если все терминальные</td>
+</tr>
+<tr>
+<td><code>_manage_plan_tasks(helper, **kwargs)</code></td>
+<td><code>action</code>: <code>add</code>/<code>update</code>/<code>replace</code></td>
+</tr>
+<tr>
+<td><code>_ask_telegram_user(helper, **kwargs)</code></td>
+<td><code>question</code>, <code>options</code>, <code>multi_select</code>, <code>allow_free_text</code>, <code>timeout_seconds</code></td>
+</tr>
+<tr>
+<td><code>_deliver_to_user(helper, *, request_context=None, **kwargs)</code></td>
+<td><code>text</code>, <code>artifacts</code>, дедупликация</td>
+</tr>
+<tr>
+<td><code>_run_subagents(helper, *, request_context=None, **kwargs)</code></td>
+<td><code>subagents</code>, <code>shared_context</code>, <code>max_rounds</code>, <code>background</code></td>
+</tr>
+<tr>
+<td><code>_run_one_subagent(helper, item, shared_context, kwargs, parent_max_rounds, ...)</code></td>
+<td>Полный цикл</td>
+</tr>
+<tr>
+<td><code>_run_subagent_completion_loop(helper, model_to_use, messages, kwargs, max_rounds, temperature, ...)</code></td>
+<td>Основной цикл взаимодействия</td>
+</tr>
+<tr>
+<td><code>_subagent_tools(helper, model_to_use, ...)</code></td>
+<td>С <code>SUBAGENT_BLOCKED_FUNCTIONS</code></td>
+</tr>
+<tr>
+<td><code>_internal_publish_tool_spec()</code></td>
+<td><code>agent_tools.internal_publish</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>manage_plan_tasks</code>, <code>ask_telegram_user</code>, <code>cancel_pending_question</code>, <code>run_subagents</code>, <code>deliver_to_user</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="reminders"><code>reminders</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reminders</code></td>
+<td><code>{user_id: {reminder_id: data}}</code></td>
+</tr>
+<tr>
+<td><code>reminders_file</code></td>
+<td>Путь к JSON</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_reminders()</code> / <code>save_reminders()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>check_reminders(helper)</code></td>
+<td>Отправка due напоминаний</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>set_reminder</code>, <code>delete_reminder</code>; <code>direct_result</code></td>
+</tr>
+<tr>
+<td><code>handle_reminder_callback(update, context)</code></td>
+<td><code>view</code>/<code>delete</code>/<code>close</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="ip_location"><code>ip_location</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'IP.FM'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>iplocation</code>: <code>ip</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'Location', 'ASN', 'AS Name', 'AS Domain'}</code> или <code>{'error'}</code></td>
+</tr>
+<tr>
+<td><code>_get_json(url)</code></td>
+<td>Таймаут 10с</td>
+</tr>
+</tbody>
+</table>
+<h3 id="youtube_audio_extractor"><code>youtube_audio_extractor</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'YouTube Audio Extractor'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>extract_youtube_audio</code>: <code>youtube_link</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value}}</code> или <code>{'result': 'Failed to extract audio'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="wolfram_alpha"><code>wolfram_alpha</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app_id</code></td>
+<td><code>WOLFRAM_APP_ID</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии <code>WOLFRAM_APP_ID</code></td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'WolframAlpha'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>answer_with_wolfram_alpha</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'answer'}</code> или <code>{'assumption', 'answer'}</code>; <code>StopIteration</code> при пустом результате</td>
+</tr>
+</tbody>
+</table>
+<h3 id="task_management"><code>task_management</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tasks</code></td>
+<td><code>{user_id: {task_id: data}}</code></td>
+</tr>
+<tr>
+<td><code>tasks_file</code></td>
+<td>Путь к JSON</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_tasks()</code> / <code>save_tasks()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_get_owner_user_id(kwargs)</code></td>
+<td>Из <code>request_context</code> или <code>user_id</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>create_task</code>, <code>list_tasks</code>, <code>update_task</code>; ошибки при отсутствии <code>user_id</code>, несуществующей задаче, неизвестной функции</td>
+</tr>
+</tbody>
+</table>
+<h3 id="reaction"><code>reaction</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_emojis</code></td>
+<td>Все значения <code>ReactionEmoji</code></td>
+</tr>
+<tr>
+<td><code>_emojis_set</code></td>
+<td>Для O(1) проверки</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Reaction'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>react_with_emoji</code>: <code>reaction</code> (enum)</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind: 'reaction', value}}</code>; fallback на <code>THUMBS_UP</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="tts"><code>tts</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'TTS'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>translate_text_to_speech</code>: <code>text</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value}}</code> или <code>{'Result': ...}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="dice"><code>dice</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Dice'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>send_dice</code>: <code>emoji</code> (enum эмодзи)</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value}}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="web_research"><code>web_research</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway Web Research'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>research_articles</code>: <code>query</code>, <code>max_results_per_lang</code>, <code>max_words</code></td>
+</tr>
+<tr>
+<td><code>_choose_research_depth(helper, query)</code></td>
+<td><code>{'research_type', 'reason'}</code>; <code>ValueError</code> при невалидном JSON</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>research</code> или <code>deep_research</code> через gateway</td>
+</tr>
+</tbody>
+</table>
+<h3 id="gtts_tts"><code>gtts_tts</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway TTS'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>google_translate_text_to_speech</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value}}</code> или <code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="vkusvill"><code>vkusvill</code></h3>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VKUSVILL_MCP_URL</code></td>
+<td>Базовый URL</td>
+</tr>
+<tr>
+<td><code>MCP_PROTOCOL_VERSION</code></td>
+<td>Версия протокола</td>
+</tr>
+<tr>
+<td><code>INTERNAL_ARGUMENTS</code></td>
+<td>Зарезервированные аргументы</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_tools()</code></td>
+<td>JSON Schema из <code>_tools</code></td>
+</tr>
+<tr>
+<td><code>execute_tool(tool_name, arguments)</code></td>
+<td>Валидация, merge с defaults, MCP-запрос</td>
+</tr>
+<tr>
+<td><code>_build_mcp_request(tool_name, arguments)</code></td>
+<td>JSON-RPC payload</td>
+</tr>
+<tr>
+<td><code>_send_mcp_request(request)</code></td>
+<td><code>httpx</code> POST</td>
+</tr>
+<tr>
+<td><code>_merge_arguments(tool_name, arguments)</code></td>
+<td>Исключение <code>INTERNAL_ARGUMENTS</code></td>
+</tr>
+<tr>
+<td><code>_validate_tool_exists(tool_name)</code></td>
+<td><code>ValueError</code></td>
+</tr>
+<tr>
+<td><code>_prepare_arguments(tool, kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_call_remote_tool(remote_name, arguments)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_extract_result(result)</code></td>
+<td>Нормализация wrapper'ов</td>
+</tr>
+<tr>
+<td><code>_parse_text_content(text)</code></td>
+<td>JSON-парсинг или оригинал</td>
+</tr>
+</tbody>
+</table>
+<h3 id="google_web_search"><code>google_web_search</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code></td>
+<td><code>GOOGLE_API_KEY</code></td>
+</tr>
+<tr>
+<td><code>cse_id</code></td>
+<td><code>GOOGLE_CSE_ID</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td>Логирование предупреждений</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Google'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>web_search</code>: <code>query</code>, <code>num</code>, <code>hl</code>, <code>gl</code>, <code>safe</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>HttpError</code> → <code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="show_me_diagrams"><code>show_me_diagrams</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>diagram_types</code></td>
+<td><code>{id: method}</code></td>
+</tr>
+<tr>
+<td><code>diagram_prompts</code></td>
+<td><code>{id: system_prompt}</code></td>
+</tr>
+<tr>
+<td><code>type_hints</code></td>
+<td><code>{id: hint}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Тип диаграммы</th>
+<th>Метод</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gantt</code></td>
+<td><code>_generate_gantt_chart</code></td>
+</tr>
+<tr>
+<td><code>mind_map</code></td>
+<td><code>_generate_mind_map</code></td>
+</tr>
+<tr>
+<td><code>flowchart</code></td>
+<td><code>_generate_flowchart</code></td>
+</tr>
+<tr>
+<td><code>project_timeline</code></td>
+<td><code>_generate_project_timeline</code></td>
+</tr>
+<tr>
+<td><code>infographic</code></td>
+<td><code>_generate_infographic</code></td>
+</tr>
+<tr>
+<td><code>org_chart</code></td>
+<td><code>_generate_org_chart</code></td>
+</tr>
+<tr>
+<td><code>process_diagram</code></td>
+<td><code>_generate_process_diagram</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>generate_diagram(diagram_type, title, description, helper, user_id)</code></td>
+<td><code>{'direct_result': {kind, format, value, add_value}}</code> или <code>{'result': ...}</code></td>
+</tr>
+<tr>
+<td><code>_generate_plantuml(puml_content, helper, user_id)</code></td>
+<td>До 3 попыток исправления ошибок через LLM</td>
+</tr>
+<tr>
+<td><code>_generate_diagram_code(diagram_type, title, description, helper, user_id)</code></td>
+<td>Через LLM по шаблону</td>
+</tr>
+<tr>
+<td><code>_render_diagram(plantuml_code, user_id)</code></td>
+<td><code>subprocess</code> с PlantUML JAR</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ddg_image_search"><code>ddg_image_search</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway Image Search'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>search_images</code>: <code>query</code>, <code>type</code> (<code>"photo"</code>, <code>"gif"</code>), <code>region</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value}}</code> или <code>{'result': ...}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="weather"><code>weather</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'OpenMeteo'</code></td>
+</tr>
+<tr>
+<td><code>_get_json(url)</code></td>
+<td>Таймаут 10с</td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>get_current_weather</code>, <code>get_forecast_weather</code>: <code>latitude</code>, <code>longitude</code>, <code>unit</code>, <code>forecast_days</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Текущая погода или <code>{'today', 'forecast'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="skills"><code>skills</code></h3>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TRUE_VALUES</code></td>
+<td><code>{"1", "true", "yes", "on"}</code></td>
+</tr>
+<tr>
+<td><code>SCRIPT_SUFFIXES</code></td>
+<td><code>{".py", ".js", ".mjs", ".cjs", ".sh"}</code></td>
+</tr>
+<tr>
+<td><code>REFLECTION_REPEAT_THRESHOLD</code></td>
+<td><code>3</code></td>
+</tr>
+<tr>
+<td><code>REFLECTION_MAX_TEXT_CHARS</code></td>
+<td><code>1200</code></td>
+</tr>
+<tr>
+<td><code>SKILLS_CLI_TIMEOUT_SECONDS</code></td>
+<td><code>180</code></td>
+</tr>
+<tr>
+<td><code>SKILLS_CLI_AGENT</code></td>
+<td><code>"codex"</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>skills_dir</code></td>
+<td><code>SKILLS_DIR</code> или <code>storage_root/skills</code></td>
+</tr>
+<tr>
+<td><code>state_file</code></td>
+<td><code>skills_state.json</code></td>
+</tr>
+<tr>
+<td><code>reflections_file</code></td>
+<td><code>skill_reflections.json</code></td>
+</tr>
+<tr>
+<td><code>workdir_root</code></td>
+<td>Рабочие директории скриптов</td>
+</tr>
+<tr>
+<td><code>audit_file</code></td>
+<td><code>skills_audit.jsonl</code></td>
+</tr>
+<tr>
+<td><code>allow_scripts</code></td>
+<td><code>SKILLS_ALLOW_SCRIPTS</code></td>
+</tr>
+<tr>
+<td><code>allow_installs</code></td>
+<td><code>SKILLS_ALLOW_INSTALLS</code></td>
+</tr>
+<tr>
+<td><code>script_timeout</code></td>
+<td><code>SKILLS_SCRIPT_TIMEOUT_SECONDS</code></td>
+</tr>
+<tr>
+<td><code>install_timeout</code></td>
+<td><code>SKILLS_INSTALL_TIMEOUT_SECONDS</code></td>
+</tr>
+<tr>
+<td><code>output_max_chars</code></td>
+<td><code>SKILLS_OUTPUT_MAX_CHARS</code></td>
+</tr>
+<tr>
+<td><code>interim_after_seconds</code></td>
+<td><code>SKILLS_INTERIM_AFTER_SECONDS</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list_skills(refresh, disabled_skills)</code></td>
+<td>Сканирование директорий</td>
+</tr>
+<tr>
+<td><code>get_skill(skill_name)</code></td>
+<td>Метаданные из <code>SKILL.md</code></td>
+</tr>
+<tr>
+<td><code>find_installable_skills(query)</code></td>
+<td>Через CLI <code>skills search</code></td>
+</tr>
+<tr>
+<td><code>install_skill(package, skill_name, confirmed, **kwargs)</code></td>
+<td>CLI <code>skills install</code>; проверка прав</td>
+</tr>
+<tr>
+<td><code>activate_skill(skill_name, initial_context, **kwargs)</code></td>
+<td>В scope чата/пользователя</td>
+</tr>
+<tr>
+<td><code>get_skill_status(skill_name, disabled_skills, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>list_active_skills(disabled_skills, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>update_skill_progress(skill_name, step, context_update, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>deactivate_skill(skill_name, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_skill_script(skill_name, script_name, args_json, **kwargs)</code></td>
+<td>Таймаут, проверка <code>script_admin_ids</code></td>
+</tr>
+<tr>
+<td><code>record_skill_reflection(skill_name, proposal, failure_mode, evidence, **kwargs)</code></td>
+<td>Автоприменение при &gt;3 повторах</td>
+</tr>
+<tr>
+<td><code>_scan_skills()</code></td>
+<td>Кэширование по сигнатуре mtime</td>
+</tr>
+<tr>
+<td><code>_parse_skill_markdown(content)</code></td>
+<td>YAML или плоский frontmatter</td>
+</tr>
+<tr>
+<td><code>_list_skill_scripts(skill_path, metadata)</code></td>
+<td>Приоритет <code>entrypoints</code> из frontmatter</td>
+</tr>
+<tr>
+<td><code>_run_skills_cli(args, timeout)</code></td>
+<td><code>npx skills</code> через <code>asyncio.create_subprocess_exec</code></td>
+</tr>
+<tr>
+<td><code>_script_command(script_path)</code></td>
+<td>Определение интерпретатора по расширению</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hindsight_memory"><code>hindsight_memory</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Hindsight Memory'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>recall</code>, <code>list_memories</code>, <code>stats</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'error': 'Hindsight memory is not configured.'}</code> или <code>{'error': 'Telegram user_id is required'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="stable_diffusion"><code>stable_diffusion</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway Image'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>stable_diffusion</code>: <code>prompt</code>; <code>edit_image</code>: <code>prompt</code>, <code>image_url</code></td>
+</tr>
+<tr>
+<td><code>_generate_image(helper, prompt)</code></td>
+<td><code>(image_value, image_format)</code></td>
+</tr>
+<tr>
+<td><code>_edit_image(helper, prompt, image_url)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'direct_result': {kind, format, value, add_value}}</code> или <code>{'result': ...}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="jina_web_search"><code>jina_web_search</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BASE_URL</code></td>
+<td><code>https://s.jina.ai</code></td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td><code>JINA_API_KEY</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td>Предупреждение при отсутствии ключа</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Jina AI'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>web_search</code>: <code>query</code>, <code>max_results</code> (1–20)</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'result': [...]}</code> или <code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="spotify"><code>spotify</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spotify</code></td>
+<td><code>spotipy.Spotify</code> с OAuth</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии <code>SPOTIFY_CLIENT_ID</code>, <code>SPOTIFY_CLIENT_SECRET</code>, <code>SPOTIFY_REDIRECT_URI</code></td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Spotify'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>spotify_get_currently_playing_song</code>, <code>spotify_get_users_top_artists</code>, <code>spotify_get_users_top_tracks</code>, <code>spotify_search_by_query</code>, <code>spotify_lookup_by_id</code></td>
+</tr>
+<tr>
+<td><code>fetch_currently_playing()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_top_tracks(time_range, limit)</code></td>
+<td><code>short_term</code>/<code>medium_term</code>/<code>long_term</code>, max 50</td>
+</tr>
+<tr>
+<td><code>fetch_top_artists(time_range, limit)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>search_by_query(query, search_type, limit)</code></td>
+<td><code>album</code>, <code>artist</code>, <code>track</code></td>
+</tr>
+<tr>
+<td><code>search_by_id(content_id, search_type)</code></td>
+<td>Нормализация через <code>_get_artist</code>, <code>_get_track</code>, <code>_get_album</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="ddg_web_search"><code>ddg_web_search</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_language_from_region(region)</code></td>
+<td><code>"ru"</code> или <code>"en"</code></td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'LLMGateway Web Search'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>web_search</code>: <code>query</code>, <code>region</code>, <code>max_results</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Делегирование <code>gateway_client</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="code_interpreter"><code>code_interpreter</code></h3>
+<table>
+<thead>
+<tr>
+<th>Исключение</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TimeoutException</code></td>
+<td>Превышение лимита времени</td>
+</tr>
+<tr>
+<td><code>SecurityError</code></td>
+<td>Потенциально опасный код</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Декоратор</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>timeout(seconds)</code></td>
+<td>Контекстный менеджер через сигналы POSIX</td>
+</tr>
+<tr>
+<td><code>async_handle_exceptions(func)</code></td>
+<td><code>{'error': ...}</code> при исключении</td>
+</tr>
+<tr>
+<td><code>handle_exceptions(func)</code></td>
+<td><code>None</code> при исключении</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code></td>
+<td><code>OPENAI_API_KEY</code></td>
+</tr>
+<tr>
+<td><code>client</code></td>
+<td><code>AsyncOpenAI</code> с <code>httpx.AsyncClient</code>, таймаутом, ретраями</td>
+</tr>
+<tr>
+<td><code>data</code></td>
+<td><code>pandas.DataFrame</code></td>
+</tr>
+<tr>
+<td><code>timeout_seconds</code></td>
+<td><code>120</code></td>
+</tr>
+<tr>
+<td><code>python_alias_dir</code></td>
+<td>Изолированные алиасы Python</td>
+</tr>
+<tr>
+<td><code>supported_formats</code></td>
+<td><code>{ext: pandas_function}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>deep_analysis</code>: <code>code_prompt</code>, <code>data_path</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td>Подготовка сессии, <code>run_code</code></td>
+</tr>
+<tr>
+<td><code>generate_code(prompt, session_id)</code></td>
+<td>Усиленный промпт для генерации Python</td>
+</tr>
+</tbody>
+</table>
+<h3 id="conversation_analytics"><code>conversation_analytics</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>analytics_dir</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>analytics_file</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>conversation_stats</code></td>
+<td><code>{chat_id: {messages, tokens, topics, sentiments, hourly_activity}}</code></td>
+</tr>
+<tr>
+<td><code>TECHNICAL_TERMS</code></td>
+<td>Предопределённое множество</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>update_stats(chat_id, message_data)</code></td>
+<td>Автоочистка записей старше 30 дней</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_extract_technical_terms(messages)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_analyze_format_preferences(messages)</code></td>
+<td><code>{'text', 'code', 'images', 'voice'}</code></td>
+</tr>
+<tr>
+<td><code>_analyze_interaction_patterns(messages)</code></td>
+<td>Средняя длина, частота вопросов, команды</td>
+</tr>
+<tr>
+<td><code>analyze_message_patterns(messages)</code></td>
+<td><code>ValueError</code> при пустом списке или отсутствии <code>'length'</code></td>
+</tr>
+<tr>
+<td><code>calculate_length_percentages(patterns)</code></td>
+<td><code>ZeroDivisionError</code> при нулевом среднем</td>
+</tr>
+</tbody>
+</table>
+<h3 id="haiper_image_to_video"><code>haiper_image_to_video</code></h3>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>WAITING_PROMPT</code></td>
+<td>Состояние ConversationHandler</td>
+</tr>
+<tr>
+<td><code>INLINE_EFFECT_IDS</code></td>
+<td>Эффекты для inline-запросов</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Класс/Структура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TempFileManager</code></td>
+<td>Контекстный менеджер временных файлов с <code>write(data: bytes)</code></td>
+</tr>
+<tr>
+<td><code>TaskStatus</code></td>
+<td><code>PENDING</code>, <code>PROCESSING</code>, <code>COMPLETED</code>, <code>FAILED</code></td>
+</tr>
+<tr>
+<td><code>VideoTask</code></td>
+<td><code>task_id</code>, <code>user_id</code>, <code>chat_id</code>, <code>file_id</code>, <code>prompt</code>, <code>status</code>, <code>result</code>, <code>error</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>STYLE_IDS</code>, <code>EFFECT_IDS</code>, <code>PRESET_IDS</code></td>
+<td>Доступные варианты</td>
+</tr>
+<tr>
+<td><code>haiper_token</code></td>
+<td>Токен API</td>
+</tr>
+<tr>
+<td><code>task_queue</code></td>
+<td><code>asyncio.Queue[VideoTask]</code></td>
+</tr>
+<tr>
+<td><code>active_tasks</code></td>
+<td><code>{task_id: VideoTask}</code></td>
+</tr>
+<tr>
+<td><code>user_settings</code></td>
+<td><code>{user_id: UserSettings}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>initialize(openai, bot, storage_root)</code></td>
+<td>Настройка аутентификации</td>
+</tr>
+<tr>
+<td><code>_get_style_definitions()</code> / <code>_get_effect_definitions()</code> / <code>_get_preset_definitions()</code></td>
+<td>Локализация</td>
+</tr>
+<tr>
+<td><code>start_worker()</code></td>
+<td>Фоновая обработка очереди</td>
+</tr>
+<tr>
+<td><code>_process_video_task(task)</code></td>
+<td>Загрузка, base64, API, polling статуса</td>
+</tr>
+<tr>
+<td><code>handle_animate_command(update, context)</code></td>
+<td><code>/animate</code></td>
+</tr>
+<tr>
+<td><code>handle_prompt_constructor_command(update, context)</code></td>
+<td><code>/animate_prompt</code> с ConversationHandler</td>
+</tr>
+<tr>
+<td><code>handle_callback_query(update, context)</code></td>
+<td>Выбор стиля/эффекта/пресета</td>
+</tr>
+<tr>
+<td><code>handle_inline_query(inline_query)</code></td>
+<td>Предложение эффектов</td>
+</tr>
+<tr>
+<td><code>generate_prompt(params)</code></td>
+<td>На основе выбранного эффекта</td>
+</tr>
+<tr>
+<td><code>get_file_id_hash(file_id)</code></td>
+<td>8-символьный MD5</td>
+</tr>
+</tbody>
+</table>
+<h3 id="chief"><code>chief</code></h3>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>edamam_app_id</code></td>
+<td><code>EDAMAM_APP_ID</code></td>
+</tr>
+<tr>
+<td><code>edamam_app_key</code></td>
+<td><code>EDAMAM_APP_KEY</code></td>
+</tr>
+<tr>
+<td><code>query_schema</code></td>
+<td>JSON Schema для <code>get_recipe</code></td>
+</tr>
+<tr>
+<td><code>menu_plan_schema</code></td>
+<td>JSON Schema для <code>plan_menu</code></td>
+</tr>
+<tr>
+<td><code>_recipe_cache</code></td>
+<td>Время жизни 3 минуты</td>
+</tr>
+<tr>
+<td><code>used_recipes</code></td>
+<td><code>{meal_type: {urls}}</code></td>
+</tr>
+<tr>
+<td><code>meal_queries</code></td>
+<td><code>{meal_type: query}</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__()</code></td>
+<td><code>ValueError</code> при отсутствии учётных данных</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Chief'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>get_recipe</code>, <code>plan_menu</code></td>
+</tr>
+<tr>
+<td><code>_translate_meal_type(meal_type)</code></td>
+<td>Русский → английский</td>
+</tr>
+<tr>
+<td><code>_translate_ingredients(ingredients, helper, user_id)</code></td>
+<td>Через LLM</td>
+</tr>
+<tr>
+<td><code>_parse_with_retry(user_query, helper, user_id, retries=3)</code></td>
+<td>Извлечение параметров через LLM</td>
+</tr>
+<tr>
+<td><code>_search_recipes(params)</code></td>
+<td>С кэшированием</td>
+</tr>
+<tr>
+<td><code>_enhance_recipe(recipe, user_query, helper, user_id)</code></td>
+<td>Советы по приготовлению</td>
+</tr>
+<tr>
+<td><code>_generate_daily_menu(preferences, helper, user_id)</code></td>
+<td>С отслеживанием <code>used_recipes</code></td>
+</tr>
+<tr>
+<td><code>_parse_menu_preferences(preferences_str, helper, user_id, days)</code></td>
+<td><code>ValueError</code>, <code>JSONDecodeError</code>, <code>ValidationError</code></td>
+</tr>
+<tr>
+<td><code>_format_menu_plan(menu_plan)</code></td>
+<td>Markdown с эмодзи</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>get_recipe</code> → <code>direct_result</code>, <code>plan_menu</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="text_document_qa-anythingllm"><code>text_document_qa</code> (AnythingLLM)</h3>
+<table>
+<thead>
+<tr>
+<th>Исключение</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AnythingLLMError</code></td>
+<td>Базовое исключение</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Поле</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>metadata_dir</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>workspace_map_path</code></td>
+<td><code>workspace_map.json</code></td>
+</tr>
+<tr>
+<td><code>cleanup_task</code></td>
+<td><code>asyncio.Task</code></td>
+</tr>
+<tr>
+<td><code>processing_tasks</code></td>
+<td><code>{temp_id: asyncio.Task}</code></td>
+</tr>
+<tr>
+<td><code>max_document_age</code></td>
+<td>30 дней</td>
+</tr>
+<tr>
+<td><code>warning_before_delete</code></td>
+<td>1 день</td>
+</tr>
+<tr>
+<td><code>_http_transport</code></td>
+<td><code>httpx.AsyncHTTPTransport</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>__init__(http_transport=None)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>initialize(openai, bot, storage_root)</code></td>
+<td>Запуск фоновой очистки</td>
+</tr>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'TextDocumentQA'</code></td>
+</tr>
+<tr>
+<td><code>get_commands()</code></td>
+<td><code>/documents</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>upload_document</code>, <code>list_documents</code>, <code>ask_question</code>, <code>delete_document</code></td>
+</tr>
+<tr>
+<td><code>_configuration_error()</code></td>
+<td>Проверка <code>ANYTHINGLLM_BASE_URL</code> и <code>ANYTHINGLLM_API_KEY</code></td>
+</tr>
+<tr>
+<td><code>_workspace_name(chat_id)</code></td>
+<td><code>{prefix}-{hash}</code></td>
+</tr>
+<tr>
+<td><code>_session_id(chat_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_chat_hash(chat_id)</code></td>
+<td>SHA-256, 16 символов</td>
+</tr>
+<tr>
+<td><code>_document_id(chat_id, location)</code></td>
+<td>MD5, 32 символа</td>
+</tr>
+<tr>
+<td><code>_request(method, path, **kwargs)</code></td>
+<td><code>AnythingLLMError</code> при ошибках</td>
+</tr>
+<tr>
+<td><code>_ensure_workspace(chat_id)</code></td>
+<td>Создание с кэшированием</td>
+</tr>
+<tr>
+<td><code>_upload_document(workspace_slug, file_name, file_content)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_chat(workspace_slug, chat_id, query)</code></td>
+<td><code>chat</code> или <code>query</code> режим</td>
+</tr>
+<tr>
+<td><code>_delete_document(doc_id, metadata)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_cleanup_loop()</code></td>
+<td>Цикл 24 часа</td>
+</tr>
+<tr>
+<td><code>_cleanup_old_documents()</code></td>
+<td>Предупреждение за сутки, затем удаление</td>
+</tr>
+<tr>
+<td><code>_send_deletion_warning(metadata, doc_id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>_coerce_file_content(file_content)</code></td>
+<td><code>bytes</code>, <code>bytearray</code>, <code>str</code> → <code>bytes</code>; <code>AnythingLLMError</code></td>
+</tr>
+<tr>
+<td><code>_direct_text(value)</code></td>
+<td><code>{'direct_result': {kind: 'text', format: 'markdown', value}}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="text_summarizer"><code>text_summarizer</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'Суммаризатор текста'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>summarize_text</code>: <code>url</code></td>
+</tr>
+<tr>
+<td><code>_generate_summary_url(url, text, helper)</code></td>
+<td>API Яндекса</td>
+</tr>
+<tr>
+<td><code>_extract_text_from_url(url)</code></td>
+<td><code>summary-scroll</code> → readability → пустая строка</td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>{'summary'}</code> или <code>{'error'}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="ddg_translate"><code>ddg_translate</code></h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_name()</code></td>
+<td><code>'DuckDuckGo Translate'</code></td>
+</tr>
+<tr>
+<td><code>get_spec()</code></td>
+<td><code>translate</code>: <code>text</code>, <code>to_language</code></td>
+</tr>
+<tr>
+<td><code>execute(function_name, helper, **kwargs)</code></td>
+<td><code>DDGS.translate()</code></td>
+</tr>
+</tbody>
+</table>
+<hr/>
+<h2 id="mcp">MCP примеры</h2>
+<h3 id="mcp_stdio_client"><code>mcp_stdio_client</code></h3>
+<table>
+<thead>
+<tr>
+<th>Структура</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>server_params</code></td>
+<td><code>StdioServerParameters(command="python", args=["examples/mcp_stdio_server.py"], env=None)</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>main()</code></td>
+<td>Подключение, инициализация, получение инструментов, демо-вызовы</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mcp_stdio_server-fastmcp"><code>mcp_stdio_server</code> (FastMCP)</h3>
+<table>
+<thead>
+<tr>
+<th>Инструмент</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add(a, b)</code></td>
+<td>Сложение</td>
+</tr>
+<tr>
+<td><code>multiply(a, b)</code></td>
+<td>Умножение</td>
+</tr>
+<tr>
+<td><code>divide(a, b)</code></td>
+<td>Деление; <code>ValueError</code> при <code>b=0</code></td>
+</tr>
+<tr>
+<td><code>greeting(name)</code></td>
+<td><code>"Привет, {name}!"</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="mcp_http_server-fastapi"><code>mcp_http_server</code> (FastAPI)</h3>
+<table>
+<thead>
+<tr>
+<th>Модель</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FunctionArguments</code></td>
+<td><code>extra="allow"</code></td>
+</tr>
+<tr>
+<td><code>FunctionCall</code></td>
+<td><code>name</code>, <code>arguments</code></td>
+</tr>
+<tr>
+<td><code>ToolSpec</code></td>
+<td><code>name</code>, <code>description</code>, <code>parameters</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Эндпоинт</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /</code></td>
+<td>Информация о сервере</td>
+</tr>
+<tr>
+<td><code>GET /tools</code></td>
+<td>Список инструментов в JSON Schema</td>
+</tr>
+<tr>
+<td><code>POST /execute</code></td>
+<td>Выполнение функции; <code>401</code> при <code>REQUIRE_AUTH=true</code>, <code>400</code> при отсутствии параметра, <code>404</code> при неизвестной функции</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Функция</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_weather(city)</code></td>
+<td>In-memory хранилище</td>
+</tr>
+<tr>
+<td><code>convert_currency(amount, from_currency, to_currency)</code></td>
+<td>Фиксированные курсы: <code>USD</code>, <code>EUR</code>, <code>GBP</code>, <code>RUB</code></td>
+</tr>
+<tr>
+<td><code>generate_id(prefix="")</code></td>
+<td>UUID с префиксом</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_3">Список модулей</h2>
+<ul>
+<li><a href="bot/__init____py.html">modules/bot/__init____py</a></li>
+<li><a href="bot/__main____py.html">modules/bot/__main____py</a></li>
+<li><a href="bot/chat_modes_registry__py.html">modules/bot/chat_modes_registry__py</a></li>
+<li><a href="bot/conversation_key__py.html">modules/bot/conversation_key__py</a></li>
+<li><a href="bot/database__py.html">modules/bot/database__py</a></li>
+<li><a href="bot/hindsight_client__py.html">modules/bot/hindsight_client__py</a></li>
+<li><a href="bot/html_utils__py.html">modules/bot/html_utils__py</a></li>
+<li><a href="bot/i18n__py.html">modules/bot/i18n__py</a></li>
+<li><a href="bot/model_constants__py.html">modules/bot/model_constants__py</a></li>
+<li><a href="bot/openai_helper__py.html">modules/bot/openai_helper__py</a></li>
+<li><a href="bot/openai_tool_handler__py.html">modules/bot/openai_tool_handler__py</a></li>
+<li><a href="bot/plugin_manager__py.html">modules/bot/plugin_manager__py</a></li>
+<li><a href="bot/plugins/agent_tools__py.html">modules/bot/plugins/agent_tools__py</a></li>
+<li><a href="bot/plugins/ask_your_pdf__py.html">modules/bot/plugins/ask_your_pdf__py</a></li>
+<li><a href="bot/plugins/auto_tts__py.html">modules/bot/plugins/auto_tts__py</a></li>
+<li><a href="bot/plugins/chief__py.html">modules/bot/plugins/chief__py</a></li>
+<li><a href="bot/plugins/codeinterpreter__py.html">modules/bot/plugins/codeinterpreter__py</a></li>
+<li><a href="bot/plugins/conversation_analytics__py.html">modules/bot/plugins/conversation_analytics__py</a></li>
+<li><a href="bot/plugins/crypto__py.html">modules/bot/plugins/crypto__py</a></li>
+<li><a href="bot/plugins/ddg_image_search__py.html">modules/bot/plugins/ddg_image_search__py</a></li>
+<li><a href="bot/plugins/ddg_translate__py.html">modules/bot/plugins/ddg_translate__py</a></li>
+<li><a href="bot/plugins/ddg_web_search__py.html">modules/bot/plugins/ddg_web_search__py</a></li>
+<li><a href="bot/plugins/deepl__py.html">modules/bot/plugins/deepl__py</a></li>
+<li><a href="bot/plugins/dice__py.html">modules/bot/plugins/dice__py</a></li>
+<li><a href="bot/plugins/github_analysis__py.html">modules/bot/plugins/github_analysis__py</a></li>
+<li><a href="bot/plugins/google_web_search__py.html">modules/bot/plugins/google_web_search__py</a></li>
+<li><a href="bot/plugins/gtts_text_to_speech__py.html">modules/bot/plugins/gtts_text_to_speech__py</a></li>
+<li><a href="bot/plugins/haiper_image_to_video__py.html">modules/bot/plugins/haiper_image_to_video__py</a></li>
+<li><a href="bot/plugins/hindsight_memory__py.html">modules/bot/plugins/hindsight_memory__py</a></li>
+<li><a href="bot/plugins/iplocation__py.html">modules/bot/plugins/iplocation__py</a></li>
+<li><a href="bot/plugins/jina_web_search__py.html">modules/bot/plugins/jina_web_search__py</a></li>
+<li><a href="bot/plugins/language_learning__py.html">modules/bot/plugins/language_learning__py</a></li>
+<li><a href="bot/plugins/mcp_server__py.html">modules/bot/plugins/mcp_server__py</a></li>
+<li><a href="bot/plugins/movie_info__py.html">modules/bot/plugins/movie_info__py</a></li>
+<li><a href="bot/plugins/plugin__py.html">modules/bot/plugins/plugin__py</a></li>
+<li><a href="bot/plugins/prompt_perfect__py.html">modules/bot/plugins/prompt_perfect__py</a></li>
+<li><a href="bot/plugins/reaction__py.html">modules/bot/plugins/reaction__py</a></li>
+<li><a href="bot/plugins/reminders__py.html">modules/bot/plugins/reminders__py</a></li>
+<li><a href="bot/plugins/show_me_diagrams__py.html">modules/bot/plugins/show_me_diagrams__py</a></li>
+<li><a href="bot/plugins/skills__py.html">modules/bot/plugins/skills__py</a></li>
+<li><a href="bot/plugins/spotify__py.html">modules/bot/plugins/spotify__py</a></li>
+<li><a href="bot/plugins/stable_diffusion__py.html">modules/bot/plugins/stable_diffusion__py</a></li>
+<li><a href="bot/plugins/task_management__py.html">modules/bot/plugins/task_management__py</a></li>
+<li><a href="bot/plugins/terminal__py.html">modules/bot/plugins/terminal__py</a></li>
+<li><a href="bot/plugins/text_document_qa__py.html">modules/bot/plugins/text_document_qa__py</a></li>
+<li><a href="bot/plugins/text_summarizer__py.html">modules/bot/plugins/text_summarizer__py</a></li>
+<li><a href="bot/plugins/vkusvill__py.html">modules/bot/plugins/vkusvill__py</a></li>
+<li><a href="bot/plugins/weather__py.html">modules/bot/plugins/weather__py</a></li>
+<li><a href="bot/plugins/web_research__py.html">modules/bot/plugins/web_research__py</a></li>
+<li><a href="bot/plugins/webshot__py.html">modules/bot/plugins/webshot__py</a></li>
+<li><a href="bot/plugins/website_content__py.html">modules/bot/plugins/website_content__py</a></li>
+<li><a href="bot/plugins/whois___py.html">modules/bot/plugins/whois___py</a></li>
+<li><a href="bot/plugins/wolfram_alpha__py.html">modules/bot/plugins/wolfram_alpha__py</a></li>
+<li><a href="bot/plugins/worldtimeapi__py.html">modules/bot/plugins/worldtimeapi__py</a></li>
+<li><a href="bot/plugins/youtube_audio_extractor__py.html">modules/bot/plugins/youtube_audio_extractor__py</a></li>
+<li><a href="bot/plugins/youtube_transcript__py.html">modules/bot/plugins/youtube_transcript__py</a></li>
+<li><a href="bot/request_context__py.html">modules/bot/request_context__py</a></li>
+<li><a href="bot/skill_script_routing__py.html">modules/bot/skill_script_routing__py</a></li>
+<li><a href="bot/telegram_bot__py.html">modules/bot/telegram_bot__py</a></li>
+<li><a href="bot/usage_tracker__py.html">modules/bot/usage_tracker__py</a></li>
+<li><a href="bot/user_settings__py.html">modules/bot/user_settings__py</a></li>
+<li><a href="bot/utils__py.html">modules/bot/utils__py</a></li>
+<li><a href="bot/validation__py.html">modules/bot/validation__py</a></li>
+<li><a href="examples/mcp_server_example__py.html">modules/examples/mcp_server_example__py</a></li>
+<li><a href="examples/mcp_stdio_client__py.html">modules/examples/mcp_stdio_client__py</a></li>
+<li><a href="examples/mcp_stdio_server__py.html">modules/examples/mcp_stdio_server__py</a></li>
+</ul></div>
+</div>
+</div>
+<footer class="col-md-12">
+<hr/>
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+</footer>
+<script src="../js/bootstrap.bundle.min.js"></script>
+<script>
+            var base_url = "..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+<script src="../js/base.js"></script>
+<script src="../search/main.js"></script>
+<div aria-hidden="true" aria-labelledby="searchModalLabel" class="modal" id="mkdocs_search_modal" role="dialog" tabindex="-1">
+<div class="modal-dialog modal-lg">
+<div class="modal-content">
+<div class="modal-header">
+<h4 class="modal-title" id="searchModalLabel">Search</h4>
+<button aria-label="Close" class="btn-close" data-bs-dismiss="modal" type="button"></button>
+</div>
+<div class="modal-body">
+<p>From here you can search these documents. Enter your search terms below.</p>
+<form>
+<div class="form-group">
+<input class="form-control" id="mkdocs-search-query" placeholder="Search..." title="Type search term here" type="search"/>
+</div>
+</form>
+<div data-no-results-text="No results found" id="mkdocs-search-results"></div>
+</div>
+<div class="modal-footer">
+</div>
+</div>
+</div>
+</div><div aria-hidden="true" aria-labelledby="keyboardModalLabel" class="modal" id="mkdocs_keyboard_modal" role="dialog" tabindex="-1">
+<div class="modal-dialog">
+<div class="modal-content">
+<div class="modal-header">
+<h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+<button aria-label="Close" class="btn-close" data-bs-dismiss="modal" type="button"></button>
+</div>
+<div class="modal-body">
+<table class="table">
+<thead>
+<tr>
+<th style="width: 20%;">Keys</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="help shortcut"><kbd>?</kbd></td>
+<td>Open this help</td>
+</tr>
+<tr>
+<td class="next shortcut"><kbd>n</kbd></td>
+<td>Next page</td>
+</tr>
+<tr>
+<td class="prev shortcut"><kbd>p</kbd></td>
+<td>Previous page</td>
+</tr>
+<tr>
+<td class="search shortcut"><kbd>s</kbd></td>
+<td>Search</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="modal-footer">
+</div>
+</div>
+</div>
+</div>
+</body>
+</html>

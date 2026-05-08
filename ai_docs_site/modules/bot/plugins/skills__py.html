@@ -1,0 +1,1276 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../../img/favicon.ico">
+        <title>skills.py - chatgpt-telegram-bot</title>
+        <link href="../../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../../css/brands.min.css" rel="stylesheet">
+        <link href="../../../css/solid.min.css" rel="stylesheet">
+        <link href="../../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="skills__py.html" class="dropdown-item active" aria-current="page">skills.py</a>
+</li>
+            
+<li>
+    <a href="spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="../__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="../chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="../conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="../database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="../hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="../html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="../i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="../model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="../openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="../openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="../plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="../request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="../skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="../telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="../usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="../user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="../utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="../validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="show_me_diagrams__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="spotify__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botpluginsskills" class="nav-link">bot/plugins/skills</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botpluginsskills">bot/plugins/skills</h1>
+<p><em>Источник:</em> <code>bot/plugins/skills.py</code></p>
+<p>Модуль реализует плагин SkillsPlugin, который интегрирует локальные Codex-стилизованные навыки (skills) в цикл function-calling бота. Плагин предоставляет инструменты для обнаружения, установки, активации и выполнения навыков с поддержкой скриптов, аудита и управления состоянием через файловую систему и CLI. Конфигурация осуществляется через переменные окружения и файлы состояния в хранилище бота.</p>
+<p>Ключевые структуры данных
+SkillsPlugin — основной плагин, управляющий жизненным циклом навыков: сканирование директорий, загрузка метаданных, выполнение скриптов, аудит операций и отражения (reflections) для оптимизации повторных вызовов.
+Plugin — базовый класс плагина, от которого наследуется SkillsPlugin.</p>
+<p>class SkillsPlugin
+Плагин для экспозиции локальных Codex-стилевых навыков как инструментов function-calling.</p>
+<p>Поля
+skills_dir — директория хранения навыков (из SKILLS_DIR или storage_root/skills).
+state_file — путь к JSON-файлу состояния активных навыков.
+reflections_file — путь к JSON-файлу кэшированных отражений навыков.
+workdir_root — корневая рабочая директория для выполнения скриптов навыков.
+audit_file — путь к JSONL-файлу аудита операций.
+available_skills — словарь обнаруженных навыков с метаданными.
+active_skills — словарь активных навыков по scope (chat/user).
+skill_reflections — словарь отражений навыков по scope.
+allow_scripts — флаг разрешения выполнения скриптов (SKILLS_ALLOW_SCRIPTS).
+allow_installs — флаг разрешения установки навыков (SKILLS_ALLOW_INSTALLS).
+script_admin_ids — множество ID администраторов для скриптов.
+script_admin_all — флаг разрешения скриптов для всех пользователей.
+install_admin_ids — множество ID администраторов для установки.
+install_admin_all — флаг разрешения установки для всех пользователей.
+script_timeout — таймаут выполнения скриптов в секундах.
+install_timeout — таймаут установки навыков в секундах.
+output_max_chars — максимальное количество символов в выводе скрипта.
+interim_after_seconds — интервал отправки промежуточных сообщений.
+_state_lock — RLock для синхронизации доступа к состоянию.
+_reflection_lock — RLock для синхронизации отражений.
+_audit_lock — Lock для синхронизации аудита.
+_scan_cache — кэш результатов сканирования навыков.</p>
+<p>Методы
+<strong>init</strong>() — инициализация плагина с настройками по умолчанию.
+initialize(openai=None, bot=None, storage_root: str | None = None) -&gt; None — инициализация путей, загрузка конфигурации из окружения, сканирование навыков и загрузка состояния.
+get_source_name() -&gt; str — возвращает идентификатор источника "Skills".
+get_spec() -&gt; List[Dict] — возвращает спецификации инструментов function-calling для навыков.</p>
+<hr />
+<p>TRUE_VALUES = {"1", "true", "yes", "on"}
+Множество строковых значений, интерпретируемых как логическое истина.</p>
+<hr />
+<p>SCRIPT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
+Множество допустимых расширений исполняемых скриптов навыков.</p>
+<hr />
+<p>REFLECTION_REPEAT_THRESHOLD = 3
+Пороговое значение повторных вызовов навыка для активации механизма отражений.</p>
+<hr />
+<p>REFLECTION_MAX_TEXT_CHARS = 1200
+Максимальное количество символов текста в отражении навыка.</p>
+<hr />
+<p>SKILLS_CLI_TIMEOUT_SECONDS = 180
+Таймаут по умолчанию для CLI-операций установки навыков в секундах.</p>
+<hr />
+<p>SKILLS_CLI_AGENT = "codex"
+Идентификатор агента для CLI-операций навыков.</p>
+<hr />
+<p>ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\-_]|[[0-?]<em>[ -/]</em>[@-~])")
+Регулярное выражение для удаления ANSI escape-последовательностей из вывода скриптов.</p>
+<hr />
+<p>Модуль реализует инструменты для управления навыками агента: перечисление доступных и активных навыков, установка из внешних источников, активация с контекстом, обновление прогресса по шагам, выполнение разрешённых скриптов, запись рефлексий после ошибок и деактивация. Все операции проверяют права пользователя и состояние готовности компонента.</p>
+<p>Ключевые структуры данных
+disabled_skills — множество строковых идентификаторов навыков, отключённых пользователем через настройки.</p>
+<p>list_skills(refresh=True, disabled_skills=set())
+Возвращает список установленных навыков с метаданными.
+Аргументы
+refresh — принудительно обновить кэш метаданных перед чтением.
+disabled_skills — множество идентификаторов навыков, исключаемых из результата.
+Возвращает
+Словарь со списком навыков или информацию об ошибке.</p>
+<hr />
+<p>get_skill(skill_name)
+Возвращает подробные метаданные конкретного навыка.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+Возвращает
+Словарь с метаданными навыка или ошибку доступа.</p>
+<hr />
+<p>find_installable_skills(query)
+Асинхронно ищет навыки, доступные для установки, по запросу.
+Аргументы
+query — строка поискового запроса.
+Возвращает
+Список найденных пакетов с описаниями или ошибку.</p>
+<hr />
+<p>install_skill(package, skill_name=None, confirmed=False, **kwargs)
+Асинхронно устанавливает навык из указанного пакета.
+Аргументы
+package — строка идентификатора пакета для установки.
+skill_name — желаемое локальное имя навыка (опционально).
+confirmed — флаг явного подтверждения операции пользователем.
+Возвращает
+Результат установки или запрос подтверждения.</p>
+<hr />
+<p>activate_skill(skill_name, initial_context=None, **kwargs)
+Активирует навык для выполнения рабочего процесса.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+initial_context — начальный контекст выполнения (строка/объект, опционально).
+Возвращает
+Состояние активации или ошибку доступа.</p>
+<hr />
+<p>get_skill_status(skill_name, disabled_skills=set(), **kwargs)
+Возвращает текущее состояние навыка (активен/неактивен, прогресс).
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+disabled_skills — множество отключённых навыков для проверки доступа.
+Возвращает
+Словарь состояния навыка или ошибку доступа.</p>
+<hr />
+<p>list_active_skills(disabled_skills=set(), **kwargs)
+Возвращает список всех активных в данный момент навыков.
+Аргументы
+disabled_skills — множество отключённых навыков для фильтрации результата.
+Возвращает
+Список активных навыков с их текущим состоянием.</p>
+<hr />
+<p>update_skill_progress(skill_name, step, context_update=None, **kwargs)
+Обновляет прогресс активного навыка и добавляет контекст.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+step — текущий номер шага рабочего процесса навыка (целое число).
+context_update — обновление прогресса в виде текста или JSON-строки (опционально).
+Возвращает
+Обновлённое состояние прогресса или ошибку доступа.</p>
+<hr />
+<p>deactivate_skill(skill_name, **kwargs)
+Помечает активный навык как завершённый и освобождает состояние.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+Возвращает
+Результат деактивации или ошибку доступа.</p>
+<hr />
+<p>run_skill_script(skill_name, script_name, args_json=None, **kwargs)
+Асинхронно выполняет разрешённый скрипт из директории скриптов навыка.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+script_name — путь к скрипту относительно директории скриптов навыка.
+args_json — JSON-массив аргументов CLI, объект для преобразования в --key value, или plain text (опционально).
+Возвращает
+Результат выполнения скрипта или ошибку доступа/разрешения.
+Исключения
+Ошибка доступа, если навык отключён для пользователя.
+Ошибка разрешения, если скрипты не разрешены конфигурацией или вызывающий не в списке администраторов.</p>
+<hr />
+<p>record_skill_reflection(skill_name, proposal, failure_mode=None, evidence=None, **kwargs)
+Записывает предложение по улучшению навыка после сбоя.
+Аргументы
+skill_name — идентификатор директории навыка или имя из метаданных.
+proposal — краткая инструкция для добавления в SKILL.md при повторении.
+failure_mode — краткое описание режима сбоя (опционально).
+evidence — краткие доказательства из неудачного запуска (опционально).
+Возвращает
+Результат записи рефлексии; при &gt;3 повторах предложение автоматически добавляется в SKILL.md.</p>
+<hr />
+<p>execute(function_name, helper, **kwargs)
+Диспетчеризует вызовы к соответствующим методам навыков.
+Аргументы
+function_name — имя вызываемой функции навыка.
+helper — вспомогательный объект с доступом к БД и контексту.
+kwargs — аргументы целевой функции.
+Возвращает
+Результат выполнения функции или ошибку "Unknown skills tool".</p>
+<hr />
+<p>_ensure_ready()
+Проверяет инициализацию компонента и при необходимости вызывает initialize.</p>
+<hr />
+<p>_disabled_skills_for_user(helper, user_id)
+Определяет множество навыков, отключённых пользователем.
+Аргументы
+helper — вспомогательный объект с доступом к БД.
+user_id — идентификатор пользователя или None.
+Возвращает
+Множество строковых идентификаторов отключённых навыков.</p>
+<hr />
+<p>_disabled_skill_error(skill_name, disabled_skills)
+Проверяет, не отключён ли навык для текущего пользователя.
+Аргументы
+skill_name — проверяемый идентификатор навыка.
+disabled_skills — множество отключённых навыков.
+Возвращает
+Словарь ошибки доступа или None, если навык доступен.</p>
+<hr />
+<p>Модуль реализует инфраструктуру для обнаружения, сканирования и управления навыками, представленными директориями с Markdown-описаниями и исполняемыми скриптами. Поддерживает кэширование сканирования по сигнатуре времени модификации, парсинг frontmatter в форматах YAML и плоском ключ-значение, явное объявление точек входа через метаданные и эвристическое определение по расширению/исполняемости файлов. Обеспечивает валидацию безопасности путей и фильтрацию отключённых навыков.</p>
+<p>Ключевые структуры данных
+_scan_cache — кортеж (signature, skills), хранящий кэшированный результат сканирования и его сигнатуру для инвалидации.
+available_skills — словарь обнаруженных навыков с полными метаданными, содержимым и скриптами.</p>
+<p>_check_disabled_skill(skill_name: str, disabled_skills: set[str]) -&gt; Dict[str, Any] | None
+Проверяет, отключён ли указанный навык в пользовательских настройках.
+Аргументы
+skill_name — имя или идентификатор навыка для проверки.
+disabled_skills — множество идентификаторов отключённых навыков.
+Возвращает
+Словарь с ошибкой, если навык отключён; None, если навык доступен.</p>
+<hr />
+<p>_scan_skills() -&gt; Dict[str, Dict[str, Any]]
+Выполняет полное сканирование директории навыков с построением кэша.
+Аргументы
+нет.
+Возвращает
+Словарь идентификаторов навыков в их полные описания.</p>
+<hr />
+<p>_scan_signature() -&gt; tuple
+Формирует сигнатуру изменений для инвалидации кэша сканирования.
+Аргументы
+нет.
+Возвращает
+Кортеж записей (имя_навыка, mtime_маркдауна, точки_входа_скриптов) или пустой кортеж при ошибке.</p>
+<hr />
+<p>_parse_skill_markdown(content: str) -&gt; tuple[Dict[str, Any], str]
+Разбирает содержимое SKILL.md на метаданные frontmatter и тело документа.
+Аргументы
+content — сырое содержимое Markdown-файла.
+Возвращает
+Кортеж (метаданные, тело_документа); метаданные пустые при отсутствии frontmatter.</p>
+<hr />
+<p>_parse_flat_frontmatter(frontmatter: str) -&gt; Dict[str, Any]
+Парсит плоский формат frontmatter без YAML-парсера (ключ: значение с продолжением строк).
+Аргументы
+frontmatter — текстовое содержимое секции frontmatter.
+Возвращает
+Словарь извлечённых метаданных.</p>
+<hr />
+<p>_parse_flat_scalar(value: str) -&gt; Any
+Преобразует строковое значение из плоского frontmatter в типизированное.
+Аргументы
+value — строковое представление значения.
+Возвращает
+Распакованная строка без кавычек, булево значение или исходную строку.</p>
+<hr />
+<p>_list_skill_scripts(skill_path: Path, metadata: Dict[str, Any] | None = None) -&gt; List[str]
+Формирует список точек входа скриптов навыка с приоритетом явных объявлений.
+Аргументы
+skill_path — путь к директории навыка.
+metadata — опциональные метаданные из frontmatter для разрешения entrypoints.
+Возвращает
+Отсортированный список относительных POSIX-путей скриптов.</p>
+<hr />
+<p>_resolve_explicit_entrypoints(metadata: Dict[str, Any], scripts_dir: Path) -&gt; List[str] | None
+Разрешает явно объявленные точки входа из метаданных с валидацией безопасности.
+Аргументы
+metadata — словарь метаданных навыка.
+scripts_dir — путь к директории scripts навыка.
+Возвращает
+Список валидных точек входа, пустой список при null, None для fallback к эвристике.
+Исключения
+Логирует предупреждения при невалидных entrypoints; не выбрасывает исключений.</p>
+<hr />
+<p>_is_script_entrypoint(path: Path, scripts_dir: Path) -&gt; bool
+Определяет, является ли файл кандидатом на точку входа по эвристикам.
+Аргументы
+path — путь к проверяемому файлу.
+scripts_dir — базовая директория scripts для вычисления относительного пути.
+Возвращает
+True, если файл проходит фильтры расширения/исполняемости и не исключён.</p>
+<hr />
+<p>_list_skills(*, refresh: bool = False, disabled_skills: set[str] | None = None) -&gt; Dict[str, Any]
+Формирует ответ со списком доступных навыков с учётом кэша и фильтрации.
+Аргументы
+refresh — принудительное обновление кэша сканирования.
+disabled_skills — множество идентификаторов для исключения из результата.
+Возвращает
+Словарь с флагом success и списком навыков.</p>
+<hr />
+<p>Модуль реализует асинхронный менеджер навыков агента с возможностью поиска, установки и синхронизации пакетов через внешний CLI <code>skills</code>. Включает механизмы контроля доступа, валидации параметров, обработки ошибок и аудита операций.</p>
+<p>Ключевые структуры данных
+Dict[str, Any] — стандартный формат возвращаемого результата операций, содержащий поля success, error, stdout, stderr и специфичные для операции данные.</p>
+<p>async def _find_installable_skills(self, query: str) -&gt; Dict[str, Any]
+Поиск доступных для установки навыков через CLI по заданному запросу.
+Аргументы
+query — строка поискового запроса; пустая или содержащая только пробелы вызывает ошибку.
+Возвращает
+словарь с результатами поиска: success, query, results, stdout, stderr, returncode.</p>
+<hr />
+<p>async def _install_skill(self, package: str, <em>, skill_name: str | None, confirmed: bool, </em>*kwargs) -&gt; Dict[str, Any]
+Установка навыка из указанного пакета с валидацией прав и синхронизацией в рабочую директорию.
+Аргументы
+package — идентификатор пакета навыка для установки.
+skill_name — желаемое имя навыка в системе; если None, выводится из package.
+confirmed — флаг явного подтверждения пользователя для установки.
+kwargs — дополнительные параметры, включая user_id для проверки прав.
+Возвращает
+словарь с результатом установки: success, skill, package, path, sync, stdout, stderr, available.
+Исключения
+возвращает ошибку в поле error результата при: запрете установок, отсутствии прав администратора, неподтверждённой операции, невалидном package, отсутствии skill_name, занятом имени, ошибке CLI или синхронизации.</p>
+<hr />
+<p>def _sync_installed_skill(self, source_path: Path, target_path: Path) -&gt; tuple[str, str | None]
+Синхронизация установленного навыка из исходного пути в целевую директорию навыков.
+Аргументы
+source_path — путь к установленному навыку в системе.
+target_path — путь назначения в директории навыков агента.
+Возвращает
+кортеж (mode, error): mode описывает способ синхронизации ("already_in_skills_dir", "copied_to_skills_dir" или пустая строка при ошибке), error содержит сообщение об ошибке или None.
+Исключения
+OSError при неудаче копирования файловой иерархии.</p>
+<hr />
+<p>async def _run_skills_cli(self, args: List[str], *, timeout: int) -&gt; Dict[str, Any]
+Запуск внешнего CLI <code>skills</code> через npx с заданными аргументами и таймаутом.
+Аргументы
+args — список аргументов командной строки для передачи в skills.
+timeout — максимальное время ожидания выполнения команды в секундах.
+Возвращает
+словарь с результатом выполнения: success, returncode, stdout, stderr.
+Исключения
+asyncio.TimeoutError при превышении таймаута — процесс принудительно завершается.
+Exception при ошибке запуска процесса.</p>
+<hr />
+<p>Внутренние вспомогательные методы для управления навыками (skills). Реализуют парсинг вывода CLI, поиск путей установленных навыков, валидацию имён директорий, очистку ANSI-escape последовательностей, управление состоянием активных навыков и генерацию вызовов скриптовых инструментов.</p>
+<p>Ключевые структуры данных
+Dict[str, Any] — стандартный словарь для передачи метаданных навыка, результатов CLI и состояния скопа.
+List[Dict[str, Any]] — список результатов установки навыков или вызовов инструментов.
+Path | None — тип возвращаемого значения для пути к установленному навыку (Python 3.10+ union syntax).</p>
+<p>_parse_installable_skill_results(self, stdout: str) -&gt; List[Dict[str, Any]]
+Парсит stdout CLI-команды списка устанавливаемых навыков в структурированные записи.
+Аргументы
+stdout — сырой текстовый вывод команды CLI.
+Возвращает
+Список словарей с ключами package, skill_name, summary, url.</p>
+<hr />
+<p>_find_cli_installed_skill_path(self, skill_name: str) -&gt; tuple[Path | None, Dict[str, Any]]
+Асинхронно определяет файловый путь к установленному навыку через CLI ls с fallback на кандидатов.
+Аргументы
+skill_name — идентификатор навыка для поиска.
+Возвращает
+Кортеж (путь или None, словарь с success, returncode и опциональными stdout/stderr/fallback).</p>
+<hr />
+<p>_installed_skill_path_candidates(self, skill_name: str) -&gt; List[Path]
+Формирует список потенциальных путей к директории навыка на основе переменных окружения и домашней директории.
+Аргументы
+skill_name — имя директории навыка.
+Возвращает
+Список абсолютных Path, проверенных через resolve().</p>
+<hr />
+<p>_infer_skill_name_from_package(self, package: str) -&gt; str
+Извлекает имя навыка из строки пакета формата namespace/name@version.
+Аргументы
+package — строка пакета, содержащая символ @.
+Возвращает
+Часть строки после последнего @, либо пустую строку при отсутствии @.</p>
+<hr />
+<p>_validate_skill_dir_name(self, value: str) -&gt; str | None
+Валидирует строку как допустимое имя директории навыка.
+Аргументы
+value — проверяемая строка имени.
+Возвращает
+Сообщение об ошибке или None при валидном имени.</p>
+<hr />
+<p>_strip_ansi(self, value: str) -&gt; str
+Удаляет ANSI-escape последовательности из строки регулярным выражением.
+Аргументы
+value — исходная строка, возможно содержащая управляющие коды.
+Возвращает
+Очищенная строка.</p>
+<hr />
+<p>_skill_scripts_allowed(self, info: Dict[str, Any]) -&gt; bool
+Проверяет разрешение выполнения скриптов навыка на основе глобального флага и метаданных.
+Аргументы
+info — словарь метаданных навыка с ключами scripts и metadata.
+Возвращает
+True если скрипты разрешены, иначе False.</p>
+<hr />
+<p>_script_tool_calls(self, skill_id: str) -&gt; List[Dict[str, Any]]
+Генерирует список вызовов инструментов для всех скриптов указанного навыка.
+Аргументы
+skill_id — идентификатор навыка в available_skills.
+Возвращает
+Список словарей с tool_name и arguments.</p>
+<hr />
+<p>_active_script_tool_calls(self, scope_state: Dict[str, Dict[str, Any]], disabled_skills: set[str] | None = None) -&gt; List[Dict[str, Any]]
+Формирует агрегированный список вызовов скриптовых инструментов для всех активных навыков в скопе.
+Аргументы
+scope_state — словарь состояний активных навыков по skill_id.
+disabled_skills — множество отключённых навыков для исключения.
+Возвращает
+Список вызовов инструментов для разрешённых активных навыков.</p>
+<hr />
+<p>_log_available_skills(self) -&gt; None
+Логирует сводку доступных навыков с указанием директории и количества.</p>
+<hr />
+<p>_bool_arg(self, value: Any, *, default: bool) -&gt; bool
+Нормализует произвольное значение в булев тип с поддержкой строковых литералов.
+Аргументы
+value — исходное значение для преобразования.
+default — значение по умолчанию при None.
+Возвращает
+Нормализованное булево значение.</p>
+<hr />
+<p>_get_skill(self, skill_name: str) -&gt; Dict[str, Any]
+Получает полную информацию о навыке по разрешённому идентификатору.
+Аргументы
+skill_name — имя или псевдоним навыка для разрешения.
+Возвращает
+Словарь с success и skill-данными или ошибкой not found.</p>
+<hr />
+<p>_activate_skill(self, skill_name: str, initial_context: Any = None, **kwargs) -&gt; Dict[str, Any]
+Активирует навык в скопе чата/пользователя с инициализацией состояния и контекста.
+Аргументы
+skill_name — имя навыка для активации.
+initial_context — начальный контекст выполнения (опционально, декодируется).
+kwargs — дополнительные аргументы включая chat_id и user_id.
+Возвращает
+Словарь с success, skill-данными, script_tool_calls и scope.</p>
+<hr />
+<p>_list_active_skills(self, disabled_skills: set[str] | None = None, **kwargs) -&gt; Dict[str, Any]
+Возвращает список активных навыков для текущего скопа с фильтрацией отключённых.
+Аргументы
+disabled_skills — множество навыков для исключения из результата.
+kwargs — аргументы для вычисления скопа через chat_id и user_id.
+Возвращает
+Словарь с success и списком entries активных навыков.</p>
+<hr />
+<p>Внутренние методы менеджера навыков для управления состоянием, прогрессом и скриптовым выполнением.</p>
+<p>Ключевые структуры данных
+active_skills — потокобезопасное хранилище состояний активных навыков, индексированное по скоупу (chat_id + user_id).
+scope_state — состояние навыков в рамках одного скоупа: {skill_id: state_dict}.
+state — словарь состояния навыка с полями current_step, activated_at, updated_at, context.</p>
+<p>_get_skill_status(skill_name: str = "", disabled_skills: set[str] | None = None, **kwargs) -&gt; Dict[str, Any]
+Возвращает статус активных навыков в скоупе или конкретного навыка.
+Аргументы
+skill_name — имя навыка для проверки; пустая строка возвращает все активные навыки.
+disabled_skills — множество идентификаторов скрываемых навыков.
+kwargs — должен содержать chat_id и/или user_id для вычисления скоупа.
+Возвращает
+словарь с success, scope, active_skills/visible_scope_state, active_script_tool_calls (при skill_name="") или success, scope, skill, state, script_tool_calls (при указанном навыке).
+Исключения
+не бросает исключений; ошибки возвращаются в поле error результата.</p>
+<hr />
+<p>_update_skill_progress(skill_name: str, step: int, context_update: Any = None, **kwargs) -&gt; Dict[str, Any]
+Обновляет текущий шаг и контекст активного навыка.
+Аргументы
+skill_name — имя обновляемого навыка.
+step — новое значение текущего шага.
+context_update — обновляемые данные контекста (декодируются через _decode_context).
+kwargs — должен содержать chat_id и/или user_id для вычисления скоупа.
+Возвращает
+словарь с success, scope, skill, state при успехе; success=False и error при неудаче.
+Исключения
+не бросает исключений; ошибки возвращаются в поле error результата.</p>
+<hr />
+<p>_deactivate_skill(skill_name: str, **kwargs) -&gt; Dict[str, Any]
+Деактивирует навык в скоупе и очищает пустые скоупы.
+Аргументы
+skill_name — имя деактивируемого навыка.
+kwargs — должен содержать chat_id и/или user_id для вычисления скоупа.
+Возвращает
+словарь с success, scope, skill, deactivated=True при успехе; success=False и error при неудаче.
+Исключения
+не бросает исключений; ошибки возвращаются в поле error результата.</p>
+<hr />
+<p>_run_skill_script(skill_name: str, script_name: str, args_json: Any = None, **kwargs) -&gt; Dict[str, Any]
+Асинхронно выполняет скрипт навыка с контролем безопасности и таймаутом.
+Аргументы
+skill_name — имя навыка, содержащего скрипт.
+script_name — имя исполняемого файла скрипта.
+args_json — аргументы скрипта в JSON-представлении.
+kwargs — должен содержать chat_id и/или user_id для вычисления скоупа.
+Возвращает
+словарь с результатом выполнения: success, stdout, stderr, returncode, duration_ms при успехе; success=False и error при неудаче.
+Исключения
+asyncio.TimeoutError — перехватывается внутри, возвращается error="timeout".
+OSError — при ошибках доступа к файлу скрипта.
+ValueError — при невалидных аргументах args_json.</p>
+<hr />
+<p>class SkillManagerInternal
+Внутренние методы управления навыками (не являются публичным API).</p>
+<p>Поля
+active_skills — потокобезопасное хранилище {scope: {skill_id: state}}.
+_state_lock — threading.RLock для синхронизации доступа к active_skills.
+available_skills — реестр доступных навыков с метаданными.
+allow_scripts — флаг разрешения выполнения скриптов.
+script_timeout — таймаут выполнения скрипта в секундах.</p>
+<p>Методы
+_get_skill_status(skill_name="", disabled_skills=None, <strong>kwargs) -&gt; Dict[str, Any] — получение статуса навыков.
+_update_skill_progress(skill_name, step, context_update=None, </strong>kwargs) -&gt; Dict[str, Any] — обновление прогресса.
+_deactivate_skill(skill_name, <strong>kwargs) -&gt; Dict[str, Any] — деактивация навыка.
+_run_skill_script(skill_name, script_name, args_json=None, </strong>kwargs) -&gt; Dict[str, Any] — выполнение скрипта.
+_resolve_skill_id(skill_name: str) -&gt; str | None — разрешение имени навыка в идентификатор.
+_decode_context(context_update: Any) -&gt; Any — декодирование обновления контекста.
+_script_command(script_path: Path) -&gt; tuple[list[str], str, str | None] — определение команды запуска скрипта.
+_script_env(<strong>variables) -&gt; dict[str, str] — формирование переменных окружения для скрипта.
+_ensure_skill_workdir(skill_id: str, scope: str) -&gt; Path — создание рабочей директории скрипта.
+_spawn_interim_notice(chat_id, skill_id, script_name) -&gt; asyncio.Task | None — запуск уведомления о долгом выполнении.
+_active_script_tool_calls(scope_state, disabled_skills) -&gt; list[dict] — сбор активных вызовов инструментов скриптов.
+_script_tool_calls(skill_id: str) -&gt; list[dict] — получение вызовов инструментов конкретного навыка.
+_is_script_admin(user_id) -&gt; bool — проверка прав администратора скриптов.
+_is_relative_to(path, base) -&gt; bool — проверка вложенности пути.
+_parse_script_args(args_json) -&gt; list[str] — парсинг аргументов скрипта.
+_truncate(data: str, limit: int) -&gt; str — усечение вывода скрипта.
+_save_state() — сохранение состояния активных навыков.
+_audit(action, </strong>fields) — запись аудит-события.</p>
+<hr />
+<p>Менеджер навыков с поддержкой рефлексии и аудита. Обеспечивает сканирование каталогов навыков, запуск скриптов в изолированных рабочих директориях, отслеживание состояния активных навыков по scope, а также накопление предложений по улучшению с автоматической записью в SKILL.md при превышении порога повторений.</p>
+<p>Ключевые структуры данных
+REFLECTION_REPEAT_THRESHOLD — пороговое значение количества повторений рефлексии, при достижении которого предложение автоматически применяется к SKILL.md.</p>
+<p>_cleanup_after_delivery(cleanup: Dict[str, Any]) -&gt; bool
+Удаляет навык из активного состояния указанного scope после завершения доставки результата.
+Аргументы
+cleanup — словарь с ключами scope и skill_id, идентифицирующими удаляемый экземпляр навыка.
+Возвращает
+True если состояние было найдено и удалено, иначе False.</p>
+<hr />
+<p>_script_command(script_path: Path) -&gt; tuple[List[str] | None, str | None, str | None]
+Определяет команду запуска, runtime-идентификатор и сообщение об ошибке для скрипта по его расширению или флагу исполняемости.
+Аргументы
+script_path — путь к исполняемому файлу скрипта.
+Возвращает
+Кортеж (command_list, runtime_name, error_message), где command_list — список аргументов для subprocess или None при неподдерживаемом формате.</p>
+<hr />
+<p>_resolve_skill_id(skill_name: str) -&gt; str | None
+Разрешает строковое имя навыка в идентификатор skill_id с учётом точного совпадения или регистронезависимого сопоставления по полю name.
+Аргументы
+skill_name — имя или идентификатор навыка для поиска.
+Возвращает
+Найденный skill_id или None при отсутствии совпадений.</p>
+<hr />
+<p>_decode_context(value: Any) -&gt; Dict[str, Any]
+Нормализует входное значение контекста в словарь, поддерживая None, dict, JSON-строку и произвольный текст.
+Аргументы
+value — исходное значение контекста произвольного типа.
+Возвращает
+Словарь с декодированным контекстом; при нераспознанном тексте возвращает {"task": text}.</p>
+<hr />
+<p>_parse_script_args(args_json: Any) -&gt; List[str]
+Парсит аргументы скрипта из JSON-строки, списка или словаря в плоский список строковых аргументов.
+Аргументы
+args_json — исходные аргументы в виде строки, списка, словаря или None.
+Возвращает
+Список строковых аргументов для передачи в командную строку скрипта.</p>
+<hr />
+<p>_record_skill_reflection(skill_name: str, proposal: str, <em>, failure_mode: Any = None, evidence: Any = None, </em><em>kwargs) -&gt; Dict[str, Any]
+Регистрирует предложение по улучшению навыка, накапливает счётчик повторений и при превышении порога автоматически применяет изменение к SKILL.md.
+Аргументы
+skill_name — имя или идентификатор навыка для рефлексии.
+proposal — текст предложения по улучшению или уточнению.
+failure_mode — опциональное описание режима отказа, вызвавшего рефлексию.
+evidence — опциональные доказательства/пример для сохранения в истории.
+</em>*kwargs — дополнительные параметры включая chat_id и user_id для формирования scope.
+Возвращает
+Словарь с результатом операции: success, count, threshold_reached, applied, already_present, возможно error.</p>
+<hr />
+<p>_append_skill_reflection(skill_id: str, proposal_text: str) -&gt; Dict[str, Any]
+Атомарно дописывает текст рефлексии в секцию "## Learned Clarifications" файла SKILL.md указанного навыка.
+Аргументы
+skill_id — идентификатор навыка для модификации.
+proposal_text — текст предложения для добавления в документацию.
+Возвращает
+Словарь с полями applied, already_present или error при неудаче чтения/записи.
+Исключения
+Не выбрасывает исключений; ошибки ОС возвращаются в поле error результата.</p>
+<hr />
+<p>Внутренние утилиты компонента управления навыками (Skill Manager). Реализуют преобразование аргументов в командную строку, нормализацию текста рефлексий, атомарное чтение/запись JSON-файлов состояний и рефлексий, проверку административных прав, формирование переменных окружения для скриптов, управление рабочими директориями навыков и фоновые уведомления пользователям о длительных операциях.</p>
+<p>def _parse_script_args(self, args_json: Any) -&gt; List[str]
+Преобразует JSON-аргументы навыка в список строк командной строки.
+Аргументы
+args_json — JSON-строка, dict, list или скаляр; None и пустая строка дают пустой список.
+Возвращает
+Список аргументов командной строки (флаги --key и значения для dict, элементы для list, скаляр как один элемент).
+Исключения
+ValueError — если в dict встречается ключ не-строка или пустая строка.</p>
+<hr />
+<p>def _arg_to_string(self, value: Any) -&gt; str
+Сериализует произвольное значение аргумента в строку.
+Аргументы
+value — скаляр, dict или list; коллекции сериализуются через json.dumps.
+Возвращает
+Строковое представление значения.</p>
+<hr />
+<p>def _normalize_reflection_text(self, value: Any) -&gt; str
+Нормализует текст рефлексии: сжимает пробелы и обрезает по максимальной длине.
+Аргументы
+value — исходный текст рефлексии (None допустим).
+Возвращает
+Нормализованная строка длиной не более REFLECTION_MAX_TEXT_CHARS.</p>
+<hr />
+<p>def _reflection_id(self, proposal_text: str) -&gt; str
+Вычисляет идентификатор рефлексии на основе нормализованного текста предложения.
+Аргументы
+proposal_text — текст предложения для хеширования.
+Возвращает
+16-символьная hex-строка (первые 16 байт SHA-256 от lowercased текста).</p>
+<hr />
+<p>def _load_reflections(self) -&gt; None
+Загружает рефлексии навыков из файла self.reflections_file.
+Аргументов нет.
+Возвращает
+None (результат записывается в self.skill_reflections).
+Исключения
+Логирует ошибки; при повреждении файла перемещает его в .broken и сбрасывает self.skill_reflections в {}.</p>
+<hr />
+<p>def _save_reflections(self) -&gt; None
+Атомарно сохраняет рефлексии навыков в файл self.reflections_file.
+Аргументов нет.
+Возвращает
+None.
+Исключения
+Логирует предупреждение при ошибке записи; использует временный файл и os.replace для атомарности.</p>
+<hr />
+<p>def _load_state(self) -&gt; None
+Загружает состояние активных навыков из файла self.state_file.
+Аргументов нет.
+Возвращает
+None (результат записывается в self.active_skills).
+Исключения
+Логирует ошибки; при повреждении файла перемещает его в .broken и сбрасывает self.active_skills в {}.</p>
+<hr />
+<p>def _save_state(self) -&gt; None
+Атомарно сохраняет состояние активных навыков в файл self.state_file.
+Аргументов нет.
+Возвращает
+None.
+Исключения
+Логирует предупреждение при ошибке записи; использует временный файл и os.replace для атомарности.</p>
+<hr />
+<p>def _ensure_paths(self) -&gt; None
+Гарантирует инициализацию и существование директории навыков self.skills_dir.
+Аргументов нет.
+Возвращает
+None.
+Исключения
+Может вызвать initialize при неинициализированном состоянии; создаёт директории через mkdir.</p>
+<hr />
+<p>def _env_flag(self, name: str, *, default: bool) -&gt; bool
+Читает булевый флаг из переменной окружения.
+Аргументы
+name — имя переменной окружения.
+default — значение по умолчанию при отсутствии переменной.
+Возвращает
+True/False на основе множества TRUE_VALUES (регистронезависимо).</p>
+<hr />
+<p>def _env_int(self, name: str, *, default: int, minimum: int) -&gt; int
+Читает целочисленную переменную окружения с ограничением минимума.
+Аргументы
+name — имя переменной окружения.
+default — значение по умолчанию.
+minimum — минимально допустимое значение.
+Возвращает
+Целое число, не меньше minimum; при ошибке парсинга — default.</p>
+<hr />
+<p>def _parse_admin_ids(self, raw: str, <em>, env_name: str = "SKILLS_SCRIPT_ADMIN_USER_IDS") -&gt; tuple[set[int], bool]
+Парсит список идентификаторов администраторов из строки.
+Аргументы
+raw — исходная строка с ID через запятую, "</em>" для "все".
+env_name — имя переменной для сообщений об ошибках.
+Возвращает
+Кортеж (множество int ID, флаг "все разрешено").
+Исключения
+Логирует предупреждения о некорректных записях, не прерывая парсинг.</p>
+<hr />
+<p>def _is_script_admin(self, user_id: Any) -&gt; bool
+Проверяет, имеет ли пользователь права на выполнение скриптов навыков.
+Аргументы
+user_id — идентификатор пользователя (любой тип, приводится к int).
+Возвращает
+True если пользователь в script_admin_ids или включён script_admin_all.</p>
+<hr />
+<p>def _is_install_admin(self, user_id: Any) -&gt; bool
+Проверяет, имеет ли пользователь права на установку навыков.
+Аргументы
+user_id — идентификатор пользователя (любой тип, приводится к int).
+Возвращает
+True если пользователь в install_admin_ids или включён install_admin_all.</p>
+<hr />
+<p>def _script_env(self, skill_id: str | None = None, scope: str | None = None, workdir: Path | None = None) -&gt; Dict[str, str]
+Формирует переменные окружения для запуска скрипта навыка.
+Аргументы
+skill_id — идентификатор навыка (опционально).
+scope — область видимости навыка (опционально).
+workdir — рабочая директория скрипта (опционально).
+Возвращает
+Словарь переменных окружения на базе os.environ с добавлением SKILL_WORKDIR, SKILL_ID, SKILL_SCOPE и PYTHONUNBUFFERED.</p>
+<hr />
+<p>def <em>ensure_skill_workdir(self, skill_id: str, scope: str) -&gt; Path | None
+Создаёт и возвращает рабочую директорию для экземпляра навыка.
+Аргументы
+skill_id — идентификатор навыка.
+scope — область видимости (символы : и / заменяются на </em>).
+Возвращает
+Путь к созданной директории или None при отсутствии workdir_root или ошибке создания.</p>
+<hr />
+<p>def _spawn_interim_notice(self, chat_id: Any, skill_id: str, script_name: str) -&gt; "asyncio.Task | None"
+Запускает фоновую задачу уведомлений о длительном выполнении скрипта.
+Аргументы
+chat_id — идентификатор чата (приводится к int).
+skill_id — идентификатор навыка.
+script_name — имя выполняемого скрипта.
+Возвращает
+asyncio.Task или None если уведомления отключены или бот недоступен.</p>
+<hr />
+<p>Вспомогательные утилиты для управления жизненным циклом скриптов навыков: watchdog-уведомления, аудит, обрезка вывода и проверка путей.</p>
+<p>_watchdog()
+Внутренняя корутина, реализующая фоновый мониторинг выполнения скрипта навыка.
+Аргументы
+отсутствуют (замыкание на внешние переменные: bot, chat_id_int, script_name, skill_id, typing_refresh_seconds, first_delay, repeat_delay).
+Возвращает
+None (бесконечный цикл до отмены задачи).
+Исключения
+asyncio.CancelledError — пробрасывается выше для корректной отмены задачи; прочие исключения логируются и подавляются.</p>
+<hr />
+<p>create_task(_watchdog())
+Создаёт и возвращает фоновую задачу watchdog для активного event loop.
+Аргументы
+отсутствуют.
+Возвращает
+asyncio.Task | None — задача watchdog или None, если нет активного event loop.
+Исключения
+отсутствуют (RuntimeError при отсутствии активного loop перехватывается и возвращается None).</p>
+<hr />
+<p>_audit(action, <strong>fields)
+Записывает аудит-событие в файл в формате JSON Lines.
+Аргументы
+action — строка, идентификатор действия.
+</strong>fields — произвольные именованные аргументы для включения в запись (значения None пропускаются).
+Возвращает
+None.
+Исключения
+отсутствуют (ошибки записи логируются и подавляются).</p>
+<hr />
+<p>_truncate(value)
+Обрезает строку до максимально допустимой длины с добавлением суффикса о количестве пропущенных символов.
+Аргументы
+value — исходная строка для обрезки.
+Возвращает
+str — исходная строка, если её длина не превышает output_max_chars; иначе обрезанная строка с суффиксом "\n...[truncated {omitted} chars]".
+Исключения
+отсутствуют.</p>
+<hr />
+<p>_is_relative_to(path, parent)
+Проверяет, находится ли путь внутри указанного родительского каталога.
+Аргументы
+path — Path, проверяемый путь.
+parent — Path, родительский каталог для проверки.
+Возвращает
+bool — True, если path является подпутем parent; False в противном случае.
+Исключения
+отсутствуют (ValueError от path.relative_to перехватывается и преобразуется в False).</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../../js/base.js"></script>
+        <script src="../../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

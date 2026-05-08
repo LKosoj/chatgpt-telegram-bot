@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../img/favicon.ico">
+        <title>utils.py - chatgpt-telegram-bot</title>
+        <link href="../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../css/brands.min.css" rel="stylesheet">
+        <link href="../../css/solid.min.css" rel="stylesheet">
+        <link href="../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="utils__py.html" class="dropdown-item active" aria-current="page">utils.py</a>
+</li>
+            
+<li>
+    <a href="validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="user_settings__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="validation__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botutils" class="nav-link">bot/utils</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botutils">bot/utils</h1>
+<p><em>Источник:</em> <code>bot/utils.py</code></p>
+<p>Модуль предоставляет вспомогательные функции и классы для Telegram-бота. Включает утилиты для обработки сообщений, проверки членства пользователей в группах, управления статусными сообщениями о прогрессе длительных операций с поддержкой отображения плана выполнения, разбиения длинного текста на фрагменты с сохранением Markdown-форматирования, обёртки асинхронных операций с индикаторами чата, редактирования сообщений с fallback-логикой, обработки ошибок, проверки доступа пользователей, управления бюджетами и отслеживания использования токенов, а также вспомогательные функции для работы с изображениями, медиа-контентом, конвертации Markdown в HTML и отправки длинных ответов в виде файлов.</p>
+<p>Ключевые структуры данных
+<em>BUSY_STATUS_ICONS — словарь соответствия статусов задач плана иконкам-эмодзи: "pending" → "⏳", "in_progress" → "🔄", "completed" → "✅", "cancelled" → "⛔"
+budget_cost_map — словарь сопоставления периодов бюджета ("monthly", "daily", "all-time") с ключами стоимости в UsageTracker
+processed_lines — список строк, предварительно разбитых по максимальной длине строки
+markdown_stack — стек строк, отслеживающий открытые Markdown-элементы (*, </em>, ` и их двойные варианты)
+chunks — список итоговых чанков текста
+current_chunk — накапливаемый текущий чанк текста</p>
+<hr />
+<p>message_text(message: Message) -&gt; str
+Возвращает текст сообщения, исключая команды бота.
+Аргументы
+message — объект сообщения Telegram
+Возвращает
+Очищенный текст сообщения без команд бота или пустую строку</p>
+<hr />
+<p>async def is_user_in_group(update: Update, context: CallbackContext, user_id: int) -&gt; bool
+Проверяет, является ли указанный пользователь членом группы.
+Аргументы
+update — объект обновления Telegram
+context — контекст обратного вызова
+user_id — идентификатор проверяемого пользователя
+Возвращает
+True, если пользователь является владельцем, администратором или обычным членом группы; иначе False
+Исключения
+telegram.error.BadRequest — при ошибках API Telegram (кроме "User not found", которое трактуется как False)
+Exception — при прочих ошибках выполнения</p>
+<hr />
+<p>def get_thread_id(update: Update) -&gt; int | None
+Получает идентификатор треда сообщения для обновления, если применимо.
+Аргументы
+update — объект обновления Telegram
+Возвращает
+Идентификатор треда (message_thread_id) для топиковых сообщений или None</p>
+<hr />
+<p>class BusyStatusMessage
+Поддерживает временное статусное сообщение для длительных операций в чате. При наличии plan_provider отображает текущие шаги плана с их статусами.
+Поля
+update — объект обновления Telegram
+context — контекст обратного вызова
+description — описание выполняемой операции
+config — конфигурация бота (опционально)
+interval — интервал обновления сообщения в секундах (по умолчанию 30.0)
+plan_provider — вызываемый объект, возвращающий список задач плана (опционально)
+message — отправленное статусное сообщение или None
+Методы
+async def start(self) -&gt; BusyStatusMessage — запускает фоновую задачу периодического обновления статусного сообщения
+async def stop(self) -&gt; None — останавливает обновление и удаляет статусное сообщение
+async def _run(self) -&gt; None — внутренний цикл периодического обновления сообщения
+async def _send(self) -&gt; bool — отправляет начальное статусное сообщение
+async def _edit(self) -&gt; None — редактирует существующее статусное сообщение
+def _text(self) -&gt; str — формирует текст статусного сообщения с учётом прошедшего времени и плана
+def _plan_lines(self) -&gt; list[str] — формирует строки отображения задач плана с иконками статусов</p>
+<hr />
+<p>def get_stream_cutoff_values(update: Update, content: str) -&gt; int
+Определяет пороговые значения для потоковой передачи на основе длины контента и типа чата.
+Аргументы
+update — объект обновления Telegram
+content — текстовый контент для анализа длины
+Возвращает
+Пороговое значение в символах для отправки фрагмента потоковой передачи</p>
+<hr />
+<p>def is_group_chat(update: Update) -&gt; bool
+Проверяет, было ли сообщение отправлено из группового чата.
+Аргументы
+update — объект обновления Telegram
+Возвращает
+True для групп и супергрупп, иначе False</p>
+<hr />
+<p>def split_into_chunks(text: str, chunk_size: int = 4096) -&gt; list[str]
+Разбивает строку на фрагменты заданного размера с сохранением Markdown-форматирования.
+Аргументы
+text — текст для разбиения
+chunk_size — максимальный размер каждого фрагмента (по умолчанию 4096)
+Возвращает
+Список фрагментов с сохранённым Markdown-форматированием</p>
+<hr />
+<p>async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine, chat_action: constants.ChatAction = "", is_inline=False)
+Оборачивает корутину с периодической отправкой индикатора активности чата.
+Аргументы
+update — объект обновления Telegram
+context — контекст обратного вызова бота
+coroutine — вызываемый объект, возвращающий корутину
+chat_action — тип индикатора активности чата (по умолчанию пустая строка)
+is_inline — флаг inline-режима, при True не отправляются chat actions
+Возвращает
+Результат выполнения переданной корутины
+Исключения
+telegram.error.TimedOut — при превышении таймаута 2000 секунд
+Exception — прочие ошибки, проброшенные из корутины</p>
+<hr />
+<p>async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: int | None, message_id: str, text: str, markdown: bool = True, is_inline: bool = False)
+Редактирует сообщение с повторной попыткой при ошибке Markdown-разметки.
+Аргументы
+context — контекст бота для выполнения операций
+chat_id — идентификатор чата (None для inline-сообщений)
+message_id — идентификатор сообщения для редактирования
+text — новый текст сообщения
+markdown — использовать Markdown-разметку (по умолчанию True)
+is_inline — флаг inline-сообщения
+Исключения
+telegram.error.BadRequest — при невозможности отредактировать сообщение
+Exception — прочие ошибки редактирования</p>
+<hr />
+<p>async def error_handler(_: object, context: ContextTypes.DEFAULT_TYPE) -&gt; None
+Обрабатывает ошибки, возникающие при обработке обновлений в python-telegram-bot.
+Аргументы
+_ — неиспользуемый объект (хендлер обновления)
+context — контекст с информацией об ошибке</p>
+<hr />
+<p>async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False) -&gt; bool
+Проверяет, разрешён ли пользователю доступ к боту.
+Аргументы
+config — конфигурация бота с настройками доступа
+update — объект обновления Telegram
+context — контекст обратного вызова
+is_inline — флаг проверки для inline-запроса
+Возвращает
+True если пользователь разрешён, иначе False</p>
+<hr />
+<p>def is_admin(config, user_id: int, log_no_admin=False) -&gt; bool
+Проверяет, является ли пользователь администратором бота.
+Аргументы
+config — конфигурация бота со списком admin_user_ids
+user_id — идентификатор пользователя для проверки
+log_no_admin — логировать отсутствие администраторов
+Возвращает
+True если пользователь в списке администраторов, иначе False</p>
+<hr />
+<p>def get_user_budget(config, user_id) -&gt; float | None
+Возвращает бюджет пользователя на основе конфигурации бота.
+Аргументы
+config — конфигурация бота с настройками бюджетов
+user_id — идентификатор пользователя
+Возвращает
+Бюджет пользователя как float, float('inf') для администраторов или при '*' в настройках, None при отсутствии пользователя в списке разрешённых</p>
+<hr />
+<p>get_remaining_budget(config, usage, update: Update, is_inline=False) -&gt; float
+Вычисляет оставшийся бюджет пользователя на основе текущего использования.
+Аргументы
+config — объект конфигурации бота
+usage — объект отслеживания использования
+update — объект обновления Telegram
+is_inline — флаг inline-запроса
+Возвращает
+Оставшийся бюджет пользователя как float</p>
+<hr />
+<p>is_within_budget(config, usage, update: Update, is_inline=False) -&gt; bool
+Проверяет, не исчерпал ли пользователь свой лимит использования.
+Аргументы
+config — объект конфигурации бота
+usage — объект отслеживания использования
+update — объект обновления Telegram
+is_inline — флаг inline-запроса
+Возвращает
+True если у пользователя положительный остаток бюджета</p>
+<hr />
+<p>add_chat_request_to_usage_tracker(usage, config, user_id, used_tokens) -&gt; bool
+Добавляет запрос чата в трекер использования для пользователя и гостей при необходимости.
+Аргументы
+usage — объект отслеживания использования
+config — объект конфигурации бота
+user_id — идентификатор пользователя
+used_tokens — количество использованных токенов
+Возвращает
+True при успешном добавлении, False при ошибке или нулевом количестве токенов</p>
+<hr />
+<p>get_reply_to_message_id(config, update: Update) -&gt; int | None
+Возвращает идентификатор сообщения для ответа при включённом цитировании или в групповых чатах.
+Аргументы
+config — объект конфигурации бота
+update — объект обновления Telegram
+Возвращает
+Идентификатор сообщения или None если цитирование отключено</p>
+<hr />
+<p>compute_scope_key(chat_id=None, user_id=None) -&gt; str
+Формирует канонический ключ области видимости состояния плагина.
+Аргументы
+chat_id — идентификатор чата
+user_id — идентификатор пользователя
+Возвращает
+Строка ключа в формате "chat:<id>", "user:<id>" или "global"</p>
+<hr />
+<p>is_direct_result(response: any) -&gt; bool
+Проверяет, содержит ли ответ структурно корректную полезную нагрузку direct_result.
+Аргументы
+response — ответ для проверки (dict или JSON-строка)
+Возвращает
+True если ответ содержит валидный direct_result с непустым полем kind</p>
+<hr />
+<p>escape_markdown(text: str, exclude_code_blocks: bool = True) -&gt; str
+Экранирует специальные символы Markdown, с опциональным пропуском блоков кода.
+Аргументы
+text — исходный текст для экранирования
+exclude_code_blocks — исключать ли блоки кода из экранирования
+Возвращает
+Экранированный текст</p>
+<hr />
+<p>get_image_size(image_path: str) -&gt; tuple[int, int]
+Получает размеры изображения.
+Аргументы
+image_path — путь к файлу изображения
+Возвращает
+Кортеж (ширина, высота) изображения</p>
+<hr />
+<p>resize_image_if_needed(image_path: str, max_dimension: int = 10000) -&gt; tuple[io.BytesIO, str]
+Проверяет и при необходимости изменяет размеры изображения.
+Аргументы
+image_path — путь к изображению
+max_dimension — максимальный размер стороны изображения
+Возвращает
+Кортеж (BytesIO-объект с изображением, формат изображения)</p>
+<hr />
+<p>handle_direct_result(config, update, response)
+Асинхронно обрабатывает прямой результат от плагина и направляет его в соответствующий метод отправки Telegram API.
+Аргументы
+config — конфигурация бота
+update — объект обновления Telegram (Update)
+response — ответ плагина (dict, строка JSON или другой тип)
+Возвращает
+список отправленных сообщений (Message) или пустой список при ошибке/отсутствии результата
+Исключения
+может возникать при ошибках сети, доступа к файлам или внутренних ошибках Telegram API; большинство перехватываются и логируются</p>
+<hr />
+<p>cleanup_intermediate_files(response: any)
+Удаляет промежуточные файлы, созданные плагинами.
+Аргументы
+response — Ответ плагина в виде словаря или JSON-строки, содержащий путь к файлу для удаления.</p>
+<hr />
+<p>encode_image(fileobj)
+Кодирует изображение в строку base64 с префиксом data URI.
+Аргументы
+fileobj — Объект файла (поддерживающий getvalue()) для кодирования.
+Возвращает
+Строку формата 'data:image/jpeg;base64,<base64>'.</p>
+<hr />
+<p>decode_image(imgbase64)
+Декодирует изображение из строки base64 с data URI префиксом.
+Аргументы
+imgbase64 — Строка base64 с префиксом 'data:image/jpeg;base64,'.
+Возвращает
+Байтовую строку декодированного изображения.</p>
+<hr />
+<p>markdown_to_html(text)
+Конвертирует Markdown-разметку в HTML с поддержкой основных элементов форматирования.
+Аргументы
+text — Исходный текст в формате Markdown.
+Возвращает
+HTML-строку с применённым форматированием (заголовки, списки, код, ссылки, жирный/курсив/зачёркнутый текст).</p>
+<hr />
+<p>send_long_response_as_file(config, update: Update, response: str, session_name: str = 'response')
+Отправляет длинный ответ в виде HTML-файла с сохранением форматирования через HTMLVisualizer.
+Аргументы
+config — Конфигурация бота.
+update — Объект обновления Telegram.
+response — Текст ответа для отправки.
+session_name — Базовое имя файла (по умолчанию 'response').
+Возвращает
+Отправленное сообщение с документом.</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../js/base.js"></script>
+        <script src="../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

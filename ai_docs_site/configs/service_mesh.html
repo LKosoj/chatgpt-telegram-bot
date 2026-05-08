@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../img/favicon.ico">
+        <title>service_mesh - chatgpt-telegram-bot</title>
+        <link href="../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../css/brands.min.css" rel="stylesheet">
+        <link href="../css/solid.min.css" rel="stylesheet">
+        <link href="../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="service_mesh.html" class="dropdown-item active" aria-current="page">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../modules/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../modules/bot/plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../modules/bot/__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="../modules/bot/validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../modules/examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../modules/examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../modules/examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="docker.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="index.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#service-mesh-ingress" class="nav-link">Service Mesh / Ingress</a>
+              <ul class="nav flex-column">
+            <li class="nav-item" data-bs-level="2"><a href="#llm-gateway-client" class="nav-link">LLM Gateway Client</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#path" class="nav-link">Маршрутизация трафика (Path)</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_11" class="nav-link">Тестирование интеграции</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="service-mesh-ingress">Service Mesh / Ingress</h1>
+<h2 id="llm-gateway-client">LLM Gateway Client</h2>
+<p>Асинхронный HTTP-клиент для взаимодействия с LLM Gateway — прокси-сервисом унифицированного доступа к LLM- и мультимодальным возможностям в рамках service mesh.</p>
+<h3 id="_1">Конфигурация клиента</h3>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">bot.llm_gateway_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">LLMGatewayClient</span><span class="p">,</span> <span class="n">LLMGatewayError</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="n">LLMGatewayClient</span><span class="p">(</span>
+    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://gateway.mesh.svc/v1&quot;</span><span class="p">,</span>  <span class="c1"># Обязательный параметр</span>
+    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-...&quot;</span><span class="p">,</span>                         <span class="c1"># Bearer-токен</span>
+    <span class="n">timeout</span><span class="o">=</span><span class="mf">120.0</span>                             <span class="c1"># Глобальный таймаут, сек</span>
+<span class="p">)</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Параметр</th>
+<th>Требование</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base_url</code></td>
+<td>Обязательный</td>
+<td>Корневой URL шлюза; <code>LLMGatewayError</code> при отсутствии</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td>Обязательный</td>
+<td>Вставляется в заголовок <code>Authorization: Bearer &lt;api_key&gt;</code></td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>Опциональный (по умолчанию 120.0)</td>
+<td>Переопределяется для конкретных методов</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">Переопределение таймаутов по операциям</h3>
+<table>
+<thead>
+<tr>
+<th>Метод</th>
+<th>Таймаут</th>
+<th>Причина</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>web_deep_research</code></td>
+<td>1800.0</td>
+<td>Многошаговое исследование с рекурсивным анализом</td>
+</tr>
+<tr>
+<td><code>web_research</code>, <code>image_edit</code></td>
+<td>300.0</td>
+<td>Генерация контента и обработка мультимодальных данных</td>
+</tr>
+<tr>
+<td><code>web_search</code></td>
+<td>90.0</td>
+<td>Простой поисковый запрос</td>
+</tr>
+<tr>
+<td>Остальные методы</td>
+<td>120.0</td>
+<td>Значение по умолчанию</td>
+</tr>
+</tbody>
+</table>
+<p>Идентификационный заголовок: <code>X-Title: tgBot</code> — передаётся во всех запросах для трассировки и rate limiting.</p>
+<h3 id="_3">Низкоуровневые методы</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># JSON-запросы с валидацией ответа</span>
+<span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_json</span><span class="p">(</span><span class="n">endpoint</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">params</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span>
+<span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">post_json</span><span class="p">(</span><span class="n">endpoint</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">json</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span>
+
+<span class="c1"># Multipart-загрузка для бинарных данных</span>
+<span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">post_multipart</span><span class="p">(</span>
+    <span class="n">endpoint</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">data</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>           <span class="c1"># текстовые поля формы</span>
+    <span class="n">files</span><span class="p">:</span> <span class="nb">dict</span>           <span class="c1"># файлы: {field: (filename, bytes, mime_type)}</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>Все методы:
+- Проверяют HTTP-статус; при ошибке поднимают <code>LLMGatewayError</code> с полным текстом ответа
+- Включают заголовки авторизации и <code>X-Title</code></p>
+<h3 id="_4">Мультимодальные операции</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Веб-поиск</span>
+<span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">web_search</span><span class="p">(</span>
+    <span class="n">query</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+    <span class="n">max_results</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>           <span class="c1"># ограничение результатов</span>
+    <span class="n">language</span><span class="o">=</span><span class="s2">&quot;ru&quot;</span><span class="p">,</span>            <span class="c1"># языковой фильтр</span>
+    <span class="n">include_images</span><span class="o">=</span><span class="kc">True</span>       <span class="c1"># включить изображения в выдачу</span>
+<span class="p">)</span>
+
+<span class="c1"># Чтение страницы в markdown</span>
+<span class="n">page</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">web_read</span><span class="p">(</span><span class="n">url</span><span class="o">=</span><span class="s2">&quot;https://...&quot;</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="s2">&quot;markdown&quot;</span><span class="p">)</span>
+
+<span class="c1"># Исследование: выбор режима через классификацию</span>
+<span class="n">research</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">web_research</span><span class="p">(</span><span class="n">query</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">)</span>
+<span class="n">deep_research</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">web_deep_research</span><span class="p">(</span>
+    <span class="n">query</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+    <span class="n">max_words</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span>           <span class="c1"># объём финального отчёта</span>
+    <span class="n">breadth</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>                <span class="c1"># число параллельных направлений</span>
+    <span class="n">depth</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>                  <span class="c1"># глубина рекурсии</span>
+    <span class="n">concurrency</span><span class="o">=</span><span class="mi">3</span>             <span class="c1"># одновременных подзапросов</span>
+<span class="p">)</span>
+</code></pre></div>
+<h3 id="_5">Редактирование изображений</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Из base64-строки</span>
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">image_edit</span><span class="p">(</span>
+    <span class="n">image_base64</span><span class="o">=</span><span class="s2">&quot;data:image/png;base64,...&quot;</span><span class="p">,</span>
+    <span class="n">prompt</span><span class="o">=</span><span class="s2">&quot;Добавить фон...&quot;</span>
+<span class="p">)</span>
+
+<span class="c1"># Из файла — multipart-загрузка</span>
+<span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">image_edit_file</span><span class="p">(</span>
+    <span class="n">file_path</span><span class="o">=</span><span class="s2">&quot;/tmp/image.png&quot;</span><span class="p">,</span>
+    <span class="n">prompt</span><span class="o">=</span><span class="s2">&quot;Изменить стиль...&quot;</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>Модель определяется константой <code>LLMGATEWAY_IMAGE_EDIT_MODEL</code> из <code>bot.model_constants</code>.</p>
+<h3 id="_6">Утилита извлечения результата</h3>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">bot.llm_gateway_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_image_result</span>
+
+<span class="c1"># Вариант 1: URL в ответе — возвращает строку</span>
+<span class="n">url</span> <span class="o">=</span> <span class="n">extract_image_result</span><span class="p">({</span><span class="s2">&quot;url&quot;</span><span class="p">:</span> <span class="s2">&quot;https://cdn.mesh/result.png&quot;</span><span class="p">})</span>
+
+<span class="c1"># Вариант 2: Base64 — сохраняет во временный файл, возвращает путь</span>
+<span class="n">path</span> <span class="o">=</span> <span class="n">extract_image_result</span><span class="p">({</span><span class="s2">&quot;b64_json&quot;</span><span class="p">:</span> <span class="s2">&quot;iVBORw0KGgo...&quot;</span><span class="p">})</span>
+<span class="c1"># /tmp/llm_img_7f3a9e2d.png</span>
+</code></pre></div>
+<h3 id="_7">Обработка ошибок</h3>
+<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">LLMGatewayError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Конфигурационные ошибки (отсутствует base_url) и HTTP-ошибки&quot;&quot;&quot;</span>
+
+    <span class="c1"># Примеры возникновения:</span>
+    <span class="c1"># - LLMGatewayClient(base_url=None)  → &quot;base_url is required&quot;</span>
+    <span class="c1"># - HTTP 502 с телом 700+ символов    → полный текст включён в сообщение</span>
+</code></pre></div>
+<hr />
+<h2 id="path">Маршрутизация трафика (Path)</h2>
+<p>Файл конфигурации <code>path</code> определяет правила сопоставления входящих запросов с целевыми сервисами в service mesh.</p>
+<h3 id="_8">Структура правила</h3>
+<div class="highlight"><pre><span></span><code><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">match</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">prefix</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/v1/llm/&quot;</span><span class="w">          </span><span class="c1"># или exact: &quot;/health&quot;, regex: &quot;^/api/.*&quot;</span>
+<span class="w">    </span><span class="nt">method</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">POST</span><span class="w">                </span><span class="c1"># фильтр по HTTP-методу</span>
+<span class="w">    </span><span class="nt">headers</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">X-Title</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tgBot&quot;</span><span class="w">          </span><span class="c1"># условие по метаданным</span>
+<span class="w">      </span><span class="nt">Authorization</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Bearer</span><span class="nv"> </span><span class="s">.*&quot;</span><span class="w"> </span><span class="c1"># regex в значениях заголовков</span>
+<span class="w">  </span><span class="nt">route</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-gateway</span><span class="w">    </span><span class="c1"># идентификатор сервиса в mesh</span>
+<span class="w">    </span><span class="nt">weight</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span><span class="w">                 </span><span class="c1"># 100% трафика (canary: 90/10)</span>
+<span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120s</span>
+<span class="w">  </span><span class="nt">retry</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">    </span><span class="nt">perTryTimeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+<span class="w">    </span><span class="nt">retryOn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gateway-error,connect-failure</span>
+<span class="w">  </span><span class="c1"># или redirect/rewrite вместо route</span>
+</code></pre></div>
+<h3 id="_9">Приоритет и распространение</h3>
+<table>
+<thead>
+<tr>
+<th>Аспект</th>
+<th>Поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Приоритет</td>
+<td>Первое совпавшее правило (порядок определения критичен)</td>
+</tr>
+<tr>
+<td>Обновление</td>
+<td>Через control plane без перезапуска sidecar-прокси</td>
+</tr>
+<tr>
+<td>Зеркалирование</td>
+<td><code>mirror</code> — копия трафика на тестовый сервис без влияния на клиента</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_10">Типы сопоставления путей</h3>
+<table>
+<thead>
+<tr>
+<th>Тип</th>
+<th>Применение</th>
+<th>Пример</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prefix</code></td>
+<td>API-версии, группы эндпоинтов</td>
+<td><code>/v1/llm/</code>, <code>/v1/audio/</code></td>
+</tr>
+<tr>
+<td><code>exact</code></td>
+<td>Health checks, статические пути</td>
+<td><code>/health</code>, <code>/ready</code></td>
+</tr>
+<tr>
+<td><code>regex</code></td>
+<td>Сложные паттерны</td>
+<td><code>^/v\d+/images/.*</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="canary-blue-green">Распределение трафика (canary / blue-green)</h3>
+<div class="highlight"><pre><span></span><code><span class="nt">route</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-gateway-v2</span>
+<span class="w">    </span><span class="nt">weight</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">        </span><span class="c1"># canary — 10% новой версии</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llm-gateway-v1</span>
+<span class="w">    </span><span class="nt">weight</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">90</span>
+</code></pre></div>
+<h3 id="-fault-injection">Хаос-тестирование (fault injection)</h3>
+<div class="highlight"><pre><span></span><code><span class="nt">fault</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">delay</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">percentage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5.0</span>
+<span class="w">    </span><span class="nt">fixedDelay</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10s</span><span class="w">   </span><span class="c1"># 5% запросов с задержкой 10 секунд</span>
+<span class="w">  </span><span class="nt">abort</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">percentage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.1</span>
+<span class="w">    </span><span class="nt">httpStatus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">503</span><span class="w">   </span><span class="c1"># 0.1% запросов — ошибка 503</span>
+</code></pre></div>
+<hr />
+<h2 id="_11">Тестирование интеграции</h2>
+<h3 id="_12">Тесты маршрутизации и классификации</h3>
+<p>Валидация корректности работы <code>WebResearchPlugin</code> и <code>OpenAIHelper.classify_reply_intent</code> при интеграции с LLM Gateway.</p>
+<h4 id="_13">Заглушки тестового окружения</h4>
+<table>
+<thead>
+<tr>
+<th>Заглушка</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FakeGateway</code></td>
+<td>Фиксация вызовов <code>web_research</code> / <code>web_deep_research</code></td>
+</tr>
+<tr>
+<td><code>FakeChatClient</code></td>
+<td>Имитация OpenAI-compatible API (<code>chat.completions.create</code>)</td>
+</tr>
+<tr>
+<td><code>FakeHelper</code></td>
+<td>Агрегатор: конфигурация модели + клиенты</td>
+</tr>
+</tbody>
+</table>
+<h4 id="_14">Инварианты классификации</h4>
+<div class="highlight"><pre><span></span><code><span class="c1"># Все классификационные вызовы — строго LLMGATEWAY_LIGHT_MODEL</span>
+<span class="k">assert</span> <span class="n">call</span><span class="o">.</span><span class="n">model</span> <span class="o">==</span> <span class="n">LLMGATEWAY_LIGHT_MODEL</span>
+<span class="k">assert</span> <span class="n">call</span><span class="o">.</span><span class="n">response_format</span> <span class="o">==</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;json_object&quot;</span><span class="p">}</span>
+<span class="k">assert</span> <span class="n">call</span><span class="o">.</span><span class="n">max_tokens</span> <span class="o">==</span> <span class="mi">1000</span>
+</code></pre></div>
+<h4 id="-">Сценарии веб-исследований</h4>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Вход</th>
+<th>Ожидаемое решение классификатора</th>
+<th>Маршрут</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_web_research_uses_light_model_then_regular_research</code></td>
+<td>Узкий запрос</td>
+<td><code>{"research_type": "research"}</code></td>
+<td><code>web_research()</code></td>
+</tr>
+<tr>
+<td><code>test_web_research_uses_light_model_then_deep_research</code></td>
+<td>Широкий запрос</td>
+<td><code>{"research_type": "deep_research"}</code></td>
+<td><code>web_deep_research()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Deep research возвращает дополнительное поле <code>source_urls</code> в ответе.</p>
+<h4 id="_15">Сценарии классификатора намерений</h4>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Вход от LLM</th>
+<th>Обработка</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_reply_intent_classifier_rejects_invalid_response</code></td>
+<td>Невалидный JSON</td>
+<td>Graceful degradation, fallback-интент</td>
+</tr>
+<tr>
+<td><code>test_reply_intent_classifier_accepts_plain_label</code></td>
+<td><code>"image_edit"</code></td>
+<td>Прямое использование строки</td>
+</tr>
+<tr>
+<td><code>test_reply_intent_classifier_accepts_image_description_alias</code></td>
+<td><code>"image_description"</code></td>
+<td>Нормализация → <code>image_describe</code></td>
+</tr>
+</tbody>
+</table>
+<p>Зависимость <code>tiktoken</code> — опциональная, пропуск через <code>pytest.importorskip("tiktoken")</code>.</p>
+<h3 id="llmgatewayclient">Тесты клиента LLMGatewayClient</h3>
+<h4 id="http-">Заглушки HTTP-уровня</h4>
+<table>
+<thead>
+<tr>
+<th>Заглушка</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FakeResponse</code> / <code>FakeVoiceResponse</code></td>
+<td>Успешные ответы POST/GET</td>
+</tr>
+<tr>
+<td><code>FakeAsyncClient</code></td>
+<td>Захват всех вызовов в <code>calls[]</code> для проверки параметров</td>
+</tr>
+<tr>
+<td><code>FakeErrorResponse</code></td>
+<td>HTTP 502 с телом &gt;700 символов</td>
+</tr>
+<tr>
+<td><code>FakeErrorAsyncClient</code></td>
+<td>Проброс ошибки в клиент</td>
+</tr>
+</tbody>
+</table>
+<h4 id="_16">Проверяемые сценарии</h4>
+<div class="highlight"><pre><span></span><code><span class="c1"># test_image_edit_file_uses_multipart_payload</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;files&quot;</span><span class="p">][</span><span class="s2">&quot;image&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="p">(</span><span class="s2">&quot;image.png&quot;</span><span class="p">,</span> <span class="sa">b</span><span class="s2">&quot;</span><span class="se">\x89</span><span class="s2">PNG...&quot;</span><span class="p">,</span> <span class="s2">&quot;image/png&quot;</span><span class="p">)</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;data&quot;</span><span class="p">][</span><span class="s2">&quot;model&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">LLMGATEWAY_IMAGE_EDIT_MODEL</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;data&quot;</span><span class="p">][</span><span class="s2">&quot;prompt&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;...&quot;</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;headers&quot;</span><span class="p">][</span><span class="s2">&quot;Authorization&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;Bearer test-key&quot;</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;headers&quot;</span><span class="p">][</span><span class="s2">&quot;X-Title&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;tgBot&quot;</span>
+
+<span class="c1"># test_audio_voices_uses_get_with_model_query</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;method&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;GET&quot;</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;params&quot;</span><span class="p">][</span><span class="s2">&quot;model&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;...&quot;</span>
+<span class="k">assert</span> <span class="n">call</span><span class="p">[</span><span class="s2">&quot;timeout&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">30.0</span>
+
+<span class="c1"># test_post_json_error_includes_full_response_text</span>
+<span class="k">with</span> <span class="n">pytest</span><span class="o">.</span><span class="n">raises</span><span class="p">(</span><span class="n">LLMGatewayError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+    <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">post_json</span><span class="p">(</span><span class="s2">&quot;/images/edits&quot;</span><span class="p">,</span> <span class="n">json</span><span class="o">=</span><span class="p">{</span><span class="o">...</span><span class="p">})</span>
+<span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">&gt;</span> <span class="mi">700</span>  <span class="c1"># полный текст ответа включён</span>
+</code></pre></div>
+<h4 id="_17">Константы тестового окружения</h4>
+<table>
+<thead>
+<tr>
+<th>Константа</th>
+<th>Значение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Базовый URL</td>
+<td><code>https://gateway.example/v1</code></td>
+</tr>
+<tr>
+<td>API-ключ</td>
+<td><code>test-key</code></td>
+</tr>
+<tr>
+<td>Эндпоинт редактирования</td>
+<td><code>/images/edits</code></td>
+</tr>
+<tr>
+<td>Эндпоинт голосов</td>
+<td><code>/audio/voices</code></td>
+</tr>
+<tr>
+<td>Модель редактирования</td>
+<td><code>LLMGATEWAY_IMAGE_EDIT_MODEL</code> (импорт из <code>bot.model_constants</code>)</td>
+</tr>
+</tbody>
+</table></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../js/base.js"></script>
+        <script src="../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

@@ -18,7 +18,6 @@ bot/plugins/.cursorrules
 bot/user_data.db
 bot/user_data.db-shm
 bot/user_data.db-wal
-*.html
 /.vscode
 data/
 bot/skills/

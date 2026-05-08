@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../../img/favicon.ico">
+        <title>agent_tools.py - chatgpt-telegram-bot</title>
+        <link href="../../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../../css/brands.min.css" rel="stylesheet">
+        <link href="../../../css/solid.min.css" rel="stylesheet">
+        <link href="../../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="agent_tools__py.html" class="dropdown-item active" aria-current="page">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="../__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="../chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="../conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="../database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="../hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="../html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="../i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="../model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="../openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="../openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="../plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="../request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="../skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="../telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="../usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="../user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="../utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="../validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="../../index.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="ask_your_pdf__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botpluginsagent_tools" class="nav-link">bot/plugins/agent_tools</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botpluginsagent_tools">bot/plugins/agent_tools</h1>
+<p><em>Источник:</em> <code>bot/plugins/agent_tools.py</code></p>
+<p>Lightweight agent-support tools for the existing function-calling loop. Provides task planning management, interactive user questioning, artifact delivery, and subagent orchestration with deduplication, TTL, and isolation mechanisms.</p>
+<p>Ключевые структуры данных
+<code>CLOSED_STATUSES</code> — множество терминальных статусов задач: <code>{"completed", "cancelled"}</code>
+<code>TASK_STATUSES</code> — множество всех допустимых статусов задач: <code>{"pending", "in_progress", "completed", "cancelled"}</code>
+<code>DELIVERY_ACTION_WORDS</code> — кортеж ключевых слов действий для эвристики доставки артефактов
+<code>DELIVERY_TARGET_WORDS</code> — кортеж ключевых слов целей для эвристики доставки артефактов
+<code>MAX_SUBAGENTS</code> — максимальное количество одновременных субагентов (<code>5</code>)
+<code>MIN_SUBAGENT_TOOL_ROUNDS</code> — минимальное количество раундов инструментов для субагента (<code>10</code>)
+<code>MAX_SUBAGENT_TOOL_ROUNDS</code> — максимальное количество раундов инструментов для субагента (<code>50</code>)
+<code>DEFAULT_SUBAGENT_TEMPERATURE</code> — температура по умолчанию для субагента (<code>0.2</code>)
+<code>SUBAGENT_BLOCKED_FUNCTIONS</code> — множество функций, запрещённых для вызова из субагента</p>
+<hr />
+<p><code>_load_subagent_system_prompt() -&gt; str</code>
+Загружает и кэширует системный промпт для субагентов из файла <code>prompts/subagent_system.md</code>.
+Аргументы
+нет
+Возвращает
+Строка с системным промптом; при ошибке чтения файла возвращает резервный промпт по умолчанию.
+Исключения
+<code>OSError</code> — логируется при отсутствии или ошибке чтения файла промпта</p>
+<hr />
+<p><code>class _PendingAskReplyFilter</code>
+Фильтр сообщений Telegram для перехвата текстовых ответов пользователя на ожидающие вопросы агента.
+Поля
+<code>plugin</code> — экземпляр <code>AgentToolsPlugin</code> для проверки состояния ожидания
+Методы
+<code>filter(message) -&gt; bool</code> — возвращает <code>True</code>, если сообщение является ответом на активный вопрос в данном чате от данного пользователя</p>
+<hr />
+<p><code>class AgentToolsPlugin</code>
+Плагин инструментов агента для управления задачами, взаимодействия с пользователем и оркестрации субагентов.
+Поля
+<code>plugin_id</code> — идентификатор плагина: <code>"agent_tools"</code>
+<code>function_prefix</code> — префикс пространства имён функций: <code>"agent_tools"</code>
+<code>DELIVERY_DEDUP_WINDOW_SECONDS</code> — окно дедупликации доставок в секундах (<code>60</code>)
+<code>DELIVERY_MAX_ARTIFACT_BYTES</code> — максимальный размер доставляемого артефакта в байтах (<code>49 * 1024 * 1024</code>)
+<code>TASKS_TTL_SECONDS</code> — время жизни задач в секундах (<code>2 * 24 * 3600</code>)
+<code>tasks</code> — словарь задач по ключам областей видимости
+<code>tasks_file</code> — путь к файлу хранения задач
+<code>pending_file</code> — путь к файлу хранения ожидающих вопросов
+<code>pending_questions</code> — словарь активных вопросов по идентификаторам
+<code>pending_by_chat</code> — отображение <code>chat_id</code> на идентификатор активного вопроса
+<code>_orphaned_pending</code> — список восстановленных потерянных вопросов
+<code>_recent_deliveries</code> — словарь временных меток недавних доставок для дедупликации
+<code>_background_subagent_tasks</code> — множество фоновых задач asyncio для субагентов
+Методы
+<code>__init__()</code> — инициализирует плагин с пустыми коллекциями и загружает сохранённые данные
+<code>initialize(openai=None, bot=None, storage_root: str | None = None) -&gt; None</code> — инициализирует плагин с обновлением путей хранения при наличии <code>storage_root</code>
+<code>close() -&gt; None</code> — отменяет все ожидающие вопросы, очищает разметку кнопок и отменяет фоновые задачи субагентов
+<code>_clear_question_markup(bot, chat_id: int, message_id: int) -&gt; None</code> — статический асинхронный метод для удаления inline-разметки у сообщения с вопросом
+<code>get_source_name() -&gt; str</code> — возвращает имя источника: <code>"AgentTools"</code>
+<code>get_spec() -&gt; List[Dict]</code> — возвращает спецификации функций плагина для регистрации в системе вызова функций
+<code>manage_plan_tasks</code> — функция управления планом задач (спецификация в <code>get_spec</code>)
+<code>ask_telegram_user</code> — функция интерактивного вопроса пользователю (спецификация в <code>get_spec</code>)
+<code>cancel_pending_question</code> — функция отмены ожидающего вопроса (спецификация в <code>get_spec</code>)
+<code>run_subagents</code> — функция запуска субагентов (спецификация в <code>get_spec</code>)
+<code>deliver_to_user</code> — функция доставки результатов пользователю (спецификация в <code>get_spec</code>)</p>
+<hr />
+<p><code>load_tasks() -&gt; None</code>
+Загружает задачи агента из JSON-файла с обработкой повреждённых данных и карантином.</p>
+<hr />
+<p><code>save_tasks() -&gt; None</code>
+Атомарно сохраняет текущие задачи агента в JSON-файл через временный файл.</p>
+<hr />
+<p><code>_prune_stale_tasks() -&gt; bool</code>
+Удаляет задачи старше <code>TASKS_TTL_SECONDS</code> секунд, возвращает признак изменения данных.</p>
+<hr />
+<p><code>_load_orphaned_pending() -&gt; None</code>
+Восстанавливает состояние ожидающих вопросов из файла при инициализации модуля.</p>
+<hr />
+<p><code>_load_pending_snapshot() -&gt; None</code>
+Загружает снимок ожидающих вопросов из JSON-файла при инициализации.
+Аргументы
+нет явных; использует <code>self.pending_file</code>.
+Возвращает
+нет.
+Исключения
+Любые исключения при чтении/парсинге файла логируются; <code>_orphaned_pending</code> сбрасывается в <code>[]</code>.</p>
+<hr />
+<p><code>_save_pending_snapshot() -&gt; None</code>
+Сохраняет текущие ожидающие вопросы в атомарный JSON-файл через временный файл.
+Аргументы
+нет явных; использует <code>self.pending_file</code> и <code>self.pending_questions</code>.
+Возвращает
+нет.
+Исключения
+Любые исключения при записи логируются.</p>
+<hr />
+<p><code>on_startup(application) -&gt; None</code>
+Обрабатывает «осиротевшие» ожидающие вопросы при старте приложения: очищает inline-клавиатуру и уведомляет пользователей о неактивности.
+Аргументы
+<code>application</code> — объект приложения с атрибутом <code>bot</code> (<code>telegram.Bot</code>).
+Возвращает
+нет.
+Исключения
+Ошибки отправки сообщений логируются на уровне debug; ошибки удаления файла — debug.</p>
+<hr />
+<p><code>get_plan_tasks(chat_id=None, user_id=None) -&gt; List[Dict[str, Any]]</code>
+Возвращает снимок текущих задач плана для заданного scope в порядке хранения.
+Аргументы
+<code>chat_id</code> — идентификатор чата (опционально).
+<code>user_id</code> — идентификатор пользователя (опционально).
+Возвращает
+Список словарей с ключами <code>id</code>, <code>content</code>, <code>status</code>.</p>
+<hr />
+<p><code>clear_plan_tasks(chat_id=None, user_id=None) -&gt; bool</code>
+Удаляет все задачи плана для заданного scope.
+Аргументы
+<code>chat_id</code> — идентификатор чата (опционально).
+<code>user_id</code> — идентификатор пользователя (опционально).
+Возвращает
+<code>True</code> если задачи были удалены, <code>False</code> если scope отсутствовал.</p>
+<hr />
+<p><code>clear_terminal_plan_tasks(chat_id=None, user_id=None) -&gt; bool</code>
+Удаляет план только если все задачи в scope уже находятся в терминальном статусе.
+Аргументы
+<code>chat_id</code> — идентификатор чата (опционально).
+<code>user_id</code> — идентификатор пользователя (опционально).
+Возвращает
+<code>True</code> если план был удалён, <code>False</code> если scope отсутствовал или есть незакрытые задачи.</p>
+<hr />
+<p><code>_copy_plan_tasks(tasks: List[Dict[str, Any]]) -&gt; List[Dict[str, Any]]</code>
+Создаёт глубокую копию списка задач.
+Аргументы
+<code>tasks</code> — исходный список задач.
+Возвращает
+Новый список с копиями словарей.</p>
+<hr />
+<p><code>_is_delivery_task(content: str) -&gt; bool</code>
+Определяет, является ли содержимое задачи delivery-задачей по ключевым словам.
+Аргументы
+<code>content</code> — текстовое содержимое задачи.
+Возвращает
+<code>True</code> если обнаружены action- и target-ключевые слова.</p>
+<hr />
+<p><code>_validate_plan_tasks(tasks: List[Dict[str, Any]]) -&gt; str | None</code>
+Валидирует список задач на соблюдение бизнес-правил: единственный <code>in_progress</code>, отсутствие пропущенных открытых задач, единственная открытая delivery-задача.
+Аргументы
+<code>tasks</code> — проверяемый список задач.
+Возвращает
+Строку с описанием ошибки или <code>None</code> если валидация пройдена.</p>
+<hr />
+<p><code>_manage_plan_tasks(helper, **kwargs) -&gt; Dict</code>
+Центральный метод управления задачами плана: добавление и обновление с валидацией и сохранением.
+Аргументы
+<code>helper</code> — вспомогательный объект (не используется в показанном фрагменте).
+<code>**kwargs</code> — именованные аргументы включая <code>action</code>, <code>chat_id</code>, <code>user_id</code>, <code>tasks</code>.
+Возвращает
+Словарь <code>{"success": bool, "error": str | None, ...}</code> с результатом операции.
+Исключения
+Нет явных; ошибки валидации возвращаются в поле <code>error</code>.</p>
+<hr />
+<p><code>_tasks_response(action: str, tasks: List[Dict[str, Any]], *, changed: bool) -&gt; Dict</code>
+Формирует стандартизированный ответ для операций с задачами плана.
+Аргументы
+<code>action</code> — строка с именем выполненной операции.
+<code>tasks</code> — список словарей с исходными задачами.
+<code>changed</code> — флаг, указывающий на изменение данных.
+Возвращает
+Словарь с <code>success</code>, текстовым <code>output</code>, <code>snapshot</code> задач и блоком <code>progress</code> (<code>total</code>/<code>closed</code>/<code>open</code>).</p>
+<hr />
+<p><code>_ask_telegram_user(helper, **kwargs) -&gt; Dict</code>
+Отправляет интерактивный вопрос пользователю Telegram и ожидает ответа.
+Аргументы
+<code>helper</code> — объект-хелпер с доступом к боту Telegram
+<code>kwargs</code> — параметры вопроса: <code>question</code>, <code>chat_id</code>, <code>options</code>, <code>multi_select</code>, <code>allow_free_text</code>, <code>timeout_seconds</code>, <code>user_id</code>
+Возвращает
+Словарь с результатом: <code>success</code>, <code>answer</code>/<code>output</code> при успехе или <code>error</code> при ошибке/таймауте
+Исключения
+<code>asyncio.TimeoutError</code> — обрабатывается внутри, возвращает ошибку таймаута</p>
+<hr />
+<p><code>_normalize_options(options) -&gt; List[str]</code>
+Нормализует и дедуплицирует список вариантов ответа.
+Аргументы
+<code>options</code> — произвольный входной список опций
+Возвращает
+Список уникальных непустых строковых опций, ограниченный 6 элементами</p>
+<hr />
+<p><code>_normalize_timeout(value) -&gt; int</code>
+Приводит значение таймаута к допустимому диапазону.
+Аргументы
+<code>value</code> — исходное значение таймаута в секундах
+Возвращает
+Нормализованное целое значение от 1 до 86400 секунд</p>
+<hr />
+<p><code>_normalize_optional_int(value) -&gt; int | None</code>
+Безопасно преобразует значение в целое число или <code>None</code>.
+Аргументы
+<code>value</code> — произвольное значение для конвертации
+Возвращает
+Целое число при успешной конвертации, иначе <code>None</code></p>
+<hr />
+<p><code>_question_markup(question_id, options, allow_free_text, multi_select, selected_indices) -&gt; InlineKeyboardMarkup | None</code>
+Формирует inline-клавиатуру Telegram для вопроса.
+Аргументы
+<code>question_id</code> — уникальный идентификатор вопроса
+<code>options</code> — список вариантов ответа
+<code>allow_free_text</code> — разрешён ли свободный текстовый ввод
+<code>multi_select</code> — режим множественного выбора
+<code>selected_indices</code> — множество индексов уже выбранных опций
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> или <code>None</code> при пустой клавиатуре</p>
+<hr />
+<p><code>is_waiting_for_text(chat_id, user_id) -&gt; bool</code>
+Проверяет, ожидает ли система свободного текстового ответа от пользователя.
+Аргументы
+<code>chat_id</code> — идентификатор чата Telegram
+<code>user_id</code> — опциональный идентификатор пользователя для проверки прав
+Возвращает
+<code>True</code> если для указанного чата активен вопрос с разрешённым текстовым вводом и пользователь авторизован</p>
+<hr />
+<p><code>handle_free_text_answer(message: Message) -&gt; None</code>
+Обрабатывает входящее текстовое сообщение как свободный ответ на ожидающий вопрос.
+Аргументы
+<code>message</code> — объект входящего сообщения Telegram
+Возвращает
+<code>None</code></p>
+<hr />
+<p><code>handle_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Обрабатывает callback-запрос от inline-клавиатуры для ответа на вопрос.
+Аргументы
+<code>update</code> — объект обновления Telegram
+<code>context</code> — контекст обработчика Telegram
+Возвращает
+<code>None</code></p>
+<hr />
+<p><code>_answerer_allowed(pending: Dict[str, Any], user_id: Any) -&gt; bool</code>
+Проверяет, разрешён ли указанному пользователю отвечать на вопрос.
+Аргументы
+<code>pending</code> — словарь состояния вопроса
+<code>user_id</code> — идентификатор пользователя для проверки
+Возвращает
+<code>True</code> если пользователь может отвечать, иначе <code>False</code></p>
+<hr />
+<p><code>_resolve_question(question_id: str, answer: str) -&gt; bool</code>
+Разрешает ожидающий вопрос, устанавливая результат в связанный <code>Future</code>.
+Аргументы
+<code>question_id</code> — идентификатор вопроса
+<code>answer</code> — текст ответа пользователя
+Возвращает
+<code>True</code> если вопрос успешно разрешён, иначе <code>False</code></p>
+<hr />
+<p><code>_drop_question(question_id: str) -&gt; None</code>
+Удаляет вопрос из хранилища и очищает связанные ссылки из <code>pending_by_chat</code>.
+Аргументы
+<code>question_id</code> — идентификатор удаляемого вопроса
+Возвращает
+<code>None</code></p>
+<hr />
+<p><code>_clear_done_question_for_chat(chat_id: int) -&gt; None</code>
+Очищает завершённый или отменённый вопрос для указанного чата.
+Аргументы
+<code>chat_id</code> — идентификатор чата
+Возвращает
+<code>None</code></p>
+<hr />
+<p><code>_cancel_pending_question(helper, **kwargs) -&gt; Dict</code>
+Отменяет активный вопрос в указанном чате, уведомляет пользователя и очищает разметку.
+Аргументы
+<code>helper</code> — вспомогательный объект (не используется напрямую)
+<code>kwargs</code> — именованные аргументы, ожидаются <code>chat_id</code> и опциональный <code>reason</code>
+Возвращает
+словарь с полями <code>success</code>, <code>error</code> или <code>cancelled</code></p>
+<hr />
+<p><code>_deliver_to_user(helper, *, request_context=None, **kwargs) -&gt; Dict</code>
+Асинхронно подготавливает и доставляет результат пользователю с дедупликацией.
+Аргументы
+<code>helper</code> — вспомогательный объект окружения.
+<code>request_context</code> — опциональный контекст запроса для дедупликации.
+<code>**kwargs</code> — именованные аргументы включая <code>text</code>, <code>artifacts</code>, <code>chat_id</code>, <code>user_id</code>.
+Возвращает
+Словарь с <code>direct_result</code> (<code>final</code>/<code>mixed</code>), метаданными доставки или <code>skipped</code>-ответ при дедупликации.
+Исключения
+Не выбрасывает исключений; ошибки возвращаются в поле <code>error</code> результата.</p>
+<hr />
+<p><code>_delivery_dedup_key(kwargs: Dict[str, Any], request_context=None) -&gt; str | None</code>
+Генерирует ключ дедупликации доставки по <code>request_id</code> или паре <code>chat_id:message_id</code>.
+Аргументы
+<code>kwargs</code> — словарь параметров вызова.
+<code>request_context</code> — объект контекста запроса с атрибутом <code>request_id</code>.
+Возвращает
+Строка-ключ в формате <code>request:&lt;id&gt;</code> или <code>message:&lt;chat_id&gt;:&lt;message_id&gt;</code>, либо <code>None</code>.</p>
+<hr />
+<p><code>_cleanup_directives_for_active_skills(helper, kwargs: Dict[str, Any]) -&gt; List[Dict[str, Any]]</code>
+Формирует директивы очистки для всех активных навыков в текущем scope.
+Аргументы
+<code>helper</code> — объект окружения с <code>plugin_manager</code>.
+<code>kwargs</code> — параметры вызова с <code>chat_id</code> и <code>user_id</code> для вычисления scope.
+Возвращает
+Список словарей с <code>plugin_id</code>, <code>scope</code> и <code>skill_id</code> для каждого активного навыка.</p>
+<hr />
+<p><code>_allowed_artifact_roots(helper) -&gt; List[str]</code>
+Определяет разрешённые корневые пути для файловых артефактов доставки.
+Аргументы
+<code>helper</code> — объект окружения для извлечения путей из <code>plugin_manager</code> и skills-плагина.
+Возвращает
+Список канонических абсолютных путей (строк) без дубликатов.</p>
+<hr />
+<p><code>_normalize_delivery_artifacts(cls, artifacts: Any, *, allowed_roots: List[str] | None = None) -&gt; tuple[List[Dict[str, Any]], str | None]</code>
+Нормализует и валидирует входные артефакты в единый список структур с <code>file_path</code> и <code>caption</code>.
+Аргументы
+<code>artifacts</code> — исходное значение: <code>None</code>, строка JSON/пути, или список.
+<code>allowed_roots</code> — опциональный список разрешённых корневых путей для валидации безопасности.
+Возвращает
+Кортеж (список нормализованных артефактов, строка ошибки или <code>None</code>).</p>
+<hr />
+<p><code>_build_artifacts(file_path: str, caption: str | None, allowed_roots: List[str] | None, items: List[Dict[str, Any]]) -&gt; Tuple[List[Dict[str, Any]], str | None]</code>
+Валидирует файловый артефакт и добавляет его в коллекцию.
+Аргументы
+<code>file_path</code> — путь к файлу артефакта для проверки и разрешения
+<code>caption</code> — необязательная подпись к артефакту
+<code>allowed_roots</code> — список разрешённых корневых директорий для ограничения доступа
+<code>items</code> — накопительный список валидированных артефактов
+Возвращает
+Кортеж (<code>items</code>, <code>error_message</code>): обновлённый список артефактов и строка ошибки или <code>None</code> при успехе</p>
+<hr />
+<p><code>_run_subagents(helper, *, request_context=None, **kwargs) -&gt; Dict</code>
+Оркестрирует запуск одного или нескольких субагентов в синхронном или фоновом режиме.
+Аргументы
+<code>helper</code> — вспомогательный объект с методами доступа к модели и плагинам
+<code>request_context</code> — необязательный контекст запроса с <code>chat_id</code> и <code>session_id</code>
+<code>**kwargs</code> — параметры включая <code>subagents</code>, <code>shared_context</code>, <code>max_rounds</code>, <code>background</code>
+Возвращает
+Словарь с результатами: при фоновом режиме — информация о запланированных задачах, иначе — результаты всех субагентов</p>
+<hr />
+<p><code>_background_subagent_done(task: asyncio.Task) -&gt; None</code>
+Обработчик завершения фоновой задачи субагента с очисткой и логированием.
+Аргументы
+<code>task</code> — завершённая асинхронная задача субагента</p>
+<hr />
+<p><code>_resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -&gt; List[str]</code>
+Разрешает список разрешённых плагинов из родительского контекста через хелпер.
+Аргументы
+<code>helper</code> — объект с методом <code>resolve_allowed_plugins</code> или <code>None</code>
+<code>request_context</code> — контекст с <code>chat_id</code> и <code>session_id</code> для идентификации сессии
+<code>kwargs</code> — резервный источник <code>chat_id</code> если <code>request_context</code> недоступен
+Возвращает
+Список разрешённых плагинов, по умолчанию <code>["All"]</code></p>
+<hr />
+<p><code>_run_one_subagent(helper, item: Dict[str, Any], shared_context: str, kwargs: Dict[str, Any], parent_max_rounds: int, *, request_context=None, parent_allowed_plugins: List[str] | None = None) -&gt; Dict</code>
+Выполняет полный цикл одного субагента с подготовкой сообщений и логированием.
+Аргументы
+<code>helper</code> — вспомогательный объект для доступа к модели
+<code>item</code> — конфигурация субагента с <code>id</code>, <code>role</code>, <code>task</code>, <code>context</code>
+<code>shared_context</code> — общий контекст для всех субагентов группы
+<code>kwargs</code> — параметры вызова с <code>user_id</code>, <code>chat_id</code> и прочими настройками
+<code>parent_max_rounds</code> — нормализованное значение максимального числа раундов из родителя
+<code>request_context</code> — опциональный контекст запроса
+<code>parent_allowed_plugins</code> — наследуемый список разрешённых плагинов
+Возвращает
+Словарь с <code>id</code>, <code>role</code>, <code>status</code>, <code>result</code> и <code>published</code> артефактами субагента</p>
+<hr />
+<p><code>_normalize_max_rounds(value, parent_value: int | None = None) -&gt; int</code>
+Нормализует значение максимального числа раундов с учётом родительского ограничения.
+Аргументы
+<code>value</code> — исходное значение из конфигурации субагента или kwargs
+<code>parent_value</code> — родительское ограничение для применения по умолчанию
+Возвращает
+Целое число раундов в допустимом диапазоне</p>
+<hr />
+<p><code>_normalize_subagent_rounds(value: Any, default: int | None = None) -&gt; int</code>
+Нормализует целочисленное значение раундов вызова инструментов в допустимый диапазон.
+Аргументы
+<code>value</code> — исходное значение для нормализации (<code>None</code>, строка, число или другой тип)
+<code>default</code> — значение по умолчанию, используемое при <code>None</code> или ошибке преобразования; если не указано, применяется <code>MIN_SUBAGENT_TOOL_ROUNDS</code>
+Возвращает
+Нормализованное целое число в диапазоне [<code>MIN_SUBAGENT_TOOL_ROUNDS</code>, <code>MAX_SUBAGENT_TOOL_ROUNDS</code>]</p>
+<hr />
+<p><code>_normalize_temperature(value: Any) -&gt; float</code>
+Нормализует значение температуры генерации в допустимый диапазон <code>[0.0, 2.0]</code>.
+Аргументы
+<code>value</code> — исходное значение температуры (<code>None</code>, строка, число или другой тип)
+Возвращает
+Нормализованное значение температуры в диапазоне <code>[0.0, 2.0]</code>; при ошибке преобразования возвращает <code>DEFAULT_SUBAGENT_TEMPERATURE</code></p>
+<hr />
+<p><code>_bool_arg(value: Any, *, default: bool = False) -&gt; bool</code>
+Нормализует значение в булев тип с поддержкой строковых представлений.
+Аргументы
+<code>value</code> — исходное значение для нормализации
+<code>default</code> — значение по умолчанию при <code>None</code> (по умолчанию <code>False</code>)
+Возвращает
+Булево значение; строки <code>"1"</code>, <code>"true"</code>, <code>"yes"</code>, <code>"on"</code> (без учёта регистра и пробелов) интерпретируются как <code>True</code></p>
+<hr />
+<p><code>_run_subagent_completion_loop(helper, model_to_use: str, messages: List[Dict[str, Any]], kwargs: Dict[str, Any], max_rounds: int, temperature: float, *, published: List[Dict[str, Any]] | None = None, request_context=None, parent_allowed_plugins: List[str] | None = None) -&gt; str</code>
+Выполняет основной цикл взаимодействия подагента с моделью и инструментами.
+Аргументы
+<code>helper</code> — вспомогательный объект с клиентом API и менеджером плагинов
+<code>model_to_use</code> — идентификатор модели для генерации ответов
+<code>messages</code> — история сообщений диалога
+<code>kwargs</code> — дополнительные параметры передачи в инструменты
+<code>max_rounds</code> — максимальное количество раундов вызова инструментов
+<code>temperature</code> — температура генерации ответов модели
+<code>published</code> — список опубликованных результатов для передачи родительскому агенту (опционально)
+<code>request_context</code> — контекст текущего запроса (опционально)
+<code>parent_allowed_plugins</code> — список разрешённых плагинов родительского агента (опционально)
+Возвращает
+Текстовый ответ подагента или сообщение о достижении лимита раундов без текстового ответа
+Исключения
+Может выбрасывать исключения при сетевых ошибках или ошибках API; не обрабатывается внутри метода</p>
+<hr />
+<p><code>_subagent_tools(helper, model_to_use: str, *, parent_allowed_plugins: List[str] | None = None) -&gt; tuple[Any, set[str]]</code>
+Формирует список доступных инструментов и имён разрешённых функций для подагента.
+Аргументы
+<code>helper</code> — вспомогательный объект с менеджером плагинов
+<code>model_to_use</code> — идентификатор модели для фильтрации доступных инструментов
+<code>parent_allowed_plugins</code> — список разрешённых плагинов родительского агента (опционально)
+Возвращает
+Кортеж (список спецификаций инструментов или <code>None</code>, множество разрешённых имён функций)</p>
+<hr />
+<p><code>_internal_publish_tool_spec() -&gt; Dict[str, Any]</code>
+Возвращает спецификацию встроенного инструмента публикации результатов для родительского агента.
+Возвращает
+Словарь со спецификацией функции <code>"agent_tools.internal_publish"</code> в формате OpenAI-compatible tool schema</p>
+<hr />
+<p><code>_extract_tool_calls(choice) -&gt; List[Dict[str, str]]</code>
+Извлекает и нормализует вызовы инструментов из ответа модели.
+Аргументы
+<code>choice</code> — объект выбора (<code>choice</code>) из ответа API чат-комплита
+Возвращает
+Список словарей с ключами <code>"id"</code>, <code>"name"</code>, <code>"arguments"</code> для каждого валидного вызова инструмента</p>
+<hr />
+<p><code>_assistant_tool_calls_message(choice, tool_calls: List[Dict[str, str]]) -&gt; Dict[str, Any]</code>
+Формирует сообщение ассистента с вызовами инструментов для добавления в историю диалога.
+Аргументы
+<code>choice</code> — объект выбора из ответа API для извлечения контента сообщения
+<code>tool_calls</code> — список нормализованных вызовов инструментов
+Возвращает
+Словарь сообщения в формате OpenAI chat message с ролью <code>"assistant"</code> и массивом <code>tool_calls</code></p>
+<hr />
+<p><code>_call_subagent_tool(helper, call: Dict[str, str], allowed_function_names: set[str], kwargs: Dict[str, Any], *, published: List[Dict[str, Any]] | None = None, request_context=None) -&gt; str</code>
+Выполняет вызов конкретного инструмента подагента с проверкой разрешений и маршрутизацией.
+Аргументы
+<code>helper</code> — вспомогательный объект для выполнения инструмента
+<code>call</code> — словарь с данными вызова инструмента (<code>"id"</code>, <code>"name"</code>, <code>"arguments"</code>)
+<code>allowed_function_names</code> — множество разрешённых имён функций для подагента
+<code>kwargs</code> — дополнительные параметры передачи в инструменты
+<code>published</code> — список опубликованных результатов для внутреннего инструмента публикации (опционально)
+<code>request_context</code> — контекст текущего запроса (опционально)
+Возвращает
+JSON-строка с результатом выполнения инструмента или сообщением об ошибке
+Исключения
+Обрабатывает <code>json.JSONDecodeError</code> при невалидных аргументах; прочие исключения зависят от реализации конкретного инструмента</p>
+<hr />
+<p><code>_handle_internal_publish(args, published)</code>
+Обрабатывает внутреннюю публикацию контента из подагента.
+Аргументы
+<code>args</code> — словарь с параметрами публикации (<code>kind</code>, <code>value</code>, <code>caption</code>)
+<code>published</code> — список для накопления опубликованных элементов; <code>None</code> вне подагента
+Возвращает
+JSON-строка с результатом операции или описанием ошибки</p>
+<hr />
+<p><code>_tool_result_content(helper, content)</code>
+Форматирует результат работы инструмента в строковое представление.
+Аргументы
+<code>helper</code> — объект-хелпер с опциональным методом <code>_tool_result_content</code>
+<code>content</code> — произвольный результат выполнения инструмента
+Возвращает
+Строковое представление контента, с приоритетом кастомному форматтеру хелпера</p>
+<hr />
+<p><code>_choice_text(response)</code>
+Извлекает текстовый контент из ответа языковой модели.
+Аргументы
+<code>response</code> — объект ответа LLM с полем <code>choices</code>
+Возвращает
+Извлечённый текст, объединённый из списка частей при необходимости; пустая строка при ошибке</p>
+<hr />
+<p><code>execute(function_name: str, helper, **kwargs) -&gt; Dict</code>
+Центральный диспетчер вызовов инструментов агента.
+Аргументы
+<code>function_name</code> — имя вызываемого инструмента
+<code>helper</code> — вспомогательный объект контекста выполнения
+<code>**kwargs</code> — параметры инструмента, включая <code>request_context</code>
+Возвращает
+Результат выполнения инструмента в виде словаря с полями <code>success</code> и данными/ошибкой</p>
+<hr />
+<p><code>get_tools() -&gt; List[Dict]</code>
+Возвращает JSON Schema описания инструментов агента для регистрации в системе.</p>
+<hr />
+<p><code>get_commands() -&gt; List[Dict]</code>
+Возвращает конфигурацию callback-обработчиков Telegram для обработки ответов пользователя.</p>
+<hr />
+<p><code>get_message_handlers() -&gt; List[Dict]</code>
+Возвращает обработчики текстовых сообщений для режимов ввода ответа.</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../../js/base.js"></script>
+        <script src="../../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

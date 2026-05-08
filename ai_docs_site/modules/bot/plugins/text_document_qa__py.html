@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../../img/favicon.ico">
+        <title>text_document_qa.py - chatgpt-telegram-bot</title>
+        <link href="../../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../../css/brands.min.css" rel="stylesheet">
+        <link href="../../../css/solid.min.css" rel="stylesheet">
+        <link href="../../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="text_document_qa__py.html" class="dropdown-item active" aria-current="page">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="../__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="../chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="../conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="../database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="../hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="../html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="../i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="../model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="../openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="../openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="../plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="../request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="../skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="../telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="../usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="../user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="../utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="../validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="terminal__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="text_summarizer__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botpluginstext_document_qa" class="nav-link">bot/plugins/text_document_qa</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botpluginstext_document_qa">bot/plugins/text_document_qa</h1>
+<p><em>Источник:</em> <code>bot/plugins/text_document_qa.py</code></p>
+<p>Модуль реализует плагин документного Q&amp;A на базе AnythingLLM с изоляцией данных по чатам. Каждый чат получает персональный workspace, куда загружаются документы; плагин предоставляет команды для просмотра списка документов, задания вопросов по их содержимому и удаления устаревших файлов. Включает фоновую задачу очистки документов старше 30 дней с предупреждением за сутки до удаления. Конфигурация осуществляется через переменные окружения с префиксом ANYTHINGLLM_.</p>
+<p>Ключевые структуры данных
+AnythingLLMError — Исключение для ошибок, специфичных для взаимодействия с AnythingLLM API.
+processing_tasks — Dict[str, asyncio.Task] активных задач обработки документов
+workspace_map_cache — Dict[str, str] кэш соответствия chat_id → workspace slug
+_metadata_dir — Path директория хранения метаданных документов
+_http_transport — httpx.AsyncHTTPTransport конфигурация HTTP-транспорта</p>
+<hr />
+<p>class AnythingLLMError
+Базовое исключение для ошибок операций с AnythingLLM.</p>
+<hr />
+<p>class TextDocumentQAPlugin
+Плагин документного Q&amp;A с бэкендом AnythingLLM, изолирующий документы по чатам.</p>
+<p>Поля
+metadata_dir — str, путь к директории хранения метаданных документов.
+workspace_map_path — str, путь к JSON-файлу отображения чатов на workspace AnythingLLM.
+cleanup_task — asyncio.Task | None, фоновая задача периодической очистки устаревших документов.
+processing_tasks — dict[str, asyncio.Task], словарь активных задач обработки загружаемых документов.
+config — dict, конфигурация плагина (например, флаг enable_quoting).
+max_document_age — int, максимальный возраст документа в секундах (30 дней).
+warning_before_delete — int, интервал предупреждения перед удалением в секундах (1 день).
+_http_transport — httpx.AsyncBaseTransport | None, кастомный HTTP-транспорт для клиента.</p>
+<p>Методы
+<strong>init</strong>(http_transport: httpx.AsyncBaseTransport | None = None) — Инициализация плагина с созданием необходимых директорий.
+initialize(openai=None, bot=None, storage_root: str | None = None) -&gt; None — Запуск плагина с перенастройкой путей хранения и запуском фоновой очистки.
+get_source_name() -&gt; str — Возвращает идентификатор источника "TextDocumentQA".
+get_commands() -&gt; List[Dict] — Возвращает регистрацию CLI-команд плагина.
+get_spec() -&gt; List[Dict] — Возвращает спецификацию функций для LLM-инструментов (upload_document, list_documents, ask_question, delete_document).
+execute(function_name: str, helper, **kwargs) -&gt; Dict — Диспетчер выполнения функций плагина по имени операции.</p>
+<hr />
+<p>execute(function_name: str, helper, **kwargs) -&gt; Dict
+Центральный диспетчер обработки запросов к плагину.</p>
+<p>Аргументы
+function_name — имя вызываемой функции (list_documents, upload_document, ask_question, delete_document).
+helper — вспомогательный объект выполнения.
+**kwargs — именованные аргументы включая chat_id, file_content, file_name, document_id, query, update.</p>
+<p>Возвращает
+Dict с результатом операции или ошибкой; для успешных текстовых ответов использует _direct_text.</p>
+<p>Исключения
+AnythingLLMError при сбоях взаимодействия с API; ошибки возвращаются в поле error ответа.</p>
+<hr />
+<p>async def _process_document(self, file_content: Any, file_name: str, temp_id: str, chat_id: str, update=None)
+Обработка загруженного документа: создание workspace, загрузка в AnythingLLM, сохранение метаданных.</p>
+<p>Аргументы
+file_content — содержимое файла (любого типа, приводится к bytes)
+file_name — оригинальное имя файла
+temp_id — временный идентификатор задачи обработки
+chat_id — идентификатор чата Telegram
+update — объект обновления Telegram для отправки ответа (опционально)</p>
+<p>Возвращает
+None (результат отправляется через _send_direct_result)</p>
+<hr />
+<p>def _configuration_error(self) -&gt; str | None
+Проверка обязательных переменных окружения ANYTHINGLLM_BASE_URL и ANYTHINGLLM_API_KEY.</p>
+<p>Возвращает
+None при корректной конфигурации, иначе строку с описанием ошибки</p>
+<hr />
+<p>def _base_url(self) -&gt; str
+Получение базового URL AnythingLLM API из переменной окружения.</p>
+<p>Возвращает
+Базовый URL без завершающего слеша</p>
+<hr />
+<p>def _api_key(self) -&gt; str
+Получение API-ключа AnythingLLM из переменной окружения.</p>
+<p>Возвращает
+Строка API-ключа</p>
+<hr />
+<p>def _timeout(self) -&gt; float
+Получение таймаута HTTP-запросов из переменной окружения.</p>
+<p>Возвращает
+Таймаут в секундах (по умолчанию 120.0)</p>
+<hr />
+<p>def _chat_mode(self) -&gt; str
+Получение режима чата из переменной окружения.</p>
+<p>Возвращает
+"query" или "chat" (по умолчанию "query")</p>
+<hr />
+<p>def _top_n(self) -&gt; int
+Получение количества возвращаемых фрагментов векторного поиска.</p>
+<p>Возвращает
+Целое число (по умолчанию 6)</p>
+<hr />
+<p>def _similarity_threshold(self) -&gt; float
+Получение порога схожести для векторного поиска.</p>
+<p>Возвращает
+Значение от 0 до 1 (по умолчанию 0.25)</p>
+<hr />
+<p>def _vector_search_mode(self) -&gt; str
+Получение режима векторного поиска из переменной окружения.</p>
+<p>Возвращает
+Режим поиска (по умолчанию "rerank")</p>
+<hr />
+<p>def _workspace_prefix(self) -&gt; str
+Получение префикса для именования рабочих пространств.</p>
+<p>Возвращает
+Строка префикса (по умолчанию "telegram-chat")</p>
+<hr />
+<p>def _workspace_name(self, chat_id: str) -&gt; str
+Формирование имени рабочего пространства для чата.</p>
+<p>Аргументы
+chat_id — идентификатор чата Telegram</p>
+<p>Возвращает
+Строка формата "{prefix}-{hash}"</p>
+<hr />
+<p>def _session_id(self, chat_id: str) -&gt; str
+Формирование идентификатора сессии для чата.</p>
+<p>Аргументы
+chat_id — идентификатор чата Telegram</p>
+<p>Возвращает
+Строка идентификатора сессии</p>
+<hr />
+<p>def _chat_hash(self, chat_id: str) -&gt; str
+Вычисление SHA-256 хеша идентификатора чата.</p>
+<p>Аргументы
+chat_id — идентификатор чата Telegram</p>
+<p>Возвращает
+16-символьная шестнадцатеричная строка</p>
+<hr />
+<p>def _document_id(self, chat_id: str, location: str) -&gt; str
+Вычисление уникального идентификатора документа.</p>
+<p>Аргументы
+chat_id — идентификатор чата Telegram
+location — путь документа в AnythingLLM</p>
+<p>Возвращает
+32-символьная MD5 хеш-строка</p>
+<hr />
+<p>async def _request(self, method: str, path: str, **kwargs) -&gt; Dict
+Выполнение HTTP-запроса к AnythingLLM API с авторизацией и обработкой ошибок.</p>
+<p>Аргументы
+method — HTTP-метод (GET, POST, DELETE и т.д.)
+path — относительный путь API
+**kwargs — дополнительные параметры httpx</p>
+<p>Возвращает
+JSON-ответ в виде словаря</p>
+<p>Исключения
+AnythingLLMError при ошибках конфигурации, HTTP-ошибках или невалидном JSON</p>
+<hr />
+<p>async def _ensure_workspace(self, chat_id: str) -&gt; str
+Получение или создание рабочего пространства для чата с кэшированием.</p>
+<p>Аргументы
+chat_id — идентификатор чата Telegram</p>
+<p>Возвращает
+Slug рабочего пространства</p>
+<p>Исключения
+AnythingLLMError при ошибке создания workspace</p>
+<hr />
+<p>async def _workspace_exists(self, slug: str) -&gt; bool
+Проверка существования рабочего пространства по slug.</p>
+<p>Аргументы
+slug — идентификатор рабочего пространства</p>
+<p>Возвращает
+True если workspace существует, False при AnythingLLMError</p>
+<hr />
+<p>async def _list_workspaces(self) -&gt; List[Dict]
+Получение списка всех рабочих пространств.</p>
+<p>Возвращает
+Список словарей с информацией о workspaces</p>
+<hr />
+<p>async def _upload_document(self, workspace_slug: str, file_name: str, file_content: bytes) -&gt; Dict
+Загрузка документа в AnythingLLM и привязка к рабочему пространству.</p>
+<p>Аргументы
+workspace_slug — идентификатор рабочего пространства
+file_name — имя загружаемого файла
+file_content — бинарное содержимое файла</p>
+<p>Возвращает
+Словарь с метаданными загруженного документа</p>
+<p>Исключения
+AnythingLLMError при отсутствии документов в ответе</p>
+<hr />
+<p>async def _chat(self, workspace_slug: str, chat_id: str, query: str) -&gt; str
+Отправка запроса в чат-режиме рабочего пространства.</p>
+<p>Аргументы
+workspace_slug — идентификатор рабочего пространства
+chat_id — идентификатор чата для сессии
+query — текстовый запрос пользователя</p>
+<p>Возвращает
+Текстовый ответ от AnythingLLM</p>
+<p>Исключения
+AnythingLLMError при отсутствии textResponse в ответе</p>
+<hr />
+<p>async def _delete_document(self, doc_id: str, metadata: Dict | None = None) -&gt; None
+Удаляет документ из AnythingLLM и связанные с ним локальные метаданные.</p>
+<p>Аргументы
+doc_id — идентификатор документа для удаления
+metadata — опциональные метаданные документа; если не переданы, загружаются автоматически</p>
+<p>Исключения
+AnythingLLMError — при ошибке удаления документа через API</p>
+<hr />
+<p>async def _get_user_documents(self, chat_id: str) -&gt; List[Dict]
+Возвращает список документов AnythingLLM, принадлежащих указанному пользователю, отсортированный по дате создания (новые первыми).</p>
+<p>Аргументы
+chat_id — идентификатор чата владельца документов</p>
+<p>Возвращает
+список словарей с полями doc_id, file_name, created_at, summary</p>
+<hr />
+<p>async def _get_document_metadata(self, doc_id: str, chat_id: str) -&gt; Dict | None
+Загружает и валидирует метаданные документа по идентификатору и владельцу.</p>
+<p>Аргументы
+doc_id — идентификатор документа
+chat_id — идентификатор чата ожидаемого владельца</p>
+<p>Возвращает
+словарь метаданных документа или None, если документ не найден или не принадлежит указанному владельцу</p>
+<hr />
+<p>async def _save_document_metadata(self, doc_id: str, metadata: Dict) -&gt; None
+Сохраняет метаданные документа в JSON-файл.</p>
+<p>Аргументы
+doc_id — идентификатор документа
+metadata — словарь метаданных для сохранения</p>
+<hr />
+<p>async def _update_last_access(self, doc_id: str) -&gt; None
+Обновляет время последнего доступа к документу и сбрасывает флаг предупреждения об удалении.</p>
+<p>Аргументы
+doc_id — идентификатор документа</p>
+<p>Исключения
+исключения подавляются, ошибки логируются</p>
+<hr />
+<p>async def _cleanup_loop(self) -&gt; None
+Бесконечный цикл периодической очистки устаревших документов с интервалом 24 часа.</p>
+<p>Исключения
+исключения подавляются, ошибки логируются</p>
+<hr />
+<p>async def _cleanup_old_documents(self) -&gt; None
+Очищает устаревшие документы: отправляет предупреждение за указанный период до удаления, затем удаляет документы по достижении максимального возраста.</p>
+<p>Исключения
+исключения подавляются, ошибки логируются</p>
+<hr />
+<p>async def _send_deletion_warning(self, metadata: Dict, doc_id: str) -&gt; None
+Отправляет пользователю предупреждение о скором удалении документа и обновляет флаг warning_sent в метаданных.</p>
+<p>Аргументы
+metadata — метаданные документа
+doc_id — идентификатор документа</p>
+<p>Исключения
+исключения подавляются, ошибки логируются</p>
+<hr />
+<p>def _metadata_path(self, doc_id: str) -&gt; Path
+Формирует путь к файлу метаданных документа, валидируя формат идентификатора.</p>
+<p>Аргументы
+doc_id — идентификатор документа (ожидается 32 шестнадцатеричных символа)</p>
+<p>Возвращает
+путь к JSON-файлу метаданных или путь <strong>invalid</strong>.json при невалидном идентификаторе</p>
+<hr />
+<p>def _metadata_files(self) -&gt; List[Path]
+Возвращает список всех JSON-файлов в директории метаданных.</p>
+<p>Возвращает
+список путей к файлам .json или пустой список, если директория не существует</p>
+<hr />
+<p>def _load_workspace_map(self) -&gt; Dict[str, str]
+Загружает маппинг идентификаторов чатов на рабочие пространства AnythingLLM.</p>
+<p>Возвращает
+словарь маппинга или пустой словарь при отсутствии файла или ошибке чтения</p>
+<hr />
+<p>def _save_workspace_map(self, workspace_map: Dict[str, str]) -&gt; None
+Сохраняет маппинг рабочих пространств в JSON-файл.</p>
+<p>Аргументы
+workspace_map — словарь маппинга идентификаторов чатов на рабочие пространства</p>
+<hr />
+<p>def _load_json_file(self, path: Path) -&gt; Dict
+Загружает и парсит JSON-файл.</p>
+<p>Аргументы
+path — путь к файлу для загрузки</p>
+<p>Возвращает
+распарсенный словарь из JSON-файла</p>
+<hr />
+<p>def _coerce_file_content(self, file_content: Any) -&gt; bytes
+Приводит содержимое файла к типу bytes, поддерживая bytes, bytearray и str.</p>
+<p>Аргументы
+file_content — исходное содержимое файла произвольного поддерживаемого типа</p>
+<p>Возвращает
+содержимое файла в виде bytes</p>
+<p>Исключения
+AnythingLLMError — при неподдерживаемом типе содержимого</p>
+<hr />
+<p>def _document_summary(self, document: Dict) -&gt; str
+Формирует человекочитаемое описание документа на основе его метаданных.</p>
+<p>Аргументы
+document — словарь метаданных документа из AnythingLLM</p>
+<p>Возвращает
+строка описания с количеством слов, токенов и описанием, или значение по умолчанию</p>
+<hr />
+<p>def _strip_document_id(self, query: str, doc_id: str) -&gt; str
+Удаляет идентификатор документа из начала строки запроса, если он присутствует.</p>
+<p>Аргументы
+query — строка запроса
+doc_id — идентификатор документа для удаления</p>
+<p>Возвращает
+строка запроса без ведущего идентификатора документа</p>
+<hr />
+<p>async def _send_direct_result(self, update, response: Dict) -&gt; None
+Отправляет результат обработки документа напрямую в чат или логирует при отсутствии контекста обновления.</p>
+<p>Аргументы
+update — объект обновления Telegram или None
+response — словарь ответа для отправки</p>
+<hr />
+<p>def _direct_text(self, value: str) -&gt; Dict
+Формирует структуру прямого текстового ответа в формате markdown.</p>
+<p>Аргументы
+value — текстовое содержимое ответа</p>
+<p>Возвращает
+словарь с полем direct_result, содержащим kind, format и value</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../../js/base.js"></script>
+        <script src="../../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

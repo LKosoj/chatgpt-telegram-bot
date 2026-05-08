@@ -1,0 +1,2205 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="img/favicon.ico">
+        <title>Обзор проекта - chatgpt-telegram-bot</title>
+        <link href="css/bootstrap.min.css" rel="stylesheet">
+        <link href="css/fontawesome.min.css" rel="stylesheet">
+        <link href="css/brands.min.css" rel="stylesheet">
+        <link href="css/solid.min.css" rel="stylesheet">
+        <link href="css/v4-font-face.min.css" rel="stylesheet">
+        <link href="css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="overview.html" class="dropdown-item active" aria-current="page">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="modules/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="modules/bot/plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="modules/bot/__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="modules/examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="modules/examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="modules/examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="index.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="architecture.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#_1" class="nav-link">Обзор проекта</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="_1">Обзор проекта</h1>
+<p>Файл <code>docker-compose.yml</code> определяет конфигурацию сервиса для запуска Telegram-бота с интеграцией ChatGPT в контейнере Docker.  </p>
+<p>Сервис <code>chatgpt-telegram-bot</code> собирается из Dockerfile в текущей директории (контекст <code>.</code>). Используется volume-монтирование директории проекта в контейнер по пути <code>/app</code> для обеспечения горячей перезагрузки кода при разработке.  </p>
+<p>Контейнер автоматически перезапускается при сбоях или перезагрузке системы, за исключением случаев, когда остановлен вручную (<code>restart: unless-stopped</code>).  </p>
+<p>Ключевые параметры:
+- <code>build.context</code>: указывает на текущую директорию как источник сборки.
+- <code>build.dockerfile</code>: используемый файл сборки — <code>Dockerfile</code>.
+- <code>volumes</code>: проброс директории с хоста в контейнер для разработки.
+- <code>restart</code>: политика перезапуска контейнера.</p>
+<p>Файл <code>AGENTS.md</code> предназначен для документирования информации о программных агентах в системе — их назначении, функциональности, взаимодействии и статусе. Содержит описания ключевых агентов, таких как <em>Data Collector</em>, <em>Task Scheduler</em>, <em>Notification Agent</em> и других, включая их роли, входные и выходные данные, зависимости и режимы работы. Также может включать информацию о конфигурации, точках интеграции и примеры использования. Важные разделы: <em>Agent Roles</em>, <em>Communication Protocol</em>, <em>Error Handling</em>, <em>Configuration Parameters</em> и <em>Health Checks</em>. Рекомендуется актуализировать при изменении архитектуры или добавлении новых агентов.</p>
+<p>Файл <code>AGENTS.md</code> — проектные инструкции для AI-агентов, работающих с кодовой базой Python Telegram-бота с интеграцией OpenAI.</p>
+<p><strong>Назначение.</strong> Определяет рабочие правила агента (проверка состояния репозитория, хирургичность изменений, верификация утверждений через код), структуру проекта, процесс навигации по кодовой базе через <code>.cli-proxy/.codebase_map/</code>, а также специфические правила работы с плагинами, инструментами (tool calls), режимами чата, обработчиками Telegram и базой данных SQLite.</p>
+<p><strong>Ключевые сущности и правила.</strong></p>
+<ul>
+<li><strong>Рабочий процесс:</strong> перед нетривиальными правками — формулировка предположений, критериев успеха и плана верификации; использование <code>rg</code> для поиска; проверка <code>git status --short</code>; цитирование <code>file:line</code> при объяснении поведения.</li>
+<li><strong>Архитектура runtime:</strong> точка входа <code>bot/__main__.py</code>, обязательные переменные окружения <code>TELEGRAM_BOT_TOKEN</code> и <code>OPENAI_API_KEY</code>, последовательность инициализации <code>PluginManager</code> → <code>Database</code> → <code>OpenAIHelper</code> → <code>ChatGPTTelegramBot</code>, Telegram-polling в <code>bot/telegram_bot.py</code> с базовым URL <code>http://localhost:8081/bot</code>.</li>
+<li><strong>Поток обработки запросов:</strong> <code>telegram_bot.py</code> (обработка обновлений), <code>openai_helper.py</code> (API-вызовы), <code>openai_tool_handler.py</code> (выполнение tool calls), <code>plugin_manager.py</code> (плагины и валидация), <code>database.py</code> (SQLite), <code>chat_modes_registry.py</code> + <code>chat_modes.yml</code> (режимы чата).</li>
+<li><strong>Плагины и инструменты:</strong> базовый класс <code>Plugin</code> в <code>bot/plugins/plugin.py</code>, идентификация по <code>plugin_id</code>, неймспейсинг функций через <code>function_prefix</code>, загрузка из <code>bot/plugins/*.py</code> с учётом allow-list <code>PLUGINS</code>, строгая/мягкая валидация дубликатов через <code>PLUGIN_STRICT_VALIDATION</code>, пакетное выполнение через <code>asyncio.gather</code>, инъекция <code>chat_id</code>/<code>user_id</code>, прямой ответ плагина для обхода повторного вызова модели, различие форматов спецификаций для Google и прочих моделей.</li>
+<li><strong>Режимы чата:</strong> декларация в <code>bot/chat_modes.yml</code>, валидация tool-ссылок при инициализации, ограничение доступных плагинов через поле <code>tools</code> режима (по умолчанию <code>['All']</code>), требование использования имён модулей плагинов.</li>
+<li><strong>Обработчики Telegram:</strong> нормализация команд через <code>PluginManager.get_plugin_commands()</code>, запрет пробелов в именах команд, обработка фильтров сообщений без <code>eval</code>.</li>
+<li><strong>База данных:</strong> singleton <code>Database</code> с thread-local соединениями SQLite, WAL, <code>busy_timeout</code>, JSON-структура <code>conversation_context.context</code> как <code>{"messages": [...]}</code>, подсчёт <code>message_count</code> по сообщениям роли <code>user</code>, ограничение <code>max_sessions</code> с удалением старейшей сессии, вынос длительных вызовов OpenAI за пределы транзакций.</li>
+<li><strong>Тестирование:</strong> конфигурация pytest в <code>pytest.ini</code> (<code>asyncio_mode = auto</code>), расположение тестов в <code>tests/</code> и <code>bot/tests/</code>, привязка тестовых файлов к конкретным компонентам системы.</li>
+<li><strong>Документация:</strong> <code>AGENTS.md</code> как активные инструкции (не история измений), приоритет кода над README при расхождениях, вынос исторических планов в отдельные датированные документы.</li>
+</ul>
+<p><strong>Система Codebase Mapper Graph</strong> — механизм навигации и поддержания актуальности документации проекта через графовую структуру инкрементально загружаемых узлов. Точка входа: <code>/.cli-proxy/.codebase_map/INDEX.md</code>; узлы графа: <code>/.cli-proxy/.codebase_map/nodes/*.md</code>; абсолютный путь развёртывания: <code>/srv/git_projects/chatgpt-telegram-bot/.cli-proxy/.codebase_map</code>. При модификации кода обновляется поле <code>Last reviewed</code> в соответствующем узле; при неудаче — запуск ремонта через команды <code>update-node</code> или <code>repair</code>. Содержит машиночитаемый маркер <code>&lt;!-- CODEBASE_MAPPER_GRAPH:END --&gt;</code>.</p>
+<p>Документация Telegram-бота ChatGPT с интеграцией OpenAI/LLM-совместимых API. Основной файл <code>README.md</code> описывает архитектуру, развёртывание и конфигурацию через переменные окружения.</p>
+<p><strong>Ключевые компоненты системы:</strong></p>
+<ul>
+<li><strong>LLMGateway</strong> — трёхуровневый маршрутизатор моделей (<code>high</code> / <code>light_model</code> / <code>big_context</code>) с настраиваемыми <code>LLMGATEWAY_*_MODEL</code> и базовым URL</li>
+<li><strong>OpenAIHelper</strong> — клиент для чата, vision, генерации изображений, TTS, транскрипции</li>
+<li><strong>ChatGPTTelegramBot</strong> — обработчик Telegram-обновлений с inline-режимом и сессионным управлением</li>
+<li><strong>PluginManager</strong> — система плагинов с namespace-инструментами, JSON-схемами и ~43 встроенными модулями</li>
+<li><strong>Database</strong> — SQLite с WAL, именованные сессии (<code>MAX_SESSIONS</code> с автоочисткой), бюджеты пользователей</li>
+<li><strong>Hindsight</strong> — опциональная долгосрочная память с автовызовом/автосохранением при удалении сессии</li>
+<li><strong>Agent runtime</strong> (<code>agent_tools</code>) — подагенты (до 5 параллельно, 10–50 раундов), планировщик задач (<code>TASKS_TTL_SECONDS</code>=2 дня), взаимодействие с пользователем</li>
+<li><strong>Skills runtime</strong> (<code>skills</code>) — локальные Codex-стиль папки <code>SKILL.md</code> с выполнением скриптов</li>
+<li><strong>MCP integration</strong> — подключение удалённых MCP-серверов как динамических инструментов модели</li>
+</ul>
+<p><strong>Режимы чата</strong> (<code>bot/chat_modes.yml</code>) — поведенческие профили с системным промптом, отображаемым именем и белым списком <code>allowed_plugins</code>. Валидация перекрёстных ссылок через <code>chat_modes_registry.py</code>; изменения требуют перезапуска.</p>
+<p><strong>Обязательные переменные:</strong> <code>TELEGRAM_BOT_TOKEN</code>, <code>OPENAI_API_KEY</code>.</p>
+<p><strong>Ключевые секции конфигурации:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Секция</th>
+<th>Параметры</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Telegram Core</strong></td>
+<td><code>TELEGRAM_LOCAL_MODE</code> (<code>true</code> → localhost:8081)</td>
+</tr>
+<tr>
+<td><strong>LLM/Маршрутизация</strong></td>
+<td><code>LLMGATEWAY_BASE_URL</code>, <code>*_MODEL</code> для трёх уровней, <code>OPENAI_BASE_URL</code></td>
+</tr>
+<tr>
+<td><strong>Мультимодальность</strong></td>
+<td><code>ENABLE_*</code> флаги; <code>VISION_MODEL</code>, <code>TTS_MODEL</code>/<code>TTS_VOICE</code>, <code>TRANSCRIPTION_MODEL</code>, <code>IMAGE_GENERATION_MODEL</code>/<code>IMAGE_EDIT_MODEL</code> с качеством/размером/стилем</td>
+</tr>
+<tr>
+<td><strong>Сессии</strong></td>
+<td><code>MAX_HISTORY_SIZE</code>, <code>MAX_CONVERSATION_AGE_MINUTES</code>, <code>MAX_SESSIONS</code> (5), <code>AUTO_CHAT_MODES</code></td>
+</tr>
+<tr>
+<td><strong>Бюджеты</strong></td>
+<td><code>BUDGET_PERIOD</code> (monthly/daily/weekly/total), <code>USER_BUDGETS</code> (<code>*</code> = безлимит), <code>GUEST_BUDGET</code>, ценообразование по токенам/изображениям/TTS/vision/транскрипции</td>
+</tr>
+<tr>
+<td><strong>Плагины</strong></td>
+<td><code>PLUGINS</code> (CSV allow-list), <code>PLUGINS_DIR</code>, <code>PLUGIN_STRICT_VALIDATION</code>, <code>PLUGIN_STORAGE_ROOT</code> (<code>data/</code>), <code>PLUGIN_MENU_PAGE_SIZE</code> (8), <code>SHOW_PLUGINS_USED</code></td>
+</tr>
+<tr>
+<td><strong>Agent Tools</strong></td>
+<td><code>AGENT_ASK_USER_TIMEOUT_SECONDS</code> (1800); остальное жёстко: <code>MAX_SUBAGENTS</code> (5), <code>MIN</code>/<code>MAX_SUBAGENT_TOOL_ROUNDS</code> (10/50), <code>DELIVERY_DEDUP_WINDOW_SECONDS</code> (60), <code>DELIVERY_MAX_ARTIFACT_BYTES</code> (49 MiB), блокировка 4 инструментов самозащиты для подагентов</td>
+</tr>
+<tr>
+<td><strong>Skills</strong></td>
+<td><code>SKILLS_DIR</code>/<code>SKILLS_WORKDIR</code>, <code>SKILLS_ALLOW_EXECUTION</code>/<code>SKILLS_ALLOW_SCRIPTS</code> (<strong>опасно</strong> — права процесса), <code>SKILLS_ALLOWED_OPERATORS</code>/<code>SKILLS_SCRIPT_ADMIN_USER_IDS</code>, таймауты установки (180) и скриптов (120), <code>SKILLS_SCRIPT_OUTPUT_MAX_CHARS</code> (12000), <code>SKILLS_SCRIPT_INTERIM_AFTER_SECONDS</code> (20)</td>
+</tr>
+<tr>
+<td><strong>MCP</strong></td>
+<td><code>MCP_SERVERS</code> (JSON-конфиг), <code>DEFAULT_MCP_SERVERS</code>, <code>MCP_SERVERS_ALLOWED_USERS</code>, <code>MCP_REQUEST_TIMEOUT</code></td>
+</tr>
+<tr>
+<td><strong>Hindsight</strong></td>
+<td><code>HINDSIGHT_ENABLED</code>, <code>HINDSIGHT_RECALL_ON_START</code>, <code>HINDSIGHT_SAVE_ON_DELETE</code>, <code>HINDSIGHT_API_URL</code>/<code>HINDSIGHT_BASE_URL</code>, <code>HINDSIGHT_API_TOKEN</code>, <code>HINDSIGHT_AUTO_RECALL</code>/<code>AUTO_SAVE</code>, <code>HINDSIGHT_MEMORY_TYPES</code>, <code>HINDSIGHT_MAX_AUTO_SAVE_ITEMS</code></td>
+</tr>
+<tr>
+<td><strong>Database</strong></td>
+<td><code>DB_PATH</code>, <code>SQLITE_TIMEOUT</code>, <code>SQLITE_JOURNAL_MODE</code> (WAL), <code>SQLITE_BUSY_TIMEOUT_MS</code>, WAL-режим, пул соединений, thread-local доступ</td>
+</tr>
+<tr>
+<td><strong>Пользователи/доступ</strong></td>
+<td><code>ADMIN_USER_IDS</code>, <code>ALLOWED_TELEGRAM_USER_IDS</code>, <code>SKILLS_INSTALL_ADMIN_USER_IDS</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Структура проекта:</strong> <code>bot/</code> — ядро с плагинами и <code>user_data.db</code>; <code>data/</code> — хранилище навыков, рабочие области, персистентность агентов; <code>examples/</code> — MCP-примеры; <code>tests/</code>/<code>bot/tests/</code> — pytest с <code>asyncio_mode = auto</code>; <code>AGENTS.md</code>/<code>CLAUDE.md</code> — правила для агентов.</p>
+<p><strong>Тестирование:</strong> <code>python -m pytest -q tests/</code> и <code>python -m pytest -q bot/tests/</code>; синтаксическая проверка: <code>python -m py_compile bot/openai_helper.py bot/telegram_bot.py</code>.</p>
+<p><strong>Устаревшие переменные:</strong> <code>MONTHLY_USER_BUDGETS</code> → <code>USER_BUDGETS</code> + <code>BUDGET_PERIOD=monthly</code>; <code>MONTHLY_GUEST_BUDGET</code> → <code>GUEST_BUDGET</code> + <code>BUDGET_PERIOD=monthly</code> (fallback с предупреждением).</p>
+<p>Список зависимостей Python для проекта, включающий библиотеки для работы с API, асинхронными задачами, обработкой медиа, текста, веб-скрапингом, телеграм-ботами, машинным обучением и веб-разработкой. Основные компоненты: <code>python-telegram-bot</code> и <code>Telethon</code> — для интеграции с Telegram; <code>openai</code>, <code>tiktoken</code>, <code>assemblyai</code> — для взаимодействия с моделями OpenAI и распознавания речи; <code>aiohttp</code>, <code>httpx</code>, <code>requests</code> — для HTTP-запросов; <code>pydub</code>, <code>gtts</code>, <code>pytube</code>, <code>moviepy</code>, <code>ffmpeg-python</code> — для обработки аудио и видео; <code>beautifulsoup4</code>, <code>lxml</code>, <code>trafilatura</code>, <code>readability-lxml</code>, <code>youtube-transcript-api</code>, <code>duckduckgo_search</code> — для парсинга и извлечения данных из веба; <code>fastapi</code>, <code>uvicorn</code> — для создания API; <code>asyncpg</code> — асинхронный драйвер PostgreSQL; <code>google-api-python-client</code> — для работы с Google API; <code>spotipy</code> — для доступа к Spotify; <code>forex_python</code>, <code>whois</code>, <code>qrcode</code>, <code>pyswisseph</code>, <code>wolframalpha</code> — утилиты для различных внешних сервисов; <code>numpy</code>, <code>pandas</code>, <code>scikit-learn</code>, <code>matplotlib</code>, <code>plotly</code> — для анализа и визуализации данных; <code>pytest</code>, <code>pytest-asyncio</code> — для тестирования; <code>PyYAML</code>, <code>jinja2</code>, <code>jsonschema</code>, <code>deep-translator</code> — для обработки конфигураций, шаблонов и локализации. Версии указаны с ограничениями совместимости (~=, &gt;=, ==), обеспечивающими стабильность среды.</p>
+<p>Конфигурационный файл переменных окружения <code>.env</code> для Telegram-бота на базе LLMGateway — единственный авторитетный источник runtime-параметров. Приоритет актуальных ключей в <code>.env.example</code> и кода в <code>bot/</code> выше документации.</p>
+<p><strong>Обязательные переменные:</strong> <code>TELEGRAM_BOT_TOKEN</code>, <code>OPENAI_API_KEY</code>, <code>LLMGATEWAY_BASE_URL</code> (или <code>OPENAI_API_BASE</code>), дефолтная модель чата.</p>
+<p><strong>Telegram core:</strong> админы (<code>ADMIN_USER_IDS</code>), allow-list пользователей (<code>ALLOWED_TELEGRAM_USER_IDS</code>), <code>GROUP_TRIGGER_KEYWORD</code>, <code>TELEGRAM_DOWNLOAD_DIR</code>, rate limits, опциональные inline-режим и payments.</p>
+<p><strong>LLMGateway / OpenAI core:</strong> базовый URL, ключи, таймауты, дефолтные/фолбэк-модели для chat (<code>OPENAI_MODEL</code>, <code>LIGHT_MODEL</code>), vision, TTS, транскрипции, генерации изображений; параметры completion (temperature, max_tokens и др.).</p>
+<p><strong>Медиа-маршрутизация:</strong> <code>ENABLE_IMAGE_GENERATION</code>/<code>IMAGE_MODEL</code>/<code>IMAGE_SIZE</code>/<code>IMAGE_QUALITY</code>, <code>ENABLE_VISION</code>/<code>VISION_MODEL</code>/<code>VISION_DETAIL</code>, <code>ENABLE_TRANSCRIPTION</code>/<code>TRANSCRIPTION_MODEL</code>/<code>WHISPER_MODEL</code>, <code>ENABLE_TTS</code>/<code>TTS_MODEL</code>/<code>TTS_VOICE</code>/<code>TTS_SPEED</code>.</p>
+<p><strong>Сессии и поведение:</strong> <code>MAX_HISTORY_SIZE</code>, <code>MAX_CONVERSATION_AGE_MINUTES</code>, <code>MAX_SESSIONS</code>, автонейминг, сериализация разговоров, чат-режимы из <code>bot/chat_modes.yml</code> с их allow-list инструментов.</p>
+<p><strong>Бюджеты и тарификация:</strong> <code>BUDGET_PERIOD</code>, <code>MAX_DAILY_BUDGET</code>/<code>MAX_MONTHLY_BUDGET</code>, <code>USER_BUDGETS</code>, <code>GUEST_BUDGET</code>, <code>TOKEN_PRICE</code>, <code>BUDGET_ALERT_THRESHOLD</code>.</p>
+<p><strong>Плагины и хранилище:</strong> <code>PLUGINS</code> (allow-list), <code>ENABLE_PLUGINS</code>, <code>PLUGIN_WHITELIST</code>, <code>PLUGIN_STORAGE_ROOT</code> (дефолт <code>data/</code>), <code>PLUGIN_STRICT_VALIDATION</code>, <code>PLUGIN_MENU_PAGE_SIZE</code>; путь к плагинам <code>bot/plugins/</code>.</p>
+<p><strong>Agent tools / субагенты:</strong> <code>AGENT_ASK_USER_TIMEOUT_SECONDS</code>; лимиты итераций, таймауты, модель для планирования, доставка артефактов.</p>
+<p><strong>Плагин Skills:</strong> <code>SKILLS_DIR</code>, <code>SKILLS_WORKDIR</code>, <code>SKILLS_ALLOW_SCRIPTS</code>, <code>SKILLS_ALLOW_INSTALLS</code>, <code>SKILLS_INSTALL_ADMIN_USER_IDS</code>, <code>SKILLS_SCRIPT_ADMIN_USER_IDS</code>, таймауты, лимиты вывода.</p>
+<p><strong>Плагин MCP:</strong> <code>DEFAULT_MCP_SERVERS</code>, <code>MCP_REQUEST_TIMEOUT</code>, <code>MCP_SERVERS_ALLOWED_USERS</code>, транспорт stdio/sse.</p>
+<p><strong>Hindsight (долговременная память):</strong> <code>HINDSIGHT_BASE_URL</code> + <code>HINDSIGHT_API_TOKEN</code>, <code>HINDSIGHT_NAMESPACE</code>, <code>HINDSIGHT_RECALL_BUDGET</code>, <code>HINDSIGHT_RECALL_MAX_TOKENS</code>, <code>HINDSIGHT_MEMORY_TYPES</code>, <code>HINDSIGHT_ASYNC_STORE</code>.</p>
+<p><strong>Ключи отдельных плагинов:</strong> <code>JINA_API_KEY</code>, <code>GOOGLE_API_KEY</code>/<code>GOOGLE_CSE_ID</code>, <code>DEEPL_API_KEY</code>, <code>WOLFRAM_APP_ID</code>, <code>YANDEX_API_TOKEN</code>, <code>TMDB_API_KEY</code>, <code>SPOTIFY_*</code> (OAuth), <code>ANYTHINGLLM_*</code> (BASE_URL, API_KEY, TIMEOUT, CHAT_MODE, TOP_N, SIMILARITY_THRESHOLD, VECTOR_SEARCH_MODE, WORKSPACE_PREFIX).</p>
+<p><strong>Настройка БД:</strong> <code>DB_PATH</code> (bot/user_data.db), <code>SQLITE_TIMEOUT</code>, <code>SQLITE_JOURNAL_MODE</code> (WAL), <code>SQLITE_BUSY_TIMEOUT_MS</code>.</p>
+<p><strong>Устаревшие переменные:</strong> <code>MONTHLY_USER_BUDGETS</code> → <code>USER_BUDGETS</code> + <code>BUDGET_PERIOD=monthly</code>; <code>MONTHLY_GUEST_BUDGET</code> → <code>GUEST_BUDGET</code> + <code>BUDGET_PERIOD=monthly</code> (fallback с deprecation warning).</p>
+<p><strong>Диагностика:</strong> <code>LOG_LEVEL</code>, <code>ENABLE_DEBUG_LOGGING</code>, <code>ENABLE_METRICS</code>/<code>METRICS_PORT</code>.</p>
+<hr />
+<p><code>bot/chat_modes_registry.py</code> — загрузчик и валидатор YAML-конфигурации <code>bot/chat_modes.yml</code>. <code>ChatModesRegistry</code> индексирует режимы по <code>id</code>; <code>ChatMode</code> содержит <code>system_prompt</code>, <code>model_profile</code> (маршруты LLMGateway: high/light/big_context/vision/image_generation/image_edit/transcription/tts), <code>plugins_allowlist</code>/<code>plugins_denylist</code>, <code>budget</code>, feature-флаги (<code>vision</code>, <code>audio</code>, <code>web_search</code>, <code>deep_research</code>, <code>agent_runtime</code>, <code>hindsight</code>, <code>skills</code>, <code>mcp</code>), <code>agent_limits</code>, <code>tts_voice</code>, <code>response_format</code>. Валидация: уникальность <code>id</code>, разрешённые <code>model_profile</code>, корректность ссылок на плагины, валидность regex; при <code>STRICT_MODE=true</code> ошибки блокируют старт.</p>
+<hr />
+<p><code>data/</code> — персистентное хранилище плагинов и агента (в <code>.gitignore</code>): <code>skills/</code>, <code>skill_workdir/</code>, <code>agent_tasks.json</code>, <code>agent_pending_questions.json</code>, кэши документов и аналитики.</p>
+<p><code>bot/user_data.db</code> — SQLite рантайм-состояния: сессии, история, image-refs, usage-статистика (в <code>.gitignore</code>).</p>
+<p><code>tests/</code> — pytest с <code>asyncio_mode = auto</code>; покрытие: реестр плагинов, tool-calls, стриминг, группы/сессии, авторизация callback'ов, chat modes, БД, LLMGateway, Hindsight, агенты, скилы, MCP, специфичные плагины. <code>bot/tests/</code> — MCP-тесты.</p>
+<p>Docker-образ для запуска Telegram-бота на Python 3.9 с минимальным Alpine-базовым образом.</p>
+<p><strong>Назначение:</strong> сборка лёгкого контейнера с зависимостью от FFmpeg для обработки медиафайлов.</p>
+<p><strong>Ключевые сущности:</strong>
+- Базовый образ: <code>python:3.9-alpine</code>
+- Установленный системный пакет: <code>ffmpeg</code>
+- Точка входа: модуль <code>bot</code> (<code>python -m bot</code>)</p>
+<p><strong>Переменные окружения:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Переменная</th>
+<th>Значение</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PYTHONFAULTHANDLER</code></td>
+<td><code>1</code></td>
+<td>включение обработчика фатальных ошибок</td>
+</tr>
+<tr>
+<td><code>PYTHONUNBUFFERED</code></td>
+<td><code>1</code></td>
+<td>отключение буферизации stdout/stderr</td>
+</tr>
+<tr>
+<td><code>PYTHONDONTWRITEBYTECODE</code></td>
+<td><code>1</code></td>
+<td>запрет генерации <code>.pyc</code>-файлов</td>
+</tr>
+<tr>
+<td><code>PIP_DISABLE_PIP_VERSION_CHECK</code></td>
+<td><code>on</code></td>
+<td>отключение проверки обновлений pip</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные настройки сборки:</strong>
+- Флаг <code>--no-cache</code> для <code>apk</code> и <code>--no-cache-dir</code> для <code>pip</code> — минимизация размера слоёв образа
+- Копирование всего содержимого контекста сборки в рабочую директорию <code>/app</code>
+- Установка зависимостей из <code>requirements.txt</code> на этапе сборки</p>
+<p>Файл <code>AGENTS.md</code> предназначен для документирования информации о программных агентах в системе — их назначении, функциональности, взаимодействии и статусе. Содержит описания ключевых агентов, таких как <em>Data Collector</em>, <em>Task Scheduler</em>, <em>Notification Agent</em> и других, включая их роли, входные и выходные данные, зависимости и режимы работы. Также может включать информацию о конфигурации, точках интеграции и примеры использования. Важные разделы: <em>Agent Roles</em>, <em>Communication Protocol</em>, <em>Error Handling</em>, <em>Configuration Parameters</em> и <em>Health Checks</em>. Рекомендуется актуализировать при изменении архитектуры или добавлении новых агентов.</p>
+<p>Конфигурационный файл pytest.ini или секция [pytest] в pyproject.toml для настройки асинхронного тестирования с использованием плагина pytest-asyncio. Определяет режим автоматического обнаружения асинхронных тестов и область видимости цикла событий для фикстур.</p>
+<p>Файл <code>AGENTS.md</code> предназначен для документирования информации о программных агентах в системе — их назначении, функциональности, взаимодействии и статусе. Содержит описания ключевых агентов, таких как <em>Data Collector</em>, <em>Task Scheduler</em>, <em>Notification Agent</em> и других, включая их роли, входные и выходные данные, зависимости и режимы работы. Также может включать информацию о конфигурации, точках интеграции и примеры использования. Важные разделы: <em>Agent Roles</em>, <em>Communication Protocol</em>, <em>Error Handling</em>, <em>Configuration Parameters</em> и <em>Health Checks</em>. Рекомендуется актуализировать при изменении архитектуры или добавлении новых агентов.</p>
+<p>Конфигурационный файл среды Conda для Python-проекта, объединяющего инструменты разработки Telegram-бота с ИИ-функциональностью, обработкой мультимедиа и веб-интеграцией. Определяет смешанную установку зависимостей через conda-каналы и pip-пакеты с частично закомментированными опциональными компонентами для машинного обучения.</p>
+<p>Модуль определяет неизменяемый контекст запроса, содержащий идентификаторы чата, пользователя, сообщения, сессии и запроса. Используется для передачи метаданных запроса между компонентами системы.</p>
+<p>Документация по интеграции MCP (Model Context Protocol) серверов в Telegram-бота. Описывает архитектуру подключения внешних инструментов через единый стандартизированный интерфейс.</p>
+<p><strong>Ключевые сущности:</strong> MCP сервер — внешний провайдер инструментов, регистрируемый в боте; инструменты (tools) — функции с префиксом имени сервера, доступные модели ИИ; транспорты — HTTP (REST API) и stdio (дочерние процессы через stdin/stdout); плагин MCP — компонент маршрутизации запросов к внешним серверам.</p>
+<p><strong>Переменные окружения:</strong> <code>ENABLE_MCP_SERVERS</code> — глобальное включение; <code>MCP_SERVERS_ALLOWED_USERS</code> — список разрешённых (<code>*</code> — все); <code>DEFAULT_MCP_SERVERS</code> — предустановленные серверы в формате <code>имя:url</code>; <code>MCP_REQUEST_TIMEOUT</code> — таймаут в секундах (по умолчанию 30).</p>
+<p><strong>Конфигурация:</strong> файл <code>bot/config/mcp_servers.json</code> создаётся автоматически, хранит URL/команду запуска, API-ключи, описание и кэшированный список инструментов.</p>
+<p><strong>Регистрация:</strong> функция <code>register_mcp_server</code> требует <code>server_name</code>, <code>user_id</code>; для HTTP — <code>base_url</code>, опционально <code>api_key</code>; для stdio — <code>transport: "stdio"</code>, <code>command</code>, <code>args</code>, опционально <code>env</code>.</p>
+<p><strong>Управление:</strong> регистрация и удаление — только администраторы (<code>ADMIN_USER_IDS</code>); просмотр списка (<code>/mcp_servers</code>) — все пользователи.</p>
+<p><strong>Требования к HTTP-серверу:</strong> эндпоинт <code>GET /tools</code> возвращает инструменты в формате OpenAI Function Calling (<code>name</code>, <code>description</code>, <code>parameters</code> в JSON Schema).</p>
+<p><strong>Транспорты:</strong> HTTP требует сетевой доступности; stdio требует управления процессами. Преимущества подхода — модульность, масштабируемость, изоляция кода.</p>
+<p>Модуль предоставляет реестр чат-режимов, загружаемых из YAML-файла с поддержкой горячей перезагрузки по изменению mtime. Реализован поиск режимов по ключу, по системному промпту с учётом маркеров, а также валидация ссылок на инструменты через plugin_manager.</p>
+<p>Модуль содержит константы идентификаторов моделей LLM Gateway, используемых для маршрутизации запросов к различным сервисам генеративного ИИ: чат-модели, генерация изображений, веб-поиск, преобразование текста в речь и транскрипция. Также определены пустые группы провайдеров для обратной совместимости с устаревшими компонентами системы.</p>
+<p>Конфигурационный файл определяет параметры и поведение двух AI-ассистентов: универсального помощника по общим вопросам и специализированного улучшателя текста. Каждый ассистент настраивается через набор ключей, регулирующих языковую модель, инструкции, доступные инструменты и формат взаимодействия с пользователем.</p>
+<p>Модуль отслеживания использования ресурсов пользователями бота. Предоставляет класс UsageTracker для учёта потребления токенов чата, изображений, vision-токенов, TTS-символов, транскрипции и других ресурсов с сохранением истории в JSON-файлы. Поддерживает расчёт дневных, месячных и общих затрат с применением модель-зависимых тарифов и агрегации статистики за различные периоды.</p>
+<p>Модуль управления локализацией и переводами бота. Предоставляет механизмы определения текущего языка, нормализации языковых кодов с поддержкой алиасов, а также получения локализованного текста по ключу из JSON-файла переводов. Использует <code>ContextVar</code> для хранения языкового контекста и <code>lru_cache</code> для кэширования нормализации языковых кодов.</p>
+<p>Модуль предоставляет комплексную инфраструктуру для создания интерактивных HTML-визуализаций с поддержкой Markdown, Mermaid-диаграмм, PlantUML-интеграции и библиографических ссылок. Основной класс HTMLVisualizer обеспечивает конвертацию текстового контента в форматированный HTML с сохранением сложных структур данных, включая диаграммы и источники. Модуль включает многоуровневую постобработку HTML для восстановления Mermaid-блоков, исправления URL, повреждённых Markdown-разметкой, и создание интерактивных контейнеров с масштабированием, экспортом в SVG/PNG, переключением тем и копированием кода. Реализованы CSS-стили для визуального оформления отчётов и клиентский JavaScript для управления диаграммами, а также вспомогательные методы для улучшения визуального представления различных типов Mermaid-диаграмм и генерации изображений PlantUML с автоматическим исправлением ошибок через LLM.</p>
+<p>Модуль реализует потокобезопасный singleton-класс Database для работы с SQLite, обеспечивающий хранение пользовательских настроек, контекста разговоров с поддержкой сессий, изображений и фоновых задач. Использует паттерн singleton с thread-local соединениями и контекстный менеджер для транзакций.</p>
+<p>Клиентская библиотека для взаимодействия с Hindsight API — сервисом семантической памяти. Предоставляет асинхронный HTTP-клиент для операций recall (поиск по памяти), retain (сохранение), list (перечисление) и stats (статистика) в рамках именованных банков памяти. Включает вспомогательную функцию форматирования результатов поиска в человекочитаемый вид.</p>
+<p>Модуль реализует централизованный менеджер плагинов для динамической загрузки, инициализации и вызова функций плагинов. Предоставляет механизмы разрешения имён функций, валидации разрешённых плагинов, нормализации спецификаций и управления жизненным циклом экземпляров плагинов с поддержкой кеширования. Обеспечивает интеграцию с OpenAI API через формирование спецификаций функций для LLM-моделей, включая сценарии делегирования функций субагентам с явными списками блокировки.</p>
+<p>Модуль реализует центральный компонент для работы с языковыми моделями через OpenAI-совместимый API и LLM Gateway. Предоставляет управление диалогами, интеграцию с системой плагинов через function calling, долгосрочную память через Hindsight, классификацию намерений пользователя, обработку изображений в vision-режиме, генерацию речи (TTS), транскрипцию аудио и управление токенами. Содержит механизмы повторных попыток при превышении лимитов API, суммаризации длинных контекстов и адаптацию форматов истории под различных провайдеров моделей (OpenAI, Anthropic, Google, Mistral и др.).</p>
+<p>Модуль предоставляет средства валидации конфигурации OpenAI и аргументов функций на основе JSON Schema. Содержит проверку обязательных полей и типов конфигурации, а также валидацию аргументов функций с форматированием понятных сообщений об ошибках.</p>
+<p>Асинхронный HTTP-клиент <code>LLMGatewayClient</code> на базе <code>httpx.AsyncClient</code> для взаимодействия с LLM Gateway — прокси-сервисом унифицированного доступа к LLM- и мультимодальным возможностям (веб-поиск, чтение страниц, исследования, редактирование изображений, аудио) в рамках service mesh.</p>
+<p><strong>Ключевые сущности:</strong> <code>LLMGatewayClient</code> (аутентификация, построение запросов, обработка ошибок), <code>LLMGatewayError</code> (исключения конфигурации и HTTP-ошибок), <code>extract_image_result</code> (извлечение URL или сохранение base64 во временный файл).</p>
+<p><strong>API-методы:</strong> низкоуровневые <code>get_json</code> / <code>post_json</code> / <code>post_multipart</code> с валидацией ответа; <code>web_search</code> (max_results, language, include_images), <code>web_read</code> (формат markdown), <code>web_research</code>, <code>web_deep_research</code> (max_words, breadth, depth, concurrency), <code>image_edit</code> / <code>image_edit_file</code>, <code>audio_voices</code>.</p>
+<p><strong>Критические настройки:</strong> <code>base_url</code> — обязателен (<code>LLMGatewayError</code> при отсутствии), <code>api_key</code> в заголовке <code>Authorization: Bearer</code>, глобальный <code>timeout</code> 120.0 с с переопределениями (<code>web_deep_research</code> 1800.0, <code>web_research</code>/<code>image_edit</code> 300.0, <code>web_search</code> 90.0), идентификационный заголовок <code>X-Title: tgBot</code>, модели вынесены в <code>model_constants</code> (постфиксы <code>_WEB_SEARCH_MODEL</code>, <code>_WEB_READ_MODEL</code>, <code>_WEB_RESEARCH_MODEL</code>, <code>_WEB_DEEP_RESEARCH_MODEL</code>, <code>_IMAGE_EDIT_MODEL</code>).</p>
+<hr />
+<p>Файл конфигурации пути (<code>path</code>) определяет маршрутизацию трафика в service mesh: сопоставление запросов с целевыми сервисами.</p>
+<p><strong>Ключевые сущности:</strong> <code>match</code> (префикс, метод, заголовки), <code>route</code> (целевой сервис, вес распределения), <code>redirect</code>/<code>rewrite</code>, <code>timeout</code>/<code>retry</code>, <code>fault</code> (хаос-тестирование).</p>
+<p><strong>Важные настройки:</strong> <code>prefix</code>/<code>exact</code>/<code>regex</code> для путей, <code>destination</code> (идентификатор сервиса в mesh), <code>weight</code> (canary/blue-green), <code>headers</code> (условия по метаданным), <code>cors</code>, <code>mirror</code> (зеркалирование на тестовый сервис без клиентского влияния). Приоритет правил — по порядку определения (первое совпавшее), изменения распространяются через control plane без перезапуска sidecar-прокси.</p>
+<p>Модуль реализует полнофункционального Telegram-бота на базе ChatGPT/OpenAI API с расширяемой плагиновой архитектурой, поддержкой мультимодальных сценариев (текст, изображения, аудио, TTS), многоязычного интерфейса и управления пользовательскими сессиями. Бот обрабатывает команды, inline-запросы, callback-запросы и медиасообщения с буферизацией, потоковой передачей ответов, блокировками для потокобезопасности и интеграцией с внешними сервисами (VSEGPT, Anthropic, Google). Реализованы механизмы отслеживания использования, управления бюджетом, кеширования настроек и фоновые задачи для обработки отложенных операций.</p>
+<p>Модуль предоставляет вспомогательную функцию для определения ключа идентификации разговора в Telegram-боте. Ключ выбирается на основе типа чата: для групп и супергрупп используется идентификатор чата, для личных сообщений — идентификатор пользователя.</p>
+<p>Модуль содержит вспомогательные функции и классы для Telegram-бота, включая обработку сообщений, проверку членства пользователей в группах, управление статусными сообщениями о прогрессе операций, разбиение длинного текста на фрагменты с сохранением Markdown-форматирования, обёртку корутин с индикаторами активности, редактирование сообщений с повторными попытками, проверку прав доступа и управление бюджетами пользователей, а также утилиты для работы с изображениями, медиа-контентом, конвертации Markdown в HTML и отправки длинных ответов в виде файлов.</p>
+<p>Ключевые компоненты: <code>BusyStatusMessage</code> — класс для отображения временных статусных сообщений с поддержкой отслеживания плана выполнения; <code>handle_direct_result</code> — центральный обработчик маршрутизации результатов плагинов; набор функций для извлечения текста сообщений, определения типа чата, получения идентификаторов тредов, управления потоковой передачей ответов и отслеживания использования токенов.</p>
+<p>Модуль реализует полный жизненный цикл обработки вызовов функций (tool calls) в LLM-чате: от парсинга и валидации ответов модели через маршрутизацию к плагинам до управления результатами — включая немедленную доставку пользователю, отложенную передачу в контекст модели с компактизацией, слияние множественных результатов и принудительную доставку через специальный инструмент <code>agent_tools.deliver_to_user</code> в режиме skills_agent. Поддерживает потоковую и непотоковую передачу, ограничение на глубину рекурсивных вызовов и интеграцию с пользовательскими сессиями для управления токенами.</p>
+<p>Модуль запуска и инициализации Telegram-бота на базе ChatGPT. Загружает конфигурацию из переменных окружения и .env-файла, валидирует обязательные параметры, формирует конфигурацию OpenAI и запускает бота. Содержит вспомогательные функции для парсинга булевых значений из окружения и валидации URL Telegram API.</p>
+<p>Модуль содержит внутренние утилиты для маршрутизации запросов к инструменту <code>codeinterpreter.deep_analysis</code> в контексте системы навыков (skills). Основное назначение — блокировать прямой вызов интерпретатора кода, когда запрос относится к активным скриптам навыков или создаёт ad-hoc скрипты в режиме skills_agent, перенаправляя вызовы на <code>skills.run_skill_script</code> или <code>terminal.terminal</code>.</p>
+<p>Модуль определяет регулярные выражения для обнаружения путей к скриптам навыков и паттернов создания скриптовых файлов, а также набор приватных функций для проверки режима агента, получения активных скриптов и формирования payload'ов с инструкциями по маршрутизации.</p>
+<p>Модуль предоставляет утилиты для работы с пользовательскими настройками в бот-платформе. Реализует константы ключей настроек, валидацию и нормализацию данных, а также функции чтения и модификации списков отключённых элементов (плагинов и навыков).</p>
+<p>Я готов выполнить подзадачу по созданию технического описания файла. Однако мне нужна дополнительная информация:</p>
+<p><strong>Требуемые данные:</strong>
+- Путь к файлу или его содержимое
+- Тип файла (конфигурационный, исходный код, скрипт, документация и т.д.)
+- Контекст использования (в каком проекте/системе)</p>
+<p><strong>Пожалуйста, предоставьте:</strong>
+1. Либо содержимое файла для анализа
+2. Либо путь к файлу, который я могу изучить через доступные инструменты
+3. Либо оба варианта</p>
+<p>После получения данных я сформирую краткое информативное описание в Markdown-формате с указанием назначения, ключевых сущностей и важных настроек/параметров.</p>
+<p>Плагин WebsiteContentPlugin предоставляет инструмент для извлечения основного текстового содержимого и заголовка веб-страницы по указанному URL через сервис LLMGateway. Реализует стандартный интерфейс Plugin с регистрацией функции <code>website_content</code>, доступной для вызова агентами или внешними компонентами системы.</p>
+<p>Модуль предоставляет плагин для выполнения shell-команд или прямого запуска программ с возвратом stdout, stderr и кода возврата. Поддерживает настраиваемый рабочий каталог, таймаут, ограничение размера вывода и выбор между shell-режимом и прямым выполнением.</p>
+<p>Плагин для запроса информации из базы данных WHOIS. Предоставляет функцию получения регистрационных данных и сроков действия доменов через стандартный интерфейс плагинов. Реализует асинхронное выполнение запросов с обработкой ошибок.</p>
+<p>Плагин WorldTimeApiPlugin предоставляет возможность получения текущего времени для указанного часового пояса через публичный API WorldTimeAPI. Автоматически определяет часовой пояс по умолчанию из переменной окружения и возвращает время в 24-часовом и 12-часовом форматах.</p>
+<p>LanguageLearningPlugin provides daily language practice exercises and tracks user learning progress across six supported languages. The plugin generates contextual exercises via ChatGPT integration and maintains per-user statistics including completion counts and practice streaks in a local JSON file.</p>
+<p>Плагин для получения транскриптов YouTube-видео через LLMGateway web_read. Преобразует идентификатор видео или URL в полный адрес, запрашивает содержимое через шлюз и форматирует результат в видео-заголовок и транскрипт. Обрабатывает ошибки валидации входных данных и сетевые сбои шлюза.</p>
+<p>Плагин для получения текущих курсов криптовалют через публичный API CoinCap. Предоставляет единственную функцию <code>get_crypto_rate</code>, которая возвращает актуальный курс указанного криптоактива. Реализует асинхронное HTTP-взаимодействие с обработкой ошибок таймаута, HTTP-статусов и парсинга JSON.</p>
+<p>Модуль реализует интеграцию с MCP (Model Context Protocol) серверами через плагин MCPServerPlugin, поддерживая HTTP и stdio транспорты для локальных и удалённых серверов. Обеспечивает централизованное управление конфигурацией серверов, ролевую модель доступа с разделением прав администраторов и обычных пользователей, динамическую регистрацию инструментов и их асинхронное обновление. Предоставляет Telegram-интерфейс для управления серверами, выполнение удалённых функций с автоматическим выбором транспорта и сохранение настроек в JSON-файле.</p>
+<p>Плагин PromptPerfectPlugin предназначен для автоматической оптимизации и уточнения пользовательских промптов с целью получения более качественных ответов от ChatGPT. Модуль интегрируется в систему плагинов через базовый класс Plugin и предоставляет единственную функцию optimize_prompt, которая перерабатывает исходный запрос с использованием стратегий улучшения ясности, структуры и конкретики.</p>
+<p>Модуль предоставляет плагин и инструмент для извлечения и анализа содержимого PDF-файлов с продвинутой системой кэширования результатов. Реализует множественные резервные бэкенды извлечения текста (PyPDF2, pdfminer, textract), управление временными файлами, LRU-подобную очистку кэша по размеру и возрасту, а также интеграцию с LLM для генерации ответов на основе содержимого документа.</p>
+<p>Конфигурационный файл определяет параметры взаимодействия с LLM через OpenAI-совместимый API, настраивает двух специализированных агентов (исследователя и планировщика) с их инструментами и системными промптами, а также задаёт настройки локальной базы данных и логирования.</p>
+<p>Плагин для интеграции с сервисом перевода DeepL API. Предоставляет функцию перевода текста на указанный язык через асинхронные HTTP-запросы. Автоматически определяет тип аккаунта (бесплатный или платный) по формату API-ключа.</p>
+<p>Плагин для интеграции с TMDb API, предоставляющий функции поиска новых фильмов, получения рекомендаций и анализа информации о киноконтенте. Поддерживает фильтрацию по жанрам, получение детальной информации о фильмах и отзывов. Требует настройки API-ключа через переменные окружения. Модуль обеспечивает обработку запросов к фильмовой базе данных с поддержкой фильтрации по жанрам, получения новых релизов и формирования персонализированных рекомендаций через интеграцию с OpenAI GPT. Реализует многоуровневую архитектуру сбора данных: от базового поиска до детального анализа отзывов критиков с последующей генерацией развёрнутых рекомендаций на естественном языке.</p>
+<p>Модуль предоставляет плагин для анализа кода из GitHub-репозиториев с использованием LLM. Плагин извлекает файлы через GitHub API, определяет язык программирования и генерирует аналитические инсайты через OpenAI-совместимый API.</p>
+<p>Ключевые структуры данных
+GitHubCodeAnalysisPlugin — основной класс плагина, инкапсулирующий клиент OpenAI, параметры модели и методы анализа кода.</p>
+<p>Плагин WebshotPlugin предоставляет возможность создания скриншотов веб-сайтов по указанному URL. Использует сторонний сервис image.thum.io для генерации изображений страниц, загружает результат и сохраняет локально в директорию uploads/webshot.</p>
+<p>Плагин <code>AgentToolsPlugin</code> предоставляет набор инструментов для поддержки работы агента в цикле вызова функций, включая управление задачами планирования, интерактивные вопросы пользователю Telegram, доставку артефактов и запуск субагентов для параллельного выполнения подзадач. Реализует механизмы дедупликации доставок, TTL для задач и изоляцию субагентов с ограниченным набором доступных функций.</p>
+<p>Плагин RemindersPlugin предоставляет функциональность управления напоминаниями с интеграцией Telegram. Поддерживает создание, просмотр, удаление напоминаний и автоматическую отправку уведомлений по расписанию. Хранение данных осуществляется в JSON-файле с возможностью указания пользовательского пути.</p>
+<p>Плагин IpLocationPlugin предоставляет геолокационную информацию по IP-адресу через API сервиса IP.FM. Реализует стандартный интерфейс Plugin с методами получения спецификации и выполнения запроса. Поддерживает асинхронные HTTP-вызовы с обработкой ошибок и таймаутов.</p>
+<p>Абстрактный базовый класс Plugin определяет интерфейс для создания плагинов к ChatGPT API. Предоставляет механизмы идентификации плагина, локализации, жизненного цикла и интеграции с Telegram-ботом через команды, обработчики сообщений и inline-запросов.</p>
+<p>Плагин для извлечения аудиодорожки из видео на YouTube. Скачивает аудиопоток в формате MP4, сохраняет как MP3-файл и возвращает путь к файлу. Обрабатывает ошибки загрузки и валидацию входной ссылки.</p>
+<p>Plugin for answering questions via WolframAlpha API. Provides structured tool specification for LLM function calling and handles query execution with result parsing. Requires WOLFRAM_APP_ID environment variable for authentication.</p>
+<p>Модуль реализует плагин управления задачами для Telegram-бота, позволяя пользователям создавать, просматривать и обновлять задачи с приоритетами, дедлайнами и тегами. Данные хранятся в JSON-файле с разделением по пользователям. Плагин интегрируется с фреймворком через базовый класс Plugin и предоставляет три основные операции: create_task, list_tasks и update_task.</p>
+<p>Plugin для автоматизации установки emoji-реакций на сообщения в Telegram. Предоставляет инструмент <code>react_with_emoji</code>, который позволяет выбрать реакцию из предопределённого набора <code>ReactionEmoji</code>. Включает защиту от некорректного ввода: при отсутствии или невалидности эмодзи автоматически подставляется <code>THUMBS_UP</code>.</p>
+<p>Плагин AutoTextToSpeech реализует преобразование текста в речь через OpenAI Speech API. Создаёт временный аудиофайл с результатом синтеза речи и возвращает путь к нему. Поддерживает конфигурацию формата выходного файла через настройки TTS.</p>
+<p>Модуль реализует плагин для отправки анимированного кубика в чат с поддержкой различных эмодзи. Плагин предоставляет функцию <code>send_dice</code>, которая возвращает случайное значение в зависимости от выбранного типа игры.</p>
+<p>Плагин WebResearchPlugin интегрирует возможности веб-исследований LLMGateway в систему плагинов, автоматически выбирая между обычным и глубоким исследованием на основе оценки сложности запроса. Поддерживает конфигурируемые параметры для контроля объёма результатов и длины отчётов.</p>
+<p>Backward-compatible text-to-speech plugin that delegates speech generation to LLMGateway. Provides a single tool for converting text to speech with configurable output format. Returns results as temporary file paths for downstream consumption.</p>
+<p>Adapter plugin that integrates the VkusVill remote MCP server, exposing tools for searching shops, products, recipes, and creating cart links. Maps local tool names to remote MCP endpoints and handles protocol-level communication with the VkusVill backend. Provides asynchronous execution with argument merging, JSON-RPC response handling, and automatic parsing of text-based JSON content.</p>
+<p>Плагин GoogleWebSearchPlugin реализует веб-поиск через Google Custom Search API. При инициализации считывает ключ API и идентификатор поисковой системы из переменных окружения. Поддерживает настраиваемые параметры поиска: количество результатов, язык интерфейса, геолокацию и уровень безопасного поиска.</p>
+<p>Плагин для генерации различных типов диаграмм и визуализаций (диаграмма Ганта, майнд-карта, блок-схема, таймлайн, инфографика, организационная структура, диаграмма процесса) с использованием PlantUML. Создаёт временные файлы с изображениями диаграмм и возвращает их в чат. Поддерживает интерактивный выбор типа диаграммы и сбор описания от пользователя через диалог. Модуль реализует асинхронный генератор диаграмм на основе PlantUML с интеграцией LLM для генерации и исправления кода. Поддерживает автоматическое исправление ошибок компиляции до трёх попыток с помощью нейросетевого ассистента и возвращает результаты в формате, совместимом с системой direct_result для отправки изображений пользователю. Модуль предоставляет набор методов для генерации различных типов визуальных диаграмм и схем на основе PlantUML. Каждый метод создаёт специализированную диаграмму — от блок-схем и инфографик до организационных структур и временных шкал проектов — через единый конвейер: сначала генерируется PlantUML-код, затем он преобразуется в готовое изображение.</p>
+<p>Плагин обратно совместимого поиска изображений, делегирующий запросы к LLMGateway web search. Извлекает первый доступный URL изображения из результатов поиска и возвращает его в формате прямого результата.</p>
+<p>Модуль реализует плагин WeatherPlugin для получения текущей погоды и прогноза на 7 дней через API Open-Meteo. Предоставляет два инструмента: get_current_weather для текущих условий и get_forecast_weather для ежедневного прогноза с настраиваемым количеством дней.</p>
+<p>Модуль реализует плагин SkillsPlugin, который интегрирует локальные Codex-стилизованные навыки (skills) в цикл function-calling бота. Плагин предоставляет инструменты для обнаружения, установки, активации и выполнения навыков с поддержкой скриптов, аудита и управления состоянием через файловую систему и CLI. Конфигурация осуществляется через переменные окружения и файлы состояния в хранилище бота.</p>
+<p>Plugin that integrates with the Hindsight long-term memory service for Telegram users. Exposes three functions—recall, list_memories, and stats—to search, browse, and inspect memory banks associated with the current user. Requires Hindsight to be enabled and configured via the helper object.</p>
+<p>Плагин обратной совместимости для генерации и редактирования изображений через LLMGateway. Предоставляет два инструмента: генерацию изображения по текстовому описанию и редактирование существующего изображения по URL. Результат возвращается в формате, пригодном для прямого отображения в Telegram-боте.</p>
+<p>Модуль реализует плагин для веб-поиска через Jina AI Search API. Плагин интегрируется с системой плагинов через базовый класс <code>Plugin</code> и предоставляет асинхронный метод выполнения поисковых запросов с обработкой ошибок и логированием.</p>
+<p>Плагин для интеграции с Spotify Web API, предоставляющий доступ к данным о текущем воспроизведении, топ-трекам и артистам пользователя, а также к поиску и поиску по идентификатору контента. Требует настройки переменных окружения для OAuth-аутентификации. Модуль включает клиент для нормализации музыкальных данных о треках, исполнителях и альбомах с внутренними служебными идентификаторами.</p>
+<p>Ключевые структуры данных
+time_range_param — Параметр схемы для временного диапазона (short_term, medium_term, long_term)
+limit_param — Параметр схемы для ограничения количества результатов
+type_param — Параметр схемы для типа контента (album, artist, track)
+Dict — стандартный словарь Python, используемый для входных параметров и возвращаемых результатов.</p>
+<p>Модуль реализует плагин веб-поиска <code>DDGWebSearchPlugin</code>, обеспечивающий обратную совместимость с DuckDuckGo за счёт делегирования запросов к LLMGateway. Поддерживает настройку языка поиска через региональный код и ограничение количества результатов. Включает вспомогательную функцию для определения языка из строки региона.</p>
+<p>Модуль реализует плагин интерпретатора кода для выполнения Python-кода с поддержкой анализа данных, визуализации и интеграции с LLM для генерации кода. Предоставляет механизмы безопасного выполнения с тайм-аутом, обработку исключений и работу с различными форматами данных. Модуль включает контекстный менеджер для ограничения времени выполнения, декораторы для обработки синхронных и асинхронных исключений, а также класс плагина с интеграцией OpenAI API для генерации и исполнения кода по текстовому описанию.</p>
+<p>Модуль <code>conversation_analytics.py</code> реализует плагин для сбора, хранения и анализа статистики чат-диалогов. Плагин отслеживает метрики использования токенов, активные часы, темы обсуждений и настроения, а также генерирует персонализированные рекомендации на основе истории взаимодействий пользователя. Модуль анализирует паттерны длины сообщений, извлекает технические термины, определяет предпочтения формата контента и выявляет аномалии в коммуникационных паттернах. Результаты форматируются в читаемый текст с эмодзи-разметкой для удобного восприятия.</p>
+<p>Модуль <code>haiper_image_to_video.py</code> реализует Telegram-бот плагин для генерации видео из изображений через API VseGPT/Haiper. Поддерживает диалоговый выбор стилей, эффектов и пресетов, асинхронную обработку задач с очередью и автоматическую очистку временных файлов. Интегрируется с фреймворком бота через стандартный интерфейс регистрации обработчиков команд, сообщений, callback-запросов и inline-запросов, реализуя механизм повторных попыток при ограничении скорости запросов и отслеживание статуса генерации видео через polling API.</p>
+<p>ChiefPlugin — плагин для создания рецептов и кулинарных рекомендаций через интеграцию с API Edamam и OpenAI. Поддерживает поиск рецептов по ингредиентам и предпочтениям, составление планов питания на несколько дней, кэширование результатов, перевод запросов с русского на английский и валидацию входных данных через JSON Schema. Реализованы механизмы повторных попыток при ошибках парсинга, обработка сетевых ошибок и форматирование результатов в читаемый вид с эмодзи.</p>
+<p>Plugin для работы с документами через интеграцию с AnythingLLM. Поддерживает загрузку текстовых документов в изолированные workspace для каждого чата, а также вопросно-ответное взаимодействие по содержимому документов и управление их жизненным циклом. Конфигурация осуществляется через переменные окружения с префиксом ANYTHINGLLM_, включая настройки векторного поиска, режимов чата и параметров HTTP-транспорта.</p>
+<p>Плагин для суммаризации текста с использованием внешних сервисов. Извлекает содержимое веб-страниц и генерирует краткие сводки через API Яндекса. Поддерживает извлечение текста как из специальных HTML-контейнеров, так и через алгоритм readability в качестве резервного варианта.</p>
+<p>Плагин DDGTranslatePlugin предоставляет возможность перевода текста с одного языка на другой через сервис DuckDuckGo. Реализует стандартный интерфейс Plugin с регистрацией функции translate, принимающей исходный текст и целевой язык.</p>
+<p>Конфигурационный файл содержит пустую структуру данных без определённых секций и параметров. Файл представляет собой JSON-объект с единственным ключом <code>files</code>, содержащим пустой словарь, и ключом <code>total_size</code> со значением ноль. Такая конфигурация обычно служит начальным состоянием или шаблоном для последующего наполнения данными.</p>
+<p>Файл модульных тестов для плагина <code>MCPServerPlugin</code>, реализующего интеграцию с MCP (Model Context Protocol) серверами. Проверяет операции регистрации, удаления, получения списка серверов и вызова функций, а также механизмы авторизации и поддержку транспортов HTTP/SSE и stdio.</p>
+<p><strong>Ключевые сущности:</strong> <code>MCPServerPlugin</code> — тестируемый класс из <code>bot.plugins.mcp_server</code>; <code>mcp_plugin</code> — pytest-фикстура с изолированным экземпляром плагина и временным файлом конфигурации; <code>mock_env_vars</code> — фикстура переменных окружения для авторизации и подключения.</p>
+<p><strong>Основные тестовые сценарии:</strong> формирование спецификаций функций (<code>test_get_spec</code>); регистрация HTTP-сервера с получением инструментов (<code>test_register_server</code>) и блокировка для неадминистраторов (<code>test_register_server_unauthorized</code>); получение списка серверов с метаданными (<code>test_list_servers</code>) и корректное отображение stdio-серверов (<code>test_list_servers_supports_stdio_config</code>); удаление сервера администратором (<code>test_remove_server</code>) и отказ непривилегированным пользователям (<code>test_remove_server_unauthorized</code>); выполнение HTTP-запроса к функции сервера (<code>test_call_mcp_function</code>); фильтрация внутренних параметров при вызове <code>execute</code> (<code>test_execute_filter_internal_params</code>); проверка прав доступа для <code>list_mcp_servers</code> (<code>test_execute_list_servers_respects_allowed_users</code>); обработчик команды <code>/mcp_servers</code> с формированием Markdown-ответа и различным поведением для администраторов (<code>test_handle_mcp_servers_command</code>); комплексная проверка контроля доступа с wildcard <code>*</code> (<code>test_user_access_control</code>).</p>
+<p><strong>Важные настройки:</strong> <code>ADMIN_USER_IDS</code> — ID администраторов через запятую; <code>MCP_SERVERS_ALLOWED_USERS</code> — разрешённые пользователи (поддерживает <code>*</code> для открытого доступа); <code>MCP_REQUEST_TIMEOUT</code> — таймаут HTTP-запросов; <code>DEFAULT_MCP_SERVERS</code> — предустановленные серверы в формате <code>имя:url</code>.</p>
+<p><strong>Особенности инфраструктуры:</strong> пропуск тестов при отсутствии библиотеки <code>mcp</code> через <code>pytest.importorskip</code>; изоляция конфигурации через <code>tempfile.NamedTemporaryFile</code>; имитация асинхронных вызовов <code>httpx.AsyncClient</code> через <code>AsyncMock</code>/<code>MagicMock</code>; патчинг <code>_get_config_path</code> для перенаправления пути конфигурации; проверка локализованных сообщений <code>localized_text</code> с языком <code>ru</code>; декораторы <code>@pytest.mark.asyncio</code> для асинхронных тестов.</p>
+<p>Файл реализует автоматическую настройку пути импорта для корректного разрешения модулей проекта.</p>
+<p><strong>Назначение</strong> — обеспечивает добавление корневой директории проекта в <code>sys.path</code>, позволяя выполнять относительные импорты независимо от текущей рабочей директории или способа запуска скрипта.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Элемент</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ROOT</code></td>
+<td>Корневая директория проекта, вычисляется подъёмом на два уровня вверх от расположения текущего файла (<code>parents[2]</code>)</td>
+</tr>
+<tr>
+<td><code>sys.path</code></td>
+<td>Список путей поиска модулей Python, модифицируется при необходимости</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Логика работы:</strong>
+- Резолвит абсолютный путь к корню проекта через <code>Path.resolve()</code>
+- Проверяет отсутствие пути в <code>sys.path</code> для избежания дублирования
+- Вставляет путь в начало списка (<code>insert(0, ...)</code>) с наивысшим приоритетом разрешения</p>
+<p><strong>Важные нюансы:</strong>
+- Привязка к фиксированной глубине вложенности файла (<code>parents[2]</code>) — при перемещении файла в иерархии требуется корректировка
+- Использование <code>str()</code> для преобразования <code>Path</code> в строку, совместимую с <code>sys.path</code>
+- Условная вставка предотвращает многократное добавление при повторных импортах</p>
+<p>Файл содержит модульные тесты для плагина интеграции с сервисом «ВкусВилл» (<code>VkusVillPlugin</code>).</p>
+<p><strong>Назначение:</strong> проверка корректности экспорта инструментов (tools/specs), маппинга вызовов плагина на удалённые MCP-инструменты, подстановки параметров по умолчанию и парсинга JSON-ответов из MCP-формата.</p>
+<p><strong>Ключевые сущности:</strong>
+- <code>VkusVillPlugin</code> — тестируемый плагин;
+- <code>plugin.get_spec()</code> — метод получения спецификаций доступных инструментов;
+- <code>plugin.execute()</code> — метод выполнения инструментов с трансляцией параметров;
+- <code>plugin._call_remote_tool</code> — мокируемый внутренний метод удалённого вызова MCP;
+- <code>plugin._extract_result()</code> — метод извлечения результата из MCP-ответа.</p>
+<p><strong>Проверяемые сценарии:</strong>
+- Экспорт доменных инструментов: <code>shops</code>, <code>products_search</code>, <code>product_details</code>, <code>product_analogs</code>, <code>products_discount</code>, <code>cart_link_create</code>, <code>recipes</code> — обязательное поле <code>q</code> для <code>products_search</code>;
+- Маппинг <code>products_search</code> на MCP-инструмент <code>vkusvill_products_search</code> с параметрами <code>q</code>, <code>page: 1</code>, <code>sort: popularity</code>, <code>vvonly: 1</code>;
+- Маппинг <code>recipes</code> на <code>vkusvill_recipes</code> с набором дефолтных фильтров: <code>sort: popularity</code>, <code>page: 1</code>, нулевые идентификаторы фильтров (<code>id_feature_filter</code>, <code>id_cooking_time_filter</code>, <code>id_cooking_method_filter</code>, <code>id_complexity_filter</code>, <code>id_category_filter</code>) и пустой список <code>id_exclude_allergens_filter</code>;
+- Парсинг JSON из MCP-ответа формата <code>{"content": [{"type": "text", "text": "..."}]}</code>.</p>
+<p><strong>Зависимости:</strong> <code>pytest</code>, <code>pytest-asyncio</code>, <code>unittest.mock.AsyncMock</code>.</p>
+<p>Модуль тестов для подсистемы интернационализации (<code>i18n</code>) бота. Содержит набор юнит-тестов, проверяющих корректность нормализации языковых кодов, целостность переводов, сохранение форматных плейсхолдеров и работу механизма текущего языка.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>PLACEHOLDER_PATTERN</code> — скомпилированное регулярное выражение для извлечения строковых плейсхолдеров вида <code>{...}</code> из переводов</li>
+<li><code>normalize_language</code> — функция приведения языковых кодов и алиасов к каноническому виду с откатом к <code>en</code></li>
+<li><code>localized_text</code> — функция получения локализованной строки по ключу и языку</li>
+<li><code>configured_language</code> — функция разрешения языковой настройки пользователя с сохранением режима <code>auto</code></li>
+<li><code>set_current_language</code> / <code>reset_current_language</code> — контекстный менеджер текущего языка через токен</li>
+<li><code>supported_languages</code> / <code>translations</code> — данные о доступных языках и словарь переводов</li>
+</ul>
+<p><strong>Проверяемые сценарии:</strong></p>
+<ul>
+<li>Нормализация: <code>pt_BR</code> → <code>pt-br</code>, <code>de-DE</code> → <code>de</code>, <code>zh-Hans</code> → <code>zh-cn</code>; неизвестные коды откатываются к <code>en</code></li>
+<li>Консистентность: все языки содержат идентичный набор ключей переводов</li>
+<li>Плейсхолдеры: форматные маркеры <code>{...}</code> в нерусских переводах совпадают с английским оригиналом</li>
+<li>Локализация новых строк: прямые проверки конкретных переводов для <code>ru</code> и <code>es</code></li>
+<li>Режим <code>auto</code>: пустые значения и <code>None</code> интерпретируются как <code>auto</code>; при активном <code>auto</code> используется язык текущего контекста, установленного через <code>set_current_language</code></li>
+</ul>
+<p>Файл содержит набор юнит-тестов для проверки механизма обработки вызовов функций (tool calls) бота, в частности — корректности передачи идентификаторов чата и контекста запроса.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>FakeResponse</code>, <code>FakeChoice</code>, <code>FakeMessage</code>, <code>FakeToolCall</code> — моки OpenAI-совместимого ответа API</li>
+<li><code>FakeHelper</code> — заглушка вспомогательного объекта бота с минимальным окружением (БД, клиент, конфигурация)</li>
+<li><code>RecordingPluginManager</code> — мок-менеджер плагинов, фиксирующий все вызовы функций</li>
+<li><code>ValidatingAnalyticsPluginManager</code> — мок-менеджер с валидацией аргументов через <code>validate_function_args</code> и делегированием реальному плагину <code>ConversationAnalyticsPlugin</code></li>
+</ul>
+<p><strong>Тестовые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_tool_injected_chat_id_is_plugin_string</code></td>
+<td>При наличии <code>request_context</code> поля <code>chat_id</code>, <code>user_id</code>, <code>message_id</code> передаются как целые числа, контекст сохраняется</td>
+</tr>
+<tr>
+<td><code>test_legacy_tool_injected_chat_id_is_plugin_string</code></td>
+<td>В legacy-режиме (без <code>request_context</code>) <code>chat_id</code> всё равно передаётся как <code>int</code></td>
+</tr>
+<tr>
+<td><code>test_conversation_analytics_tool_call_uses_string_chat_id</code></td>
+<td>Плагин <code>conversation_analytics</code> корректно принимает валидированные аргументы, <code>chat_id</code> остаётся числом после валидации</td>
+</tr>
+<tr>
+<td><code>test_model_visible_required_args_exclude_internal_chat_id</code></td>
+<td>В спецификации функции для модели поля <code>chat_id</code>, <code>user_id</code>, <code>message_id</code> не присутствуют в <code>required</code>, скрывая внутренние параметры</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Особенности реализации:</strong></p>
+<ul>
+<li>Динамическая подмена модуля <code>markdown2</code> через <code>types.ModuleType</code> и <code>sys.modules</code> для изоляции тестов от внешних зависимостей; оригинальное состояние <code>sys.modules</code> восстанавливается после импорта тестируемых модулей</li>
+<li>Импорты <code>openai_tool_handler</code>, <code>plugin_manager</code>, <code>request_context</code>, <code>validation</code> выполняются после установки фиктивного <code>markdown2</code> (помечены <code>noqa: E402</code>)</li>
+<li><code>ConversationAnalyticsPlugin</code> инициализируется с временным <code>storage_root</code> через <code>tmp_path</code> (фикстура pytest)</li>
+</ul>
+<p>Модуль тестов для системы валидации аргументов функций и интеграции с плагинами бота.</p>
+<p><strong>Назначение:</strong> Проверяет корректность работы валидатора <code>validate_function_args</code>, основанного на JSON Schema, а также взаимодействие валидации с менеджером плагинов <code>PluginManager</code>.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>validate_function_args</code> — валидатор аргументов функций, проверяющий соответствие переданных значений JSON Schema спецификации</li>
+<li><code>PluginManager</code> — менеджер плагинов, загружающий и исполняющий плагины из указанного каталога</li>
+<li><code>_schema(properties, required)</code> — вспомогательная функция для генерации тестовых JSON Schema спецификаций</li>
+<li><code>_write_plugin(path)</code> — фабрика тестовых плагинов, создающая плагин-класс <code>DemoPlugin</code> с заданной спецификацией параметров</li>
+</ul>
+<p><strong>Тестовые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемая ситуация</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_jsonschema_rejects_bool_for_integer</code></td>
+<td>Отклонение булева значения <code>True</code> при ожидании <code>integer</code></td>
+</tr>
+<tr>
+<td><code>test_jsonschema_rejects_bool_for_number</code></td>
+<td>Отклонение булева значения <code>True</code> при ожидании <code>number</code></td>
+</tr>
+<tr>
+<td><code>test_jsonschema_rejects_invalid_enum</code></td>
+<td>Отклонение строки, отсутствующей в допустимом перечислении <code>enum</code></td>
+</tr>
+<tr>
+<td><code>test_jsonschema_reports_missing_required</code></td>
+<td>Обнаружение отсутствия обязательного параметра из списка <code>required</code></td>
+</tr>
+<tr>
+<td><code>test_jsonschema_rejects_invalid_nested_object_property</code></td>
+<td>Валидация вложенных свойств объекта с точечной нотацией (<code>filters.limit</code>)</td>
+</tr>
+<tr>
+<td><code>test_jsonschema_rejects_invalid_array_item_type</code></td>
+<td>Валидация типов элементов массива с индексной нотацией (<code>tags[1]</code>)</td>
+</tr>
+<tr>
+<td><code>test_plugin_arg_validation</code></td>
+<td>Сквозной сценарий: плагин отклоняет вызов с отсутствующим обязательным аргументом через <code>PluginManager.call_function</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные особенности реализации:</strong></p>
+<ul>
+<li>Валидатор строго различает булевы и числовые типы (Python-специфичное поведение, где <code>bool</code> — подкласс <code>int</code>)</li>
+<li>Пути к ошибкам формируются в формате <code>parent.child</code> для объектов и <code>array[index]</code> для массивов</li>
+<li><code>PluginManager</code> принимает конфигурацию с секцией <code>plugins</code> и параметр <code>plugins_directory</code> для указания пути загрузки плагинов</li>
+<li>Тестовый плагин <code>DemoPlugin</code> наследуется от базового класса <code>Plugin</code> и реализует методы <code>get_source_name</code>, <code>get_spec</code> и <code>execute</code></li>
+</ul>
+<p>Файл содержит модульные тесты для класса <code>RequestContext</code>, проверяющие корректность инициализации и неизменяемость объекта контекста запроса.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>RequestContext</code> — датакласс, инкапсулирующий параметры входящего запроса: идентификаторы чата, пользователя и сообщения, а также служебные идентификаторы сессии и запроса.</li>
+<li><code>plugin_chat_id</code> — производное свойство, возвращающее <code>chat_id</code> в виде целого числа для совместимости с плагинной системой.</li>
+</ul>
+<p><strong>Проверяемые сценарии:</strong></p>
+<ul>
+<li>Проверка доступности всех полей контекста и типа <code>plugin_chat_id</code> (<code>int</code>).</li>
+<li>Проверка иммутабельности экземпляра: попытка изменения поля <code>chat_id</code> должна вызывать исключение <code>FrozenInstanceError</code>.</li>
+</ul>
+<p>Файл <code>tests/test_telegram_bot.py</code> — модульные тесты валидации конфигурации и инициализации Telegram-бота.</p>
+<p><strong>Назначение:</strong> Проверка формирования параметров подключения к Telegram Bot API, обработки переменных окружения, дефолтных значений и раннего отклонения невалидных конфигураций до запуска polling-цикла.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li>Фейковые модули-заглушки — динамическая подмена внешних зависимостей (<code>tiktoken</code>, <code>pydub</code>, <code>markdown2</code>, <code>tenacity</code>) через манипуляцию <code>sys.modules</code> до импорта тестируемого кода</li>
+<li><code>FakeApplication</code> / <code>FakeApplicationBuilder</code> — имитация <code>python-telegram-bot</code> Application API с коллекторами вызовов (<code>local_mode_calls</code>, <code>base_url_calls</code>)</li>
+<li><code>CapturingTelegramBot</code> / <code>FakeOpenAIHelper</code> — шпионские заглушки для фиксации переданной конфигурации</li>
+<li>Вспомогательные фабрики — <code>_make_bot</code>, <code>_run_bot_with_fake_builder</code>, <code>_run_main_with_fake_dependencies</code>, <code>_set_required_env</code></li>
+</ul>
+<p><strong>Покрываемые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_default_telegram_builder_uses_local_bot_api</code></td>
+<td>Локальный Bot API (<code>localhost:8081</code>) и <code>concurrent_updates=True</code> по умолчанию</td>
+</tr>
+<tr>
+<td><code>test_main_defaults_telegram_local_bot_api_config</code></td>
+<td><code>TELEGRAM_LOCAL_MODE</code> и <code>TELEGRAM_BASE_URL</code> выставляются в <code>main()</code> при отсутствии переменных окружения</td>
+</tr>
+<tr>
+<td><code>test_main_defaults_bot_language_to_auto</code></td>
+<td><code>BOT_LANGUAGE</code> по умолчанию <code>auto</code></td>
+</tr>
+<tr>
+<td><code>test_main_normalizes_explicit_bot_language</code></td>
+<td>Нормализация языкового тега к нижнему регистру с дефисом (<code>pt_BR</code> → <code>pt-br</code>)</td>
+</tr>
+<tr>
+<td><code>test_main_parses_telegram_local_mode_and_custom_base_url</code></td>
+<td>Чтение явно заданных переменных окружения</td>
+</tr>
+<tr>
+<td><code>test_telegram_builder_uses_custom_local_base_url</code></td>
+<td>Проброс кастомного <code>base_url</code> из конфигурации в билдер</td>
+</tr>
+<tr>
+<td><code>test_telegram_builder_skips_base_url_when_local_mode_disabled</code></td>
+<td>Отсутствие вызова <code>base_url()</code> при выключенном локальном режиме</td>
+</tr>
+<tr>
+<td><code>test_local_mode_false_ignores_custom_base_url</code></td>
+<td>При <code>local_mode=False</code> кастомный <code>base_url</code> игнорируется; polling запускается</td>
+</tr>
+<tr>
+<td><code>test_invalid_telegram_base_url_rejected_before_polling</code></td>
+<td>Невалидный <code>TELEGRAM_BASE_URL</code> → <code>ValueError</code> до создания экземпляра бота</td>
+</tr>
+<tr>
+<td><code>test_invalid_telegram_local_mode_rejected_before_polling</code></td>
+<td>Недопустимое значение <code>TELEGRAM_LOCAL_MODE</code> → <code>ValueError</code> до создания экземпляра бота</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Валидация переменных окружения:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Переменная</th>
+<th>Правило</th>
+<th>Ошибка</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TELEGRAM_LOCAL_MODE</code></td>
+<td>Валидное булево (<code>true</code>/<code>false</code>)</td>
+<td><code>ValueError</code> с именем переменной</td>
+</tr>
+<tr>
+<td><code>TELEGRAM_BASE_URL</code></td>
+<td>Валидный URL; проверяется только при <code>local_mode=true</code></td>
+<td><code>ValueError</code> с именем переменной</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Особенности реализации:</strong> Модули-заглушки вставляются в <code>sys.modules</code> до импорта и удаляются после (<code>_INSERTED_MODULES</code> + финальная очистка); <code>monkeypatch</code> для изоляции окружения; <code># noqa: E402</code> для импортов не в начале файла; <code>pytest.raises(match=...)</code> для проверки сообщений об ошибках; списки-аккумуляторы фиксируют порядок операций (валидация → создание → polling).</p>
+<p>Модульные тесты для плагина <code>SkillsPlugin</code> системы бота, валидирующие управление навыками: сканирование директорий, парсинг frontmatter из <code>SKILL.md</code>, активацию/деактивацию, отслеживание прогресса, выполнение скриптов и пользовательские настройки.</p>
+<p><strong>Ключевые сущности:</strong> <code>SkillsPlugin</code> — тестируемый плагин; <code>PluginManager</code> — проверка регистрации спецификаций; <code>FakeSettingsDB</code> — фейковая БД настроек для чёрного списка; <code>_make_plugin</code> — фабрика инициализации с переменными окружения; <code>_write_skill</code> / <code>_write_skill_with_entrypoints</code> — генераторы тестовых навыков.</p>
+<p><strong>Тестовые сценарии:</strong> регистрация 11 функций в <code>PluginManager</code>; парсинг YAML frontmatter с двоеточиями; логирование доступных навыков; полный жизненный цикл (список → детали → активация → прогресс → статус); динамическое обнаружение навыков без перезапуска; скрытие и блокировка навыков из пользовательского чёрного списка; учёт флага <code>allow_scripts</code> и проверка прав администратора; рефлексия навыков с накоплением предложений и применением после порога (threshold=3); установка с проверками <code>SKILLS_ALLOW_INSTALLS</code> и <code>SKILLS_INSTALL_ADMIN_USER_IDS</code>; восстановление состояния между экземплярами плагина; деактивация с очисткой состояния; принудительная очистка по <code>scope</code> и <code>skill_id</code> (идемпотентна); таймаут выполнения скриптов (<code>script_timeout</code>); компактный список активных навыков без полного <code>context</code>; аудит событий в <code>skills_audit.jsonl</code>; передача переменных окружения <code>SKILL_WORKDIR</code>, <code>SKILL_ID</code>, <code>SKILL_SCOPE</code> в скрипты; явный список <code>entrypoints</code> для фильтрации скриптов и эвристический fallback при отсутствии; валидация entrypoints (пустой список, скалярное значение, path traversal, отсутствие файла, вложенные пути).</p>
+<p><strong>Контролируемые переменные окружения:</strong> <code>SKILLS_DIR</code> — директория навыков; <code>SKILLS_ALLOW_SCRIPTS</code> — глобальное разрешение скриптов; <code>SKILLS_SCRIPT_ADMIN_USER_IDS</code> — администраторы для запуска скриптов; <code>SKILLS_ALLOW_INSTALLS</code> / <code>SKILLS_INSTALL_ADMIN_USER_IDS</code> — разрешение и администраторы для установки; <code>PLUGIN_STORAGE_ROOT</code> — корень хранилища плагина.</p>
+<p><strong>Структура навыка:</strong> <code>&lt;skill_name&gt;/SKILL.md</code> (YAML frontmatter: <code>name</code>, <code>description</code>, <code>allow_scripts</code>, <code>entrypoints</code> + markdown body) и <code>scripts/</code> с исполняемыми файлами.</p>
+<p><strong>Параметры сканирования скриптов:</strong> включает <code>.py</code>, <code>.sh</code>, <code>.js</code> и вложенные пути; исключает <code>__init__.py</code>, <code>__pycache__/*</code>, <code>.hidden*</code>, <code>.pyc</code>, <code>.jar</code>, <code>.xsd</code>; кэш инвалидируется по изменению mtime директории или добавлению файлов.</p>
+<p><strong>Особенности безопасности скриптов:</strong> проверка пути по allow-list (блокировка <code>../echo.py</code>); поддерживаемые runtime: <code>python</code>, <code>node</code>; вложенные скрипты допустимы (<code>tools/nested.py</code>); аргументы через <code>args_json</code> как JSON-массив; ошибка при отсутствии интерпретатора; административные ограничения по <code>admin_ids</code> (<code>"42"</code>, <code>"*"</code> для всех).</p>
+<p>Модуль <code>test_database.py</code> — модульные тесты для singleton-класса <code>Database</code>, реализующего слой доступа к данным SQLite-бота. Проверяет работу с пользовательскими сессиями, миграцию legacy-схемы <code>conversation_context</code> в сессионную модель, мультимодальный контент, фоновые задачи hindsight и конкурентный доступ.</p>
+<p><strong>Ключевые сущности:</strong> <code>Database</code> (singleton, управляет сессиями, настройками, изображениями, задачами hindsight), стабы <code>DummyOpenAI</code> / <code>DummyHindsightOpenAI</code>, фикстура <code>db</code> (временная БД через <code>tmp_path</code>, сброс singleton через <code>Database._instance = None</code>).</p>
+<p><strong>Проверяемые сценарии:</strong> подсчёт сообщений и enforce <code>max_sessions</code>, именование сессий из мультимодального контента, автоматическая миграция legacy-таблицы с созданием индекса <code>idx_conversation_context_session</code>, жизненный цикл hindsight-задач (claim/done/retry/fail) с <code>finalize_jobs</code> для удаления устаревших сессий, включение <code>PRAGMA foreign_keys = 1</code>, graceful-обработка несуществующих сессий (<code>session_id="missing-session"</code>), smoke-тест многопоточной записи настроек, автосоздание <code>user_settings</code> при <code>save_image</code>, каскадное удаление данных пользователя через <code>delete_user_data</code>.</p>
+<p><strong>Важные детали реализации:</strong> <code>monkeypatch.setenv("DB_PATH", ...)</code> для изоляции от продакшн-пути, <code>retry_delay_seconds=0</code> для ускорения ретраев, контракт <code>DummyOpenAI.config["model"]</code> и <code>is_hindsight_enabled()</code> для AI-хелпера. Метод <code>delete_user_data(42)</code> проверяется через отсутствие настроек (<code>get_user_settings</code> → <code>None</code>) и пустой список изображений (<code>get_user_images</code> → <code>[]</code>); идентификатор <code>42</code> используется как тестовый ID пользователя.</p>
+<p>Файл содержит pytest-тесты для интеграции с сервисом долговременной памяти <strong>Hindsight</strong> в чат-боте на базе LLM.</p>
+<p><strong>Назначение:</strong> верификация клиента Hindsight, его REST API-взаимодействия, а также интеграции памяти в цикл обработки сообщений — внедрение воспоминаний в промпт LLM, дедупликация вызовов в рамках сессии, финализация сессий с асинхронным извлечением и сохранением памяти.</p>
+<p><strong>Ключевые сущности:</strong> <code>DummyDB</code> (отслеживание контекста и задач финализации), <code>DummyPluginManager</code>, <code>FakeHindsight</code> (захват вызовов <code>recall</code>/<code>retain_memories</code>), <code>SlowFinalizeOpenAI</code> (контролируемая задержка финализации), <code>FakeCompletions</code> (фиксация параметров вызова), <code>make_helper()</code> (фабрика <code>OpenAIHelper</code> с мок-зависимостями), <code>HindsightMemoryPlugin</code>, <code>ChatGPTTelegramBot</code>, <code>HINDSIGHT_EXTRACTOR_PROMPT</code>.</p>
+<p><strong>Проверяемые сценарии:</strong> корректность URL-путей (<code>/hindsight/v1/default/banks/{bank_id}/memories/recall</code>, <code>/memories</code>) и авторизации Bearer с полем <code>async=true</code>; дедупликация <code>recall</code> в рамках сессии; фильтрация чувствительного контента (<code>context: "secret"</code>); отключение при отсутствии токена; промпт-ограничения на извлечение предпочтений из слабых сигналов и транзиентных задач; финализация через LLM (<code>response_format: json_object</code>, <code>max_tokens: 4000</code>) с сохранением по <code>document_id</code> вида <code>telegram-{user_id}-{session_id}-final</code> и приоритетом очереди перед удалением сессии; recall из user bank с параметрами <code>hindsight_recall_max_tokens</code> и <code>hindsight_recall_budget</code>; компактное bullet-представление результатов с метаданными <code>type</code> и <code>context</code>.</p>
+<p><strong>Конфигурация (make_helper):</strong> <code>hindsight_enabled</code>, <code>hindsight_auto_save</code>, <code>hindsight_api_token</code> — основные переключатели интеграции; <code>hindsight_recall_max_tokens</code>, <code>hindsight_recall_budget</code> — ограничения recall; <code>max_history_size</code>, <code>max_conversation_age_minutes</code> — ограничения контекста; модели <code>model</code>/<code>big_model_to_use</code>/<code>light_model</code>; параметры функций, мультимодальности и прочие стандартные настройки <code>OpenAIHelper</code>.</p>
+<p><strong>Детали реализации:</strong> идентификация банка <code>telegram-{user_id}</code> через <code>get_hindsight_bank_id()</code>; типы памяти <code>world</code>, <code>experience</code>, <code>profile</code>, <code>session preference</code>; метаданные с <code>mode: "session_close"</code>; поддержка внешнего snapshot сообщений в <code>finalize_hindsight_session_memory</code>.</p>
+<p><strong>Незавершённый тест:</strong> <code>test_hindsight_memory_parser</code> — объявлен без тела.</p>
+<p>Файл <code>test_sequencing.py</code> — набор асинхронных юнит-тестов для проверки механизмов сериализации и реентерабельности обработки сообщений в Telegram-боте.</p>
+<p><strong>Назначение:</strong> проверяет, что сообщения в рамках одного чата/топика обрабатываются строго последовательно (без параллельного наложения вызовов <code>get_conversation_context</code>/<code>save_conversation_context</code>), тогда как сообщения из разных чатов могут обрабатываться параллельно. Также тестирует корректное поведение при реентерабельном вызове <code>process_buffer</code> для уже активного буфера.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_FakeEncoding</code>, <code>_tiktoken</code>, <code>_pydub</code>, <code>_markdown2</code>, <code>_tenacity</code></td>
+<td>Фейковые модули, устанавливаемые в <code>sys.modules</code> перед импортом тестируемого кода для устранения внешних зависимостей</td>
+</tr>
+<tr>
+<td><code>SequencingDB</code></td>
+<td>Заглушка БД с отслеживанием вложенных/параллельных вызовов (<code>active_by_chat</code>, <code>overlaps</code>, <code>load_calls</code>, <code>save_calls</code>)</td>
+</tr>
+<tr>
+<td><code>DelayedOpenAI</code></td>
+<td>Заглушка клиента OpenAI с искусственной задержкой <code>0.05</code> сек и счётчиками параллельных вызовов</td>
+</tr>
+<tr>
+<td><code>FakeMessage</code>, <code>FakeUpdate</code></td>
+<td>Заглушки объектов <code>python-telegram-bot</code></td>
+</tr>
+<tr>
+<td><code>FakePluginManager</code></td>
+<td>Заглушка менеджера плагинов</td>
+</tr>
+<tr>
+<td><code>_make_bot()</code></td>
+<td>Фабрика, создающая неинициализированный экземпляр <code>ChatGPTTelegramBot</code> с минимальным набором атрибутов для тестирования</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные настройки тестового бота (в <code>bot.config</code>):</strong></p>
+<ul>
+<li><code>allowed_user_ids: "*"</code> — открытый доступ</li>
+<li><code>stream: False</code> — отключённый стриминг ответов</li>
+<li><code>enable_image_generation</code>, <code>enable_quoting</code>, <code>enable_vision</code> — отключённые опциональные функции</li>
+</ul>
+<p><strong>Ключевые тесты:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_reentrant_process_buffer_does_not_clear_active_processing_flag</code></td>
+<td>При реентерабельном вызове <code>process_buffer</code> для чата с <code>processing=True</code> флаг обработки не сбрасывается</td>
+</tr>
+<tr>
+<td><code>test_same_conversation_key_updates_are_serialized</code></td>
+<td>Два сообщения в один чат (один <code>chat_id</code>, один <code>user_id</code>) не вызывают перекрытия (<code>db.overlaps == []</code>) — сериализованы</td>
+</tr>
+<tr>
+<td><code>test_different_conversation_keys_can_process_independently</code></td>
+<td>Сообщения в разные чаты обрабатываются параллельно (<code>max_parallel_calls &gt;= 2</code>) без перекрытий</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Технические детали:</strong></p>
+<ul>
+<li>Используется <code>pytest-asyncio</code> для асинхронных тестов</li>
+<li><code>monkeypatch</code> подменяет <code>telegram_bot.wrap_with_indicator</code> на <code>_run_without_indicator</code> для исключения индикаторов действий Telegram</li>
+<li>Фейковые модули устанавливаются в <code>sys.modules</code> до импорта <code>bot.telegram_bot</code>, затем удаляются через <code>_INSERTED_MODULES</code></li>
+</ul>
+<p>Файл содержит набор unit-тестов для валидации и верификации конфигурации чат-режимов бота.</p>
+<p><strong>Назначение:</strong> проверка корректности работы <code>ChatModesRegistry</code> — загрузки YAML-конфигурации, валидации инструментов, поиска режимов по ключу и по содержимому системного промпта.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ChatModesRegistry</code></td>
+<td>Целевой класс реестра чат-режимов, загружающий конфигурацию из YAML</td>
+</tr>
+<tr>
+<td><code>DummyPluginManager</code></td>
+<td>Тестовый заглушка-менеджер плагинов; проверяет наличие инструмента по имени в множестве <code>available</code></td>
+</tr>
+<tr>
+<td><code>test_chat_modes_validate_tools_logs_error</code></td>
+<td>Тест валидации: при отсутствующем инструменте <code>missing_tool</code> должно логироваться сообщение уровня <code>ERROR</code></td>
+</tr>
+<tr>
+<td><code>test_skills_agent_mode_is_registered</code></td>
+<td>Тест структуры режима <code>skills_agent</code>: проверка списка инструментов, флага <code>defer_direct_results</code>, наличия обязательных подстрок в <code>prompt_start</code> и отсутствия устаревших подстрок</td>
+</tr>
+<tr>
+<td><code>test_skills_agent_mode_is_detected_by_prompt_markers</code></td>
+<td>Тест обратной совместимости: режим должен определяться по маркерам в системном промпте даже без явного <code>mode_key</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные аспекты тестируемой конфигурации (<code>chat_modes.yml</code>):</strong></p>
+<ul>
+<li>Режим <code>skills_agent</code> использует специальный инструмент <code>"All"</code> вместо перечисления конкретных имён</li>
+<li>Флаг <code>defer_direct_results: True</code> — отложенная доставка результатов пользователю</li>
+<li><code>prompt_start</code> содержит инструкции по работе с skills-инструментами (<code>skills.list_skills</code>, <code>skills.run_skill_script</code>, <code>skills.record_skill_reflection</code>, <code>skills.find_installable_skills</code>, <code>skills.install_skill</code>), терминалом (<code>terminal.terminal</code>) и агентскими инструментами (<code>agent_tools.deliver_to_user</code>, <code>agent_tools.run_subagents</code>)</li>
+<li>Явно запрещены: <code>skills.publish_result</code>, <code>skills.publish_artifact</code> — устаревшие инструменты</li>
+<li>Промпт содержит обязательные инструкции на русском языке: активация нескольких skills, запрет пустых ответов, немедленный вызов tools, запрет служебных reasoning-тегов, запрет сырых результатов, запрет выдумывания абсолютных путей, запрет повторных вызовов</li>
+</ul>
+<p>Файл содержит модульные тесты для утилит обработки прямых результатов (<code>handle_direct_result</code>, <code>is_direct_result</code>) и плагина реакций (<code>ReactionPlugin</code>) Telegram-бота.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>handle_direct_result(config, update, response)</code> — асинхронная функция отправки результата в чат; поддерживает виды: <code>text</code>, <code>reaction</code>, <code>file</code>, <code>gif</code>, <code>final</code></li>
+<li><code>is_direct_result(payload)</code> — проверяет, является ли payload структурированным результатом с обязательным полем <code>kind</code></li>
+<li><code>ReactionPlugin</code> — плагин для установки реакций на сообщения</li>
+</ul>
+<p><strong>Тестовые фикстуры и моки:</strong></p>
+<ul>
+<li><code>FakeUpdate</code>, <code>FakeMessage</code>, <code>FakeReactionTarget</code> — имитация объектов <code>python-telegram-bot</code> с <code>AsyncMock</code> для методов отправки</li>
+<li><code>_config()</code> — возвращает <code>{"enable_quoting": False}</code></li>
+<li><code>_reaction_response(value)</code> — шаблон ответа с реакцией</li>
+<li>Динамическая подмена модуля <code>markdown2</code> через <code>types.ModuleType</code>, чтобы избежать внешней зависимости</li>
+</ul>
+<p><strong>Покрываемые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Вид результата</th>
+<th>Поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reaction</code> без <code>format</code></td>
+<td>Устанавливает реакцию на <code>reply_to_message</code>; при отсутствии цели — fallback через <code>reply_text</code></td>
+</tr>
+<tr>
+<td><code>text</code> + <code>markdown</code></td>
+<td>Отправка с <code>parse_mode=constants.ParseMode.MARKDOWN</code></td>
+</tr>
+<tr>
+<td><code>final</code> + <code>mixed</code></td>
+<td>Отправка текста + несколько файлов через <code>reply_document</code>; длинный текст (&gt;4096) отправляется как <code>.html</code>-файл</td>
+</tr>
+<tr>
+<td><code>file</code> + <code>path</code></td>
+<td>Отправка документа с опциональным <code>caption</code></td>
+</tr>
+<tr>
+<td><code>gif</code> + <code>path</code>/<code>url</code></td>
+<td>Отправка через <code>reply_animation</code>, а не <code>reply_document</code></td>
+</tr>
+<tr>
+<td>Отсутствие <code>kind</code></td>
+<td>Пропуск обработки, пустой список отправленных сообщений</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные проверки:</strong></p>
+<ul>
+<li>Корректность структуры <code>direct_result</code> (наличие <code>kind</code>, тип <code>dict</code>)</li>
+<li>Поддержка строковых JSON-payload (десериализация в <code>is_direct_result</code>)</li>
+<li>Порядок возвращаемых <code>sent_messages</code> соответствует порядку отправки</li>
+<li>Передача <code>message_thread_id</code>/<code>reply_to_message_id</code> для приватных чатов</li>
+</ul>
+<p>Модульные тесты для асинхронных HTTP-плагинов бота (<code>WeatherPlugin</code>, <code>CryptoPlugin</code>, <code>IpLocationPlugin</code>). Проверяют корректность сетевых вызовов, обработку ошибок и неблокирующее поведение при параллельном выполнении.</p>
+<p>Ключевые сущности: <code>FakeResponse</code> — имитация HTTP-ответа с настраиваемым JSON и ошибками десериализации; <code>_fake_async_client</code> — фабрика фейкового <code>httpx.AsyncClient</code> с контролируемыми задержками, сетевыми и JSON-ошибками; <code>_patch_get</code> — подмена клиента через <code>monkeypatch</code>; <code>_network_error</code> — генератор <code>TimeoutException</code>; <code>_assert_controlled_error</code> — проверка структуры контролируемых ошибок (ключ <code>error</code>, отсутствие <code>Error</code>).</p>
+<p>Тестовые сценарии: <code>SUCCESS_CASES</code> — параметризованные успешные вызовы трёх плагинов с проверкой маппинга API-ответов; <code>ERROR_CASES</code> — сетевые и парсинговые ошибки с единообразной обработкой; <code>NON_BLOCKING_CASES</code> — проверка конкурентности: задержка HTTP 0.05с не блокирует параллельную <code>asyncio</code> задачу (<code>sleep 0.01</code>). Дополнительный тест параллельного выполнения отслеживает порядок событий (<code>events</code>: <code>"parallel"</code> → <code>"plugin_done"</code>) и единичность вызова (<code>len(calls) == 1</code>) через <code>await task</code>.</p>
+<p>Настройки: <code>timeout=10.0</code> в конструкторе фейка; <code>delay=0.05</code> / <code>asyncio.sleep(0.01)</code> для проверки таймингов; <code>pytest.mark.asyncio</code> и <code>pytest.mark.parametrize</code> по модулям, классам и методам плагинов.</p>
+<p>Набор модульных тестов для плагина <code>AgentToolsPlugin</code>, реализующего инструменты агента — планирование задач, взаимодействие с пользователем Telegram, запуск под-агентов и доставку результатов.</p>
+<p><strong>Ключевые сущности:</strong> <code>AgentToolsPlugin</code> (целевой плагин), <code>PluginManager</code> (регистрация спецификаций и обработчиков), <code>FakeBot</code> (имитация Telegram-бота с сообщениями и редактированием разметки), <code>FakeCompletions</code> / <code>SlowFakeCompletions</code> (имитация LLM API с поддержкой tool calls), <code>FakePluginManager</code> / <code>ParallelToolPluginManager</code> (имитация менеджера плагинов с возможностью параллельного вызова), <code>FakeLLMHelper</code> (агрегатор зависимостей для тестов), <code>FakeMessage</code> (имитация входящего сообщения Telegram), <code>RequestContext</code> (контекст запроса).</p>
+<p><strong>Назначение:</strong> Проверка корректности работы методов управления планом задач (<code>manage_plan_tasks</code>, <code>clear_terminal_plan_tasks</code>, <code>get_plan_tasks</code>), оркестрации субагентов (<code>run_subagents</code>), взаимодействия с пользователем (<code>ask_telegram_user</code>, <code>cancel_pending_question</code>) и доставки результатов (<code>deliver_to_user</code>).</p>
+<p><strong>Существенные настройки и сценарии:</strong></p>
+<ul>
+<li><strong>Инициализация:</strong> <code>plugin.initialize(storage_root=str(tmp_path))</code> — создание файлового хранилища во временной директории.</li>
+<li><strong>Регистрация спецификаций:</strong> валидация функций <code>agent_tools.manage_plan_tasks</code>, <code>agent_tools.ask_telegram_user</code>, <code>agent_tools.cancel_pending_question</code>, <code>agent_tools.run_subagents</code>, <code>agent_tools.deliver_to_user</code> в <code>PluginManager</code> с проверкой обязательных параметров (<code>question</code>, <code>options</code>) и ограничений (<code>minItems</code> для массива опций).</li>
+<li><strong>Нормализация опций:</strong> сохранение полного текста длинных текстовых опций без обрезания.</li>
+<li><strong>Управление планом задач:</strong> добавление с отслеживанием прогресса (<code>total</code>/<code>closed</code>/<code>open</code>), обновление статусов, очистка завершённых задач (<code>completed</code>) с сохранением <code>in_progress</code>, защита от дублирования delivery-задач и нарушения порядка статусов.</li>
+<li><strong>Параллелизм:</strong> отслеживание одновременно выполняющихся запросов через <code>running</code>/<code>overlapped</code> в <code>ParallelToolPluginManager</code>.</li>
+<li><strong>Запуск субагентов:</strong> поддержка ролей (<code>reviewer</code>, <code>tester</code>, <code>worker</code>), формирование списка инструментов с включением <code>skills.list_skills</code> и исключением рекурсивных (<code>agent_tools.deliver_to_user</code>, <code>agent_tools.run_subagents</code>), передача <code>shared_context</code>, переопределение параметров на уровне субагента (<code>temperature</code>, <code>max_rounds</code>), фоновый запуск (<code>background=True</code>) с накоплением в <code>_background_subagent_tasks</code>, нормализация <code>max_rounds</code> через <code>_normalize_max_rounds</code> с учётом <code>MIN_SUBAGENT_TOOL_ROUNDS</code>, защита от превышения лимита одновременных подагентов.</li>
+<li><strong>Блокировки для субагентов:</strong> <code>deliver_to_user</code> и <code>skills.run_skill_script</code> (через <code>codeinterpreter.deep_analysis</code>) включены в <code>SUBAGENT_BLOCKED_FUNCTIONS</code> с подменой на <code>terminal.terminal</code> и контролем <code>script_name</code>.</li>
+<li><strong>Опрос пользователя:</strong> ожидание текстового ответа конкретного пользователя с игнорированием сообщений от других, таймаут с очисткой inline-разметки и уведомлением, поддержка мультивыбора (<code>multi_select=True</code>) с чекбоксами (<code>☐</code>/<code>✅</code>) и кнопкой <code>Confirm</code>, принудительное отключение <code>allow_free_text</code> при мультивыборе, валидация наличия <code>options</code> даже при <code>allow_free_text=True</code>.</li>
+<li><strong>Отмена вопроса:</strong> удаление разметки, отправка причины отмены, освобождение ожидания.</li>
+<li><strong>Внутренний publish подагента:</strong> <code>_handle_internal_publish</code> накапливает артефакты (<code>text</code>, <code>file</code>) для родительского агента с валидацией <code>kind</code>, запрет вызова вне подагента.</li>
+<li><strong>Доставка пользователю:</strong> формирование <code>direct_result</code> с <code>kind="final"</code>, <code>format="mixed"</code>, метаданными файлов; дедупликация в рамках одного <code>request_id</code> (поле <code>skipped</code>); валидация наличия текста или артефактов; отклонение несуществующих и пустых файлов.</li>
+<li><strong>Персистентность опросов:</strong> сериализация в <code>agent_pending_questions.json</code>, восстановление при перезапуске через <code>on_startup</code>, очистка устаревших сообщений, уведомление пользователя о потере актуальности через <code>localized_text("agent_tools_orphaned_question_inactive", "en")</code>.</li>
+<li><strong>Закрытие плагина:</strong> прерывание <code>asyncio.Task</code> через <code>CancelledError</code>, принудительная очистка разметки у ожидающих вопросов.</li>
+<li><strong>Интеграция с LLM:</strong> обработка цепочек tool calls и финального текстового ответа, использование модели <code>llmgateway/high</code>.</li>
+</ul>
+<p><strong>Важные параметры:</strong> <code>chat_id=10</code>, <code>user_id=42</code>, <code>action="add"</code>, <code>tasks</code> с полями <code>id</code>/<code>content</code>/<code>status</code> (<code>pending</code>/<code>in_progress</code>/<code>completed</code>), <code>subagents</code> с полями <code>id</code>/<code>role</code>/<code>task</code>/<code>context</code>, <code>max_rounds</code> (глобальный и переопределяемый), <code>timeout_seconds=1</code>, <code>request_id</code> для дедупликации.</p>
+<p>Файл содержит модульные тесты для компонентов бота, взаимодействующих с LLM-шлюзом (service_mesh).</p>
+<p><strong>Назначение:</strong> Проверка корректности работы плагина веб-исследований (<code>WebResearchPlugin</code>) и классификатора намерений ответов (<code>OpenAIHelper.classify_reply_intent</code>) при интеграции с LLM Gateway.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FakeGateway</code></td>
+<td>Заглушка шлюза LLM с методами <code>web_research</code> и <code>web_deep_research</code>, фиксирующая вызовы</td>
+</tr>
+<tr>
+<td><code>FakeChatClient</code></td>
+<td>Заглушка клиента чата, имитирующая OpenAI-compatible API (<code>chat.completions.create</code>)</td>
+</tr>
+<tr>
+<td><code>FakeHelper</code></td>
+<td>Агрегатор заглушек, предоставляющий конфигурацию модели и клиентов</td>
+</tr>
+<tr>
+<td><code>GPT_ALL_MODELS</code></td>
+<td>Константа со списком всех доступных моделей чата</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_LIGHT_MODEL</code></td>
+<td>Лёгкая модель для классификации и маршрутизации</td>
+</tr>
+<tr>
+<td><code>LLMGATEWAY_HIGH_MODEL</code> / <code>LLMGATEWAY_BIG_CONTEXT_MODEL</code></td>
+<td>Модели повышенной мощности и увеличенного контекста</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Тестовые сценарии:</strong></p>
+<ul>
+<li><code>test_llmgateway_models_are_the_only_chat_models</code> — валидация полноты перечня моделей</li>
+<li><code>test_web_research_uses_light_model_then_regular_research</code> — маршрутизация к обычному исследованию для узких запросов (JSON-решение: <code>research_type: "research"</code>)</li>
+<li><code>test_web_research_uses_light_model_then_deep_research</code> — маршрутизация к глубокому исследованию для широких запросов (JSON-решение: <code>research_type: "deep_research"</code>)</li>
+<li><code>test_reply_intent_classifier_uses_light_model</code> — проверка использования лёгкой модели с <code>response_format: {"type": "json_object"}</code> и <code>max_tokens: 1000</code></li>
+<li><code>test_reply_intent_classifier_rejects_invalid_response</code> — graceful degradation при невалидном JSON</li>
+<li><code>test_reply_intent_classifier_accepts_plain_label</code> — поддержка plain-text ответов</li>
+<li><code>test_reply_intent_classifier_accepts_image_description_alias</code> — нормализация алиаса <code>image_description</code> → <code>image_describe</code></li>
+</ul>
+<p><strong>Важные настройки и инварианты:</strong></p>
+<ul>
+<li>Все классификационные вызовы строго используют <code>LLMGATEWAY_LIGHT_MODEL</code></li>
+<li>Формат ответа классификатора: JSON-объект с полем <code>intent</code> или plain string</li>
+<li>Плагин веб-исследований выбирает тип исследования на основе LLM-классификации запроса</li>
+<li>Глубокое исследование возвращает дополнительное поле <code>source_urls</code></li>
+<li>Тесты <code>OpenAIHelper</code> требуют наличия опциональной зависимости <code>tiktoken</code> (<code>pytest.importorskip</code>)</li>
+</ul>
+<p><strong>Назначение:</strong> Модуль инициализации пути корневого каталога проекта для корректного разрешения импортов при запуске скриптов из различных подкаталогов.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ROOT</code></td>
+<td><code>Path</code>-объект, указывающий на корневой каталог проекта (два уровня выше текущего файла)</td>
+</tr>
+<tr>
+<td><code>sys.path</code></td>
+<td>Список путей поиска модулей Python, модифицируемый для включения корня проекта</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Логика работы:</strong> Вычисляет абсолютный путь к корню проекта через <code>resolve().parents[1]</code>, затем условно добавляет его в начало <code>sys.path</code> при отсутствии — обеспечивая приоритетный импорт внутренних пакетов.</p>
+<p><strong>Важные особенности:</strong>
+- Использует <code>resolve()</code> для получения канонического пути (разрешение символических ссылок)
+- Проверка <code>str(ROOT) not in sys.path</code> предотвращает дублирование записей при многократном импорте
+- Вставка через <code>insert(0, ...)</code> обеспечивает приоритет проектных модулей над системными одноимёнными пакетами</p>
+<p>Файл содержит асинхронные тесты потокобезопасности диспетчера плагинов и валидации передачи идентификаторов пользователя/сообщения в Telegram-контексте.</p>
+<p><strong>Назначение:</strong> Проверка корректности конкурентных вызовов инструментов OpenAI от разных пользователей без смешивания данных, а также тестирование механизмов разрешения <code>user_id</code> и <code>message_id</code> через <code>RequestContext</code>, явные параметры или контролируемые ошибки при их отсутствии.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Класс</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ForbiddenLegacyHelper</code></td>
+<td>Заглушка, запрещающая чтение устаревших свойств <code>user_id</code>/<code>message_id</code></td>
+</tr>
+<tr>
+<td><code>FakeToolCall</code> / <code>FakeMessage</code> / <code>FakeChoice</code> / <code>FakeResponse</code></td>
+<td>Фабрика фейковых объектов ответа OpenAI API</td>
+</tr>
+<tr>
+<td><code>RacingPluginManager</code></td>
+<td>Менеджер с искусственной гонкой: первый вызов блокируется до старта второго</td>
+</tr>
+<tr>
+<td><code>SharedHelper</code></td>
+<td>Общий хелпер с конфигурацией бота (<code>functions_max_consecutive_calls: 1</code>) и историей вызовов</td>
+</tr>
+<tr>
+<td><code>RequestContext</code></td>
+<td>Контейнер контекста с полями <code>chat_id</code>, <code>user_id</code>, <code>message_id</code>, <code>session_id</code>; вычисляемое свойство <code>plugin_chat_id</code></td>
+</tr>
+<tr>
+<td><code>LanguageLearningPlugin</code></td>
+<td>Плагин отслеживания прогресса изучения языков</td>
+</tr>
+<tr>
+<td><code>RemindersPlugin</code></td>
+<td>Плагин управления напоминаниями с привязкой <code>reply_to_message_id</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ключевые тестовые сценарии:</strong></p>
+<ul>
+<li>Параллельные вызовы разных плагинов (<code>task_management</code>, <code>language_learning</code>) — изоляция данных пользователей 101 и 202</li>
+<li>Конкурентные вызовы одного плагина — сохранение изоляции задач по <code>user_id</code></li>
+<li>Корректность инкрементов прогресса при гонке</li>
+<li>Извлечение <code>user_id</code> из <code>RequestContext</code> при недоступности legacy-хелпера</li>
+<li>Прямое указание <code>user_id</code> в kwargs</li>
+<li>Обработка отсутствующего <code>user_id</code> — возврат <code>{"error": "Telegram user_id is required for ..."}</code></li>
+<li>Привязка <code>message_id</code> к напоминанию через <code>reply_to_message_id</code> из контекста или явного параметра</li>
+<li>Конкурентные вызовы <code>set_reminder</code> — сохранение своего <code>message_id</code> без смешивания</li>
+</ul>
+<p><strong>Важные настройки тестового окружения:</strong></p>
+<ul>
+<li>Модуль <code>markdown2</code> подменяется заглушкой перед импортом, затем восстанавливается</li>
+<li>Все плагины инициализируются с <code>storage_root=str(tmp_path)</code> для изоляции хранилищ</li>
+<li>Параметр вызова <code>integration="telegram"</code> влияет на логику обработки идентификаторов</li>
+</ul>
+<p>Фикстурный модуль для тестирования обработки callback-запросов плагинного меню Telegram-бота.</p>
+<p><strong>Назначение:</strong> Предоставляет изолированное тестовое окружение для проверки метода <code>handle_plugin_menu_callback</code> класса <code>ChatGPTTelegramBot</code>, минуя необходимость установки тяжеловесных зависимостей (<code>tiktoken</code>, <code>pydub</code>, <code>markdown2</code>, <code>tenacity</code>).</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>_FakeEncoding</code> — заглушка для токенизатора <code>tiktoken</code>, возвращающая список символов вместо токенов</li>
+<li><code>_install_module_if_missing()</code> — функция динамической подмены модулей в <code>sys.modules</code> с отслеживанием вставленных</li>
+<li><code>FakeCallbackMessage</code> / <code>FakeCallbackQuery</code> — фейковые объекты Telegram API с асинхронными моками</li>
+<li><code>_make_bot()</code> — фабрика бота с минимальным конфигом и одной тестовой записью меню плагина</li>
+</ul>
+<p><strong>Важные настройки тестового окружения:</strong></p>
+<ul>
+<li>Модули-заглушки создаются через <code>types.ModuleType</code> и внедряются только если отсутствуют в окружении</li>
+<li>После импорта <code>ChatGPTTelegramBot</code> все вставленные модули удаляются из <code>sys.modules</code> для восстановления чистоты</li>
+<li>Плагинное меню настроено с одной командой: <code>notes</code> с подкомандой <code>note</code>, принимающей аргументы <code>title body</code></li>
+</ul>
+<p><strong>Проверяемый сценарий:</strong> При callback с данными <code>pluginmenu:input:notes:0</code> бот должен:
+- ответить на callback-запрос (<code>answer</code>)
+- не редактировать исходное сообщение (<code>edit_message_text</code> не вызывается)
+- отправить reply-сообщение с текстом подсказки и <code>ForceReply</code>-разметкой
+- сохранить в <code>user_data</code> состояние ожидания ввода с идентификатором prompt-сообщения</p>
+<p>Файл содержит модульные и асинхронные юнит-тесты для класса <code>OpenAIHelper</code> — центрального компонента интеграции с LLM и голосовыми сервисами через OpenAI-совместимый API. Тесты изолируют зависимости с помощью фикстур и фейковых реализаций.</p>
+<p><strong>Ключевые фейковые сущности:</strong></p>
+<ul>
+<li><code>DummyClient</code> / <code>DummyModelsClient</code> / <code>DummySpeechClient</code> — имитация клиентов OpenAI для чат-комплишенов, списка моделей и TTS; <code>DummyClient</code> отслеживает вызовы через <code>create_kwargs</code> и поддерживает очередь ответов</li>
+<li><code>DummyDB</code> / <code>MultiSessionDB</code> — заглушки базы данных для хранения контекста диалогов и настроек; <code>MultiSessionDB</code> поддерживает несколько сессий на пользователя</li>
+<li><code>DummyPluginManager</code> — имитация менеджера плагинов с фильтрацией по разрешённым плагинам, фиксацией контекстов запросов (<code>call_contexts</code>) и управлением спецификациями (<code>spec_calls</code>)</li>
+<li><code>FakeResponse</code> / <code>FakeStreamItem</code> / <code>FakeToolCall</code> / <code>FakeMessage</code> / <code>FakeChoice</code> — репликация структур ответов API, потоковой передачи и объектов tool-calling</li>
+<li><code>FakeSkillsPlugin</code> — заглушка плагина навыков для тестов маршрутизации скриптов</li>
+<li>Динамические фейковые модули для <code>tiktoken</code>, <code>markdown2</code>, <code>tenacity</code> — внедряются в <code>sys.modules</code> при отсутствии реальных пакетов</li>
+</ul>
+<p><strong>Фабрика тестовых экземпляров (<code>_make_helper</code>):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Параметр</th>
+<th>Значение</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td><code>llmgateway/high</code></td>
+<td>Основная языковая модель</td>
+</tr>
+<tr>
+<td><code>vision_model</code></td>
+<td><code>llmgateway/big_context</code></td>
+<td>Модель для обработки изображений</td>
+</tr>
+<tr>
+<td><code>image_model</code></td>
+<td><code>llmgateway/ai-klein-generation</code></td>
+<td>Модель генерации изображений</td>
+</tr>
+<tr>
+<td><code>tts_model</code></td>
+<td><code>llmgateway/silero-tts</code></td>
+<td>Модель синтеза речи</td>
+</tr>
+<tr>
+<td><code>transcription_model</code></td>
+<td><code>llmgateway/whisper-large-v3</code></td>
+<td>Модель транскрипции</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td>1000</td>
+<td>Лимит токенов ответа</td>
+</tr>
+<tr>
+<td><code>temperature</code></td>
+<td>0.1</td>
+<td>Температура сэмплирования</td>
+</tr>
+<tr>
+<td><code>max_history_size</code></td>
+<td>5</td>
+<td>Глубина истории диалога</td>
+</tr>
+<tr>
+<td><code>functions_max_consecutive_calls</code></td>
+<td>2</td>
+<td>Лимит последовательных вызовов функций</td>
+</tr>
+<tr>
+<td><code>enable_functions</code></td>
+<td>True</td>
+<td>Активация function calling</td>
+</tr>
+<tr>
+<td><code>stream</code></td>
+<td>False</td>
+<td>Потоковая передача отключена по умолчанию</td>
+</tr>
+<tr>
+<td><code>auto_chat_modes</code></td>
+<td>False</td>
+<td>Автоматическое переключение режимов чата</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Покрываемая функциональность:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Область</th>
+<th>Тестируемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Контекстные окна</td>
+<td><code>default_max_tokens</code> возвращает 256K для <code>llmgateway/high</code></td>
+</tr>
+<tr>
+<td>Vision-запросы</td>
+<td><code>_vision_history_content</code> извлекает только текст, отбрасывает изображения</td>
+</tr>
+<tr>
+<td>Память hindsight</td>
+<td><code>_parse_hindsight_memory_items</code> сохраняет полные поля <code>content</code>, <code>context</code>, <code>tags</code> без обрезки</td>
+</tr>
+<tr>
+<td>Автоматический выбор режима</td>
+<td><code>_build_auto_chat_mode_prompt</code> маршрутизирует по сложности задачи, а не по ключевым словам</td>
+</tr>
+<tr>
+<td>Управление плагинами</td>
+<td><code>resolve_allowed_plugins</code> фильтрует по режиму чата, сессии и пользовательским настройкам</td>
+</tr>
+<tr>
+<td>TTS</td>
+<td><code>get_available_tts_models</code>/<code>voices</code> загружает список из API; <code>generate_speech</code> применяет пользовательские настройки <code>tts_model</code>/<code>tts_voice</code></td>
+</tr>
+<tr>
+<td>Стриминг</td>
+<td><code>__handle_function_call</code> сохраняет первый чанк при отсутствии tool calls</td>
+</tr>
+<tr>
+<td>Интеграция tools</td>
+<td>структурированная история tool calls в <code>conversations</code> с сериализацией <code>role</code>/<code>content</code>/<code>tool_calls</code></td>
+</tr>
+<tr>
+<td>Валидация ответа</td>
+<td><code>get_chat_response</code> выбрасывает <code>ValueError</code> на пустой контент модели</td>
+</tr>
+<tr>
+<td>Разрешение плагинов</td>
+<td>начальный запрос использует результат <code>resolve_allowed_plugins</code> для фильтрации доступных инструментов</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Сценарии обработки function calling:</strong></p>
+<ul>
+<li><strong>Пустые ответы модели</strong> — автоматический retry с подстановкой уточняющего системного сообщения (<code>"Предыдущий ответ был пустым"</code>); сохранение спецификаций инструментов при повторном запросе</li>
+<li><strong>Фильтрация служебных маркеров</strong> — удаление блоков <code>` (или аналогичных маркеров вида</code>hidden`) из финального ответа</li>
+<li><strong>Подавление сырых tool-результатов</strong> — отбрасывание ответов в формате <code>Function X returned: {...}</code> с инициацией retry</li>
+<li><strong>Параллельные вызовы инструментов</strong> — обработка нескольких <code>tool_calls</code> в одном ответе; корректное накопление <code>tools_used</code></li>
+<li><strong>Direct result и short-circuit</strong> — при отсутствии агентного режима результат инструмента с <code>direct_result</code> возвращается напрямую без дополнительного запроса к LLM</li>
+<li><strong>Агентный режим (<code>skills_agent</code>)</strong> — <code>direct_result</code> от промежуточных инструментов откладывается (<code>defer</code>) и записывается только в историю диалога; финальный результат формирует отдельный вызов <code>agent_tools.deliver_to_user</code></li>
+</ul>
+<p><strong>Специфические сценарии агентного режима:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_skills_agent_retries_plain_text_final_response_through_delivery_tool</code></td>
+<td>Ретрай текстового ответа через принудительный вызов <code>deliver_to_user</code>; проверка <code>tool_choice</code> с принудительным выбором функции</td>
+</tr>
+<tr>
+<td><code>test_new_session_reloads_mode_before_deferring_direct_results</code></td>
+<td>Перезагрузка режима чата при смене <code>session_id</code>; корректное применение <code>defer_direct_results</code> из новой сессии</td>
+</tr>
+<tr>
+<td><code>test_agent_mode_sends_final_direct_result_when_defer_is_false</code></td>
+<td>Немедленная отправка финального результата без дополнительных вызовов LLM при <code>defer: false</code></td>
+</tr>
+<tr>
+<td><code>test_allowed_tool_reentry_uses_original_allowlist</code></td>
+<td>Сохранение исходного списка <code>allowed_plugins</code> при повторном входе в обработку</td>
+</tr>
+<tr>
+<td><code>test_all_allowlist_allows_any_tool_call</code></td>
+<td>Разрешение вызова любого инструмента при <code>allowed_plugins=["All"]</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Сценарии маршрутизации и блокировки инструментов:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_skills_agent_routes_skill_scripts_away_from_codeinterpreter</code></td>
+<td>Перехват вызовов <code>codeinterpreter.deep_analysis</code> для скриптов в <code>/bot/skills/</code> — маршрутизация на <code>skills.run_skill_script</code></td>
+</tr>
+<tr>
+<td><code>test_skills_agent_routes_active_skill_script_names_away_from_codeinterpreter</code></td>
+<td>Перехват по имени активного навыка без полного пути</td>
+</tr>
+<tr>
+<td><code>test_skills_agent_rejects_ad_hoc_tmp_script_creation_via_codeinterpreter</code></td>
+<td>Блокировка создания произвольных скриптов в <code>/tmp/</code> через <code>fs.writeFileSync</code></td>
+</tr>
+<tr>
+<td><code>test_active_skill_script_reference_blocks_codeinterpreter_in_assistant_mode</code></td>
+<td>Блокировка <code>codeinterpreter</code> в assistant-режиме при наличии навыка <code>run_skill_script</code></td>
+</tr>
+<tr>
+<td><code>test_active_skill_script_reference_blocks_codeinterpreter_in_any_mode</code></td>
+<td>Аналогичная блокировка в любом режиме с формированием <code>suggested_tool_call</code></td>
+</tr>
+<tr>
+<td><code>test_ordinary_mode_merges_multiple_direct_results_into_final</code></td>
+<td>Слияние нескольких <code>direct_result</code> в единый финальный результат с артефактами</td>
+</tr>
+<tr>
+<td><code>test_deliver_to_user_carries_cleanup_directive_in_payload</code></td>
+<td>Проброс директивы <code>cleanup_skills</code> через <code>agent_tools.deliver_to_user</code> при <code>defer_direct_results: True</code></td>
+</tr>
+<tr>
+<td><code>test_active_skill_does_not_block_unrelated_codeinterpreter_calls</code></td>
+<td>Пропуск вызовов <code>codeinterpreter</code>, не связанных со сборкой/запуском скриптов</td>
+</tr>
+<tr>
+<td><code>test_model_messages_include_current_user_language_instruction</code></td>
+<td>Вставка системной инструкции с языком пользователя в цепочку сообщений</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Сценарии работы с контекстом запросов:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_request_context_tool_flow_injects_context_without_shared_user_id</code></td>
+<td>Инъекция <code>request_context</code> в вызовы плагинов при несовпадении <code>chat_id</code>/<code>user_id</code></td>
+</tr>
+<tr>
+<td><code>test_get_chat_response_with_request_context_does_not_create_legacy_message_id_state</code></td>
+<td>Отсутствие устаревших атрибутов <code>message_id</code>/<code>message_ids</code> на экземпляре helper</td>
+</tr>
+<tr>
+<td><code>test_mode_allowlist_is_passed_to_tool_reentry</code></td>
+<td>Передача ограниченного списка инструментов при повторном входе после tool call</td>
+</tr>
+<tr>
+<td><code>test_mode_restrictions_survive_tool_reentry</code></td>
+<td>Сохранение режимных ограничений на протяжении цикла обработки</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные проверяемые инварианты:</strong></p>
+<ul>
+<li>Корректное количество вызовов <code>client.calls</code> и <code>pm.calls</code></li>
+<li>Содержимое <code>answer</code>, <code>total_tokens</code>, <code>tools_used</code></li>
+<li>Наличие/отсутствие <code>tool_calls</code> в промежуточных ответах</li>
+<li>Структура <code>direct_result</code> (<code>kind</code>, <code>format</code>, <code>value</code>, <code>defer</code>, <code>artifacts</code>)</li>
+<li>Трассировка контекстов через <code>pm.call_contexts</code> и ограничений через <code>pm.spec_calls</code></li>
+<li>Анализ истории сообщений <code>helper.conversations[chat_id]</code> на системные вставки о замене/отклонении инструментов</li>
+<li>Различие <code>tools_used</code> vs <code>pm.calls</code> — между инструментами, объявленными моделью, и фактически выполненными вызовами</li>
+</ul>
+<p><strong>Тестовые паттерны:</strong></p>
+<ul>
+<li><code>monkeypatch</code> для подмены методов экземпляра (<code>resolve_allowed_plugins</code>)</li>
+<li><code>pytest.mark.asyncio</code> для корутин</li>
+<li>Проверка побочных эффектов через накопители вызовов</li>
+<li>Тестирование граничных случаев длинных строк (2500/700/120 символов) для полей памяти</li>
+<li><code>allowed_plugins=["All"]</code> — режим без фильтрации; конкретный список или <code>"All"</code> как фильтр разрешённых плагинов</li>
+<li><code>tool_choice</code> — параметр принудительного выбора инструмента в структуре <code>{"type": "function", "function": {"name": "..."}}</code></li>
+<li><code>chat_modes_registry</code> — реестр режимов с маппингом системного промпта на разрешённые инструменты и флагом <code>defer_direct_results</code></li>
+</ul>
+<p>Тестовый модуль для проверки работы Telegram-бота <code>ChatGPTTelegramBot</code> с сессиями и промптами в групповых чатах. Проверяет, что обработчики callback-запросов используют <code>chat_id</code> группы (отрицательное значение) как ключ разговора вместо <code>user_id</code>, обеспечивая разделение контекста между группами и приватными чатами.</p>
+<p><strong>Фейковые модули:</strong> <code>_FakeEncoding</code>, <code>_tiktoken</code>, <code>_pydub</code>, <code>_markdown2</code>, <code>_tenacity</code> — устанавливаются в <code>sys.modules</code> до импорта бота для изоляции от внешних зависимостей.</p>
+<p><strong>Моки Telegram:</strong> <code>FakeCallbackMessage</code>, <code>FakeCallbackQuery</code>, <code>FakeCallbackUpdate</code> — имитация объектов <code>python-telegram-bot</code> для callback-обновлений.</p>
+<p><strong>Фабрики тестовых зависимостей:</strong> <code>_make_context()</code>, <code>_make_db()</code>, <code>_make_openai()</code>, <code>_make_bot()</code> — создают настраиваемые <code>MagicMock</code>/<code>AsyncMock</code>; <code>_group_update(data)</code> и <code>_private_update(data)</code> — конструкторы фейковых обновлений для супергрупп и приватных чатов.</p>
+<p><strong>Ключевые тесты:</strong> создание сессии с групповым ключом, переключение сессии и загрузка истории по <code>chat_id</code>, приоритет <code>max_sessions</code> (3) над <code>MAX_SESSIONS</code> (99) в нижнем регистре при создании сессии, удаление сессии с предварительным финализатором hindsight, корректный порядок операций (сначала <code>hindsight</code>, потом удаление из БД).</p>
+<p><strong>Настройки фейкового бота:</strong> <code>allowed_user_ids: "*"</code> (открытый доступ), <code>admin_user_ids: "-"</code> (без администраторов), <code>max_sessions</code>/<code>MAX_SESSIONS: 5</code> (тестируется приоритет lowercase), <code>bot_language: "en"</code>, <code>hindsight_auto_save: True</code> в <code>openai.config</code>.</p>
+<p>Модуль также покрывает фоновую обработку hindsight: обработка очереди <code>hindsight_finalize_jobs</code> с retry при ошибках, вызов <code>finalize_hindsight_session_memory</code> с <code>raise_on_error=True, async_store=False</code>. Контроль порядка операций через список <code>order</code> — <code>enqueue</code>/<code>prune</code> предшествует <code>delete</code>/<code>create</code>. Ошибки постановки в очередь hindsight отменяют удаление сессий и пробрасывают исключение.</p>
+<p>Файл содержит модульные тесты для функции <code>get_conversation_key</code> из модуля <code>bot.conversation_key</code>.</p>
+<p><strong>Назначение:</strong> Проверяет логику формирования ключа разговора в Telegram-боте в зависимости от типа чата и источника обновления (сообщение или callback-запрос).</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_update</code></td>
+<td>Вспомогательная фабрика, создающая mock-объект <code>Update</code> из <code>python-telegram-bot</code> через <code>types.SimpleNamespace</code></td>
+</tr>
+<tr>
+<td><code>test_private_conversation_key_uses_effective_user_id</code></td>
+<td>Тест: в личном чате ключ = ID пользователя</td>
+</tr>
+<tr>
+<td><code>test_group_message_conversation_key_uses_chat_id</code></td>
+<td>Тест: в группе ключ = ID чата (отрицательное число), не ID пользователя</td>
+</tr>
+<tr>
+<td><code>test_supergroup_callback_conversation_key_uses_chat_id_not_actor_id</code></td>
+<td>Тест: в супергруппе при callback ключ = ID чата, не ID инициатора callback</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные аспекты тестовой стратегии:</strong></p>
+<ul>
+<li>Используется <code>SimpleNamespace</code> для имитации структуры объектов библиотеки <code>telegram</code> без полноценной инициализации</li>
+<li>Проверяется разграничение контекстов: личные сообщения изолируются по пользователю, групповые — по чату</li>
+<li>Callback-запросы в супергруппах привязываются к чату, а не к конкретному пользователю, нажавшему кнопку</li>
+</ul>
+<p><strong>Константы из внешней библиотеки:</strong></p>
+<ul>
+<li><code>constants.ChatType.PRIVATE</code> — личный чат</li>
+<li><code>constants.ChatType.GROUP</code> — группа</li>
+<li><code>constants.ChatType.SUPERGROUP</code> — супергруппа</li>
+</ul>
+<p>Файл содержит набор модульных тестов для плагина <code>CodeInterpreterPlugin</code>, выполняющего произвольный Python-код в изолированном процессе. Основное назначение — проверка корректности обработки различных сценариев выполнения кода: прямого запуска Python, обработки ошибок подпроцесса, перехвата <code>sys.exit</code>, создания псевдонима команды <code>python</code>, а также интеграции с режимом глубокого анализа.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>_INSERTED_MODULES</code> — список имён модулей-заглушек, внедрённых в <code>sys.modules</code> для изоляции тестов от тяжёлых зависимостей (<code>pandas</code>, <code>numpy</code>, <code>matplotlib</code>, <code>plotly</code>).</li>
+<li><code>_install_module_if_missing(name, module)</code> — вспомогательная функция, регистрирующая заглушку в <code>sys.modules</code> только при отсутствии реального модуля.</li>
+<li><code>_plugin(tmp_path)</code> — фабрика тестовых экземпляров плагина с фиксированными параметрами: <code>timeout_seconds = 20</code>, <code>python_alias_dir</code> указывает на временный каталог, <code>data = None</code>.</li>
+</ul>
+<p><strong>Модульные заглушки (внедряются до импорта плагина):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Модуль</th>
+<th>Заглушенные атрибуты</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pandas</code></td>
+<td><code>read_csv</code>, <code>read_excel</code>, <code>read_json</code>, <code>read_parquet</code>, <code>read_pickle</code> — все возвращают <code>None</code></td>
+</tr>
+<tr>
+<td><code>numpy</code></td>
+<td>пустой модуль без атрибутов</td>
+</tr>
+<tr>
+<td><code>matplotlib</code></td>
+<td><code>__path__ = []</code>, <code>use</code> — заглушка</td>
+</tr>
+<tr>
+<td><code>matplotlib.pyplot</code></td>
+<td><code>close</code> — заглушка</td>
+</tr>
+<tr>
+<td><code>plotly</code>, <code>plotly.express</code></td>
+<td>пустые модули</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Тестовые сценарии:</strong></p>
+<ul>
+<li><code>test_code_prompt_python_is_executed_without_regeneration</code> — проверяет, что при <code>mode="direct"</code> код выполняется напрямую без вызова LLM-генерации (<code>generate_code</code> не должен вызываться).</li>
+<li><code>test_direct_python_code_returns_subprocess_errors_without_internal_debug</code> — убеждается, что ошибки подпроцесса возвращаются как есть, без попытки отладки через <code>debug_code</code>.</li>
+<li><code>test_execute_code_returns_syntax_error_without_keyerror</code> — проверяет корректную обработку синтаксических ошибок (отсутствие <code>KeyError</code> при формировании ответа).</li>
+<li><code>test_execute_code_exposes_python_command_alias</code> — тестирует создание и доступность псевдонима команды <code>python</code> в каталоге <code>python_alias_dir</code>, даже когда реальный <code>python</code> отсутствует в <code>PATH</code>.</li>
+<li><code>test_execute_code_captures_system_exit_instead_of_crashing_bot</code> — проверяет перехват <code>sys.exit</code> с сохранением выведенного до выхода текста и формированием локализованной ошибки.</li>
+<li><code>test_deep_analysis_direct_file_result_also_includes_text_result</code> — убеждается, что режим <code>deep_analysis</code> возвращает структуру с полем <code>direct_result</code> типа <code>file</code> и текстовым результатом в <code>result</code>.</li>
+</ul>
+<p>Файл <code>test_telegram_bot.py</code> — набор модульных тестов для проверки механизма регистрации плагиновых обработчиков сообщений в Telegram-боте.</p>
+<p><strong>Назначение:</strong> проверяет, что плагиновые <code>MessageHandler</code>-ы регистрируются ровно один раз, до встроенных обработчиков (<code>handle_document</code>, <code>prompt</code>), и что повторный вызов <code>post_init</code> не приводит к дублированию.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Класс/функция</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_FakeEncoding</code>, фейковые модули (<code>tiktoken</code>, <code>pydub</code>, <code>markdown2</code>, <code>tenacity</code>)</td>
+<td>Минимальные заглушки для импортов, отсутствующих в тестовом окружении; устанавливаются в <code>sys.modules</code> перед импортом тестируемого кода и удаляются после</td>
+</tr>
+<tr>
+<td><code>FakeTelegramBot</code></td>
+<td>Эмуляция Telegram-API бота; фиксирует вызовы <code>set_my_commands</code></td>
+</tr>
+<tr>
+<td><code>FakeApplication</code></td>
+<td>Эмуляция <code>telegram.ext.Application</code>; собирает зарегистрированные обработчики, error-обработчики, вызовы <code>run_polling</code></td>
+</tr>
+<tr>
+<td><code>FakeApplicationBuilder</code></td>
+<td>Флюент-билдер для <code>FakeApplication</code>; поддерживает цепочку вызовов (<code>token</code>, <code>post_init</code>, <code>post_shutdown</code> и др.)</td>
+</tr>
+<tr>
+<td><code>FakePluginManager</code></td>
+<td>Эмуляция менеджера плагинов; возвращает тестовые <code>message_handlers</code>, считает вызовы <code>get_message_handlers</code></td>
+</tr>
+<tr>
+<td><code>FakeOpenAI</code></td>
+<td>Заглушка для OpenAI-компонента</td>
+</tr>
+<tr>
+<td><code>_make_bot()</code></td>
+<td>Фабрика: создаёт <code>ChatGPTTelegramBot</code> с минимальной конфигурацией и фейковыми зависимостями</td>
+</tr>
+<tr>
+<td><code>_message_handler_index()</code></td>
+<td>Вспомогательный поиск индекса обработчика по имени callback-функции</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Тестовые сценарии:</strong></p>
+<ul>
+<li><code>test_plugin_message_handlers_registered_once_and_before_builtin_handlers</code> — проверяет порядок регистрации (плагиновые → <code>handle_document</code> → <code>prompt</code>), отсутствие дублей, единственность вызова <code>get_message_handlers</code> и <code>run_polling</code></li>
+<li><code>test_post_init_guard_skips_plugin_message_handlers_on_second_call</code> — проверяет идемпотентность <code>post_init</code>: при повторном вызове плагиновые обработчики не добавляются повторно</li>
+</ul>
+<p><strong>Важные особенности реализации:</strong></p>
+<ul>
+<li>Используется <code>monkeypatch</code> для подмены <code>ApplicationBuilder</code> и метода <code>cleanup</code></li>
+<li>Фоновые задачи (<code>_background_tasks</code>) эмулируются списком с произвольным объектом</li>
+<li>Конфигурация бота в тестах: <code>token="test-token"</code>, <code>bot_language="en"</code>, генерация изображений и TTS отключены</li>
+</ul>
+<p>Файл содержит модульный тест для проверки обработки ошибок в клиенте <code>HindsightClient</code>.</p>
+<p><strong>Назначение:</strong> Проверяет, что при получении HTTP-ответа с кодом 500 клиент выбрасывает исключение <code>HindsightError</code>, включающее полный текст ответа сервера — в том числе для длинных ответов (более 700 символов).</p>
+<p><strong>Ключевые сущности:</strong>
+- <code>HindsightClient</code> — асинхронный HTTP-клиент для взаимодействия с сервисом Hindsight
+- <code>HindsightError</code> — кастомное исключение, инкапсулирующее ошибки клиента
+- <code>httpx.MockTransport</code> — мок-транспорт <code>httpx</code> для имитации HTTP-ответов без реальных сетевых вызовов</p>
+<p><strong>Важные детали теста:</strong>
+- Используется декоратор <code>@pytest.mark.asyncio</code> для асинхронного выполнения
+- Генерируется тестовый ответ длиной ~715 символов для проверки отсутствия truncation
+- Контекстный менеджер <code>pytest.raises</code> перехватывает исключение для последующих проверок
+- Блок <code>finally</code> гарантирует закрытие клиента даже при падении теста
+- Ассерт проверяет наличие полного текста ответа в строковом представлении исключения</p>
+<p>Тестовый файл для плагина <code>AskYourPDFPlugin</code>, реализованный на <code>pytest</code> с <code>pytest.mark.asyncio</code> и <code>monkeypatch</code>. Покрывает загрузку и анализ PDF-документов с изоляцией внешних зависимостей через фейковые <code>PyPDF2</code> и <code>textract</code>.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>_load_ask_your_pdf_module</code> — фабрика загрузки модуля с подменой внешних библиотек</li>
+<li><code>_plugin</code> — конструктор плагина с кэш-настройками (<code>max_cache_size_mb = 500</code>, <code>max_cache_age_days = 10</code>, <code>storage_root</code>)</li>
+<li><code>_helper</code> / <code>_helper_prompt</code> — создание мока LLM-хелпера и извлечение промпта из вызова</li>
+<li><code>_create_pdf</code> — генератор минимального валидного PDF</li>
+</ul>
+<p><strong>Покрываемые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_analyze_pdf_happy_path_extracts_text_and_returns_result</code></td>
+<td>Успешный анализ: извлечение текста, формирование промпта с именем файла и запросом, вызов LLM</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_cache_hit_returns_cached_result_without_helper</code></td>
+<td>Попадание в кэш по хешу файла и запросу, пропуск вызова LLM</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_cache_is_scoped_by_query</code></td>
+<td>Кэш изолирован по запросу</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_missing_file_returns_error_without_helper</code></td>
+<td>Отсутствующий файл — ошибка без вызова LLM</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_falls_back_to_textract_when_pypdf2_has_no_text</code></td>
+<td>Fallback на <code>textract</code> при пустом результате <code>PyPDF2</code></td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_error_when_text_cannot_be_extracted</code></td>
+<td>Ошибка при невозможности извлечь текст обоими способами</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_truncates_oversized_text</code></td>
+<td>Усечение текста сверх ~60K символов перед отправкой в LLM</td>
+</tr>
+<tr>
+<td><code>test_upload_pdf_rejects_path_outside_plugin_storage</code></td>
+<td>Защита от directory traversal при загрузке</td>
+</tr>
+<tr>
+<td><code>test_analyze_pdf_rejects_path_outside_plugin_storage</code></td>
+<td>Защита от directory traversal при анализе</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Особенности инфраструктуры:</strong> <code>importlib.reload</code> для переинициализации модуля после monkeypatching <code>sys.modules</code>; фейковые реализации возвращают управляемый <code>extracted_text</code> или его UTF-8 версию; проверка промптов через инспекцию аргументов <code>AsyncMock</code>.</p>
+<p>Модуль содержит набор тестов для компонента <code>PluginManager</code>, отвечающего за динамическую загрузку, регистрацию и вызов плагинов бота.</p>
+<p><strong>Назначение:</strong> Проверка корректности работы менеджера плагинов, включая разрешение конфликтов имён, фильтрацию разрешённых плагинов, валидацию уникальности функций и передачу контекста запроса в плагины.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Сущность</th>
+<th>Описание</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PluginManager</code></td>
+<td>Центральный компонент загрузки и управления плагинами</td>
+</tr>
+<tr>
+<td><code>Plugin</code></td>
+<td>Базовый класс плагина, от которого наследуются тестовые реализации</td>
+</tr>
+<tr>
+<td><code>RequestContext</code></td>
+<td>Контекст запроса с идентификаторами чата, пользователя и сообщения</td>
+</tr>
+<tr>
+<td><code>_write_plugin()</code></td>
+<td>Вспомогательная функция генерации тестовых плагинов на диск</td>
+</tr>
+<tr>
+<td><code>_write_context_plugin()</code></td>
+<td>Специализированный генератор плагина, проверяющего <code>request_context</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Тестовые сценарии:</strong></p>
+<ul>
+<li><code>test_namespacing_and_collision</code> — функции с одинаковыми именами в разных плагинах разрешаются через префикс (<code>deepl.translate</code>, <code>ddg_translate.translate</code>)</li>
+<li><code>test_filter_allowed_plugins</code> — фильтрация списка плагинов по разрешённым именам с игнорированием отсутствующих</li>
+<li><code>test_function_allowlist_uses_plugin_ownership</code> — привязка функций к владельцу-плагину и проверка прав доступа через <code>is_function_allowed()</code></li>
+<li><code>test_strict_validation_raises_on_duplicate_function_names</code> — при включённой строгой валидации (<code>PLUGIN_STRICT_VALIDATION=true</code>) дублирование имён функций вызывает <code>ValueError</code></li>
+<li><code>test_call_function_passes_request_context_to_plugin_execute</code> — <code>RequestContext</code> пробрасывается в плагин через <code>kwargs["request_context"]</code> при вызове <code>call_function()</code></li>
+</ul>
+<p><strong>Важные настройки окружения:</strong></p>
+<ul>
+<li><code>PLUGIN_STRICT_VALIDATION</code> — включает проверку уникальности имён функций между всеми загруженными плагинами; при <code>"true"</code> дубли вызывают исключение</li>
+</ul>
+<p>Модульные тесты для Telegram-бота <code>ChatGPTTelegramBot</code>, фокусирующиеся на маршрутизации запросов, потоковой обработке сообщений и взаимодействии с планировщиком задач агента.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>FakeAgentTools</code> — имитация плагина управления планами задач (<code>clear_plan_tasks</code>, <code>clear_terminal_plan_tasks</code>, <code>get_plan_tasks</code>)</li>
+<li><code>FakeOpenAI</code> — эмуляция потоковых ответов языковой модели</li>
+<li><code>FakeDB</code> — подмена хранилища контекста диалогов</li>
+<li><code>FakeMessage</code> / <code>FakeUpdate</code> / <code>FakeTelegramFile</code> — стабы объектов Telegram Bot API</li>
+<li><code>conversation_context</code> — кортеж <code>(messages_history, parse_mode, temperature, max_tokens, session_id)</code></li>
+</ul>
+<p><strong>Вспомогательные фабрики:</strong></p>
+<ul>
+<li><code>_make_bot()</code> — сборка тестового экземпляра с предустановленной конфигурацией</li>
+<li><code>_make_context()</code> — генерация фиктивного контекста выполнения Telegram</li>
+</ul>
+<p><strong>Механизм подмены модулей:</strong> динамическая установка заглушек для <code>tiktoken</code>, <code>pydub</code>, <code>markdown2</code>, <code>tenacity</code> через манипуляцию <code>sys.modules</code> до импорта тестируемого кода.</p>
+<p><strong>Тестовые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Тест</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_process_message_clears_terminal_plan_before_agent_request</code></td>
+<td>Очистка терминальных планов перед запросом к агенту</td>
+</tr>
+<tr>
+<td><code>test_handle_direct_result_clears_plan_after_success</code></td>
+<td>Удаление планов после успешной отправки прямого результата</td>
+</tr>
+<tr>
+<td><code>test_streaming_unpacks_conversation_context_5_tuple</code></td>
+<td>Корректная распаковка 5-элементного кортежа контекста при потоковой обработке</td>
+</tr>
+<tr>
+<td><code>test_streaming_falls_back_to_html_when_parse_mode_is_none</code></td>
+<td>Установка <code>ParseMode.HTML</code> при <code>parse_mode=None</code></td>
+</tr>
+<tr>
+<td><code>test_plain_text_image_edit_request_uses_normal_chat</code></td>
+<td>Текстовый запрос на редактирование изображения вне image pipeline</td>
+</tr>
+<tr>
+<td><code>test_reply_to_image_edit_request_still_edits_image</code></td>
+<td>Ответ на фото с интентом <code>image_edit</code> вызывает <code>_edit_image_from_context</code></td>
+</tr>
+<tr>
+<td><code>test_reply_to_document_adds_downloaded_file_context_to_chat_request</code></td>
+<td>Скачивание документа, включение метаданных (<code>local_path</code>, <code>file_name</code>, <code>size_bytes</code>) в промпт, автоматическая очистка временных файлов</td>
+</tr>
+<tr>
+<td><code>test_streaming_reply_text_failure_is_logged_and_does_not_retry_each_chunk</code></td>
+<td>Логирование ошибки отправки чанка без повторных попыток для каждого чанка</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Конфигурация тестового бота (<code>_make_bot</code>):</strong></p>
+<ul>
+<li><code>allowed_user_ids: "*"</code> — отключена проверка доступа</li>
+<li><code>stream: True</code> — включена потоковая передача</li>
+<li><code>enable_image_generation</code>, <code>enable_vision</code>, <code>enable_quoting</code> — отключены</li>
+<li><code>token_price: 0.0</code> — обнулена стоимость токенов</li>
+</ul>
+<p><strong>Детали реализации:</strong> <code>monkeypatch</code> для подмены <code>edit_message_with_retry</code> и <code>wrap_with_indicator</code>, <code>AsyncMock</code>/<code>Mock(side_effect=...)</code> для верификации вызовов, <code>caplog.at_level(logging.DEBUG)</code> для проверки обработки исключений, проверка удаления временных файлов через <code>Path.exists()</code>.</p>
+<p>Файл содержит модульные тесты для Telegram-бота, проверяющие механизмы авторизации, защиту от несанкционированного доступа при обработке callback-запросов, многоязычность и пользовательские настройки.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><strong>Фейковые модули</strong> — ленивая подмена зависимостей (<code>tiktoken</code>, <code>pydub</code>, <code>markdown2</code>, <code>tenacity</code>) через динамическую вставку в <code>sys.modules</code> с минимальной реализацией интерфейсов; очистка <code>_INSERTED_MODULES</code> после импорта тестируемого кода</li>
+<li><strong>Фейковые объекты Telegram</strong> — <code>FakeCallbackMessage</code>, <code>FakeCallbackQuery</code>, <code>FakeCallbackUpdate</code> имитируют структуру <code>python-telegram-bot</code></li>
+<li><strong>Фабрики тестовых объектов</strong> — <code>_make_context()</code>, <code>_make_db()</code>, <code>_make_openai()</code>, <code>_make_bot()</code> создают изолированные инстансы бота с мокированными зависимостями</li>
+<li><strong>FakeSettingsPluginManager</strong> — заглушка менеджера плагинов с предустановленным набором плагинов и навыков</li>
+<li><strong>Функции и обработчики</strong> — <code>is_allowed</code>, <code>_get_user_language</code>, <code>_build_language_settings_menu</code>, <code>handle_plugin_callback_query</code>, <code>handle_settings_callback</code></li>
+</ul>
+<p><strong>Покрываемые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Область</th>
+<th>Проверяемое поведение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Авторизация</td>
+<td>Режим <code>allowed_user_ids="*"</code> разрешает доступ любым пользователям; строгий список блокирует посторонних с сообщением <code>access_denied_command</code>; проверка <code>get_chat_member</code> для разрешённых пользователей</td>
+</tr>
+<tr>
+<td>Защита callback</td>
+<td>Неавторизованный выбор промпта не изменяет сессию, контекст и не вызывает сброс; неавторизованные операции с сессиями (<code>new</code>, <code>switch</code>, <code>delete</code>, <code>export</code>) не мутируют БД и не сбрасывают историю; проверка членства в группе при отсутствии сообщения у callback-запроса</td>
+</tr>
+<tr>
+<td>Автоопределение языка</td>
+<td>При <code>bot_language=auto</code> язык определяется из <code>language_code</code> пользователя, сохраняется в БД и кешируется на первом контакте</td>
+</tr>
+<tr>
+<td>Язык по умолчанию</td>
+<td>Явный <code>bot_language</code> используется по умолчанию; пользовательская настройка из БД имеет приоритет</td>
+</tr>
+<tr>
+<td>UI настроек</td>
+<td>Меню языков отображает по 2 кнопки в ряд, навигация <code>settings:root</code> возвращает в корень настроек</td>
+</tr>
+<tr>
+<td>Смена языка</td>
+<td>Callback <code>settings:lang_set:{code}</code> обновляет кеш, БД и подтверждает выбор локализованным сообщением</td>
+</tr>
+<tr>
+<td>TTS</td>
+<td>Callback <code>settings:tts_model_set:{page}:{index}</code> и <code>settings:tts_voice_set:{page}:{index}</code> сохраняют выбранную модель и голос</td>
+</tr>
+<tr>
+<td>Плагины и навыки</td>
+<td>Callback <code>settings:plugin_toggle:{page}:{index}</code> и <code>settings:skill_toggle:{page}:{index}</code> переключают состояние, обновляя массивы <code>disabled_plugins</code> и <code>disabled_skills</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные настройки тестового окружения:</strong></p>
+<ul>
+<li><code>allowed_user_ids</code> — <code>"*"</code> (все разрешены), <code>"111"</code> (конкретный ID), <code>"-"</code> (пусто)</li>
+<li><code>admin_user_ids</code> — администраторы бота (<code>"-"</code> в тестах)</li>
+<li><code>bot_language</code> — <code>"auto"</code>, <code>"en"</code>, <code>"ru"</code> и др.</li>
+<li><code>max_sessions</code> — лимит сессий на пользователя (<code>5</code>)</li>
+<li><code>callback_query_handler</code> — передаваемый обработчик плагинов</li>
+</ul>
+<p>Файл содержит модульные тесты для клиента <code>LLMGatewayClient</code>, реализующего взаимодействие с LLM Gateway в рамках сервисной сети (service mesh). Тесты покрывают операции редактирования изображений, получения списка голосов для TTS и обработку ошибок HTTP-запросов.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>FakeResponse</code> / <code>FakeVoiceResponse</code> — имитации успешных HTTP-ответов для POST и GET соответственно</li>
+<li><code>FakeAsyncClient</code> — фейковый асинхронный HTTP-клиент с захватом всех вызовов (<code>calls</code>) для последующей проверки параметров запроса</li>
+<li><code>FakeErrorResponse</code> / <code>FakeErrorAsyncClient</code> — имитации сценариев ошибок шлюза (HTTP 502) с длинным телом ответа для проверки включения полного текста в исключение</li>
+<li><code>LLMGatewayClient</code> — тестируемый клиент шлюза LLM</li>
+</ul>
+<p><strong>Тестовые сценарии:</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Тест</th>
+<th style="text-align: left;">Проверяемая функция</th>
+<th style="text-align: left;">Ключевые аспекты</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>test_image_edit_file_uses_multipart_payload</code></td>
+<td style="text-align: left;"><code>image_edit_file()</code></td>
+<td style="text-align: left;">Multipart-загрузка: поле <code>files</code> с кортежем <code>(filename, bytes, mime-type)</code>, поля <code>data</code> с моделью и промптом, заголовки авторизации и идентификатора сервиса <code>X-Title: tgBot</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>test_audio_voices_uses_get_with_model_query</code></td>
+<td style="text-align: left;"><code>audio_voices()</code></td>
+<td style="text-align: left;">GET-запрос с query-параметром <code>model</code>, таймаут 30.0 сек, заголовки авторизации</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>test_post_json_error_includes_full_response_text</code></td>
+<td style="text-align: left;"><code>post_json()</code></td>
+<td style="text-align: left;">При ошибке пробрасывается <code>LLMGatewayError</code> с полным текстом ответа (включая тело &gt;700 символов)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>test_post_multipart_error_includes_full_response_text</code></td>
+<td style="text-align: left;"><code>post_multipart()</code></td>
+<td style="text-align: left;">Аналогичная проверка для multipart-запросов</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>test_get_json_error_includes_full_response_text</code></td>
+<td style="text-align: left;"><code>get_json()</code></td>
+<td style="text-align: left;">Аналогичная проверка для GET-запросов</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Важные настройки и константы:</strong></p>
+<ul>
+<li>Базовый URL шлюза: <code>https://gateway.example/v1</code></li>
+<li>API-ключ: <code>test-key</code></li>
+<li>Модель редактирования изображений: <code>LLMGATEWAY_IMAGE_EDIT_MODEL</code> (импорт из <code>bot.model_constants</code>)</li>
+<li>Эндпоинты: <code>/images/edits</code>, <code>/audio/voices</code></li>
+<li>Идентификатор сервиса в заголовке <code>X-Title</code>: <code>tgBot</code></li>
+</ul>
+<p>Файл содержит тестовую функцию <code>test_duplicate_plugin_commands</code> для проверки обработки конфликтующих команд плагинов, а также вспомогательную функцию <code>_write_plugin</code> для генерации тестовых плагинов.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>_write_plugin(path, class_name, command_name)</code> — создаёт Python-файл плагина с заданным именем класса и командой; генерирует минимальную реализацию базового класса <code>Plugin</code> с методами <code>get_source_name</code>, <code>get_spec</code>, <code>execute</code> и <code>get_commands</code></li>
+<li><code>test_duplicate_plugin_commands(tmp_path)</code> — тестовая функция, проверяющая, что при наличии двух плагинов с одинаковой командой <code>"dup"</code> менеджер плагинов возвращает эту команду только один раз</li>
+</ul>
+<p><strong>Логика теста:</strong></p>
+<ol>
+<li>Создаёт временную директорию <code>plugins</code> через фикстуру <code>tmp_path</code></li>
+<li>Генерирует два плагина (<code>OnePlugin</code> в <code>one.py</code> и <code>TwoPlugin</code> в <code>two.py</code>), оба регистрирующие команду <code>"dup"</code></li>
+<li>Инициализирует <code>PluginManager</code> с пустым конфигом <code>{"plugins": []}</code> и указанием директории плагинов</li>
+<li>Проверяет утверждение: команда <code>"dup"</code> присутствует в итоговом списке ровно один раз (<code>names.count("dup") == 1</code>)</li>
+</ol>
+<p><strong>Важные аспекты:</strong></p>
+<ul>
+<li>Использует <code>textwrap.dedent</code> для корректного форматирования генерируемого кода</li>
+<li>Проверяет поведение <code>PluginManager</code> при конфликте имён команд — ожидается дедупликация или приоритизация одной из команд</li>
+<li>Зависимости: <code>pathlib.Path</code>, <code>bot.plugin_manager.PluginManager</code>, <code>bot.plugins.plugin.Plugin</code></li>
+</ul>
+<p>Тестовый модуль для плагина <code>TextDocumentQAPlugin</code>, реализующего интеграцию с AnythingLLM для загрузки, поиска и удаления текстовых документов.</p>
+<p><strong>Ключевые сущности:</strong></p>
+<ul>
+<li><code>TextDocumentQAPlugin</code> — основной плагин, работающий с документами через AnythingLLM API</li>
+<li><code>_plugin()</code> — фабрика для создания экземпляра плагина с настраиваемым HTTP-транспортом и временными директориями</li>
+<li><code>_set_anythingllm_env()</code> — вспомогательная функция для установки переменных окружения AnythingLLM</li>
+<li><code>_direct_value()</code> — извлекает значение из поля <code>direct_result.value</code> ответа плагина</li>
+</ul>
+<p><strong>Покрываемые сценарии:</strong></p>
+<ul>
+<li><code>test_upload_document_creates_per_chat_workspace_and_metadata</code> — загрузка документа: создание рабочего пространства (workspace) уникального для чата, загрузка файла, сохранение метаданных и маппинга чат→slug</li>
+<li><code>test_ask_question_uses_anythingllm_workspace_chat</code> — запрос к документу: вызов чата workspace с передачей <code>sessionId</code>, обновление <code>last_accessed</code> в метаданных</li>
+<li><code>test_delete_document_detaches_document_from_workspace</code> — удаление документа: отсоединение от workspace (<code>update-embeddings</code> с <code>deletes</code>), затем физическое удаление (<code>remove-documents</code>)</li>
+<li><code>test_ensure_workspace_reuses_cached_slug</code> — кеширование: повторное использование slug из <code>anythingllm_workspaces.json</code> без создания нового workspace</li>
+<li><code>test_missing_anythingllm_configuration_fails_before_upload</code> — валидация: отсутствие обязательных переменных окружения приводит к ошибке <code>"Missing AnythingLLM configuration: ANYTHINGLLM_BASE_URL, ANYTHINGLLM_API_KEY"</code> до выполнения запроса</li>
+</ul>
+<p><strong>Важные параметры workspace:</strong></p>
+<ul>
+<li><code>chatMode</code>: <code>"query"</code> — режим запросов без сохранения истории диалога</li>
+<li><code>vectorSearchMode</code>: <code>"rerank"</code> — режим векторного поиска с реранжированием</li>
+<li><code>topN</code>: <code>6</code> — количество возвращаемых чанков</li>
+<li><code>similarityThreshold</code>: <code>0.25</code> — порог схожести для векторного поиска</li>
+</ul>
+<p><strong>Файловые артефакты:</strong></p>
+<ul>
+<li><code>anythingllm_workspaces.json</code> — маппинг <code>chat_id</code> → <code>workspace_slug</code></li>
+<li><code>document_metadata/{doc_id}.json</code> — метаданные документа: <code>backend</code>, <code>owner_chat_id</code>, <code>workspace_slug</code>, <code>anythingllm_location</code>, <code>summary</code>, <code>created_at</code>, <code>last_accessed</code></li>
+</ul>
+<p><strong>Переменные окружения:</strong></p>
+<ul>
+<li><code>ANYTHINGLLM_BASE_URL</code> — базовый URL API AnythingLLM</li>
+<li><code>ANYTHINGLLM_API_KEY</code> — ключ авторизации (передаётся как <code>Bearer secret</code>)</li>
+</ul>
+<p>Модуль реализует асинхронный MCP-клиент с транспортом stdio для тестирования взаимодействия с MCP-сервером. Выполняет инициализацию соединения, получение списка доступных инструментов и демонстрационные вызовы арифметических функций и функции приветствия. Использует контекстные менеджеры для управления жизненным циклом транспортного соединения и клиентской сессии.</p>
+<p>Модуль реализует простой MCP-сервер на базе FastMCP с четырьмя инструментами для базовых математических операций и формирования приветственных сообщений. Сервер использует stdio-транспорт для взаимодействия с клиентами и ведёт подробное логирование всех вызовов.</p>
+<p>Модуль реализует пример MCP-сервера на базе FastAPI для интеграции с Telegram-ботом. Предоставляет REST API для получения списка доступных инструментов (погода, конвертация валют, генерация идентификаторов) и их выполнения по запросу. Включает модели данных Pydantic, in-memory хранилища примерных данных и базовую авторизацию через заголовки.</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = ".",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="js/base.js"></script>
+        <script src="search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

@@ -1,0 +1,1731 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../img/favicon.ico">
+        <title>telegram_bot.py - chatgpt-telegram-bot</title>
+        <link href="../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../css/brands.min.css" rel="stylesheet">
+        <link href="../../css/solid.min.css" rel="stylesheet">
+        <link href="../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="telegram_bot__py.html" class="dropdown-item active" aria-current="page">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="skill_script_routing__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="usage_tracker__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#bottelegram_bot" class="nav-link">bot/telegram_bot</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="bottelegram_bot">bot/telegram_bot</h1>
+<p><em>Источник:</em> <code>bot/telegram_bot.py</code></p>
+<p>Модуль <code>bot</code> реализует основной класс Telegram-бота <code>ChatGPTTelegramBot</code> (алиас <code>TelegramBot</code>), интегрирующий OpenAI API и альтернативные провайдеры LLM с платформой Telegram. Поддерживает мультиязычность, плагиновую архитектуру, генерацию изображений (DALL·E), голосовых сообщений (TTS), транскрипцию аудио (Whisper), интерпретацию изображений (Vision), отслеживание использования токенов и бюджета, управление пользовательскими сессиями через базу данных, буферизацию сообщений с группировкой по времени, потоковую и пакетную генерацию ответов, inline-запросы с кешированием, интерактивные настройки с пагинацией и интеграцию с агентскими инструментами.</p>
+<p>Ключевые структуры данных
+<code>ChatGPTTelegramBot</code> / <code>TelegramBot</code> — Основной класс бота, инкапсулирующий конфигурацию (<code>BotConfig</code>), состояние диалогов, кеши настроек, буферы сообщений и обработчики Telegram.
+<code>RequestContext</code> — Контекст запроса с идентификаторами чата, пользователя, сообщения и составным <code>request_id</code> для трассировки.
+<code>UsageTracker</code> — Трекер использования API для подсчёта расхода токенов, изображений, транскрипций и TTS.
+<code>BusyStatusMessage</code> / <code>BusyStatus</code> — Индикатор активной обработки с автоматическим обновлением статуса.
+<code>buffer_data</code> — Структура буфера чата: <code>messages</code> (список), <code>processing</code> (bool), <code>timer</code> (<code>asyncio.Task</code> или <code>None</code>).
+<code>inline_queries_cache</code> — Словарь кешированных inline-запросов с ограничением по размеру и времени жизни.
+<code>file_context</code> — Словарь с ключами <code>local_path</code>, <code>file_name</code>, <code>mime_type</code>, <code>file_size</code>, описывающий загруженный файл для передачи в модель.
+<code>_UpdateProxy</code> — Прокси-класс для унифицированного доступа к <code>message</code> при отсутствии <code>update.message</code>.
+<code>UserSession</code> — Данные пользовательской сессии, включая историю сообщений и настройки.
+<code>BackgroundTask</code> — Фоновая задача <code>asyncio</code>, накопленная в <code>_background_tasks</code> для последующей отменки.</p>
+<hr />
+<p><code>ChatGPTTelegramBot.__init__(self, config: dict, openai: OpenAIHelper, db: Database)</code>
+Инициализирует бота с заданной конфигурацией, объектом <code>OpenAIHelper</code> и подключением к базе данных.
+Аргументы
+<code>config</code> — Словарь с конфигурацией бота (<code>BotConfig</code>).
+<code>openai</code> — Экземпляр <code>OpenAIHelper</code> для взаимодействия с LLM.
+<code>db</code> — Экземпляр <code>Database</code> для хранения настроек и статистики.</p>
+<hr />
+<p><code>ChatGPTTelegramBot._is_auto_language_enabled(self) -&gt; bool</code>
+Проверяет, включён ли режим автоматического определения языка на основе конфигурации.</p>
+<hr />
+<p><code>ChatGPTTelegramBot._configured_language(self) -&gt; str</code>
+Возвращает нормализованный язык из конфигурации или язык по умолчанию при отключённом автоопределении.</p>
+<hr />
+<p><code>ChatGPTTelegramBot._detect_user_language(self, update: Update) -&gt; str</code>
+Определяет язык пользователя из объекта обновления Telegram.
+Аргументы
+<code>update</code> — Объект обновления от Telegram API.</p>
+<hr />
+<p><code>ChatGPTTelegramBot._get_user_language(self, update: Update) -&gt; str</code>
+Получает язык пользователя с кешированием в памяти и fallback на автоопределение или конфигурацию.
+Аргументы
+<code>update</code> — Объект обновления от Telegram API.</p>
+<hr />
+<p><code>ChatGPTTelegramBot.prepare_user_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Асинхронно устанавливает текущий язык локализации для последующих операций.
+Аргументы
+<code>update</code> — Объект обновления от Telegram API.
+<code>context</code> — Контекст обработчика Telegram.</p>
+<hr />
+<p><code>ChatGPTTelegramBot.get_chat_modes(self)</code>
+Возвращает словарь режимов чата из YAML-файла с кешированием на 5 минут.</p>
+<hr />
+<p><code>ChatGPTTelegramBot._image_file_id_from_message(self, message)</code>
+Извлекает идентификатор файла изображения из сообщения, если оно содержит медиа.
+Аргументы
+<code>message</code> — Объект сообщения Telegram.
+Возвращает
+Строку <code>file_id</code> последнего (наибольшего) изображения из <code>photo</code>, или <code>file_id</code> документа с MIME-типом <code>image/*</code>, или <code>None</code>, если изображение отсутствует.</p>
+<hr />
+<p><code>_document_file_from_message(self, message)</code>
+Извлекает документ из сообщения Telegram, исключая изображения.
+Аргументы
+<code>message</code> — Объект сообщения Telegram (<code>Message</code>), из которого извлекается документ.
+Возвращает
+Объект документа (<code>Document</code>), если он присутствует и не является изображением; иначе <code>None</code>.</p>
+<hr />
+<p><code>_safe_reply_file_name(document) -&gt; str</code>
+Формирует безопасное имя файла для загруженного документа.
+Аргументы
+<code>document</code> — Объект документа Telegram (<code>Document</code>), содержащий метаданные файла.
+Возвращает
+Очищенную строку имени файла, пригодную для использования в файловой системе, с заменой небезопасных символов на подчёркивание.</p>
+<hr />
+<p><code>_download_replied_file_for_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; dict | None</code>
+Загружает файл из ответного сообщения во временную директорию для передачи модели.
+Аргументы
+<code>update</code> — Объект обновления Telegram (<code>Update</code>), содержащий сообщение с reply.
+<code>context</code> — Контекст обработчика Telegram (<code>ContextTypes.DEFAULT_TYPE</code>), предоставляющий доступ к боту.
+Возвращает
+Словарь <code>file_context</code> с информацией о загруженном файле, или <code>None</code>, если файл отсутствует или не является документом.
+Исключения
+Любое исключение при загрузке файла пробрасывается выше после попытки очистки временных ресурсов.</p>
+<hr />
+<p><code>_prompt_with_replied_file_context(prompt: str, file_context: dict) -&gt; str</code>
+Формирует расширенный промпт с контекстной информацией о загруженном файле.
+Аргументы
+<code>prompt</code> — Исходный текстовый промпт пользователя.
+<code>file_context</code> — Словарь с метаданными загруженного файла (<code>local_path</code>, <code>file_name</code>, <code>mime_type</code>, <code>file_size</code>).
+Возвращает
+Строку промпта с добавленным блоком контекста файла для модели.</p>
+<hr />
+<p><code>_cleanup_replied_file_context(file_context: dict | None) -&gt; None</code>
+Удаляет временный файл и директорию из контекста ответного сообщения.
+Аргументы
+<code>file_context</code> — Словарь с <code>local_path</code> загруженного файла, или <code>None</code>.</p>
+<hr />
+<p><code>_reply_context_kind(self, update: Update) -&gt; str | None</code>
+Определяет тип контекста ответного сообщения (изображение, текст или другое).
+Аргументы
+<code>update</code> — Объект обновления Telegram (<code>Update</code>).
+Возвращает
+Строку <code>"image"</code>, <code>"text"</code> или <code>"other"</code>, или <code>None</code>, если ответное сообщение отсутствует.</p>
+<hr />
+<p><code>_classify_reply_intent(self, update: Update, prompt: str | None) -&gt; str | None</code>
+Классифицирует намерение пользователя при ответе на сообщение с помощью лёгкой модели.
+Аргументы
+<code>update</code> — Объект обновления Telegram (<code>Update</code>).
+<code>prompt</code> — Текстовый промпт пользователя для классификации.
+Возвращает
+Строку с классифицированным намерением (<code>"image_edit"</code>, <code>"image_describe"</code>, <code>"text_reply"</code>) или <code>None</code> при ошибке или отсутствии классификации.</p>
+<hr />
+<p><code>_remember_sent_image_messages(self, update: Update, sent_messages) -&gt; None</code>
+Сохраняет идентификаторы отправленных изображений в базу данных и обновляет контекст OpenAI.
+Аргументы
+<code>update</code> — Объект обновления Telegram (<code>Update</code>), содержащий информацию о пользователе и чате.
+<code>sent_messages</code> — Отправленное сообщение или список сообщений для анализа.</p>
+<hr />
+<p><code>_get_agent_tools_plugin(self)</code>
+Получает экземпляр плагина агентских инструментов через менеджер плагинов.
+Возвращает
+Объект плагина <code>"agent_tools"</code> или <code>None</code>, если плагин недоступен.</p>
+<hr />
+<p><code>_clear_agent_plan(self, chat_id, user_id, *, reason: str, terminal_only: bool = False) -&gt; None</code>
+Очищает план задач агента для указанного чата и пользователя.
+Аргументы
+<code>chat_id</code> — Идентификатор чата.
+<code>user_id</code> — Идентификатор пользователя.
+<code>reason</code> — Причина очистки плана (обязательный именованный аргумент).
+<code>terminal_only</code> — Флаг очистки только терминальных задач; по умолчанию <code>False</code>.</p>
+<hr />
+<p><code>_build_plan_status_provider(self, chat_id, user_id)</code>
+Создаёт провайдер статуса плана агента для отображения прогресса выполнения.
+Аргументы
+<code>chat_id</code> — Идентификатор чата.
+<code>user_id</code> — Идентификатор пользователя.
+Возвращает
+Кортеж <code>(provider, interval)</code>: функция-генератор задач плана и интервал обновления в секундах, или <code>(None, 30.0)</code> при отсутствии плагина.</p>
+<hr />
+<p><code>async def _handle_direct_result(self, update: Update, response: dict | str) -&gt; None</code>
+Доставляет прямой результат пользователю в чат Telegram и выполняет пост-доставочную очистку.
+Аргументы
+<code>update</code> — объект обновления Telegram с контекстом чата и пользователя.
+<code>response</code> — словарь с полем <code>direct_result</code> или JSON-строка с аналогичной структурой.
+Возвращает
+<code>None</code> (возвращаемое значение не определено; при ошибке доставки уведомляет пользователя и прерывает выполнение).</p>
+<hr />
+<p><code>async def _run_post_delivery_cleanup(self, response: dict | str) -&gt; None</code>
+Выполняет очистку ресурсов плагинов после успешной доставки результата.
+Аргументы
+<code>response</code> — словарь с полем <code>direct_result</code> или JSON-строка; извлекает <code>cleanup_skill</code>/<code>cleanup_skills</code>.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>async def _enqueue_hindsight_session_finalize_before_delete(self, user_id: int, session_id: str | None) -&gt; int</code>
+Создаёт отложенную задачу финализации сессии Hindsight перед её удалением.
+Аргументы
+<code>user_id</code> — идентификатор пользователя Telegram.
+<code>session_id</code> — идентификатор сессии для финализации; при <code>None</code> или пустом значении задача не создаётся.
+Возвращает
+Идентификатор созданной задачи (<code>job_id</code>) или <code>0</code>, если задача не создана.
+Исключения
+<code>Exception</code> — при ошибке получения контекста сессии из базы данных; исключение пробрасывается после логирования.</p>
+<hr />
+<p><code>async def _enqueue_hindsight_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -&gt; None</code>
+Выбирает старые сессии для финализации, создаёт задачи Hindsight и удаляет сессии из базы.
+Аргументы
+<code>user_id</code> — идентификатор пользователя Telegram.
+<code>max_sessions</code> — максимальное количество сессий; более старые подлежат удалению.
+Возвращает
+<code>None</code>.
+Исключения
+<code>RuntimeError</code> — если удаление сессий из базы данных не удалось.</p>
+<hr />
+<p><code>async def _process_pending_hindsight_finalize_jobs(self, limit: int = HINDSIGHT_FINALIZE_JOB_LIMIT) -&gt; int</code>
+Обрабатывает отложенные задачи финализации Hindsight из очереди.
+Аргументы
+<code>limit</code> — максимальное количество задач для обработки за один вызов; значение по умолчанию из константы <code>HINDSIGHT_FINALIZE_JOB_LIMIT</code>.
+Возвращает
+Количество обработанных задач.</p>
+<hr />
+<p><code>async def hindsight_finalize_worker(self) -&gt; None</code>
+Фоновый worker для циклической обработки отложенных задач Hindsight.
+Аргументы
+Отсутствуют.
+Возвращает
+<code>None</code> (цикл прерывается по <code>asyncio.CancelledError</code>).</p>
+<hr />
+<p><code>def _image_edit_source_file_id(self, update: Update, user_id: int | None = None, chat_id: int | None = None, prompt: str | None = None) -&gt; str | None</code>
+Извлекает идентификатор файла изображения для операции редактирования из текущего или ответного сообщения.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>user_id</code> — не используется (зарезервировано для совместимости).
+<code>chat_id</code> — не используется (зарезервировано для совместимости).
+<code>prompt</code> — не используется (зарезервировано для совместимости).
+Возвращает
+Идентификатор файла изображения или <code>None</code>, если изображение не найдено.</p>
+<hr />
+<p><code>def _image_description_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -&gt; str | None</code>
+Извлекает идентификатор файла изображения для операции описания из текущего или ответного сообщения.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>user_id</code> — идентификатор пользователя (не используется в логике).
+<code>chat_id</code> — идентификатор чата (не используется в логике).
+<code>prompt</code> — не используется (зарезервировано для совместимости).
+Возвращает
+Идентификатор файла изображения или <code>None</code>, если изображение не найдено.</p>
+<hr />
+<p><code>async def _telegram_image_as_png(self, file_id: str) -&gt; io.BytesIO</code>
+Загружает изображение из Telegram по идентификатору файла и конвертирует его в PNG.
+Аргументы
+<code>file_id</code> — идентификатор файла изображения в Telegram.
+Возвращает
+Объект <code>BytesIO</code> с содержимым PNG-изображения.</p>
+<hr />
+<p><code>async def _edit_image_from_context(self, update: Update, prompt: str, file_id: str) -&gt; None</code>
+Редактирует изображение по контексту и отправляет результат как прямой результат пользователю.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>prompt</code> — текстовый запрос для редактирования изображения.
+<code>file_id</code> — идентификатор исходного файла изображения.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>async def _describe_image_from_context(self, update: Update, prompt: str, file_id: str) -&gt; None</code>
+Описывает изображение по контексту; метод обрезан в предоставленном фрагменте.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>prompt</code> — текстовый запрос для описания изображения.
+<code>file_id</code> — идентификатор файла изображения.
+Возвращает
+<code>None</code> (реализация обрезана в исходном коде).</p>
+<hr />
+<p><code>async def interpret_image(self, update: Update, image_file, prompt: str) -&gt; None</code>
+Интерпретирует изображение через OpenAI и отправляет результат пользователю.
+Аргументы
+<code>update</code> — объект обновления Telegram с информацией о сообщении.
+<code>image_file</code> — файл изображения для интерпретации.
+<code>prompt</code> — текстовый промпт для модели vision.
+Исключения
+<code>BadRequest</code> — при ошибке отправки с Markdown-форматированием, отправляет текст без форматирования.
+<code>Exception</code> — при ошибке интерпретации отправляет локализованное сообщение об ошибке.</p>
+<hr />
+<p><code>def cleanup_inline_cache(self) -&gt; None</code>
+Очищает устаревшие записи из кеша inline-запросов, оставляя последние 100 записей каждые 10 минут.</p>
+<hr />
+<p><code>async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Отправляет справочное меню с доступными командами и дополнительной информацией.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>_</code> — неиспользуемый контекст бота.</p>
+<hr />
+<p><code>async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Возвращает статистику использования токенов за текущий день и месяц, информацию о сессиях и бюджете.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст бота с конфигурацией.
+Исключения
+Access denied — если пользователь не в списке <code>allowed_user_ids</code>, отправляет сообщение о запрете доступа.</p>
+<hr />
+<p><code>async def resend(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Повторно отправляет последний запрос пользователя.
+Аргументы
+<code>update</code> — объект обновления Telegram с информацией о сообщении.
+<code>context</code> — контекст обработчика с данными приложения.
+Исключения
+Отправляет сообщение об ошибке, если у пользователя нет сохранённого последнего сообщения.</p>
+<hr />
+<p><code>async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Отображает меню настроек пользователя.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+Исключения
+Отправляет сообщение о запрете доступа при отсутствии разрешения.</p>
+<hr />
+<p><code>async def handle_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает callback-запросы из inline-меню настроек.
+Аргументы
+<code>update</code> — объект обновления с <code>callback_query</code>.
+<code>context</code> — контекст обработчика.
+Исключения
+Игнорирует запросы без <code>query.data</code>, прерывает обработку при отсутствии прав доступа.</p>
+<hr />
+<p><code>def get_credits(self)</code>
+Запрашивает текущий баланс кредитов через VSEGPT API.
+Возвращает
+<code>float</code> — количество доступных кредитов при успешном ответе; <code>str</code> — причина ошибки от API; <code>ValueError</code> — при HTTP-ошибке.
+Исключения
+<code>ValueError</code> — при получении неуспешного HTTP-статуса от API.</p>
+<hr />
+<p><code>async def _show_usage_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Формирует и отправляет статистику использования бота за текущую сессию, все сессии, сегодня и месяц.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+Возвращает
+Отправляет форматированное сообщение со статистикой в чат.</p>
+<hr />
+<p><code>def _settings_page(self, parts: list) -&gt; int</code>
+Извлекает номер страницы из разобранных частей callback-данных.
+Аргументы
+<code>parts</code> — список строк, полученный разделением <code>query.data</code> по <code>':'</code>.
+Возвращает
+<code>int</code> — номер страницы (по умолчанию 0).</p>
+<hr />
+<p><code>def _settings_text(self, bot_language: str, user_id: int | None) -&gt; str</code>
+Формирует текст заголовка меню настроек.
+Аргументы
+<code>bot_language</code> — код языка интерфейса.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+<code>str</code> — локализованный текст заголовка настроек.</p>
+<hr />
+<p><code>def _build_settings_menu(self, bot_language: str, user_id: int | None) -&gt; InlineKeyboardMarkup</code>
+Создаёт разметку клавиатуры основного меню настроек.
+Аргументы
+<code>bot_language</code> — код языка интерфейса.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+<code>InlineKeyboardMarkup</code> — объект разметки inline-клавиатуры.</p>
+<hr />
+<p><code>def _build_language_settings_menu(self, page: int, bot_language: str) -&gt; InlineKeyboardMarkup</code>
+Создаёт разметку клавиатуры выбора языка с пагинацией.
+Аргументы
+<code>page</code> — номер текущей страницы.
+<code>bot_language</code> — код языка интерфейса.
+Возвращает
+<code>InlineKeyboardMarkup</code> — объект разметки inline-клавиатуры с языками и навигацией.</p>
+<hr />
+<p><code>async def _show_tts_model_settings(self, query: CallbackQuery, page: int, user_id: int | None)</code>
+Отображает меню выбора модели TTS.
+Аргументы
+<code>query</code> — объект callback-запроса.
+<code>page</code> — номер текущей страницы.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.</p>
+<hr />
+<p><code>_settings_page(parts: list[str]) -&gt; int</code>
+Извлекает номер страницы из callback-данных.
+Аргументы
+<code>parts</code> — список строк, разбитых по разделителю callback-данных; ожидается индекс 2 с номером страницы.
+Возвращает
+Номер страницы (не менее 0) или 0 при ошибке парсинга.</p>
+<hr />
+<p><code>_settings_index(parts: list[str]) -&gt; int | None</code>
+Извлекает индекс элемента из callback-данных.
+Аргументы
+<code>parts</code> — список строк, разбитых по разделителю callback-данных; ожидается индекс 3 с индексом элемента.
+Возвращает
+Индекс элемента (не менее 0) или <code>None</code> при ошибке парсинга.</p>
+<hr />
+<p><code>_settings_label(value: str, max_chars: int = 34) -&gt; str</code>
+Сокращает строковое значение для отображения в кнопках меню.
+Аргументы
+<code>value</code> — исходная строка для отображения.
+<code>max_chars</code> — максимальное количество символов (по умолчанию 34).
+Возвращает
+Сокращённая строка с многоточием или исходная строка, если умещается.</p>
+<hr />
+<p><code>_settings_for_user(user_id: int | None) -&gt; dict</code>
+Получает настройки пользователя из базы данных.
+Аргументы
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+Словарь настроек пользователя или пустой словарь при отсутствии подключения к БД.</p>
+<hr />
+<p><code>_settings_text(bot_language: str, user_id: int | None = None) -&gt; str</code>
+Формирует текстовое описание текущих настроек пользователя.
+Аргументы
+<code>bot_language</code> — текущий язык интерфейса бота.
+<code>user_id</code> — идентификатор пользователя или <code>None</code> для использования настроек по умолчанию.
+Возвращает
+Многострочная строка с перечислением текущих настроек языка, TTS-модели, TTS-голоса, отключённых плагинов и навыков.</p>
+<hr />
+<p><code>_build_settings_menu(bot_language: str, user_id: int | None = None) -&gt; InlineKeyboardMarkup</code>
+Создаёт главное меню настроек с кнопками перехода к подменю.
+Аргументы
+<code>bot_language</code> — текущий язык интерфейса бота.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> с кнопками языка, TTS-модели, TTS-голоса, плагинов, навыков и закрытия меню.</p>
+<hr />
+<p><code>_build_language_settings_menu(page: int, current_language: str) -&gt; InlineKeyboardMarkup</code>
+Создаёт меню выбора языка с пагинацией.
+Аргументы
+<code>page</code> — номер текущей страницы.
+<code>current_language</code> — код текущего выбранного языка.
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> с кнопками языков, помеченными галочкой для текущего выбора, навигацией по страницам и кнопкой возврата.</p>
+<hr />
+<p><code>_build_option_settings_menu(items: list[str], *, page: int, current_value: str | None, page_action: str, set_action: str) -&gt; InlineKeyboardMarkup</code>
+Создаёт универсальное меню выбора из списка опций с пагинацией.
+Аргументы
+<code>items</code> — список строковых опций для отображения.
+<code>page</code> — номер текущей страницы.
+<code>current_value</code> — текущее выбранное значение для пометки галочкой или <code>None</code>.
+<code>page_action</code> — callback-действие для навигации по страницам.
+<code>set_action</code> — callback-действие для выбора элемента.
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> с кнопками опций, навигацией по страницам и кнопкой возврата.</p>
+<hr />
+<p><code>_build_toggle_settings_menu(self, items: list[str], *, page: int, disabled_values: list[str], page_action: str, toggle_action: str) -&gt; InlineKeyboardMarkup</code>
+Строит пагинированное меню с переключаемыми элементами (две колонки) и навигацией.
+Аргументы
+<code>items</code> — список элементов для отображения.
+<code>page</code> — номер текущей страницы (0-based).
+<code>disabled_values</code> — список значений, отображаемых как отключённые.
+<code>page_action</code> — идентификатор действия для навигации по страницам.
+<code>toggle_action</code> — идентификатор действия для переключения элемента.
+Возвращает
+Разметка inline-клавиатуры с кнопками элементов и навигацией.</p>
+<hr />
+<p><code>_append_settings_nav_rows(self, keyboard: list, page: int, total_pages: int, page_action: str) -&gt; None</code>
+Дополняет клавиатуру строками навигации по страницам и кнопкой возврата.
+Аргументы
+<code>keyboard</code> — изменяемый список строк клавиатуры.
+<code>page</code> — текущая страница.
+<code>total_pages</code> — общее количество страниц.
+<code>page_action</code> — идентификатор действия навигации.</p>
+<hr />
+<p><code>_show_tts_model_settings(self, query, page: int, user_id: int | None) -&gt; None</code>
+Отображает меню выбора TTS-модели с пагинацией.
+Аргументы
+<code>query</code> — объект callback-запроса Telegram.
+<code>page</code> — номер страницы для отображения.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.</p>
+<hr />
+<p><code>_set_tts_model_setting(self, query, parts: list[str], user_id: int | None, bot_language: str) -&gt; None</code>
+Устанавливает выбранную пользователем TTS-модель и возвращает в главное меню настроек.
+Аргументы
+<code>query</code> — объект callback-запроса Telegram.
+<code>parts</code> — разобранные компоненты <code>callback_data</code>.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+<code>bot_language</code> — код языка интерфейса бота.</p>
+<hr />
+<p><code>_show_tts_voice_settings(self, query, page: int, user_id: int | None) -&gt; None</code>
+Отображает меню выбора TTS-голоса для текущей модели пользователя.
+Аргументы
+<code>query</code> — объект callback-запроса Telegram.
+<code>page</code> — номер страницы для отображения.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.</p>
+<hr />
+<p><code>_set_tts_voice_setting(self, query, parts: list[str], user_id: int | None, bot_language: str) -&gt; None</code>
+Устанавливает выбранный TTS-голос и возвращает в главное меню настроек.
+Аргументы
+<code>query</code> — объект callback-запроса Telegram.
+<code>parts</code> — разобранные компоненты <code>callback_data</code>.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+<code>bot_language</code> — код языка интерфейса бота.</p>
+<hr />
+<p><code>_available_plugin_names(self) -&gt; list[str]</code>
+Возвращает отсортированный список имён доступных плагинов.
+Возвращает
+Список строковых имён плагинов.</p>
+<hr />
+<p><code>_disabled_plugins_for_user(self, user_id: int | None) -&gt; set[str]</code>
+Возвращает множество отключённых плагинов для указанного пользователя.
+Аргументы
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+Множество имён отключённых плагинов.</p>
+<hr />
+<p><code>_is_plugin_disabled_for_user(self, plugin_name: str | None, user_id: int | None) -&gt; bool</code>
+Проверяет, отключён ли указанный плагин для пользователя.
+Аргументы
+<code>plugin_name</code> — имя проверяемого плагина или <code>None</code>.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+<code>True</code>, если плагин отключён; иначе <code>False</code>.</p>
+<hr />
+<p><code>_available_skill_names(self) -&gt; list[str]</code>
+Возвращает отсортированный список имён доступных навыков из плагина skills.
+Возвращает
+Список строковых имён навыков.</p>
+<hr />
+<p><code>_build_plugin_settings_menu(self, page: int, user_id: int | None) -&gt; InlineKeyboardMarkup</code>
+Строит меню управления плагинами с возможностью включения/отключения.
+Аргументы
+<code>page</code> — номер страницы для отображения.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+Разметка inline-клавиатуры для управления плагинами.</p>
+<hr />
+<p><code>_build_skill_settings_menu(self, page: int, user_id: int | None) -&gt; InlineKeyboardMarkup</code>
+Строит меню управления навыками с возможностью включения/отключения.
+Аргументы
+<code>page</code> — номер страницы для отображения.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+Разметка inline-клавиатуры для управления навыками.</p>
+<hr />
+<p><code>_toggle_plugin_setting(self, query, parts: list[str], user_id: int | None) -&gt; None</code>
+Переключает состояние плагина (включён/отключён) по выбору пользователя.
+Аргументы
+<code>query</code> — объект callback-запроса Telegram.
+<code>parts</code> — разобранные компоненты <code>callback_data</code>.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.</p>
+<hr />
+<p><code>async def _toggle_plugin_setting(self, query, parts: list[str], user_id: int | None) -&gt; None</code>
+Переключает состояние включения/отключения плагина по индексу из callback-данных.
+Аргументы
+<code>query</code> — объект callback query Telegram.
+<code>parts</code> — разобранные части <code>callback_data</code> для извлечения страницы и индекса.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>async def _toggle_skill_setting(self, query, parts: list[str], user_id: int | None) -&gt; None</code>
+Переключает состояние включения/отключения навыка по индексу из callback-данных.
+Аргументы
+<code>query</code> — объект callback query Telegram.
+<code>parts</code> — разобранные части <code>callback_data</code> для извлечения страницы и индекса.
+<code>user_id</code> — идентификатор пользователя или <code>None</code>.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>_build_back_settings_menu(self) -&gt; InlineKeyboardMarkup</code>
+Создаёт inline-клавиатуру с единственной кнопкой возврата в корневое меню настроек.
+Возвращает
+<code>InlineKeyboardMarkup</code> с кнопкой "Назад".</p>
+<hr />
+<p><code>async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error: bool = False)</code>
+Сбрасывает контекст разговора и отображает меню управления сессиями.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика бота.
+<code>error</code> — флаг сброса из-за ошибки, при <code>True</code> показывает сообщение об ошибке.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Отображает текущие активные сессии пользователя с возможностью сброса или выбора промпта.
+Аргументы
+<code>update</code> — объект обновления от Telegram API.
+<code>context</code> — контекст обработчика с конфигурацией и данными пользователя.</p>
+<hr />
+<p><code>handle_prompt_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает выбор промпта пользователем через callback-запросы с навигацией по группам режимов.
+Аргументы
+<code>update</code> — объект обновления с callback-запросом.
+<code>context</code> — контекст обработчика.</p>
+<hr />
+<p><code>restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Перезапускает бота. Доступно только администраторам.
+Аргументы
+<code>update</code> — объект обновления с командой перезапуска.
+<code>context</code> — контекст обработчика.
+Исключения
+Отправляет сообщение об отказе в доступе для не-администраторов.</p>
+<hr />
+<p><code>async def restart(self)</code>
+Выполняет graceful-перезапуск бота через systemd-сервис или fallback на перезапуск Python-процесса.
+Аргументы
+Отсутствуют.
+Возвращает
+Отсутствует.
+Исключения
+Любые исключения при работе с systemd логируются как warning, перезапуск процесса гарантирован.</p>
+<hr />
+<p><code>async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Генерирует изображение по текстовому запросу пользователя с использованием DALL·E API.
+Аргументы
+<code>update</code> — объект обновления Telegram с сообщением пользователя.
+<code>context</code> — контекст обработчика Telegram-бота.
+Возвращает
+Отсутствует (ответ отправляется через API Telegram).
+Исключения
+<code>Exception</code> — при невалидном значении <code>IMAGE_RECEIVE_MODE</code> или ошибках OpenAI API.</p>
+<hr />
+<p><code>async def tts(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Синтезирует речь из текста пользователя с использованием TTS API OpenAI.
+Аргументы
+<code>update</code> — объект обновления Telegram с сообщением пользователя.
+<code>context</code> — контекст обработчика Telegram-бота.
+Возвращает
+Отсутствует (аудиофайл отправляется через API Telegram).
+Исключения
+<code>Exception</code> — при ошибках генерации речи или отправки сообщения.</p>
+<hr />
+<p><code>async def transcribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Распознаёт речь из аудиосообщения или голосового сообщения пользователя.
+Аргументы
+<code>update</code> — объект обновления Telegram с медиа-вложением.
+<code>context</code> — контекст обработчика Telegram-бота.
+Возвращает
+Отсутствует (текст транскрипции отправляется через API Telegram).
+Исключения
+<code>TimedOut</code> — при таймауте загрузки файла с повторной попыткой до <code>max_retries</code>.
+<code>Exception</code> — при исчерпании попыток или критических ошибках загрузки/конвертации.</p>
+<hr />
+<p><code>async def transcribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Обрабатывает голосовое сообщение: конвертирует в MP3, транскрибирует через OpenAI и генерирует ответ.
+Аргументы
+<code>update</code> — объект обновления Telegram с голосовым сообщением.
+<code>context</code> — контекст обработчика Telegram.
+Возвращает
+<code>None</code> (все результаты отправляются через Telegram API).</p>
+<hr />
+<p><code>async def vision(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Интерпретирует изображение с помощью vision-модели OpenAI.
+Аргументы
+<code>update</code> — объект обновления Telegram с изображением.
+<code>context</code> — контекст обработчика Telegram.
+Возвращает
+<code>None</code> (все результаты отправляются через Telegram API).</p>
+<hr />
+<p><code>async def prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Основной обработчик входящих текстовых сообщений.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика Telegram.
+Возвращает
+<code>None</code> (асинхронная отправка ответа или буферизация).
+Исключения
+Пропускает обработку при <code>edited_message</code>, <code>via_bot</code> или отсутствии <code>update.message</code>.</p>
+<hr />
+<p><code>async def _delayed_process_buffer(self, chat_id: int)</code>
+Запускает задержку перед обработкой буфера сообщений.
+Аргументы
+<code>chat_id</code> — идентификатор чата для обработки.
+Возвращает
+<code>None</code> (после задержки вызывает <code>process_buffer</code>).</p>
+<hr />
+<p><code>async def process_buffer(self, chat_id: int)</code>
+Обрабатывает накопленные в буфере сообщения, группируя их по пользователям и сортируя по времени.
+Аргументы
+<code>chat_id</code> — идентификатор чата для обработки.
+Возвращает
+<code>None</code> (асинхронная отправка ответов или обработка через OpenAI).
+Исключения
+Пропускает при отсутствии буфера или активной обработке; управление флагом <code>processing</code> через блокировку.</p>
+<hr />
+<p><code>async def process_buffer(self, chat_id: int) -&gt; None</code>
+Обрабатывает накопленные в буфере сообщения для указанного чата.
+Аргументы
+<code>chat_id</code> — идентификатор чата Telegram, буфер которого требуется обработать.
+Возвращает
+<code>None</code>.
+Исключения
+Любые исключения логируются через <code>logger.error</code> без проброса наружу; флаг <code>processing</code> сбрасывается в <code>finally</code>-блоке.</p>
+<hr />
+<p><code>async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Точка входа для обработки одиночного сообщения с гарантией последовательности в рамках одного диалога.
+Аргументы
+<code>prompt</code> — текстовый запрос к модели после предобработки.
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика Telegram-бота.
+Возвращает
+Результат вызова <code>_process_message_locked</code>.
+Исключения
+Нет явных исключений; блокировка <code>conversation_lock</code> гарантирует атомарность.</p>
+<hr />
+<p><code>async def _get_conversation_lock(self, conversation_key: int) -&gt; asyncio.Lock</code>
+Возвращает или создаёт <code>asyncio.Lock</code> для указанного ключа диалога с потокобезопасной инициализацией.
+Аргументы
+<code>conversation_key</code> — уникальный идентификатор диалога (обычно <code>chat_id</code>).
+Возвращает
+Экземпляр <code>asyncio.Lock</code>, ассоциированный с ключом.
+Исключения
+Нет; использует внутренний <code>_conversation_locks_guard</code> для синхронизации.</p>
+<hr />
+<p><code>async def _process_message_locked(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Внутренняя реализация обработки сообщения с классификацией намерений, маршрутизацией и потоковой/пакетной генерацией ответа.
+Аргументы
+<code>prompt</code> — финальный текст запроса после всех преобразований.
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика Telegram-бота.
+Возвращает
+<code>None</code>; побочные эффекты включают отправку сообщений и обновление состояния.
+Исключения
+<code>RetryAfter</code> — обрабатывается экспоненциальной задержкой при превышении лимитов Telegram API.
+<code>TimedOut</code> — обрабатывается задержкой 0.5 секунды.
+Общие <code>Exception</code> — логируются, часто приводят к fallback-ответу.</p>
+<hr />
+<p><code>async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает текстовый запрос пользователя и формирует ответ через OpenAI API.
+Аргументы
+<code>update</code> — объект обновления Telegram с сообщением пользователя.
+<code>context</code> — контекст обработчика Telegram.
+Возвращает
+<code>None</code> (отправляет ответ через Telegram API побочными эффектами).
+Исключения
+<code>Exception</code> — любые ошибки при запросе к API или отправке сообщения перехватываются и логируются.</p>
+<hr />
+<p><code>async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -&gt; None</code>
+Обрабатывает inline-запрос при вводе <code>@botusername &lt;query&gt;</code>.
+Аргументы
+<code>update</code> — объект обновления с inline-запросом.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.
+Исключения
+Нет явных исключений (ошибки логируются).</p>
+<hr />
+<p><code>async def send_inline_query_result(self, update: Update, result_id, message_content, callback_data="")</code>
+Формирует и отправляет результат inline-запроса с кнопкой callback.
+Аргументы
+<code>update</code> — объект обновления.
+<code>result_id</code> — уникальный идентификатор результата.
+<code>message_content</code> — текст сообщения для отображения.
+<code>callback_data</code> — данные для callback-кнопки (по умолчанию пустая строка).
+Возвращает
+<code>None</code>.
+Исключения
+<code>Exception</code> — ошибки при формировании карточки результата логируются.</p>
+<hr />
+<p><code>async def handle_callback_inline_query(self, update: Update, context: CallbackContext)</code>
+Обрабатывает callback-запрос от inline-результата, запускает генерацию ответа через OpenAI.
+Аргументы
+<code>update</code> — объект обновления с callback-запросом.
+<code>context</code> — контекст обратного вызова.
+Возвращает
+<code>None</code>.
+Исключения
+<code>Exception</code> — ошибки при обработке запроса или редактировании сообщения.</p>
+<hr />
+<p><code>async def edit_message_with_retry(context, chat_id, message_id, text, is_inline=False, max_retries=5)</code>
+Редактирует сообщение с повторными попытками при ошибках Telegram API.
+Аргументы
+<code>context</code> — контекст Telegram-бота.
+<code>chat_id</code> — идентификатор чата (<code>None</code> для inline-сообщений).
+<code>message_id</code> — идентификатор сообщения.
+<code>text</code> — новый текст сообщения.
+<code>is_inline</code> — флаг inline-сообщения.
+<code>max_retries</code> — максимальное количество попыток.
+Возвращает
+<code>None</code> в случае успеха, иначе выбрасывает исключение после исчерпания попыток.
+Исключения
+<code>RetryAfter</code> — обрабатывается внутри с увеличением задержки.
+<code>TimedOut</code> — обрабатывается внутри с фиксированной задержкой 0.5с.
+<code>Exception</code> — обрабатывается внутри с увеличением счётчика попыток.</p>
+<hr />
+<p><code>async def _send_inline_query_response()</code>
+Внутренняя корутина для обработки inline-запроса с генерацией ответа через OpenAI.
+Аргументы
+Нет (использует nonlocal переменные из замыкания).
+Возвращает
+<code>None</code>, отправляет результат через <code>edit_message_with_retry</code>.
+Исключения
+Обрабатываются в вызывающем коде.</p>
+<hr />
+<p><code>async def wrap_with_indicator(update, context, coroutine, chat_action, is_inline=False)</code>
+Обертка для выполнения корутины с индикатором действия в чате.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст Telegram-бота.
+<code>coroutine</code> — выполняемая корутина.
+<code>chat_action</code> — тип индикатора действия.
+<code>is_inline</code> — флаг inline-запроса.</p>
+<hr />
+<p><code>async def check_allowed_and_within_budget(self, update, context, is_inline=False) -&gt; bool</code>
+Проверяет разрешение пользователя на использование бота и наличие бюджета.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст Telegram-бота.
+<code>is_inline</code> — флаг inline-запроса.
+Возвращает
+<code>True</code> если пользователь разрешён и в пределах бюджета, иначе <code>False</code>.</p>
+<hr />
+<p><code>async def send_disallowed_message(self, update, _, is_inline=False)</code>
+Отправляет сообщение о запрете использования бота.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>_</code> — неиспользуемый контекст (placeholder).
+<code>is_inline</code> — флаг inline-запроса.</p>
+<hr />
+<p><code>async def send_budget_reached_message(self, update, _, is_inline=False)</code>
+Отправляет сообщение о достижении лимита бюджета.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>_</code> — неиспользуемый контекст (placeholder).
+<code>is_inline</code> — флаг inline-запроса.</p>
+<hr />
+<p><code>def _register_plugin_message_handlers(self, application, source)</code>
+Регистрирует обработчики сообщений из плагинов с защитой от повторной регистрации.
+Аргументы
+<code>application</code> — экземпляр <code>Application</code> Telegram-бота.
+<code>source</code> — строковый идентификатор источника регистрации.</p>
+<hr />
+<p><code>def _register_message_tail_handlers(self, application)</code>
+Регистрирует базовые обработчики сообщений с защитой от повторной регистрации.
+Аргументы
+<code>application</code> — экземпляр <code>Application</code> Telegram-бота.</p>
+<hr />
+<p><code>async def post_init(self, application: Application)</code>
+Хук пост-инициализации бота: установка команд и запуск фоновых задач.
+Аргументы
+<code>application</code> — экземпляр <code>Application</code> Telegram-бота.</p>
+<hr />
+<p><code>async def post_init(self, application: Application)</code>
+Инициализация бота после запуска приложения.
+Аргументы
+<code>application</code> — экземпляр <code>Application</code> из <code>python-telegram-bot</code>.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>async def handle_plugin_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict)</code>
+Обработчик callback-запросов от плагинов.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+<code>cmd</code> — словарь конфигурации команды плагина.
+Возвращает
+Результат выполнения <code>callback_query_handler</code> плагина или <code>None</code>.</p>
+<hr />
+<p><code>async def handle_plugin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict)</code>
+Обработчик команд плагинов.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+<code>cmd</code> — словарь конфигурации команды плагина.
+Возвращает
+<code>None</code>.
+Исключения
+<code>ValueError</code> — если плагин или обработчик не найдены.
+<code>Exception</code> — при ошибках выполнения команды плагина.</p>
+<hr />
+<p><code>async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Формирует и отправляет корневое меню доступных команд плагинов с первой страницей.
+Аргументы
+<code>update</code> — объект обновления, содержащий команду вызова меню.
+<code>context</code> — контекст обработчика с конфигурацией и данными пользователя.
+Исключения
+Отправляет сообщение о запрете доступа при непрохождении проверки <code>is_allowed</code>.</p>
+<hr />
+<p><code>async def handle_plugin_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Центральный обработчик callback-запросов меню плагинов, маршрутизирует действия <code>page</code>/<code>plugin</code>/<code>input</code>/<code>cmd</code>.
+Аргументы
+<code>update</code> — объект обновления с <code>callback_query</code>.
+<code>context</code> — контекст обработчика с <code>user_data</code> для хранения состояния ожидания параметров.
+Исключения
+Логирует и отображает ошибки выполнения команд; игнорирует некорректные форматы данных.</p>
+<hr />
+<p><code>async def handle_plugin_menu_args_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает ответы пользователя на <code>ForceReply</code>-запросы параметров команд плагинов.
+Аргументы
+<code>update</code> — объект обновления с текстовым ответом пользователя.
+<code>context</code> — контекст обработчика с <code>user_data</code>, содержащим состояние ожидания.
+Исключения
+Перенаправляет неотносящиеся сообщения в <code>prompt</code>; очищает состояние при недоступности команды.</p>
+<hr />
+<p><code>def _build_plugins_menu(self, page: int = 0, plugin: str | None = None) -&gt; InlineKeyboardMarkup</code>
+Конструирует разметку inline-клавиатуры для меню плагинов или команд конкретного плагина с учётом пагинации.
+Аргументы
+<code>page</code> — номер запрашиваемой страницы (по умолчанию 0).
+<code>plugin</code> — имя плагина для отображения его команд, <code>None</code> для списка плагинов.
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> с кнопками навигации и элементами текущей страницы.</p>
+<hr />
+<p><code>_build_plugin_keyboard(self, page: int, plugin: str | None = None) -&gt; InlineKeyboardMarkup</code>
+Формирует клавиатуру интерактивного меню плагинов с постраничной навигацией.
+Аргументы
+<code>page</code> — номер текущей страницы (0-based).
+<code>plugin</code> — имя плагина для отображения его команд; <code>None</code> для списка плагинов.
+Возвращает
+Объект <code>InlineKeyboardMarkup</code> с кнопками навигации и команд.</p>
+<hr />
+<p><code>_get_plugins_list(self) -&gt; list[str]</code>
+Возвращает отсортированный список уникальных имён плагинов из записей меню.
+Возвращает
+Список строк с именами плагинов.</p>
+<hr />
+<p><code>_get_plugin_commands(self, plugin_name: str) -&gt; list[tuple[str, dict]]</code>
+Получает команды указанного плагина с их индексами.
+Аргументы
+<code>plugin_name</code> — имя плагина для фильтрации команд.
+Возвращает
+Список кортежей (строковый индекс, словарь команды).</p>
+<hr />
+<p><code>_get_plugin_command(self, plugin_name: str, cmd_id: str) -&gt; dict | None</code>
+Возвращает конкретную команду плагина по её индексу.
+Аргументы
+<code>plugin_name</code> — имя плагина.
+<code>cmd_id</code> — строковый идентификатор индекса команды.
+Возвращает
+Словарь команды или <code>None</code> при невалидном индексе.</p>
+<hr />
+<p><code>_format_plugin_title(self, plugin_name: str) -&gt; str</code>
+Форматирует имя плагина для отображения, заменяя подчёркивания на пробелы.
+Аргументы
+<code>plugin_name</code> — сырое имя плагина.
+Возвращает
+Отформатированная строка заголовка.</p>
+<hr />
+<p><code>_get_page_for_command_id(self, cmd_id: str) -&gt; int</code>
+Вычисляет номер страницы, на которой находится команда с указанным индексом.
+Аргументы
+<code>cmd_id</code> — строковый идентификатор индекса команды.
+Возвращает
+Номер страницы (0-based), вычисленный по размеру страницы.</p>
+<hr />
+<p><code>cleanup(self)</code>
+Комплексная очистка ресурсов: отмена таймеров, очистка буферов, остановка фоновых задач, закрытие соединений.
+Исключения
+Может возбуждать исключения при ошибках закрытия ресурсов; логирует и пробрасывает критические ошибки.</p>
+<hr />
+<p><code>_post_shutdown(self, application: Application)</code>
+Обработчик пост-завершения работы приложения, вызывает <code>cleanup</code>.
+Аргументы
+<code>application</code> — экземпляр <code>Application</code> из <code>python-telegram-bot</code>.</p>
+<hr />
+<p><code>buffer_data_checker(self)</code>
+Периодически проверяет и запускает обработку буферизованных сообщений. Работает в бесконечном цикле с интервалом 1 секунда.
+Исключения
+<code>asyncio.CancelledError</code> — прерывает цикл при отмене задачи.</p>
+<hr />
+<p><code>start_reminder_checker(self, plugin_manager)</code>
+Запускает бесконечный цикл проверки напоминаний через плагин reminders с интервалом 60 секунд.
+Аргументы
+<code>plugin_manager</code> — менеджер плагинов для получения экземпляра плагина напоминаний.</p>
+<hr />
+<p><code>handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обработчик загруженных документов с проверкой доступа, валидацией формата и передачей в плагин <code>text_document_qa</code>.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+Исключения
+Логирует ошибки обработки; отправляет пользователю сообщения о неподдерживаемых форматах или недоступности обработки.</p>
+<hr />
+<p><code>async def upload_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE, document: Document, file_content: bytes)</code>
+Обрабатывает загрузку документа через плагин и управляет результатом выполнения.
+Аргументы
+<code>update</code> — объект обновления Telegram с информацией о чате и сообщении.
+<code>context</code> — контекст выполнения Telegram-бота.
+<code>document</code> — метаданные загружаемого документа включая имя файла.
+<code>file_content</code> — бинарное содержимое файла в виде массива байтов.
+Исключения
+<code>Exception</code> — при ошибках плагина, обработки результата или чтения файла; ошибка логируется и отправляется пользователю с локализованным текстом.</p>
+<hr />
+<p><code>async def handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Универсальный обработчик inline-callback запросов для управления сессиями чата.
+Аргументы
+<code>update</code> — объект обновления Telegram с <code>callback_query</code>.
+<code>context</code> — контекст выполнения Telegram-бота.
+Исключения
+<code>Exception</code> — при внутренних ошибках обработки действий; ошибка логируется и отправляется пользователю.</p>
+<hr />
+<p><code>session:preview:&lt;session_id&gt;</code>
+Отображает предпросмотр истории сообщений выбранной сессии с пагинацией контента до 200 символов и статистикой. Формирует inline-кнопку для возврата к списку сессий.</p>
+<hr />
+<p><code>session:close</code>
+Удаляет сообщение с интерфейсом управления сессиями без изменения состояния.</p>
+<hr />
+<p><code>session:new</code>
+Создаёт новую сессию с контролем лимита через hindsight-финализацию старых сессий, сбрасывает историю чата OpenAI и обновляет UI.
+Исключения
+<code>Exception</code> — при неудаче создания сессии в БД; отправляется локализованное сообщение об ошибке.</p>
+<hr />
+<p><code>session:switch:&lt;session_id&gt;</code>
+Активирует выбранную сессию, загружает её контекст в память OpenAI и обновляет UI.
+Исключения
+<code>Exception</code> — при отсутствии сессии в БД; отправляется локализованное сообщение о не найденной сессии.</p>
+<hr />
+<p><code>session:delete:&lt;session_id&gt;</code>
+Инициирует hindsight-финализацию сессии перед удалением, удаляет запись из БД, загружает контекст новой активной сессии и обновляет UI.</p>
+<hr />
+<p><code>session:change_mode</code>
+Отображает меню выбора группы режимов чата с использованием кешированных конфигураций, группировкой по категориям и кнопкой возврата.</p>
+<hr />
+<p><code>session:change_model</code>
+Игнорирует запрос на смену модели с логированием причины отключения функционала и обновляет UI.</p>
+<hr />
+<p><code>session:back</code>
+Возвращает пользователя к списку сессий через вызов <code>reset</code>.</p>
+<hr />
+<p><code>session:export</code>
+Экспортирует все сессии пользователя в YAML-файл и инициирует отправку документа.
+Исключения
+<code>Exception</code> — при ошибках файловой системы или БД в процессе экспорта.</p>
+<hr />
+<p><code>handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает callback-запросы для управления сессиями пользователя (экспорт, удаление, выбор).
+Аргументы
+<code>update</code> — объект обновления Telegram с <code>callback_query</code>.
+<code>context</code> — контекст обработчика с данными пользователя.
+Возвращает
+<code>None</code> (асинхронная функция, результат через <code>edit_message_text</code>/<code>reply_document</code>).
+Исключения
+<code>Exception</code> — логирует ошибку экспорта/обработки сессии и уведомляет пользователя.</p>
+<hr />
+<p><code>run(self)</code>
+Запускает бота в режиме опроса с инициализацией event loop и регистрацией всех обработчиков.
+Аргументы
+Нет.
+Возвращает
+<code>None</code> (блокирующий вызов, управление возвращается после остановки бота).
+Исключения
+<code>RuntimeError</code> — при проблемах с event loop; исключения пробрасываются через <code>finally</code> с <code>cleanup</code>.</p>
+<hr />
+<p><code>restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/restart</code> — перезапускает сессию пользователя.
+Аргументы
+<code>update</code> — объект обновления с командой.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Сбрасывает состояние диалога и возвращает пользователя к списку сессий или начальному меню.
+Аргументы
+<code>update</code> — объект обновления.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>help(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команды <code>/start</code> и <code>/help</code> — отправляет справочную информацию.
+Аргументы
+<code>update</code> — объект обновления с командой.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/settings</code> — открывает меню настроек пользователя.
+Аргументы
+<code>update</code> — объект обновления с командой.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>image(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/image</code> — генерирует изображение через OpenAI API.
+Аргументы
+<code>update</code> — объект обновления с командой и параметрами.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>tts(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/tts</code> — генерирует голосовое сообщение через OpenAI TTS.
+Аргументы
+<code>update</code> — объект обновления с командой и текстом.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/stats</code> — показывает статистику использования.
+Аргументы
+<code>update</code> — объект обновления с командой.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>resend(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/resend</code> — повторно отправляет последний ответ.
+Аргументы
+<code>update</code> — объект обновления с командой.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает команду <code>/chat</code> в групповых чатах — обрабатывает упоминания бота.
+Аргументы
+<code>update</code> — объект обновления из группы/супергруппы.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>vision(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает входящие изображения (фото, документы-изображения) через OpenAI Vision API.
+Аргументы
+<code>update</code> — объект обновления с медиа.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>transcribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE)</code>
+Обрабатывает аудио/видео сообщения — транскрибирует речь через OpenAI Whisper.
+Аргументы
+<code>update</code> — объект обновления с голосовым/аудио/видео сообщением.
+<code>context</code> — контекст обработчика.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>post_init(self, application: Application)</code>
+Хук инициализации приложения, вызывается после сборки <code>Application</code>.
+Аргументы
+<code>application</code> — собранный объект <code>Application</code>.
+Возвращает
+<code>None</code> (асинхронный метод).</p>
+<hr />
+<p><code>_post_shutdown(self, application: Application)</code>
+Хук завершения работы приложения, вызывается при остановке бота.
+Аргументы
+<code>application</code> — объект <code>Application</code> перед уничтожением.
+Возвращает
+<code>None</code> (асинхронный метод).</p>
+<hr />
+<p><code>cleanup(self)</code>
+Выполняет graceful shutdown: отменяет фоновые задачи, освобождает ресурсы.
+Аргументы
+Нет.
+Возвращает
+<code>None</code> (асинхронный метод).</p>
+<hr />
+<p><code>localized_text(key: str, language: str)</code>
+Возвращает локализованную строку по ключу для указанного языка.
+Аргументы
+<code>key</code> — ключ локализации.
+<code>language</code> — код языка (например, <code>'ru'</code>, <code>'en'</code>).
+Возвращает
+<code>str</code> — локализованный текст.</p>
+<hr />
+<p><code>split_into_chunks(text: str, chunk_size: int = 4096) -&gt; List[str]</code>
+Разбивает текст на чанки указанного размера (по умолчанию лимит Telegram).
+Аргументы
+<code>text</code> — исходный текст для разбиения.
+<code>chunk_size</code> — максимальный размер чанка в символах.
+Возвращает
+Список строк, каждая не превышающий <code>chunk_size</code>.</p>
+<hr />
+<p><code>send_long_response_as_file(config: dict, update: Update, response: str, filename: str) -&gt; None</code>
+Отправляет длинный ответ в виде документа вместо множества сообщений.
+Аргументы
+<code>config</code> — конфигурация бота.
+<code>update</code> — объект обновления Telegram.
+<code>response</code> — полный текст ответа.
+<code>filename</code> — имя файла для документа.
+Возвращает
+<code>None</code>.</p>
+<hr />
+<p><code>get_thread_id(update: Update) -&gt; Optional[int]</code>
+Извлекает идентификатор темы (thread) из обновления для форумов.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+Возвращает
+Идентификатор темы или <code>None</code>.</p>
+<hr />
+<p><code>get_reply_to_message_id(config: dict, update: Update) -&gt; Optional[int]</code>
+Определяет ID сообщения для ответа с учётом настроек бота.
+Аргументы
+<code>config</code> — конфигурация бота.
+<code>update</code> — объект обновления Telegram.
+Возвращает
+ID сообщения для reply или <code>None</code>.</p>
+<hr />
+<p><code>is_group_chat(update: Update) -&gt; bool</code>
+Проверяет, является ли чат групповым.
+Аргументы
+<code>update</code> — объект обновления Telegram.
+Возвращает
+<code>True</code> если чат групповой, иначе <code>False</code>.</p>
+<hr />
+<p><code>is_direct_result(response: Any) -&gt; bool</code>
+Проверяет, является ли ответ прямым результатом (требующим особой обработки).
+Аргументы
+<code>response</code> — объект ответа для проверки.
+Возвращает
+<code>True</code> если ответ требует прямой обработки.</p>
+<hr />
+<p><code>wrap_with_indicator(update: Update, context: ContextTypes.DEFAULT_TYPE, coroutine: Callable, action: constants.ChatAction) -&gt; Any</code>
+Обертывает корутину в индикатор действия (typing, upload_photo и т.д.).
+Аргументы
+<code>update</code> — объект обновления Telegram.
+<code>context</code> — контекст обработчика.
+<code>coroutine</code> — асинхронная функция для выполнения.
+<code>action</code> — тип индикатора действия.
+Возвращает
+Результат выполнения корутины.</p>
+<hr />
+<p>class <code>TelegramBot</code> / <code>ChatGPTTelegramBot</code>
+Основной класс Telegram-бота с полным жизненным циклом приложения.
+Поля
+<code>config</code> — конфигурация бота (<code>BotConfig</code>).
+<code>application</code> — экземпляр <code>Application</code> после сборки.
+<code>openai</code> — клиент OpenAI API с привязкой к <code>bot</code>.
+<code>_background_tasks</code> — список накопленных фоновых задач <code>asyncio</code>.
+<code>_plugin_message_handlers_registered</code> — флаг регистрации плагиновых обработчиков.
+<code>_message_tail_handlers_registered</code> — флаг регистрации tail-обработчиков.
+<code>message_buffer</code> — словарь буферизованных сообщений по <code>chat_id</code>.
+<code>plugin_menu_entries</code> — список записей команд плагинов для формирования интерактивного меню.
+<code>buffer_lock</code> — асинхронный блокировщик для потокобезопасного доступа к буферу.
+<code>self.usage</code> — словарь трекеров использования по <code>user_id</code>.
+Методы
+<code>run()</code> — запускает бота в режиме опроса.
+<code>handle_session_callback(update, context)</code> — обрабатывает callback сессий.
+<code>prepare_user_language(update, context)</code> — подготавливает язык пользователя.
+<code>restart(update, context)</code> — перезапускает сессию.
+<code>reset(update, context)</code> — сбрасывает состояние диалога.
+<code>help(update, context)</code> — отправляет справку.
+<code>settings(update, context)</code> — открывает настройки.
+<code>image(update, context)</code> — генерирует изображение.
+<code>tts(update, context)</code> — генерирует голосовое сообщение.
+<code>stats(update, context)</code> — показывает статистику.
+<code>resend(update, context)</code> — повторяет последний ответ.
+<code>prompt(update, context)</code> — обрабатывает групповые чаты и текстовые сообщения.
+<code>vision(update, context)</code> — обрабатывает изображения.
+<code>transcribe(update, context)</code> — транскрибирует аудио/видео.
+<code>post_init(application)</code> — хук инициализации.
+<code>_post_shutdown(application)</code> — хук завершения.
+<code>cleanup()</code> — освобождает ресурсы.</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../js/base.js"></script>
+        <script src="../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

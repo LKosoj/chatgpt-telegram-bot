@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../img/favicon.ico">
+        <title>usage_tracker.py - chatgpt-telegram-bot</title>
+        <link href="../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../css/brands.min.css" rel="stylesheet">
+        <link href="../../css/solid.min.css" rel="stylesheet">
+        <link href="../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="usage_tracker__py.html" class="dropdown-item active" aria-current="page">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="telegram_bot__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="user_settings__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botusage_tracker" class="nav-link">bot/usage_tracker</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botusage_tracker">bot/usage_tracker</h1>
+<p><em>Источник:</em> <code>bot/usage_tracker.py</code></p>
+<p>Модуль отслеживания использования ресурсов пользователями бота. Предоставляет класс UsageTracker для учёта потребления токенов чата, изображений, vision-токенов, TTS-символов, транскрипции и других ресурсов с сохранением истории в JSON-файлы. Поддерживает расчёт дневных, месячных и общих затрат с применением модель-зависимых тарифов и агрегации статистики за различные периоды.</p>
+<p>Ключевые структуры данных
+UsageTracker — класс для отслеживания использования ресурсов пользователем, хранит данные в JSON-формате с полями user_name, current_cost и usage_history
+self.usage — словарь с историей использования и текущими затратами, хранящийся в JSON-файле пользователя
+self.user_file — путь к JSON-файлу, в котором сохраняется статистика использования</p>
+<hr />
+<p>year_month(date_str)
+Извлекает строку год-месяц из даты в формате 'YYYY-MM'.
+Аргументы
+date_str — строка или объект даты, из которого извлекается год-месяц
+Возвращает
+Строку формата 'YYYY-MM' (первые 7 символов)</p>
+<hr />
+<p>class UsageTracker
+Класс для отслеживания дневного/месячного использования ресурсов пользователем.</p>
+<p>Поля
+user_id — идентификатор пользователя (Telegram ID)
+logs_dir — директория для хранения файлов использования, по умолчанию "usage_logs"
+user_file — путь к JSON-файлу использования пользователя
+usage — словарь с данными использования в формате JSON</p>
+<p>Методы
+<strong>init</strong>(user_id, user_name, logs_dir="usage_logs") — инициализация трекера для пользователя, загрузка или создание файла использования
+add_chat_tokens(tokens, tokens_price=0.002) — добавляет использованные токены чата в историю и обновляет текущие затраты
+get_current_token_usage() — возвращает количество токенов чата за сегодня и за текущий месяц
+add_image_request(image_size, image_prices="0.016,0.018,0.02") — добавляет запрос изображения в историю и обновляет текущие затраты
+get_current_image_count() — возвращает количество изображений за сегодня и за текущий месяц
+add_vision_tokens(tokens, vision_token_price=0.01) — добавляет vision-токены в историю и обновляет текущие затраты
+get_current_vision_tokens() — возвращает количество vision-токенов за сегодня и за текущий месяц
+_tts_price_for_model(tts_model, tts_prices) — возвращает цену для указанной TTS-модели из списка доступных моделей
+add_tts_request(text_length, tts_model, tts_prices) — регистрирует запрос на синтез речи, обновляет текущие затраты и историю использования по символам
+get_current_tts_usage() — возвращает суммарное количество символов, преобразованных в речь, за сегодня и текущий месяц
+add_transcription_seconds(seconds, minute_price=0.006) — добавляет секунды транскрипции в историю использования и обновляет текущие затраты
+get_current_transcription_duration() — возвращает длительность транскрибированного аудио за сегодня и текущий месяц в минутах и секундах
+add_current_costs(request_cost) — добавляет стоимость запроса к совокупным затратам за день, месяц и всё время с учётом даты последнего обновления
+get_current_cost() — возвращает совокупные затраты за текущий день, месяц и всё время
+initialize_all_time_cost(tokens_price=0.002, image_prices="0.016,0.018,0.02", minute_price=0.006, vision_token_price=0.01, tts_prices='0.015,0.030') — вычисляет полную стоимость всех запросов в истории использования на основе накопленной статистики и заданных тарифов
+all_time_cost() — вычисляет полную совокупную стоимость всех типов потреблённых ресурсов</p>
+<hr />
+<p>UsageTracker.<strong>init</strong>(self, user_id, user_name, logs_dir="usage_logs")
+Инициализирует UsageTracker для пользователя с текущей датой. Загружает данные использования из файла или создаёт новые.
+Аргументы
+user_id — Telegram ID пользователя
+user_name — имя пользователя Telegram
+logs_dir — путь к директории логов использования, по умолчанию "usage_logs"</p>
+<hr />
+<p>UsageTracker.add_chat_tokens(self, tokens, tokens_price=0.002)
+Добавляет использованные токены чата из запроса в историю использования и обновляет текущие затраты.
+Аргументы
+tokens — общее количество токенов, использованных в последнем запросе
+tokens_price — цена за 1000 токенов, по умолчанию 0.002</p>
+<hr />
+<p>UsageTracker.get_current_token_usage(self)
+Возвращает количество токенов чата, использованных за сегодня и за текущий месяц.
+Возвращает
+Кортеж (usage_day, usage_month) с количеством токенов за день и месяц</p>
+<hr />
+<p>UsageTracker.add_image_request(self, image_size, image_prices="0.016,0.018,0.02")
+Добавляет запрос изображения в историю использования и обновляет текущие затраты.
+Аргументы
+image_size — запрошенный размер изображения ("256x256", "512x512" или "1024x1024")
+image_prices — цены для изображений разных размеров в формате строки, по умолчанию "0.016,0.018,0.02"</p>
+<hr />
+<p>UsageTracker.get_current_image_count(self)
+Возвращает количество изображений, запрошенных за сегодня и за текущий месяц.
+Возвращает
+Кортеж (usage_day, usage_month) с количеством изображений за день и месяц</p>
+<hr />
+<p>UsageTracker.add_vision_tokens(self, tokens, vision_token_price=0.01)
+Добавляет vision-токены в историю использования и обновляет текущие затраты.
+Аргументы
+tokens — общее количество vision-токенов, использованных в последнем запросе
+vision_token_price — цена за 1000 vision-токенов, по умолчанию 0.01</p>
+<hr />
+<p>UsageTracker.get_current_vision_tokens(self)
+Возвращает количество vision-токенов за сегодня и за текущий месяц.
+Возвращает
+Кортеж (tokens_day, tokens_month) с количеством vision-токенов за день и месяц</p>
+<hr />
+<p>UsageTracker._tts_price_for_model(self, tts_model, tts_prices)
+Возвращает цену для указанной TTS-модели из списка доступных моделей.
+Аргументы
+tts_model — строка с идентификатором модели TTS
+tts_prices — список или кортеж цен для моделей TTS
+Возвращает
+Числовое значение цены за 1000 символов для указанной модели или цену первой модели по умолчанию
+Исключения
+IndexError — если индекс модели выходит за границы списка цен</p>
+<hr />
+<p>UsageTracker.add_tts_request(self, text_length, tts_model, tts_prices)
+Регистрирует запрос на синтез речи, обновляет текущие затраты и историю использования по символам.
+Аргументы
+text_length — количество символов для синтеза речи
+tts_model — идентификатор используемой TTS-модели
+tts_prices — список цен для расчёта стоимости</p>
+<hr />
+<p>UsageTracker.get_current_tts_usage(self)
+Возвращает суммарное количество символов, преобразованных в речь, за сегодня и текущий месяц.
+Возвращает
+Кортеж из двух целых чисел: (characters_day, characters_month)</p>
+<hr />
+<p>UsageTracker.add_transcription_seconds(self, seconds, minute_price=0.006)
+Добавляет секунды транскрипции в историю использования и обновляет текущие затраты.
+Аргументы
+seconds — общее количество секунд в последнем запросе транскрипции
+minute_price — цена за минуту транскрипции, по умолчанию 0.006</p>
+<hr />
+<p>UsageTracker.get_current_transcription_duration(self)
+Возвращает длительность транскрибированного аудио за сегодня и текущий месяц в минутах и секундах.
+Возвращает
+Кортеж из четырёх значений: (minutes_day, seconds_day, minutes_month, seconds_month)</p>
+<hr />
+<p>UsageTracker.add_current_costs(self, request_cost)
+Добавляет стоимость запроса к совокупным затратам за день, месяц и всё время с учётом даты последнего обновления.
+Аргументы
+request_cost — стоимость текущего запроса в USD</p>
+<hr />
+<p>UsageTracker.get_current_cost(self)
+Возвращает совокупные затраты за текущий день, месяц и всё время.
+Возвращает
+Словарь с ключами "cost_today", "cost_month", "cost_all_time"</p>
+<hr />
+<p>UsageTracker.initialize_all_time_cost(self, tokens_price=0.002, image_prices="0.016,0.018,0.02", minute_price=0.006, vision_token_price=0.01, tts_prices='0.015,0.030')
+Вычисляет полную стоимость всех запросов в истории использования на основе накопленной статистики и заданных тарифов.
+Аргументы
+tokens_price — цена за 1000 токенов, по умолчанию 0.002
+image_prices — строка с ценами изображений разных размеров через запятую, по умолчанию "0.016,0.018,0.02"
+minute_price — цена за минуту транскрипции, по умолчанию 0.006
+vision_token_price — цена за 1000 токенов vision, по умолчанию 0.01
+tts_prices — строка с ценами TTS-моделей через запятую, по умолчанию '0.015,0.030'
+Возвращает
+Общая стоимость всех запросов в истории в USD</p>
+<hr />
+<p>UsageTracker.all_time_cost(self)
+Вычисляет полную совокупную стоимость всех типов потреблённых ресурсов.
+Возвращает
+число — суммарная стоимость token_cost + transcription_cost + image_cost + vision_cost + tts_cost, округлённая до 2 знаков
+Исключения
+KeyError — при отсутствии обязательных ключей в self.usage['usage_history']
+ValueError — при некорректном формате данных в истории использования или ценах</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../js/base.js"></script>
+        <script src="../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

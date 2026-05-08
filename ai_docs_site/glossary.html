@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="img/favicon.ico">
+        <title>Глоссарий - chatgpt-telegram-bot</title>
+        <link href="css/bootstrap.min.css" rel="stylesheet">
+        <link href="css/fontawesome.min.css" rel="stylesheet">
+        <link href="css/brands.min.css" rel="stylesheet">
+        <link href="css/solid.min.css" rel="stylesheet">
+        <link href="css/v4-font-face.min.css" rel="stylesheet">
+        <link href="css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="glossary.html" class="nav-link active" aria-current="page">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="modules/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="modules/bot/plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="modules/bot/__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/openai_helper__py.html" class="dropdown-item">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="modules/bot/validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="modules/examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="modules/examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="modules/examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="conventions.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="configs/docker.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#_1" class="nav-link">Глоссарий</a>
+              <ul class="nav flex-column">
+            <li class="nav-item" data-bs-level="2"><a href="#_2" class="nav-link">Системные компоненты</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#runtime" class="nav-link">Архитектура runtime</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_5" class="nav-link">Ключевые модули</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_6" class="nav-link">Подсистемы</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_9" class="nav-link">Конфигурация и переменные окружения</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#docker" class="nav-link">Docker и инфраструктура</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_13" class="nav-link">Тестирование</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#_17" class="nav-link">Структура проекта</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+            <li class="nav-item" data-bs-level="2"><a href="#python" class="nav-link">Зависимости Python</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="_1">Глоссарий</h1>
+<h2 id="_2">Системные компоненты</h2>
+<h3 id="agentsmd">AGENTS.md</h3>
+<p>Файл проектных инструкций для AI-агентов, работающих с кодовой базой. Определяет рабочие правила: формулировка предположений перед правками, использование <code>rg</code> для поиска, проверка <code>git status --short</code>, цитирование <code>file:line</code>. Содержит структуру проекта, процесс навигации через <code>.cli-proxy/.codebase_map/</code>, правила работы с плагинами, инструментами, режимами чата, обработчиками Telegram и SQLite. Приоритет кода выше README при расхождениях; исторические планы выносятся в датированные документы.</p>
+<h3 id="codebase-mapper-graph">Codebase Mapper Graph</h3>
+<p>Механизм навигации и поддержания актуальности документации через графовую структуру инкрементально загружаемых узлов. Точка входа: <code>/.cli-proxy/.codebase_map/INDEX.md</code>; узлы: <code>/.cli-proxy/.codebase_map/nodes/*.md</code>; абсолютный путь развёртывания: <code>/srv/git_projects/chatgpt-telegram-bot/.cli-proxy/.codebase_map</code>. При модификации кода обновляется поле <code>Last reviewed</code>; при неудаче — запуск ремонта через <code>update-node</code> или <code>repair</code>. Содержит машиночитаемый маркер <code>&lt;!-- CODEBASE_MAPPER_GRAPH:END --&gt;</code>.</p>
+<h3 id="llmgateway">LLMGateway</h3>
+<p>Трёхуровневый маршрутизатор моделей (<code>high</code> / <code>light_model</code> / <code>big_context</code>) с настраиваемыми <code>LLMGATEWAY_*_MODEL</code> и базовым URL. Единая точка доступа к LLM- и мультимодальным возможностям (веб-поиск, чтение страниц, исследования, редактирование изображений, аудио) в рамках service mesh.</p>
+<h3 id="llmgatewayclient">LLMGatewayClient</h3>
+<p>Асинхронный HTTP-клиент на базе <code>httpx.AsyncClient</code>. Критические настройки: <code>base_url</code> — обязателен (<code>LLMGatewayError</code> при отсутствии), <code>api_key</code> в заголовке <code>Authorization: Bearer</code>, глобальный <code>timeout</code> 120.0 с с переопределениями (<code>web_deep_research</code> 1800.0, <code>web_research</code>/<code>image_edit</code> 300.0, <code>web_search</code> 90.0), идентификационный заголовок <code>X-Title: tgBot</code>.</p>
+<h2 id="runtime">Архитектура runtime</h2>
+<h3 id="_3">Точка входа</h3>
+<p><code>bot/__main__.py</code> — запуск бота с валидацией переменных окружения и инициализацией компонентов.</p>
+<h3 id="_4">Последовательность инициализации</h3>
+<p><code>PluginManager</code> → <code>Database</code> → <code>OpenAIHelper</code> → <code>ChatGPTTelegramBot</code>.</p>
+<h3 id="telegram-polling">Telegram-polling</h3>
+<p>Реализован в <code>bot/telegram_bot.py</code> с базовым URL <code>http://localhost:8081/bot</code> при <code>TELEGRAM_LOCAL_MODE=true</code>.</p>
+<h2 id="_5">Ключевые модули</h2>
+<h3 id="chatgpttelegrambot">ChatGPTTelegramBot</h3>
+<p>Обработчик Telegram-обновлений с inline-режимом и сессионным управлением. Обрабатывает команды, inline-запросы, callback-запросы и медиасообщения с буферизацией, потоковой передачей ответов, блокировками для потокобезопасности.</p>
+<h3 id="openaihelper">OpenAIHelper</h3>
+<p>Клиент для чата, vision, генерации изображений, TTS, транскрипции. Содержит механизмы повторных попыток при превышении лимитов API, суммаризации длинных контекстов, адаптацию форматов истории под различных провайдеров (OpenAI, Anthropic, Google, Mistral и др.).</p>
+<h3 id="openaitoolhandler">OpenAIToolHandler</h3>
+<p>Полный жизненный цикл обработки вызовов функций (tool calls): парсинг и валидация ответов модели, маршрутизация к плагинам, немедленная доставка пользователю, отложенная передача в контекст модели с компактизацией, слияние множественных результатов, принудительная доставка через <code>agent_tools.deliver_to_user</code> в режиме skills_agent.</p>
+<h3 id="pluginmanager">PluginManager</h3>
+<p>Система плагинов с namespace-инструментами, JSON-схемами и ~43 встроенными модулями. Механизмы разрешения имён функций, валидации разрешённых плагинов, нормализации спецификаций, управления жизненным циклом экземпляров с поддержкой кеширования. Интеграция с OpenAI API через формирование спецификаций функций, включая сценарии делегирования субагентам с явными списками блокировки.</p>
+<h3 id="database">Database</h3>
+<p>Singleton <code>Database</code> с thread-local соединениями SQLite, WAL, <code>busy_timeout</code>. JSON-структура <code>conversation_context.context</code> как <code>{"messages": [...]}</code>. Подсчёт <code>message_count</code> по сообщениям роли <code>user</code>. Ограничение <code>max_sessions</code> с удалением старейшей сессии. Длительные вызовы OpenAI вынесены за пределы транзакций.</p>
+<h3 id="chatmodesregistry">ChatModesRegistry</h3>
+<p>Загрузчик и валидатор YAML-конфигурации <code>bot/chat_modes.yml</code>. Индексирует режимы по <code>id</code>; <code>ChatMode</code> содержит <code>system_prompt</code>, <code>model_profile</code>, <code>plugins_allowlist</code>/<code>plugins_denylist</code>, <code>budget</code>, feature-флаги, <code>agent_limits</code>, <code>tts_voice</code>, <code>response_format</code>. Валидация: уникальность <code>id</code>, разрешённые <code>model_profile</code>, корректность ссылок на плагины, валидность regex; при <code>STRICT_MODE=true</code> ошибки блокируют старт.</p>
+<h2 id="_6">Подсистемы</h2>
+<h3 id="_7">Плагины и инструменты</h3>
+<p><strong>Базовый класс:</strong> <code>Plugin</code> в <code>bot/plugins/plugin.py</code>.</p>
+<p><strong>Идентификация:</strong> по <code>plugin_id</code>, неймспейсинг функций через <code>function_prefix</code>.</p>
+<p><strong>Загрузка:</strong> из <code>bot/plugins/*.py</code> с учётом allow-list <code>PLUGINS</code>.</p>
+<p><strong>Валидация дубликатов:</strong> строгая/мягкая через <code>PLUGIN_STRICT_VALIDATION</code>.</p>
+<p><strong>Выполнение:</strong> пакетное через <code>asyncio.gather</code>.</p>
+<p><strong>Инъекция контекста:</strong> <code>chat_id</code>/<code>user_id</code> в вызовы плагинов.</p>
+<p><strong>Прямой ответ плагина:</strong> обход повторного вызова модели.</p>
+<p><strong>Форматы спецификаций:</strong> различие для Google и прочих моделей.</p>
+<h3 id="_8">Режимы чата</h3>
+<p>Декларация в <code>bot/chat_modes.yml</code>. Валидация tool-ссылок при инициализации. Ограничение доступных плагинов через поле <code>tools</code> режима (по умолчанию <code>['All']</code>). Требование использования имён модулей плагинов.</p>
+<h3 id="telegram">Обработчики Telegram</h3>
+<p>Нормализация команд через <code>PluginManager.get_plugin_commands()</code>. Запрет пробелов в именах команд. Обработка фильтров сообщений без <code>eval</code>.</p>
+<h3 id="mcp-model-context-protocol">MCP (Model Context Protocol)</h3>
+<p>Подключение удалённых MCP-серверов как динамических инструментов модели. Транспорты: HTTP (REST API) и stdio (дочерние процессы через stdin/stdout). Конфигурация: <code>bot/config/mcp_servers.json</code>. Регистрация требует <code>server_name</code>, <code>user_id</code>; для HTTP — <code>base_url</code>, опционально <code>api_key</code>; для stdio — <code>transport: "stdio"</code>, <code>command</code>, <code>args</code>, опционально <code>env</code>. Управление: регистрация и удаление — только администраторы; просмотр списка (<code>/mcp_servers</code>) — все пользователи.</p>
+<h3 id="hindsight">Hindsight</h3>
+<p>Опциональная долгосрочная память с автовызовом/автосохранением при удалении сессии. Идентификация банка: <code>telegram-{user_id}</code>. Типы памяти: <code>world</code>, <code>experience</code>, <code>profile</code>, <code>session preference</code>. Метаданные с <code>mode: "session_close"</code>.</p>
+<h3 id="agent-runtime-agent_tools">Agent runtime (<code>agent_tools</code>)</h3>
+<p>Подагенты (до 5 параллельно, 10–50 раундов), планировщик задач (<code>TASKS_TTL_SECONDS</code>=2 дня), взаимодействие с пользователем.</p>
+<h3 id="skills-runtime-skills">Skills runtime (<code>skills</code>)</h3>
+<p>Локальные Codex-стиль папки <code>SKILL.md</code> с выполнением скриптов. Структура: <code>&lt;skill_name&gt;/SKILL.md</code> (YAML frontmatter: <code>name</code>, <code>description</code>, <code>allow_scripts</code>, <code>entrypoints</code> + markdown body) и <code>scripts/</code> с исполняемыми файлами.</p>
+<h2 id="_9">Конфигурация и переменные окружения</h2>
+<h3 id="_10">Обязательные переменные</h3>
+<ul>
+<li><code>TELEGRAM_BOT_TOKEN</code></li>
+<li><code>OPENAI_API_KEY</code></li>
+<li><code>LLMGATEWAY_BASE_URL</code> (или <code>OPENAI_API_BASE</code>)</li>
+</ul>
+<h3 id="_11">Ключевые секции конфигурации</h3>
+<table>
+<thead>
+<tr>
+<th>Секция</th>
+<th>Критические параметры</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Telegram Core</strong></td>
+<td><code>TELEGRAM_LOCAL_MODE</code> (<code>true</code> → localhost:8081)</td>
+</tr>
+<tr>
+<td><strong>LLM/Маршрутизация</strong></td>
+<td><code>LLMGATEWAY_BASE_URL</code>, <code>*_MODEL</code> для трёх уровней, <code>OPENAI_BASE_URL</code></td>
+</tr>
+<tr>
+<td><strong>Мультимодальность</strong></td>
+<td><code>ENABLE_*</code> флаги; <code>VISION_MODEL</code>, <code>TTS_MODEL</code>/<code>TTS_VOICE</code>, <code>TRANSCRIPTION_MODEL</code>, <code>IMAGE_GENERATION_MODEL</code>/<code>IMAGE_EDIT_MODEL</code> с качеством/размером/стилем</td>
+</tr>
+<tr>
+<td><strong>Сессии</strong></td>
+<td><code>MAX_HISTORY_SIZE</code>, <code>MAX_CONVERSATION_AGE_MINUTES</code>, <code>MAX_SESSIONS</code> (5), <code>AUTO_CHAT_MODES</code></td>
+</tr>
+<tr>
+<td><strong>Бюджеты</strong></td>
+<td><code>BUDGET_PERIOD</code> (monthly/daily/weekly/total), <code>USER_BUDGETS</code> (<code>*</code> = безлимит), <code>GUEST_BUDGET</code>, ценообразование по токенам/изображениям/TTS/vision/транскрипции</td>
+</tr>
+<tr>
+<td><strong>Плагины</strong></td>
+<td><code>PLUGINS</code> (CSV allow-list), <code>PLUGINS_DIR</code>, <code>PLUGIN_STRICT_VALIDATION</code>, <code>PLUGIN_STORAGE_ROOT</code> (<code>data/</code>), <code>PLUGIN_MENU_PAGE_SIZE</code> (8), <code>SHOW_PLUGINS_USED</code></td>
+</tr>
+<tr>
+<td><strong>Agent Tools</strong></td>
+<td><code>AGENT_ASK_USER_TIMEOUT_SECONDS</code> (1800); жёстко: <code>MAX_SUBAGENTS</code> (5), <code>MIN</code>/<code>MAX_SUBAGENT_TOOL_ROUNDS</code> (10/50), <code>DELIVERY_DEDUP_WINDOW_SECONDS</code> (60), <code>DELIVERY_MAX_ARTIFACT_BYTES</code> (49 MiB), блокировка 4 инструментов самозащиты для подагентов</td>
+</tr>
+<tr>
+<td><strong>Skills</strong></td>
+<td><code>SKILLS_DIR</code>/<code>SKILLS_WORKDIR</code>, <code>SKILLS_ALLOW_EXECUTION</code>/<code>SKILLS_ALLOW_SCRIPTS</code> (<strong>опасно</strong> — права процесса), <code>SKILLS_ALLOWED_OPERATORS</code>/<code>SKILLS_SCRIPT_ADMIN_USER_IDS</code>, таймауты установки (180) и скриптов (120), <code>SKILLS_SCRIPT_OUTPUT_MAX_CHARS</code> (12000), <code>SKILLS_SCRIPT_INTERIM_AFTER_SECONDS</code> (20)</td>
+</tr>
+<tr>
+<td><strong>MCP</strong></td>
+<td><code>MCP_SERVERS</code> (JSON-конфиг), <code>DEFAULT_MCP_SERVERS</code>, <code>MCP_SERVERS_ALLOWED_USERS</code>, <code>MCP_REQUEST_TIMEOUT</code></td>
+</tr>
+<tr>
+<td><strong>Hindsight</strong></td>
+<td><code>HINDSIGHT_ENABLED</code>, <code>HINDSIGHT_RECALL_ON_START</code>, <code>HINDSIGHT_SAVE_ON_DELETE</code>, <code>HINDSIGHT_API_URL</code>/<code>HINDSIGHT_BASE_URL</code>, <code>HINDSIGHT_API_TOKEN</code>, <code>HINDSIGHT_AUTO_RECALL</code>/<code>AUTO_SAVE</code>, <code>HINDSIGHT_MEMORY_TYPES</code>, <code>HINDSIGHT_MAX_AUTO_SAVE_ITEMS</code></td>
+</tr>
+<tr>
+<td><strong>Database</strong></td>
+<td><code>DB_PATH</code>, <code>SQLITE_TIMEOUT</code>, <code>SQLITE_JOURNAL_MODE</code> (WAL), <code>SQLITE_BUSY_TIMEOUT_MS</code></td>
+</tr>
+<tr>
+<td><strong>Пользователи/доступ</strong></td>
+<td><code>ADMIN_USER_IDS</code>, <code>ALLOWED_TELEGRAM_USER_IDS</code>, <code>SKILLS_INSTALL_ADMIN_USER_IDS</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_12">Устаревшие переменные</h3>
+<p><code>MONTHLY_USER_BUDGETS</code> → <code>USER_BUDGETS</code> + <code>BUDGET_PERIOD=monthly</code>; <code>MONTHLY_GUEST_BUDGET</code> → <code>GUEST_BUDGET</code> + <code>BUDGET_PERIOD=monthly</code> (fallback с предупреждением).</p>
+<h2 id="docker">Docker и инфраструктура</h2>
+<h3 id="docker-composeyml">docker-compose.yml</h3>
+<p>Сервис <code>chatgpt-telegram-bot</code> собирается из Dockerfile в текущей директории (контекст <code>.</code>). Volume-монтирование директории проекта в <code>/app</code> для горячей перезагрузки кода при разработке. Политика перезапуска: <code>unless-stopped</code> (автоматически при сбоях или перезагрузке системы, кроме ручной остановки).</p>
+<h3 id="dockerfile">Dockerfile</h3>
+<p>Базовый образ: <code>python:3.9-alpine</code>. Системный пакет: <code>ffmpeg</code>. Точка входа: <code>python -m bot</code>. Переменные окружения: <code>PYTHONFAULTHANDLER=1</code>, <code>PYTHONUNBUFFERED=1</code>, <code>PYTHONDONTWRITEBYTECODE=1</code>, <code>PIP_DISABLE_PIP_VERSION_CHECK=on</code>. Флаги <code>--no-cache</code> для <code>apk</code> и <code>--no-cache-dir</code> для <code>pip</code> — минимизация размера слоёв.</p>
+<h2 id="_13">Тестирование</h2>
+<h3 id="pytest">Конфигурация pytest</h3>
+<p><code>pytest.ini</code>: <code>asyncio_mode = auto</code>.</p>
+<h3 id="_14">Расположение тестов</h3>
+<ul>
+<li><code>tests/</code> — основные тесты</li>
+<li><code>bot/tests/</code> — MCP-тесты</li>
+</ul>
+<h3 id="_15">Запуск</h3>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>-q<span class="w"> </span>tests/
+python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>-q<span class="w"> </span>bot/tests/
+</code></pre></div>
+<h3 id="_16">Синтаксическая проверка</h3>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>py_compile<span class="w"> </span>bot/openai_helper.py<span class="w"> </span>bot/telegram_bot.py
+</code></pre></div>
+<h2 id="_17">Структура проекта</h2>
+<table>
+<thead>
+<tr>
+<th>Путь</th>
+<th>Назначение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bot/</code></td>
+<td>Ядро с плагинами и <code>user_data.db</code></td>
+</tr>
+<tr>
+<td><code>data/</code></td>
+<td>Хранилище навыков, рабочие области, персистентность агентов (в <code>.gitignore</code>)</td>
+</tr>
+<tr>
+<td><code>examples/</code></td>
+<td>MCP-примеры</td>
+</tr>
+<tr>
+<td><code>tests/</code>/<code>bot/tests/</code></td>
+<td>pytest с <code>asyncio_mode = auto</code></td>
+</tr>
+<tr>
+<td><code>AGENTS.md</code>/<code>CLAUDE.md</code></td>
+<td>Правила для агентов</td>
+</tr>
+<tr>
+<td><code>bot/user_data.db</code></td>
+<td>SQLite рантайм-состояния: сессии, история, image-refs, usage-статистика (в <code>.gitignore</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="python">Зависимости Python</h2>
+<p><strong>Telegram:</strong> <code>python-telegram-bot</code>, <code>Telethon</code></p>
+<p><strong>OpenAI/LLM:</strong> <code>openai</code>, <code>tiktoken</code>, <code>assemblyai</code></p>
+<p><strong>HTTP:</strong> <code>aiohttp</code>, <code>httpx</code>, <code>requests</code></p>
+<p><strong>Медиа:</strong> <code>pydub</code>, <code>gtts</code>, <code>pytube</code>, <code>moviepy</code>, <code>ffmpeg-python</code></p>
+<p><strong>Веб-скрапинг:</strong> <code>beautifulsoup4</code>, <code>lxml</code>, <code>trafilatura</code>, <code>readability-lxml</code>, <code>youtube-transcript-api</code>, <code>duckduckgo_search</code></p>
+<p><strong>API/веб:</strong> <code>fastapi</code>, <code>uvicorn</code></p>
+<p><strong>База данных:</strong> <code>asyncpg</code> (PostgreSQL)</p>
+<p><strong>Google:</strong> <code>google-api-python-client</code></p>
+<p><strong>Spotify:</strong> <code>spotipy</code> (OAuth)</p>
+<p><strong>Утилиты:</strong> <code>forex_python</code>, <code>whois</code>, <code>qrcode</code>, <code>pyswisseph</code>, <code>wolframalpha</code></p>
+<p><strong>Анализ данных:</strong> <code>numpy</code>, <code>pandas</code>, <code>scikit-learn</code>, <code>matplotlib</code>, <code>plotly</code></p>
+<p><strong>Тестирование:</strong> <code>pytest</code>, <code>pytest-asyncio</code></p>
+<p><strong>Конфигурации/шаблоны:</strong> <code>PyYAML</code>, <code>jinja2</code>, <code>jsonschema</code>, <code>deep-translator</code></p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = ".",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="js/base.js"></script>
+        <script src="search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>

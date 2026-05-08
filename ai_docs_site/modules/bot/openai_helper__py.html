@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        
+        
+        
+        <link rel="shortcut icon" href="../../img/favicon.ico">
+        <title>openai_helper.py - chatgpt-telegram-bot</title>
+        <link href="../../css/bootstrap.min.css" rel="stylesheet">
+        <link href="../../css/fontawesome.min.css" rel="stylesheet">
+        <link href="../../css/brands.min.css" rel="stylesheet">
+        <link href="../../css/solid.min.css" rel="stylesheet">
+        <link href="../../css/v4-font-face.min.css" rel="stylesheet">
+        <link href="../../css/base.css" rel="stylesheet">
+        <link id="hljs-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" >
+        <link id="hljs-dark" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" disabled>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script> 
+    </head>
+
+    <body>
+        <div class="navbar fixed-top navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="../../index.html">chatgpt-telegram-bot</a>
+                <!-- Expander button -->
+                <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navbar-collapse" aria-controls="navbar-collapse" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Expanded navigation -->
+                <div id="navbar-collapse" class="navbar-collapse collapse">
+                        <!-- Main navigation -->
+                        <ul class="nav navbar-nav">
+                            <li class="nav-item">
+                                <a href="../../index.html" class="nav-link">Главная</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Обзор</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../overview.html" class="dropdown-item">Обзор проекта</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../architecture.html" class="nav-link">Архитектура</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../runtime.html" class="nav-link">Запуск</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../dependencies.html" class="nav-link">Зависимости</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../testing.html" class="nav-link">Тестирование</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../conventions.html" class="nav-link">Соглашения</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../glossary.html" class="nav-link">Глоссарий</a>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфиги</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/docker.html" class="dropdown-item">Docker</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/service_mesh.html" class="dropdown-item">service_mesh</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Конфигурация проекта</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../../configs/index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/pdf_cache</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../../configs/files/bot/plugins/pdf_cache/cache_metadata__json.html" class="dropdown-item">cache_metadata.json</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/plugins/agent_config__yml.html" class="dropdown-item">agent_config.yml</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="../../configs/files/bot/chat_modes__yml.html" class="dropdown-item">chat_modes.yml</a>
+</li>
+    </ul>
+  </li>
+                                    
+<li>
+    <a href="../../configs/files/environment__yml.html" class="dropdown-item">environment.yml</a>
+</li>
+                                    
+<li>
+    <a href="../../configs/files/pytest__ini.html" class="dropdown-item">pytest.ini</a>
+</li>
+                                </ul>
+                            </li>
+                            <li class="nav-item dropdown">
+                                <a href="#" class="nav-link dropdown-toggle active" aria-current="page" role="button" data-bs-toggle="dropdown"  aria-expanded="false">Модули</a>
+                                <ul class="dropdown-menu">
+                                    
+<li>
+    <a href="../index.html" class="dropdown-item">Обзор</a>
+</li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/bot</a>
+    <ul class="dropdown-menu">
+            
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/plugins</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="plugins/agent_tools__py.html" class="dropdown-item">agent_tools.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ask_your_pdf__py.html" class="dropdown-item">ask_your_pdf.py</a>
+</li>
+            
+<li>
+    <a href="plugins/auto_tts__py.html" class="dropdown-item">auto_tts.py</a>
+</li>
+            
+<li>
+    <a href="plugins/chief__py.html" class="dropdown-item">chief.py</a>
+</li>
+            
+<li>
+    <a href="plugins/codeinterpreter__py.html" class="dropdown-item">codeinterpreter.py</a>
+</li>
+            
+<li>
+    <a href="plugins/conversation_analytics__py.html" class="dropdown-item">conversation_analytics.py</a>
+</li>
+            
+<li>
+    <a href="plugins/crypto__py.html" class="dropdown-item">crypto.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_image_search__py.html" class="dropdown-item">ddg_image_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_translate__py.html" class="dropdown-item">ddg_translate.py</a>
+</li>
+            
+<li>
+    <a href="plugins/ddg_web_search__py.html" class="dropdown-item">ddg_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/deepl__py.html" class="dropdown-item">deepl.py</a>
+</li>
+            
+<li>
+    <a href="plugins/dice__py.html" class="dropdown-item">dice.py</a>
+</li>
+            
+<li>
+    <a href="plugins/github_analysis__py.html" class="dropdown-item">github_analysis.py</a>
+</li>
+            
+<li>
+    <a href="plugins/google_web_search__py.html" class="dropdown-item">google_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/gtts_text_to_speech__py.html" class="dropdown-item">gtts_text_to_speech.py</a>
+</li>
+            
+<li>
+    <a href="plugins/haiper_image_to_video__py.html" class="dropdown-item">haiper_image_to_video.py</a>
+</li>
+            
+<li>
+    <a href="plugins/hindsight_memory__py.html" class="dropdown-item">hindsight_memory.py</a>
+</li>
+            
+<li>
+    <a href="plugins/iplocation__py.html" class="dropdown-item">iplocation.py</a>
+</li>
+            
+<li>
+    <a href="plugins/jina_web_search__py.html" class="dropdown-item">jina_web_search.py</a>
+</li>
+            
+<li>
+    <a href="plugins/language_learning__py.html" class="dropdown-item">language_learning.py</a>
+</li>
+            
+<li>
+    <a href="plugins/mcp_server__py.html" class="dropdown-item">mcp_server.py</a>
+</li>
+            
+<li>
+    <a href="plugins/movie_info__py.html" class="dropdown-item">movie_info.py</a>
+</li>
+            
+<li>
+    <a href="plugins/plugin__py.html" class="dropdown-item">plugin.py</a>
+</li>
+            
+<li>
+    <a href="plugins/prompt_perfect__py.html" class="dropdown-item">prompt_perfect.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reaction__py.html" class="dropdown-item">reaction.py</a>
+</li>
+            
+<li>
+    <a href="plugins/reminders__py.html" class="dropdown-item">reminders.py</a>
+</li>
+            
+<li>
+    <a href="plugins/show_me_diagrams__py.html" class="dropdown-item">show_me_diagrams.py</a>
+</li>
+            
+<li>
+    <a href="plugins/skills__py.html" class="dropdown-item">skills.py</a>
+</li>
+            
+<li>
+    <a href="plugins/spotify__py.html" class="dropdown-item">spotify.py</a>
+</li>
+            
+<li>
+    <a href="plugins/stable_diffusion__py.html" class="dropdown-item">stable_diffusion.py</a>
+</li>
+            
+<li>
+    <a href="plugins/task_management__py.html" class="dropdown-item">task_management.py</a>
+</li>
+            
+<li>
+    <a href="plugins/terminal__py.html" class="dropdown-item">terminal.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_document_qa__py.html" class="dropdown-item">text_document_qa.py</a>
+</li>
+            
+<li>
+    <a href="plugins/text_summarizer__py.html" class="dropdown-item">text_summarizer.py</a>
+</li>
+            
+<li>
+    <a href="plugins/vkusvill__py.html" class="dropdown-item">vkusvill.py</a>
+</li>
+            
+<li>
+    <a href="plugins/weather__py.html" class="dropdown-item">weather.py</a>
+</li>
+            
+<li>
+    <a href="plugins/web_research__py.html" class="dropdown-item">web_research.py</a>
+</li>
+            
+<li>
+    <a href="plugins/webshot__py.html" class="dropdown-item">webshot.py</a>
+</li>
+            
+<li>
+    <a href="plugins/website_content__py.html" class="dropdown-item">website_content.py</a>
+</li>
+            
+<li>
+    <a href="plugins/whois___py.html" class="dropdown-item">whois_.py</a>
+</li>
+            
+<li>
+    <a href="plugins/wolfram_alpha__py.html" class="dropdown-item">wolfram_alpha.py</a>
+</li>
+            
+<li>
+    <a href="plugins/worldtimeapi__py.html" class="dropdown-item">worldtimeapi.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_audio_extractor__py.html" class="dropdown-item">youtube_audio_extractor.py</a>
+</li>
+            
+<li>
+    <a href="plugins/youtube_transcript__py.html" class="dropdown-item">youtube_transcript.py</a>
+</li>
+    </ul>
+  </li>
+            
+<li>
+    <a href="__init____py.html" class="dropdown-item">__init__.py</a>
+</li>
+            
+<li>
+    <a href="__main____py.html" class="dropdown-item">__main__.py</a>
+</li>
+            
+<li>
+    <a href="chat_modes_registry__py.html" class="dropdown-item">chat_modes_registry.py</a>
+</li>
+            
+<li>
+    <a href="conversation_key__py.html" class="dropdown-item">conversation_key.py</a>
+</li>
+            
+<li>
+    <a href="database__py.html" class="dropdown-item">database.py</a>
+</li>
+            
+<li>
+    <a href="hindsight_client__py.html" class="dropdown-item">hindsight_client.py</a>
+</li>
+            
+<li>
+    <a href="html_utils__py.html" class="dropdown-item">html_utils.py</a>
+</li>
+            
+<li>
+    <a href="i18n__py.html" class="dropdown-item">i18n.py</a>
+</li>
+            
+<li>
+    <a href="model_constants__py.html" class="dropdown-item">model_constants.py</a>
+</li>
+            
+<li>
+    <a href="openai_helper__py.html" class="dropdown-item active" aria-current="page">openai_helper.py</a>
+</li>
+            
+<li>
+    <a href="openai_tool_handler__py.html" class="dropdown-item">openai_tool_handler.py</a>
+</li>
+            
+<li>
+    <a href="plugin_manager__py.html" class="dropdown-item">plugin_manager.py</a>
+</li>
+            
+<li>
+    <a href="request_context__py.html" class="dropdown-item">request_context.py</a>
+</li>
+            
+<li>
+    <a href="skill_script_routing__py.html" class="dropdown-item">skill_script_routing.py</a>
+</li>
+            
+<li>
+    <a href="telegram_bot__py.html" class="dropdown-item">telegram_bot.py</a>
+</li>
+            
+<li>
+    <a href="usage_tracker__py.html" class="dropdown-item">usage_tracker.py</a>
+</li>
+            
+<li>
+    <a href="user_settings__py.html" class="dropdown-item">user_settings.py</a>
+</li>
+            
+<li>
+    <a href="utils__py.html" class="dropdown-item">utils.py</a>
+</li>
+            
+<li>
+    <a href="validation__py.html" class="dropdown-item">validation.py</a>
+</li>
+    </ul>
+  </li>
+                                    
+  <li class="dropdown-submenu">
+    <a href="#" class="dropdown-item">/examples</a>
+    <ul class="dropdown-menu">
+            
+<li>
+    <a href="../examples/mcp_server_example__py.html" class="dropdown-item">mcp_server_example.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_client__py.html" class="dropdown-item">mcp_stdio_client.py</a>
+</li>
+            
+<li>
+    <a href="../examples/mcp_stdio_server__py.html" class="dropdown-item">mcp_stdio_server.py</a>
+</li>
+    </ul>
+  </li>
+                                </ul>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../../changes.html" class="nav-link">Изменения</a>
+                            </li>
+                        </ul>
+
+                    <ul class="nav navbar-nav ms-md-auto">
+                        <li class="nav-item">
+                            <a href="#" class="nav-link" data-bs-toggle="modal" data-bs-target="#mkdocs_search_modal">
+                                <i class="fa fa-search"></i> Search
+                            </a>
+                        </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="model_constants__py.html" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="openai_tool_handler__py.html" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                    <div class="col-md-3"><div class="navbar-expand-md bs-sidebar hidden-print affix" role="complementary">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggler collapsed" data-bs-toggle="collapse" data-bs-target="#toc-collapse" title="Table of Contents">
+            <span class="fa fa-angle-down"></span>
+        </button>
+    </div>
+
+    
+    <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
+        <ul class="nav flex-column">
+            
+            <li class="nav-item" data-bs-level="1"><a href="#botopenai_helper" class="nav-link">bot/openai_helper</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
+        </ul>
+    </div>
+</div></div>
+                    <div class="col-md-9" role="main">
+
+<h1 id="botopenai_helper">bot/openai_helper</h1>
+<p><em>Источник:</em> <code>bot/openai_helper.py</code></p>
+<p>Модуль реализует центральный компонент для работы с языковыми моделями — инициализацию клиентов, управление историей диалогов, интеграцию с системой плагинов, долгосрочную память (Hindsight), классификацию намерений пользователя, обработку изображений, TTS, транскрипцию и вспомогательные функции для обработки ответов моделей и управления лимитами токенов.</p>
+<p>Ключевые структуры данных</p>
+<p>OpenAIHelper — основной класс-обёртка для взаимодействия с LLM API, управления диалогами и плагинами.
+self.conversations — словарь {chat_id: [messages...]} хранения истории сообщений
+self.conversations_vision — словарь {chat_id: bool} флагов использования vision-режима
+self.loaded_conversation_sessions — словарь {chat_id: session_id} отслеживания загруженных сессий
+self.last_updated — словарь {chat_id: datetime} временных меток последней активности
+self._tts_models_cache — кэш кортеж (timestamp, [model_names]) доступных TTS-моделей
+self._tts_voices_cache — кэш {model: (timestamp, [voice_names])} голосов по моделям TTS
+self.chat_modes_registry — реестр режимов чата из YAML-конфигурации
+common_args — словарь параметров для вызова chat.completions.create, формируемый динамически в зависимости от модели
+tools — список спецификаций функций для function calling, получаемый от plugin_manager</p>
+<hr />
+<p>default_max_tokens(model: str = None) -&gt; int
+Возвращает стандартное максимальное количество токенов для указанной модели.
+Аргументы
+model — имя модели; если не указано, используется значение по умолчанию
+Возвращает
+количество токенов (int)</p>
+<hr />
+<p>are_functions_available(model: str) -&gt; bool
+Проверяет, поддерживает ли указанная модель вызов функций (function calling).
+Аргументы
+model — имя модели для проверки
+Возвращает
+True, если модель поддерживает функции, иначе False</p>
+<hr />
+<p>class OpenAIHelper
+Основной класс для взаимодействия с OpenAI-совместимым API и LLM Gateway.
+Поля
+client — асинхронный клиент openai.AsyncOpenAI
+gateway_client — клиент для работы с LLM Gateway
+config — словарь с конфигурацией
+plugin_manager — менеджер плагинов
+db — экземпляр базы данных
+conversations — словарь историй диалогов {chat_id: [messages...]}
+hindsight_client — клиент HindsightClient или None
+Методы
+<strong>init</strong>(self, config: dict, plugin_manager: PluginManager, db: Database) — инициализация клиентов, валидация конфигурации и настройка подключений</p>
+<hr />
+<p>async def get_chat_response(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None, request_context=None, <strong>kwargs) -&gt; tuple[str, str]
+Получает полный ответ от GPT-модели с опциональной поддержкой сессий.
+Аргументы
+chat_id — идентификатор чата
+query — запрос к модели
+request_id — опциональный идентификатор запроса
+session_id — опциональный идентификатор сессии
+user_id — опциональный идентификатор пользователя
+request_context — опциональный контекст запроса для переопределения параметров
+</strong>kwargs — дополнительные именованные аргументы
+Возвращает
+кортеж (ответ_модели, количество_токенов)
+Исключения
+пробрасывает исключения при ошибках взаимодействия с моделью</p>
+<hr />
+<p>async def get_chat_response_stream(self, chat_id: int, query: str, request_id: str = None, session_id: str = None, user_id: int = None, request_context=None)
+Потоковое получение ответа от GPT-модели с опциональной поддержкой сессий.
+Аргументы
+chat_id — идентификатор чата
+query — запрос к модели
+request_id — опциональный идентификатор запроса
+session_id — опциональный идентификатор сессии
+user_id — опциональный идентификатор пользователя
+request_context — опциональный контекст запроса для переопределения параметров
+Возвращает
+генератор, выдающий кортежи (ответ_модели, количество_токенов) или ('not_finished', ...)
+Исключения
+обрабатывает внутренние ошибки, логирует и возвращает сообщение об ошибке через yield</p>
+<hr />
+<p>async def __common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None, <strong>kwargs)
+Внутренний метод запроса ответа от GPT-модели с управлением контекстом, автовыбором режима и подготовкой памяти.
+Аргументы
+chat_id — идентификатор чата
+query — текст запроса
+stream — флаг потоковой передачи ответа
+session_id — идентификатор сессии
+</strong>kwargs — дополнительные аргументы включая big_context, user_id
+Возвращает
+Ответ модели и количество использованных токенов
+Исключения
+openai.RateLimitError — при превышении лимитов API выполняется до 3 повторных попыток с интервалом 20 секунд</p>
+<hr />
+<p>async def __common_get_chat_response_vision(self, chat_id, content, stream=False)
+Внутренний метод для выполнения vision-запроса к API с подготовкой контекста и обработкой ошибок.
+Аргументы
+chat_id — идентификатор чата для извлечения истории диалога
+content — мультимодальный контент (текст + изображение)
+stream — флаг потоковой передачи ответа
+Возвращает
+Объект ответа chat.completions.create или асинхронный генератор при stream=True
+Исключения
+openai.RateLimitError — при превышении лимитов API
+openai.BadRequestError — при некорректном запросе, преобразуется в локализованное исключение
+Exception — при прочих ошибках с локализованным сообщением</p>
+<hr />
+<p>async def __handle_function_call(self, chat_id, response, stream=False, times=0, tools_used=(), allowed_plugins=None, user_id=None, request_context=None)
+Прокси-метод для делегирования обработки функциональных вызовов внешнему обработчику.
+Аргументы
+chat_id — идентификатор чата
+response — объект ответа от LLM
+stream — флаг потоковой обработки
+times — счётчик рекурсивных вызовов
+tools_used — кортеж уже использованных инструментов
+allowed_plugins — разрешённые плагины
+user_id — идентификатор пользователя
+request_context — контекст запроса
+Возвращает
+Результат выполнения handle_function_call</p>
+<hr />
+<p>def _uses_structured_tool_history(self, model_to_use: str) -&gt; bool
+Определяет, использует ли указанная модель структурированный формат истории tool calls.
+Аргументы
+model_to_use — строковый идентификатор модели
+Возвращает
+True для моделей из GPT_4O_MODELS и LLMGATEWAY_CHAT_MODELS, иначе False</p>
+<hr />
+<p>def _tool_result_content(self, content: Any) -&gt; str
+Нормализует результат выполнения инструмента в строковое представление.
+Аргументы
+content — произвольное содержимое результата (строка, объект, и т.д.)
+Возвращает
+Строковое представление: исходная строка, JSON-сериализация или str(content)</p>
+<hr />
+<p>def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -&gt; None
+Добавляет в историю диалога сообщение ассистента с вызовами инструментов в формате OpenAI.
+Аргументы
+chat_id — идентификатор чата
+tool_calls — список вызовов инструментов с полями id, name, arguments</p>
+<hr />
+<p>def _mode_from_system_message(self, system_message: dict[str, Any] | None) -&gt; dict[str, Any] | None
+Определяет текущий режим чата из системного сообщения по ключу или по содержимому.
+Аргументы
+system_message — системное сообщение или None
+Возвращает
+Словарь режима чата или None, если режим не определён</p>
+<hr />
+<p>def _defer_direct_tool_results(self, chat_id: int) -&gt; bool
+Проверяет необходимость отложенной обработки прямых результатов инструментов.
+Аргументы
+chat_id — идентификатор чата
+Возвращает
+Логическое значение условия отложенной обработки</p>
+<hr />
+<p>def _should_defer_direct_results(self, chat_id: int) -&gt; bool
+Определяет, следует ли откладывать прямой вывод результатов на основе системного сообщения.
+Аргументы
+chat_id — идентификатор чата для получения истории сообщений
+Возвращает
+True, если режим требует отложенных результатов; иначе False</p>
+<hr />
+<p>def _add_function_call_to_history(self, chat_id: int, function_name: str, content: str, tool_call_id: str | None = None) -&gt; None
+Добавляет вызов функции в историю чата через приватный метод-обёртку.
+Аргументы
+chat_id — идентификатор чата
+function_name — имя вызванной функции
+content — содержимое результата вызова
+tool_call_id — опциональный идентификатор tool call</p>
+<hr />
+<p>async def _retry_empty_response_after_tools(self, chat_id: int, user_id: int | None, session_id: str | None)
+Повторно запрашивает непустой финальный ответ после выполнения инструментов, без вызова tools.
+Аргументы
+chat_id — идентификатор чата
+user_id — опциональный идентификатор пользователя
+session_id — опциональный идентификатор сессии
+Возвращает
+Ответ модели chat.completions.create после ретрая</p>
+<hr />
+<p>async def _retry_empty_response_with_tools(self, chat_id: int, user_id: int | None, session_id: str | None, allowed_plugins)
+Повторно запрашивает ответ с разрешёнными инструментами при пустом предыдущем ответе.
+Аргументы
+chat_id — идентификатор чата
+user_id — опциональный идентификатор пользователя
+session_id — опциональный идентификатор сессии
+allowed_plugins — разрешённые плагины для получения спецификаций функций
+Возвращает
+Ответ модели или None, если модель не поддерживает tools или нет доступных инструментов</p>
+<hr />
+<p>async def _create_empty_response_retry_completion(self, retry_kind: str, <strong>kwargs)
+Выполняет запрос к API chat.completions.create для ретрая пустого ответа с логированием.
+Аргументы
+retry_kind — метка типа ретрая ("after_tools" или "with_tools")
+</strong>kwargs — аргументы, передаваемые в client.chat.completions.create
+Возвращает
+Ответ API chat.completions</p>
+<hr />
+<p>async def generate_image(self, prompt: str) -&gt; tuple[str, str]
+Генерирует изображение по текстовому описанию с использованием модели DALL·E или LLMGateway.
+Аргументы
+prompt — текстовое описание для генерации изображения
+Возвращает
+Кортеж (URL изображения, размер изображения)
+Исключения
+Exception — при отсутствии данных в ответе или ошибке API</p>
+<hr />
+<p>async def edit_telegram_image(self, prompt: str, file_id: str) -&gt; tuple[str, str]
+Редактирует изображение из Telegram, загружая файл и отправляя на модель редактирования LLMGateway.
+Аргументы
+prompt — инструкция для редактирования
+file_id — идентификатор файла в Telegram
+Возвращает
+Кортеж с результатом редактирования (URL/данные изображения, формат)
+Исключения
+Exception — при ошибке загрузки или обработки изображения</p>
+<hr />
+<p>@staticmethod
+def _cache_is_fresh(cache_entry: tuple[float, list[str]] | None) -&gt; bool
+Проверяет актуальность кэш-записи TTS-опций по времени жизни.
+Аргументы
+cache_entry — кортеж (timestamp, options) или None
+Возвращает
+True, если кэш существует и не устарел</p>
+<hr />
+<p>@staticmethod
+def _extract_option_ids(payload: Any, preferred_keys: tuple[str, ...]) -&gt; list[str]
+Извлекает список строковых идентификаторов из произвольной структуры данных (dict, list, Pydantic-модель).
+Аргументы
+payload — входные данные для парсинга
+preferred_keys — приоритетные ключи для поиска в словаре
+Возвращает
+Список извлечённых строковых идентификаторов</p>
+<hr />
+<p>def classify_reply_intent(self, user_text: str, replied_message_kind: str) -&gt; str
+Классифицирует намерение Telegram-ответа с использованием лёгкой модели.
+Аргументы
+user_text — текст ответа пользователя
+replied_message_kind — тип сообщения, на которое отвечают
+Возвращает
+Классифицированное намерение: "image_edit", "image_describe", "text_reply" или "unknown"</p>
+<hr />
+<p>def get_conversation_stats(self, chat_id: int) -&gt; tuple[int, int]
+Возвращает количество сообщений и токенов в диалоге.
+Аргументы
+chat_id — идентификатор чата
+Возвращает
+Кортеж (количество сообщений, количество токенов)</p>
+<hr />
+<p>async def ask(self, prompt, user_id, assistant_prompt=None, model=None)
+Отправляет промпт к OpenAI-совместимому API и возвращает ответ.
+Аргументы
+prompt — текст запроса пользователя
+user_id — идентификатор пользователя
+assistant_prompt — системный промпт (опционально, по умолчанию базовый ассистент)
+model — имя модели для использования (опционально, по умолчанию из конфигурации)
+Возвращает
+Кортеж (текст ответа, общее количество использованных токенов)
+Исключения
+Логирует ошибки выполнения запроса через logger.error</p>
+<hr />
+<p>def _disabled_plugins_for_user(self, user_id: int | None) -&gt; set[str]
+Возвращает множество плагинов, отключённых пользователем в настройках.
+Аргументы
+user_id — идентификатор пользователя
+Возвращает
+Множество строк с нормализованными именами отключённых плагинов</p>
+<hr />
+<p>def _apply_user_disabled_plugins(self, allowed_plugins, user_id: int | None)
+Фильтрует разрешённые плагины с учётом пользовательских настроек отключения.
+Аргументы
+allowed_plugins — список разрешённых плагинов или ['All']
+user_id — идентификатор пользователя
+Возвращает
+Отфильтрованный список плагинов с исключёнными пользовательскими отключениями</p>
+<hr />
+<p>def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None, user_id: int | None = None)
+Определяет итоговый список разрешённых плагинов из контекста сессии с учётом режима работы и пользовательских настроек.
+Аргументы
+chat_id — идентификатор чата
+session_id — идентификатор сессии (опционально)
+user_id — идентификатор пользователя (опционально)
+Возвращает
+Отфильтрованный список разрешённых плагинов через plugin_manager.filter_allowed_plugins</p>
+<hr />
+<p>def _localized_text(self, key, bot_language)
+Возвращает локализованный текст по ключу для указанного языка бота.
+Аргументы
+key — ключ строки локализации
+bot_language — язык интерфейса бота
+Возвращает
+Локализованную строку</p>
+<hr />
+<p>async def interpret_image(self, chat_id, fileobj, prompt=None)
+Интерпретирует изображение через Vision-модель с полным получением ответа.
+Аргументы
+chat_id — идентификатор чата
+fileobj — файловый объект изображения PNG
+prompt — пользовательский промпт или vision_prompt из конфигурации
+Возвращает
+Кортеж (answer, total_tokens) — текст ответа и количество использованных токенов</p>
+<hr />
+<p>async def interpret_image_stream(self, chat_id, fileobj, prompt=None)
+Интерпретирует изображение через Vision-модель с потоковой передачей ответа.
+Аргументы
+chat_id — идентификатор чата
+fileobj — файловый объект изображения PNG
+prompt — пользовательский промпт или vision_prompt из конфигурации
+Возвращает
+Асинхронный генератор кортежей (accumulated_answer, status/tokens)</p>
+<hr />
+<p>is_hindsight_enabled(self) -&gt; bool
+Проверяет активность интеграции с системой памяти Hindsight.
+Возвращает
+True при наличии всех необходимых конфигурационных параметров и инициализированного клиента</p>
+<hr />
+<p>get_hindsight_bank_id(self, user_id: int | str) -&gt; str
+Формирует идентификатор банка памяти Hindsight для пользователя.
+Аргументы
+user_id — числовой или строковый идентификатор пользователя
+Возвращает
+Строка префикса банка с user_id</p>
+<hr />
+<p>_hindsight_memory_types(self) -&gt; list[str]
+Определяет типы памяти для операций recall из конфигурации.
+Возвращает
+Список типов памяти (по умолчанию ['world', 'experience'])</p>
+<hr />
+<p>async def _prepare_hindsight_session_memory_context(self, chat_id, user_id, query, parse_mode, temperature, max_tokens_percent, session_id)
+Выполняет автоматический recall памяти Hindsight и встраивает контекст в историю диалога.
+Аргументы
+chat_id — идентификатор чата
+user_id — идентификатор пользователя для определения банка памяти
+query — текст запроса для поиска релевантной памяти
+parse_mode — режим парсинга сообщений
+temperature — температура генерации
+max_tokens_percent — процент от максимума токенов
+session_id — идентификатор сессии или None
+Исключения
+Логирует предупреждение при неудаче recall, не прокидывает исключение</p>
+<hr />
+<p>_has_hindsight_memory_context(self, messages: list[dict[str, Any]]) -&gt; bool
+Проверяет наличие системного контекста памяти Hindsight в истории сообщений.
+Аргументы
+messages — список сообщений диалога
+Возвращает
+True если найден маркер HINDSIGHT_MEMORY_MARKER в системных сообщениях</p>
+<hr />
+<p>_insert_hindsight_memory_context(self, chat_id, memory)
+Встраивает контекст памяти Hindsight в историю диалога указанного чата.
+Аргументы
+chat_id — идентификатор чата
+memory — отформатированная строка результатов recall для вставки</p>
+<hr />
+<p>add_hindsight_context(self, chat_id: int, memory: str) -&gt; None
+Вставляет системное сообщение с контекстом hindsight-памяти в цепочку сообщений чата.
+Аргументы
+chat_id — идентификатор чата, в историю которого вставляется контекст
+memory — строка с содержимым памяти для форматирования в системный промпт
+Возвращает
+None</p>
+<hr />
+<p>finalize_hindsight_session_memory(self, user_id: int, session_id: str | None, messages: list[dict[str, Any]] | None = None, *, raise_on_error: bool = False, async_store: bool | None = None) -&gt; int
+Финализирует сессию: извлекает транскрипт, выделяет элементы памяти и сохраняет их в hindsight-банк.
+Аргументы
+user_id — идентификатор пользователя
+session_id — идентификатор сессии (опционально)
+messages — предварительно полученные сообщения диалога (опционально, по умолчанию загружаются из БД)
+raise_on_error — флаг проброса исключений вместо подавления
+async_store — принудительный режим асинхронного сохранения (None — использовать конфигурацию)
+Возвращает
+Количество сохранённых элементов памяти (0 при отказе или ошибке)
+Исключения
+Exception — при raise_on_error=True пробрасываются возникшие ошибки извлечения/сохранения</p>
+<hr />
+<p>_retain_hindsight_items(self, chat_id: int, user_id: int, items: list[dict[str, Any]], session_id: str | None, mode: str, document_id: str | None = None, async_store: bool | None = None) -&gt; None
+Нормализует элементы памяти и отправляет их на сохранение в hindsight-клиент.
+Аргументы
+chat_id — идентификатор чата
+user_id — идентификатор пользователя
+items — список извлечённых элементов памяти
+session_id — идентификатор сессии
+mode — режим сохранения (например, "session_close")
+document_id — принудительный идентификатор документа
+async_store — режим асинхронного сохранения
+Возвращает
+None</p>
+<hr />
+<p>_extract_hindsight_memory_items(self, transcript: str) -&gt; list[dict[str, Any]]
+Отправляет транскрипт в LLM для извлечения структурированных элементов памяти в формате JSON.
+Аргументы
+transcript — текстовый транскрипт сессии диалога
+Возвращает
+Список извлечённых элементов памяти (может быть пустым)</p>
+<hr />
+<p>_parse_hindsight_memory_items(self, content: str) -&gt; list[dict[str, Any]]
+Парсит JSON-ответ LLM, валидирует и фильтрует извлечённые элементы памяти.
+Аргументы
+content — сырой текст ответа от LLM
+Возвращает
+Отфильтрованный список валидных элементов памяти с ограничением по максимальному количеству</p>
+<hr />
+<p>_looks_sensitive_memory(self, content: str) -&gt; bool
+Проверяет содержимое памяти на наличие потенциально чувствительной информации.
+Аргументы
+content — проверяемый текст содержимого памяти
+Возвращает
+True, если обнаружены маркеры чувствительных данных (API-ключи, пароли, токены и т.д.)</p>
+<hr />
+<p>reset_chat_history(self, chat_id, content='', session_id=None)
+Сбрасывает историю диалога, создаёт новую сессию через базу данных и инициализирует контекст.
+Аргументы
+chat_id — идентификатор чата
+content — начальное содержимое системного сообщения
+session_id — идентификатор существующей сессии (опционально)
+Возвращает
+None
+Исключения
+ValueError — при невозможности создать или получить сессию для указанного пользователя</p>
+<hr />
+<p>__max_age_reached(self, chat_id) -&gt; bool
+Проверяет, превышен ли максимальный возраст разговора с момента последнего обновления.
+Аргументы
+chat_id — идентификатор чата
+Возвращает
+True, если с момента last_updated прошло более max_conversation_age_minutes минут; False, если чат не найден или возраст не превышен</p>
+<hr />
+<p>__add_function_call_to_history(self, chat_id, function_name, content, tool_call_id=None)
+Добавляет результат вызова функции в историю разговора с адаптацией под провайдера модели.
+Аргументы
+chat_id — идентификатор чата
+function_name — имя вызванной функции
+content — результат выполнения функции
+tool_call_id — опциональный идентификатор вызова инструмента для структурированного формата</p>
+<hr />
+<p>__add_to_history(self, chat_id, role, content, session_id=None)
+Добавляет сообщение в историю разговора с автоматической инициализацией и сохранением в базу данных.
+Аргументы
+chat_id — идентификатор чата
+role — роль отправителя сообщения (system/user/assistant/tool/function)
+content — текст сообщения
+session_id — опциональный идентификатор сессии для привязки контекста</p>
+<hr />
+<p>__summarise(self, conversation, chat_id=None, session_id=None) -&gt; str
+Создаёт сжатое резюме истории разговора с обрезкой по токенам и сохранением контекста.
+Аргументы
+conversation — полная история сообщений для суммаризации
+chat_id — опциональный идентификатор чата для сохранения результата
+session_id — опциональный идентификатор сессии
+Возвращает
+Строка-суммаризация длиной до 1000 символов или сообщение об ошибке/обрезке
+Исключения
+Exception — ошибки API или обработки; логируются, возвращается fallback-сообщение</p>
+<hr />
+<p>__count_tokens(self, messages, model_to_use=None) -&gt; int
+Подсчитывает количество токенов для заданных сообщений с использованием tiktoken.
+Аргументы
+messages — список сообщений в формате [{"role": str, "content": str}, ...]
+model_to_use — опциональное имя модели; по умолчанию используется self.config['model']
+Возвращает
+Целое число — количество токенов для кодирования сообщений</p>
+<hr />
+<p>num_tokens_from_messages(messages: list[dict], model: str) -&gt; int
+Подсчитывает количество токенов в списке сообщений для указанной модели.
+Аргументы
+messages — список сообщений в формате OpenAI Chat API
+model — идентификатор модели для выбора схемы токенизации
+Возвращает
+общее количество токенов с учётом служебных
+Исключения
+NotImplementedError — если модель не входит в список supported_models</p>
+<hr />
+<p>__count_tokens_vision(image_bytes: bytes) -&gt; int
+Вычисляет количество токенов для обработки изображения по алгоритму OpenAI Vision.
+Аргументы
+image_bytes — бинарные данные изображения
+Возвращает
+количество токенов для обработки изображения
+Исключения
+ValueError — при неизвестном значении параметра vision_detail</p>
+<hr />
+<p>get_file_data(file_id: str) -&gt; bytes
+Асинхронно получает данные файла из Telegram по идентификатору.
+Аргументы
+file_id — идентификатор файла в системе Telegram
+Возвращает
+байтовый массив содержимого файла
+Исключения
+ValueError — если экземпляр бота не инициализирован</p>
+<hr />
+<p>download_file_as_bytes(file_id: str) -&gt; bytes
+Асинхронно загружает файл Telegram в виде байтов.
+Аргументы
+file_id — идентификатор файла в системе Telegram
+Возвращает
+байтовое представление файла</p>
+<hr />
+<p>set_last_image_file_id(chat_id: int, file_id: str) -&gt; None
+Сохраняет идентификатор последнего изображения для указанного чата.
+Аргументы
+chat_id — идентификатор чата
+file_id — идентификатор файла изображения</p>
+<hr />
+<p>get_last_image_file_id(chat_id: int) -&gt; str | None
+Возвращает идентификатор последнего изображения для чата.
+Аргументы
+chat_id — идентификатор чата
+Возвращает
+идентификатор файла или None, если изображений не было</p>
+<hr />
+<p>generate_session_name(chat_id: int, first_message: str, session_id: Optional[str] = None) -&gt; str
+Генерирует название сессии на основе первого сообщения пользователя с помощью LLM.
+Аргументы
+chat_id — идентификатор чата
+first_message — первое сообщение пользователя для анализа
+session_id — опциональный идентификатор сессии
+Возвращает
+сгенерированное название сессии длиной до 50 символов и количество использованных токенов</p>
+<hr />
+<p>ask_sync(prompt, user_id, assistant_prompt=None, model=None)
+Выполняет синхронный запрос к API языковой модели.
+Аргументы
+prompt — текст запроса пользователя
+user_id — идентификатор пользователя
+assistant_prompt — системный промпт для модели
+model — принудительно указанная модель вместо модели по умолчанию
+Возвращает
+текст ответа модели и количество использованных токенов</p>
+<hr />
+<p>send_request(self, prompt: str, model_to_use: str, max_tokens: int, temperature: float) -&gt; tuple[str, int]
+Отправляет синхронный HTTP-запрос к LLM API и возвращает сгенерированный текст с количеством использованных токенов.
+Аргументы
+prompt — текст запроса для модели
+model_to_use — идентификатор модели для генерации ответа
+max_tokens — максимальное количество токенов в ответе
+temperature — параметр температуры для управления случайностью генерации
+Возвращает
+Кортеж (сгенерированный_текст, количество_токенов) или (сообщение_об_ошибке, 0) при неудаче
+Исключения
+Обрабатывает requests.exceptions.RequestException, KeyError, ValueError, TypeError и прочие исключения, возвращая описание ошибки вместо выброса</p>
+<hr />
+<p>get_current_model(self, user_id: int = None) -&gt; str
+Определяет актуальную модель по приоритетам: сессия пользователя, глобальная настройка пользователя, модель по умолчанию из конфигурации. Фильтрует модели из сессии по белому списку LLMGATEWAY_CHAT_MODELS.
+Аргументы
+user_id — идентификатор пользователя для поиска активной сессии (опционально)
+Возвращает
+Название выбранной модели в виде строки</p>
+<hr />
+<p>get_max_tokens(self, model_to_use: str, max_tokens_percent: float, chat_id: any) -&gt; int
+Рассчитывает допустимое количество токенов для генерации с учётом общего лимита модели, текущего размера контекста, резервирования системных токенов и процентного ограничения. Для моделей семейства GPT-4O устанавливает фиксированный лимит 32768.
+Аргументы
+model_to_use — идентификатор модели для определения базового лимита
+max_tokens_percent — процент от общего лимита, разрешённый для генерации
+chat_id — идентификатор чата для подсчёта токенов текущего контекста
+Возвращает
+Целочисленное значение максимального количества токенов для генерации</p>
+<hr />
+<p>get_all_modes(self)
+Возвращает список всех доступных режимов работы чата из реестра.</p>
+<hr />
+<p>_build_auto_chat_mode_prompt(self, query: str) -&gt; str
+Формирует промпт для автоматического определения режима работы чата на основе анализа сложности запроса. Правила предпочитают простые режимы для одношаговых задач и skills_agent для многошаговых сценариев требующих оркестрации.
+Аргументы
+query — текст сообщения пользователя для анализа
+Возвращает
+Сформированный промпт с инструкциями и списком доступных режимов</p>
+<hr />
+<p>async close(self)
+Асинхронно закрывает HTTP-клиенты OpenAI, LLMGateway и Hindsight, освобождая сетевые ресурсы и предотвращая утечку соединений.
+Исключения
+Логирует ошибки закрытия клиентов без выброса исключений наружу</p>
+<hr />
+<p>_is_tts_model_id(model_id)
+Проверяет, относится ли идентификатор модели к TTS-моделям.
+Аргументы
+model_id — строка идентификатора модели
+Возвращает
+True, если в идентификаторе содержится "tts", "speech" или "silero"</p>
+<hr />
+<p>get_available_tts_models()
+Возвращает список доступных TTS-моделей с кэшированием.
+Возвращает
+Список строк идентификаторов TTS-моделей или пустой список при ошибке</p>
+<hr />
+<p>get_available_tts_voices(model)
+Возвращает список доступных голосов для указанной TTS-модели с кэшированием.
+Аргументы
+model — строка идентификатора модели или None для использования модели по умолчанию
+Возвращает
+Список строк идентификаторов голосов или пустой список при ошибке</p>
+<hr />
+<p>get_user_tts_model(user_id)
+Получает TTS-модель, настроенную для пользователя, или значение по умолчанию.
+Аргументы
+user_id — целочисленный идентификатор пользователя или None
+Возвращает
+Строка идентификатора TTS-модели</p>
+<hr />
+<p>get_user_tts_voice(user_id)
+Получает голос TTS, настроенный для пользователя, или значение по умолчанию.
+Аргументы
+user_id — целочисленный идентификатор пользователя или None
+Возвращает
+Строка идентификатора голоса в нижнем регистре</p>
+<hr />
+<p>generate_speech(text, user_id)
+Генерирует аудио из текста с использованием TTS-модели.
+Аргументы
+text — строка текста для озвучивания
+user_id — целочисленный идентификатор пользователя или None
+Возвращает
+Кортеж (BytesIO, int): объект с аудиоданными и длина исходного текста
+Исключения
+Exception с локализованным сообщением об ошибке при сбое генерации</p>
+<hr />
+<p>transcribe(filename)
+Транскрибирует аудиофайл с использованием модели Whisper.
+Аргументы
+filename — строка пути к аудиофайлу
+Возвращает
+Строка результата транскрипции
+Исключения
+Exception с локализованным сообщением об ошибке при сбое транскрипции</p>
+<hr />
+<p>@staticmethod _vision_history_content(content: list) -&gt; str
+Извлекает текстовые части из мультимодального контента для сохранения в истории диалога.
+Аргументы
+content — список элементов контента с типами text/image_url
+Возвращает
+Конкатенированный текст или строку "[image]" при отсутствии текста</p></div>
+            </div>
+        </div>
+
+        <footer class="col-md-12">
+            <hr>
+            <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a>.</p>
+        </footer>
+        <script src="../../js/bootstrap.bundle.min.js"></script>
+        <script>
+            var base_url = "../..",
+                shortcuts = {"help": 191, "next": 78, "previous": 80, "search": 83};
+        </script>
+        <script src="../../js/base.js"></script>
+        <script src="../../search/main.js"></script>
+
+        <div class="modal" id="mkdocs_search_modal" tabindex="-1" role="dialog" aria-labelledby="searchModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="searchModalLabel">Search</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>From here you can search these documents. Enter your search terms below.</p>
+                <form>
+                    <div class="form-group">
+                        <input type="search" class="form-control" placeholder="Search..." id="mkdocs-search-query" title="Type search term here">
+                    </div>
+                </form>
+                <div id="mkdocs-search-results" data-no-results-text="No results found"></div>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div><div class="modal" id="mkdocs_keyboard_modal" tabindex="-1" role="dialog" aria-labelledby="keyboardModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title" id="keyboardModalLabel">Keyboard Shortcuts</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="width: 20%;">Keys</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="help shortcut"><kbd>?</kbd></td>
+                    <td>Open this help</td>
+                  </tr>
+                  <tr>
+                    <td class="next shortcut"><kbd>n</kbd></td>
+                    <td>Next page</td>
+                  </tr>
+                  <tr>
+                    <td class="prev shortcut"><kbd>p</kbd></td>
+                    <td>Previous page</td>
+                  </tr>
+                  <tr>
+                    <td class="search shortcut"><kbd>s</kbd></td>
+                    <td>Search</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer">
+            </div>
+        </div>
+    </div>
+</div>
+
+    </body>
+</html>
