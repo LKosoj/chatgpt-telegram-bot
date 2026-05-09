@@ -1653,7 +1653,85 @@ class OpenAIHelper:
             return [messages[0], language_instruction, *messages[1:]]
         return [language_instruction, *messages]
 
+    @staticmethod
+    def _tool_call_ids(message: dict[str, Any]) -> list[str]:
+        tool_calls = message.get("tool_calls") or []
+        ids = []
+        for call in tool_calls:
+            if isinstance(call, dict) and call.get("id"):
+                ids.append(str(call["id"]))
+        return ids
+
+    def _repair_tool_call_history(self, chat_id: int) -> None:
+        messages = self.conversations.get(chat_id)
+        if not isinstance(messages, list):
+            return
+
+        repaired = []
+        changed = False
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if not isinstance(message, dict):
+                repaired.append(message)
+                index += 1
+                continue
+
+            expected_ids = self._tool_call_ids(message)
+            if message.get("role") == "assistant" and expected_ids:
+                repaired.append(message)
+                seen_ids = set()
+                index += 1
+
+                while index < len(messages):
+                    next_message = messages[index]
+                    if not isinstance(next_message, dict) or next_message.get("role") != "tool":
+                        break
+                    raw_tool_call_id = next_message.get("tool_call_id")
+                    tool_call_id = str(raw_tool_call_id) if raw_tool_call_id is not None else None
+                    if tool_call_id in expected_ids and tool_call_id not in seen_ids:
+                        repaired.append(next_message)
+                        seen_ids.add(tool_call_id)
+                    else:
+                        changed = True
+                    index += 1
+
+                missing_ids = [tool_call_id for tool_call_id in expected_ids if tool_call_id not in seen_ids]
+                for tool_call_id in missing_ids:
+                    repaired.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps({
+                            "error": "Tool result missing because execution was interrupted before a result was recorded."
+                        }, ensure_ascii=False),
+                    })
+                    changed = True
+                if missing_ids:
+                    logger.warning(
+                        "Repaired incomplete tool-call history for chat_id=%s missing_tool_call_ids=%s",
+                        chat_id,
+                        missing_ids,
+                    )
+                continue
+
+            if message.get("role") == "tool":
+                changed = True
+                logger.warning(
+                    "Dropping orphan tool result from history for chat_id=%s tool_call_id=%s",
+                    chat_id,
+                    message.get("tool_call_id"),
+                )
+                index += 1
+                continue
+
+            repaired.append(message)
+            index += 1
+
+        if changed:
+            self.conversations[chat_id] = repaired
+
     def _messages_with_hindsight_context(self, chat_id: int) -> list[dict[str, Any]]:
+        self._repair_tool_call_history(chat_id)
         return self._messages_with_language_instruction(self.conversations[chat_id])
 
     async def finalize_hindsight_session_memory(

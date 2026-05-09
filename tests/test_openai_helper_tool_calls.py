@@ -546,6 +546,42 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
     )
 
 
+def test_messages_with_hindsight_context_repairs_incomplete_tool_call_history():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.conversations[1] = [
+        {"role": "system", "content": "agent-mode", "mode_key": "skills_agent"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "chief_get_recipe:2",
+                "type": "function",
+                "function": {
+                    "name": "chief.get_recipe",
+                    "arguments": "{}",
+                },
+            }],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    messages = helper._messages_with_hindsight_context(1)
+
+    synthetic_tool_result = helper.conversations[1][2]
+    assert synthetic_tool_result["role"] == "tool"
+    assert synthetic_tool_result["tool_call_id"] == "chief_get_recipe:2"
+    assert helper.conversations[1][3] == {"role": "user", "content": "continue"}
+
+    outbound_assistant_index = next(
+        index for index, message in enumerate(messages)
+        if message.get("role") == "assistant"
+    )
+    outbound_tool_result = messages[outbound_assistant_index + 1]
+    assert outbound_tool_result["role"] == "tool"
+    assert outbound_tool_result["tool_call_id"] == "chief_get_recipe:2"
+    assert "Tool result missing" in json.loads(outbound_tool_result["content"])["error"]
+
+
 @pytest.mark.asyncio
 async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     tool_spec = {
