@@ -2,6 +2,10 @@
 
 > 🌐 **Language / Язык:** **English** · [Русский](README.ru.md)
 
+📚 **Documentation:**
+- [Step by step tutorial (17 chapters)](/docs/tutorial)
+- [Full documentation](/ai_docs_site)
+
 A Telegram bot built around an OpenAI-compatible **LLMGateway** runtime. The
 project keeps the chat / image / audio / vision UX of the original
 `chatgpt-telegram-bot` lineage but is now centred on gateway-routed models, an
