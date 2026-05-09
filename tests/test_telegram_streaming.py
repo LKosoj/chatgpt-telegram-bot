@@ -84,19 +84,35 @@ class FakeAgentTools:
 
 
 class FakePluginManager:
-    def __init__(self, agent_tools=None):
+    def __init__(self, agent_tools=None, text_document_qa=None, plugin_help_texts=None):
         self.agent_tools = agent_tools
+        self.text_document_qa = text_document_qa
+        self.plugin_help_texts = list(plugin_help_texts or [])
+
+    def has_plugin(self, name):
+        return self.get_plugin(name) is not None
 
     def get_plugin(self, name):
         if name == "agent_tools":
             return self.agent_tools
+        if name == "text_document_qa":
+            return self.text_document_qa
         return None
+
+    def get_prompt_handlers(self):
+        handlers = []
+        if self.text_document_qa is not None:
+            handlers.extend(self.text_document_qa.get_prompt_handlers())
+        return handlers
+
+    def get_plugin_help_texts(self):
+        return list(self.plugin_help_texts)
 
 
 class FakeOpenAI:
-    def __init__(self, chunks, agent_tools=None):
+    def __init__(self, chunks, agent_tools=None, text_document_qa=None, plugin_help_texts=None):
         self.chunks = chunks
-        self.plugin_manager = FakePluginManager(agent_tools)
+        self.plugin_manager = FakePluginManager(agent_tools, text_document_qa, plugin_help_texts)
         self.stream_requests = []
 
     def get_current_model(self, user_id):
@@ -113,8 +129,8 @@ class FakeOpenAI:
 
 
 class FakeOpenAINonStream(FakeOpenAI):
-    def __init__(self, response, agent_tools=None):
-        super().__init__([], agent_tools)
+    def __init__(self, response, agent_tools=None, text_document_qa=None):
+        super().__init__([], agent_tools, text_document_qa)
         self.response = response
         self.chat_requests = []
 
@@ -128,10 +144,56 @@ class FakeDB:
     def __init__(self, conversation_context):
         self.conversation_context = conversation_context
         self.calls = []
+        self.user_settings = {}
 
     def get_conversation_context(self, chat_id):
         self.calls.append(chat_id)
         return self.conversation_context
+
+    def get_user_settings(self, user_id):
+        return self.user_settings.get(user_id)
+
+
+class FakeRagPlugin:
+    def __init__(self, enabled=True, result=None):
+        self.enabled = enabled
+        self.result = result or {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "value": "RAG answer",
+            }
+        }
+        self.calls = []
+
+    def is_rag_enabled(self, chat_id):
+        return self.enabled
+
+    def get_prompt_handlers(self):
+        return [{
+            "handler": self.handle_prompt,
+            "plugin_name": "text_document_qa",
+            "chat_action": "typing",
+        }]
+
+    async def handle_prompt(self, prompt, update, context, helper=None, bot=None):
+        if not self.is_rag_enabled(str(update.effective_chat.id)):
+            return False
+        return await self.execute(
+            "ask_workspace",
+            helper,
+            chat_id=str(update.effective_chat.id),
+            query=prompt,
+            update=update,
+        )
+
+    async def handle_document_upload(self, update, context):
+        self.calls.append(("handle_document_upload", {}))
+        return True
+
+    async def execute(self, function_name, helper, **kwargs):
+        self.calls.append((function_name, kwargs))
+        return self.result
 
 
 class FakeTelegramFile:
@@ -142,6 +204,9 @@ class FakeTelegramFile:
     async def download_to_drive(self, path):
         self.downloaded_paths.append(path)
         Path(path).write_bytes(self.content)
+
+    async def download_as_bytearray(self):
+        return bytearray(self.content)
 
 
 class FakeMessage:
@@ -160,7 +225,9 @@ class FakeMessage:
     async def reply_chat_action(self, **kwargs):
         self.reply_chat_action_calls.append(kwargs)
 
-    async def reply_text(self, **kwargs):
+    async def reply_text(self, *args, **kwargs):
+        if args:
+            kwargs = {"text": args[0], **kwargs}
         self.reply_text_calls.append(kwargs)
         if self._reply_side_effects:
             effect = self._reply_side_effects.pop(0)
@@ -188,7 +255,7 @@ def _make_context(telegram_file=None):
     return SimpleNamespace(bot=bot, user_data={})
 
 
-def _make_bot(chunks, conversation_context, agent_tools=None):
+def _make_bot(chunks, conversation_context, agent_tools=None, text_document_qa=None):
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {
         "allowed_user_ids": "*",
@@ -200,11 +267,132 @@ def _make_bot(chunks, conversation_context, agent_tools=None):
         "token_price": 0.0,
     }
     bot.db = FakeDB(conversation_context)
-    bot.openai = FakeOpenAI(chunks, agent_tools)
+    bot.openai = FakeOpenAI(chunks, agent_tools, text_document_qa)
     bot.last_message = {}
     bot.usage = {}
     bot._classify_reply_intent = AsyncMock(return_value=None)
     return bot
+
+
+@pytest.mark.asyncio
+async def test_process_message_routes_to_rag_when_enabled(monkeypatch):
+    async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_indicator)
+    rag_plugin = FakeRagPlugin()
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+    message = FakeMessage()
+    update = FakeUpdate(message)
+
+    await bot.process_message("What is in the docs?", update, _make_context())
+
+    assert rag_plugin.calls == [
+        (
+            "ask_workspace",
+            {
+                "chat_id": str(message.chat_id),
+                "query": "What is in the docs?",
+                "update": update,
+            },
+        )
+    ]
+    assert bot.openai.stream_requests == []
+    assert message.reply_text_calls[0]["text"] == "RAG answer"
+
+
+@pytest.mark.asyncio
+async def test_process_message_skips_disabled_plugin_prompt_handler():
+    rag_plugin = FakeRagPlugin()
+    bot = _make_bot(
+        chunks=[
+            ("Normal answer", "1"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+    bot.db.user_settings[42] = {"disabled_plugins": ["text_document_qa"]}
+    message = FakeMessage()
+
+    await bot.process_message("hello", FakeUpdate(message), _make_context())
+
+    assert rag_plugin.calls == []
+    assert bot.openai.stream_requests[0]["query"] == "hello"
+    assert message.reply_text_calls[0]["text"] == "Normal answer"
+
+
+@pytest.mark.asyncio
+async def test_plugin_message_handler_respects_disabled_text_document_plugin():
+    rag_plugin = FakeRagPlugin()
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+    bot.db.user_settings[42] = {"disabled_plugins": ["text_document_qa"]}
+    message = FakeMessage()
+    message.document = SimpleNamespace(
+        file_id="file-1",
+        file_name="notes.txt",
+        mime_type="text/plain",
+    )
+    context = _make_context(FakeTelegramFile())
+
+    await bot.handle_plugin_command(
+        FakeUpdate(message),
+        context,
+        {
+            "plugin_name": "text_document_qa",
+            "handler": rag_plugin.handle_document_upload,
+        },
+    )
+
+    context.bot.get_file.assert_not_called()
+    assert rag_plugin.calls == []
+    assert message.reply_text_calls == [{"text": "Plugin disabled: text_document_qa"}]
+
+
+@pytest.mark.asyncio
+async def test_help_includes_enabled_plugin_help_text():
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.commands = [SimpleNamespace(command="help", description="Show help")]
+    bot.group_commands = []
+    bot.openai.plugin_manager.plugin_help_texts = [{
+        "plugin_name": "text_document_qa",
+        "text": "RAG plugin help",
+    }]
+    message = FakeMessage()
+
+    await bot.help(FakeUpdate(message), None)
+
+    assert "RAG plugin help" in message.reply_text_calls[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_help_skips_disabled_plugin_help_text():
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.commands = [SimpleNamespace(command="help", description="Show help")]
+    bot.group_commands = []
+    bot.openai.plugin_manager.plugin_help_texts = [{
+        "plugin_name": "text_document_qa",
+        "text": "RAG plugin help",
+    }]
+    bot.db.user_settings[42] = {"disabled_plugins": ["text_document_qa"]}
+    message = FakeMessage()
+
+    await bot.help(FakeUpdate(message), None)
+
+    assert "RAG plugin help" not in message.reply_text_calls[0]["text"]
 
 
 @pytest.mark.asyncio

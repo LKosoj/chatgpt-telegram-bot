@@ -88,6 +88,18 @@ class Plugin(ABC):
         Возвращает список обработчиков сообщений.
         """
         return []
+
+    def get_prompt_handlers(self) -> List[Dict]:
+        """
+        Возвращает список обработчиков обычных текстовых сообщений перед стандартным chat flow.
+        """
+        return []
+
+    def get_help_text(self) -> str | None:
+        """
+        Возвращает дополнительный текст для /help.
+        """
+        return None
     
     def get_inline_handlers(self) -> List[Dict]:
         """

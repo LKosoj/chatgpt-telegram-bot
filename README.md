@@ -6,26 +6,32 @@
 - [Step by step tutorial (17 chapters)](/docs/tutorial)
 - [Full documentation](/ai_docs_site)
 
-A Telegram bot built around an OpenAI-compatible **LLMGateway** runtime. The
-project keeps the chat / image / audio / vision UX of the original
-`chatgpt-telegram-bot` lineage but is now centred on gateway-routed models, an
-extensive plugin system, named SQLite sessions, optional Hindsight long-term
-memory, a subagent / skills runtime, and Model Context Protocol (MCP) support.
+An agentic Telegram workspace for running OpenAI-compatible models, tools,
+subagents, skills, and long-lived conversations inside Telegram. The project
+still supports the classic ChatGPT bot workflows — chat, images, audio,
+transcription, TTS, and vision — but it is no longer positioned as a minimal
+ChatGPT wrapper. It is a self-hosted assistant runtime built around
+LLMGateway-routed models, governed tool calls, named SQLite sessions, optional
+Hindsight long-term memory, local skills, deliverable artifacts, and Model
+Context Protocol (MCP) integrations.
 
-> **Status.** The codebase has diverged significantly from the upstream project.
-> Default models, image/audio routing, plugin namespacing, the chat-mode
-> registry, the agent/skills runtime, and the storage layout are all
-> repo-specific. This README documents the current behaviour. Treat the source
-> (`bot/`) and `.env.example` as authoritative when in doubt.
+> **Positioning.** Treat this repository as a power-user assistant platform,
+> not a simple public chatbot template. The codebase has diverged significantly
+> from the upstream `chatgpt-telegram-bot` project: default models,
+> image/audio routing, plugin namespacing, the chat-mode registry, the
+> agent/skills runtime, and the storage layout are all repo-specific. This
+> README documents the current behaviour. Treat the source (`bot/`) and
+> `.env.example` as authoritative when in doubt.
 
 ## Key Capabilities
 
-- **Tool-using Telegram assistant**: OpenAI-compatible chat runtime with
+- **Agentic Telegram workspace**: OpenAI-compatible chat runtime with
   namespaced plugin tools, JSON-schema argument validation, per-chat-mode tool
-  allow-lists, and direct artifact delivery back to Telegram.
+  allow-lists, plan-aware execution, and direct artifact delivery back to
+  Telegram.
 - **Agents and subagents**: `agent_tools` can run bounded subagents, ask the
-  Telegram user follow-up questions, track plans, and deliver generated files,
-  images, audio, or text artifacts.
+  Telegram user follow-up questions, track plans, coordinate tool work, and
+  deliver generated files, images, audio, or text artifacts.
 - **Skills runtime**: local Codex-style `SKILL.md` folders are exposed as tools,
   with optional script execution, operator allow-lists, progress updates, and
   routing through terminal / code-interpreter style execution.
@@ -325,7 +331,7 @@ by the runtime. **Bold** rows are required.
 |---|---|---|---|
 | `PLUGINS` | `` | csv | Allow-list of plugin module names (filenames without `.py`). Empty means no plugins are loaded. |
 | `PLUGIN_STRICT_VALIDATION` | `false` | bool | When `true`, duplicate function names across plugins raise at registration; when `false`, duplicates are logged and the second registration is dropped. |
-| `PLUGIN_STORAGE_ROOT` | `<repo>/data` | path | Root directory for plugin state (skills workdir, agent tasks, MCP config, conversation analytics, etc.). Created on startup if missing. |
+| `PLUGIN_STORAGE_ROOT` | `<repo>/data` | path | Root directory for plugin state (skills workdir, pending agent questions, MCP config, conversation analytics, etc.). Created on startup if missing. |
 | `PLUGIN_MENU_PAGE_SIZE` | `8` | int | Page size for the `/plugins` menu. |
 
 ### Agent Tools / Subagents
@@ -463,11 +469,11 @@ controlled by `Bot.set_my_commands()`.
 | `/tts <text>` | private + groups | Synthesise speech (only when `ENABLE_TTS_GENERATION=true`). |
 | `/chat <prompt>` | groups only | Address the bot explicitly in a group chat. |
 
-Plugins can contribute their own slash commands and button handlers via
-`Plugin.get_commands()` and `Plugin.get_message_handlers()`. They are
-discovered through `PluginManager.build_bot_commands()` and registered
-alongside the built-in commands. Commands with `add_to_menu=True` also appear
-in the `/plugins` menu.
+Plugins can contribute slash commands, button handlers, message filters,
+pre-chat prompt handlers, and `/help` sections via the plugin contract. Commands
+with `add_to_menu=True` also appear in the `/plugins` menu. The
+`text_document_qa` plugin contributes `/rag` as its single RAG UX command when
+enabled.
 
 ### Inline Menus
 
@@ -481,13 +487,14 @@ in the `/plugins` menu.
 
 ### Media Handlers
 
-`_register_message_tail_handlers()` registers the following filters:
+The bot registers built-in tail filters and lets enabled plugins register their
+own message filters before the catch-all text handler:
 
 | Filter | Handler | Behaviour |
 |---|---|---|
 | `filters.PHOTO`, `filters.Document.IMAGE` | `vision()` | Vision over the image, or routed to image-edit when intent matches. |
 | `filters.AUDIO`, `filters.VOICE`, `filters.Document.AUDIO`, `filters.VIDEO`, `filters.VIDEO_NOTE`, `filters.Document.VIDEO` | `transcribe()` | Transcribe the file (extracts audio for video). Subject to `IGNORE_GROUP_TRANSCRIPTIONS`. |
-| `filters.Document.*` (txt, doc, docx, pdf, rtf, odt, md) | `handle_document()` | Upload to the `text_document_qa` plugin (one workspace per chat). |
+| `filters.Document.*` (txt, doc, docx, pdf, rtf, odt, md) | plugin-registered handler | `text_document_qa` registers document upload when the plugin is enabled. |
 | `filters.REPLY & filters.TEXT` | `handle_plugin_menu_args_reply()` | Captures replies to plugin force-reply prompts; otherwise delegates to `prompt()`. Replies to non-image documents are downloaded to a temporary local path for tool-based editing / analysis. |
 | `filters.TEXT & ~filters.COMMAND & ~filters.REPLY` | `prompt()` | Catch-all non-reply chat handler. |
 
@@ -625,9 +632,17 @@ web_research
 | Plugin | Tools | Notes |
 |---|---|---|
 | `ask_your_pdf` | `analyze_pdf`, `upload_pdf` | Local PDF text extraction. |
-| `text_document_qa` | `upload_document`, `ask_question`, `list_documents`, `delete_document` | One AnythingLLM workspace per Telegram chat. |
+| `text_document_qa` | `upload_document`, `ask_question`, `ask_workspace`, `list_documents`, `delete_document`, `set_rag_mode`, `get_rag_status` | One AnythingLLM workspace per Telegram chat; `/rag` opens the RAG mode UX. |
 | `youtube_transcript` | `youtube_video_transcript` | Gateway transcript path. |
 | `youtube_audio_extractor` | `extract_youtube_audio` | pytube audio extraction. |
+
+`/rag` opens a chat-scoped RAG menu with status, document count, a document
+list button, and an enable/disable toggle. The toggle is stored in SQLite as a
+chat setting. When RAG mode is on, ordinary text messages in that Telegram chat
+are answered through the chat's AnythingLLM workspace instead of the normal
+assistant flow. Uploading a supported document always adds it to the same
+workspace; turning RAG off in the `/rag` menu returns text messages to the
+standard conversation path.
 
 ### Agent / Automation / System
 
@@ -668,7 +683,9 @@ Key tools:
   `[10, 50]` and uses `bot/prompts/subagent_system.md` as system prompt.
   Subagents inherit the parent's `allowed_plugins` and cannot recursively call
   `run_subagents`, `ask_telegram_user`, `deliver_to_user`, or
-  `cancel_pending_question`.
+  `cancel_pending_question`. Subagent final output is expected to summarize
+  findings, checked evidence, changed files, artifacts, and remaining risks for
+  the parent agent.
 - **`ask_telegram_user`** — sends a question to the user and waits up to
   `AGENT_ASK_USER_TIMEOUT_SECONDS` for a Telegram answer (text or inline
   buttons). Pending questions are persisted under `data/`, so a restart does
@@ -682,10 +699,18 @@ Key tools:
   When `defer=true`, the model loop short-circuits the tool result and the
   artifact is delivered without re-entering the model.
 - **`manage_plan_tasks`** — single per-scope plan-tracking tool with
-  `action ∈ {add, update, list, clear}` and a list of tasks (each with an `id`
-  like `T1`, free-form `content`, and a `status`). Statuses are `pending`,
-  `in_progress`, `completed`, `cancelled`. Tasks older than
-  `TASKS_TTL_SECONDS` (2 days) are pruned on load.
+  `action ∈ {add, update, list, clear}`, an optional Definition of Done contract
+  (`goal`, `success_criteria`, `verification`, `constraints`), and a task DAG.
+  Each task has an `id` like `T1`, free-form `content`, `status`, and optional
+  `depends_on` task ids. Statuses are `pending`, `in_progress`, `completed`,
+  `cancelled`. Runtime state is persisted only in SQLite (`agent_plan_tasks`
+  and `agent_plan_contracts`). Tasks older than `TASKS_TTL_SECONDS` (2 days)
+  are pruned on load.
+
+Every plugin tool call is also recorded in SQLite `tool_call_events` with the
+function name, owning plugin, chat/user/request ids when available, status,
+duration, error text, and direct-result flag. This is operational telemetry; it
+does not change the model-visible tool result.
 
 Subagents are also given an `agent_tools.internal_publish` tool (injected
 automatically) that lets them hand findings or local file paths back to the
@@ -790,7 +815,6 @@ available as a regular tool when manual memory inspection is needed.
 ├── data/                       # Default PLUGIN_STORAGE_ROOT
 │   ├── skills/                 # Skill definitions (when SKILLS_DIR not overridden)
 │   ├── skill_workdir/          # Skill script work area
-│   ├── agent_tasks.json        # Plan persistence
 │   ├── agent_pending_questions.json
 │   ├── conversation_analytics/
 │   ├── document_metadata/

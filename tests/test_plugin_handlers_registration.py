@@ -217,16 +217,12 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
         for index, handler in enumerate(application.handlers)
         if handler is ready_handler or handler in generated_plugin_handlers
     ]
-    document_index = _message_handler_index(
-        application.handlers,
-        "handle_document",
-    )
     text_index = _message_handler_index(application.handlers, "prompt")
 
     ready_handler_count = sum(
         handler is ready_handler for handler in application.handlers
     )
-    order_is_preserved = max(plugin_indexes) < document_index < text_index
+    order_is_preserved = max(plugin_indexes) < text_index
 
     assert (
         application.run_polling_calls,

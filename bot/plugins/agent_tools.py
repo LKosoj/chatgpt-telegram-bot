@@ -53,6 +53,7 @@ SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
 }
+_CONTRACT_UNSET = object()
 
 _SUBAGENT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "subagent_system.md"
 _SUBAGENT_SYSTEM_PROMPT_CACHE: str | None = None
@@ -99,24 +100,25 @@ class AgentToolsPlugin(Plugin):
     TASKS_TTL_SECONDS = 2 * 24 * 3600
 
     def __init__(self):
-        self.tasks: Dict[str, List[Dict[str, Any]]] = {}
-        self.tasks_file = os.path.join(os.path.dirname(__file__), "agent_tasks.json")
+        self.db = None
         self.pending_file = os.path.join(os.path.dirname(__file__), "agent_pending_questions.json")
         self.pending_questions: Dict[str, Dict[str, Any]] = {}
         self.pending_by_chat: Dict[int, str] = {}
         self._orphaned_pending: List[Dict[str, Any]] = []
         self._recent_deliveries: Dict[str, float] = {}
         self._background_subagent_tasks: set[asyncio.Task] = set()
-        self.load_tasks()
         self._load_orphaned_pending()
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        runtime_db = getattr(openai, "db", None) or getattr(bot, "db", None)
+        self.db = None
         if storage_root:
-            self.tasks_file = os.path.join(storage_root, "agent_tasks.json")
             self.pending_file = os.path.join(storage_root, "agent_pending_questions.json")
-            self.load_tasks()
             self._load_orphaned_pending()
+        self.db = runtime_db
+        if self.db is not None:
+            self._prune_stale_tasks()
 
     def close(self) -> None:
         try:
@@ -165,11 +167,13 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "manage_plan_tasks",
                 "description": (
-                    "Manage a short planning task list for complex multi-step work in the current "
-                    "Telegram chat. Use it to create a plan, inspect progress, and mark steps done. "
-                    "Keep task ids stable: update existing tasks instead of adding semantic duplicates. "
-                    "Only one task may be in_progress, and later tasks must not start while earlier "
-                    "tasks are still pending."
+                    "Manage the current Telegram chat's durable task plan and Definition of Done. "
+                    "Use this before complex work to set the goal, success criteria, constraints, "
+                    "and verification checks; then add/update tasks. Keep task ids stable: update "
+                    "existing tasks instead of adding semantic duplicates. Use depends_on to model "
+                    "a task DAG; a task may start only after its dependencies are closed. Without "
+                    "depends_on, preserve list order and do not start later tasks while earlier "
+                    "tasks are still pending. Only one task may be in_progress."
                 ),
                 "parameters": {
                     "type": "object",
@@ -181,7 +185,7 @@ class AgentToolsPlugin(Plugin):
                         },
                         "tasks": {
                             "type": "array",
-                            "description": "Tasks for add/update actions.",
+                            "description": "Tasks for add/update actions. Include depends_on when one task blocks another.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -191,6 +195,33 @@ class AgentToolsPlugin(Plugin):
                                         "type": "string",
                                         "enum": ["pending", "in_progress", "completed", "cancelled"],
                                     },
+                                    "depends_on": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Task ids that must be completed or cancelled before this task starts.",
+                                    },
+                                },
+                            },
+                        },
+                        "definition_of_done": {
+                            "type": "object",
+                            "description": (
+                                "Optional contract for this work: goal, success criteria, constraints, "
+                                "and verification checks. Store it before or with the task plan."
+                            ),
+                            "properties": {
+                                "goal": {"type": "string"},
+                                "success_criteria": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "verification": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "constraints": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
                                 },
                             },
                         },
@@ -299,7 +330,9 @@ class AgentToolsPlugin(Plugin):
                 "description": (
                     "Run independent tool-capable subagents in parallel for bounded subtasks. "
                     "Subagents may call tools and skills, but they cannot ask Telegram questions, "
-                    "publish final artifacts, or start nested subagents."
+                    "publish final artifacts, or start nested subagents. Give each subagent a "
+                    "bounded output contract: what to inspect, expected evidence, files it may "
+                    "touch, and what risks/unknowns it must report back to the parent."
                 ),
                 "parameters": {
                     "type": "object",
@@ -403,58 +436,106 @@ class AgentToolsPlugin(Plugin):
             return await self._deliver_to_user(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
-    def load_tasks(self) -> None:
-        if not os.path.exists(self.tasks_file):
-            self.tasks = {}
-            return
-        try:
-            with open(self.tasks_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as exc:
-            broken_path = f"{self.tasks_file}.broken"
-            logging.error(
-                "Failed to load agent tasks from %s: %s. Quarantining to %s.",
-                self.tasks_file, exc, broken_path,
-            )
-            try:
-                os.replace(self.tasks_file, broken_path)
-            except Exception:
-                logging.exception("Could not move corrupted agent tasks to %s", broken_path)
-            self.tasks = {}
-            return
-        self.tasks = data if isinstance(data, dict) else {}
-        if self._prune_stale_tasks():
-            self.save_tasks()
-
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
-        changed = False
-        for scope in list(self.tasks.keys()):
-            tasks = self.tasks.get(scope) or []
-            kept = [
-                task for task in tasks
-                if int(task.get("updated_at") or task.get("created_at") or 0) >= cutoff
-            ]
-            if len(kept) != len(tasks):
-                changed = True
-                if kept:
-                    self.tasks[scope] = kept
-                else:
-                    self.tasks.pop(scope, None)
-        if changed:
-            logging.info("Pruned stale agent tasks older than %s seconds", self.TASKS_TTL_SECONDS)
-        return changed
+        if self.db is not None:
+            try:
+                return bool(self.db.prune_agent_plans(cutoff))
+            except Exception:
+                logging.exception("Failed to prune stale agent plans from database")
+                return False
 
-    def save_tasks(self) -> None:
-        try:
-            tasks_dir = os.path.dirname(self.tasks_file) or "."
-            os.makedirs(tasks_dir, exist_ok=True)
-            tmp_path = f"{self.tasks_file}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self.tasks, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.tasks_file)
-        except Exception as exc:
-            logging.exception("Failed to save agent tasks: %s", exc)
+        return False
+
+    def _get_scope_plan(self, scope: str) -> Dict[str, Any]:
+        if self.db is not None:
+            plan = self.db.get_agent_plan(scope)
+            return {
+                "tasks": [
+                    self._normalize_existing_task(task)
+                    for task in (plan.get("tasks") or [])
+                ],
+                "contract": self._normalize_existing_contract(plan.get("contract")),
+            }
+        return {"tasks": [], "contract": None}
+
+    def _save_scope_plan(
+        self,
+        scope: str,
+        tasks: List[Dict[str, Any]],
+        *,
+        contract: Any = _CONTRACT_UNSET,
+    ) -> None:
+        normalized_tasks = [self._normalize_existing_task(task) for task in tasks]
+        if self.db is not None:
+            current_contract = self.db.get_agent_plan(scope).get("contract")
+            contract_to_save = current_contract if contract is _CONTRACT_UNSET else contract
+            self.db.save_agent_plan(scope, normalized_tasks, contract_to_save)
+            return
+        raise RuntimeError("agent_tools plan storage requires database")
+
+    def _clear_scope_tasks(self, scope: str) -> None:
+        if self.db is not None:
+            self.db.clear_agent_plan(scope, clear_contract=False)
+            return
+
+    @staticmethod
+    def _normalize_existing_task(task: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": str(task.get("id") or task.get("task_id") or "").strip(),
+            "content": str(task.get("content") or "").strip(),
+            "status": str(task.get("status") or "pending").strip(),
+            "depends_on": AgentToolsPlugin._normalize_depends_on(task.get("depends_on")),
+            "created_at": int(task.get("created_at") or int(time.time())),
+            "updated_at": int(task.get("updated_at") or task.get("created_at") or int(time.time())),
+        }
+
+    @staticmethod
+    def _normalize_existing_contract(contract: Any) -> Dict[str, Any] | None:
+        if not isinstance(contract, dict):
+            return None
+        normalized = {
+            "goal": str(contract.get("goal") or "").strip(),
+            "success_criteria": AgentToolsPlugin._normalize_string_list(
+                contract.get("success_criteria") or contract.get("criteria")
+            ),
+            "verification": AgentToolsPlugin._normalize_string_list(contract.get("verification")),
+            "constraints": AgentToolsPlugin._normalize_string_list(contract.get("constraints")),
+        }
+        if not normalized["goal"] and not any(
+            normalized[key] for key in ("success_criteria", "verification", "constraints")
+        ):
+            return None
+        return normalized
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            candidates = [value]
+        elif isinstance(value, list):
+            candidates = value
+        else:
+            candidates = [value]
+        normalized: List[str] = []
+        for item in candidates:
+            text = str(item or "").strip()
+            if text and text not in normalized:
+                normalized.append(text)
+        return normalized
+
+    @staticmethod
+    def _normalize_depends_on(value: Any) -> List[str]:
+        return AgentToolsPlugin._normalize_string_list(value)
+
+    def _contract_from_kwargs(self, kwargs: Dict[str, Any]) -> tuple[Any, str | None]:
+        if "definition_of_done" not in kwargs:
+            return _CONTRACT_UNSET, None
+        contract = self._normalize_existing_contract(kwargs.get("definition_of_done"))
+        if contract is None:
+            return _CONTRACT_UNSET, "definition_of_done must include goal, success_criteria, verification, or constraints"
+        return contract, None
 
     def _load_orphaned_pending(self) -> None:
         if not self.pending_file or not os.path.exists(self.pending_file):
@@ -529,12 +610,13 @@ class AgentToolsPlugin(Plugin):
         Used by the live status message to render plan progress to the user.
         """
         scope = compute_scope_key(chat_id, user_id)
-        tasks = self.tasks.get(scope) or []
+        tasks = self._get_scope_plan(scope).get("tasks") or []
         return [
             {
                 "id": str(task.get("id") or ""),
                 "content": str(task.get("content") or ""),
                 "status": str(task.get("status") or "pending"),
+                "depends_on": self._normalize_depends_on(task.get("depends_on")),
             }
             for task in tasks
         ]
@@ -542,22 +624,21 @@ class AgentToolsPlugin(Plugin):
     def clear_plan_tasks(self, chat_id=None, user_id=None) -> bool:
         """Remove all plan tasks for the given scope."""
         scope = compute_scope_key(chat_id, user_id)
-        if scope not in self.tasks:
+        tasks = self._get_scope_plan(scope).get("tasks") or []
+        if not tasks:
             return False
-        self.tasks.pop(scope, None)
-        self.save_tasks()
+        self._clear_scope_tasks(scope)
         return True
 
     def clear_terminal_plan_tasks(self, chat_id=None, user_id=None) -> bool:
         """Remove the plan only when every task in the scope is already closed."""
         scope = compute_scope_key(chat_id, user_id)
-        tasks = self.tasks.get(scope) or []
+        tasks = self._get_scope_plan(scope).get("tasks") or []
         if not tasks:
             return False
         if any(task.get("status") not in CLOSED_STATUSES for task in tasks):
             return False
-        self.tasks.pop(scope, None)
-        self.save_tasks()
+        self._clear_scope_tasks(scope)
         return True
 
     @staticmethod
@@ -572,6 +653,30 @@ class AgentToolsPlugin(Plugin):
         return has_action and has_target
 
     def _validate_plan_tasks(self, tasks: List[Dict[str, Any]]) -> str | None:
+        task_ids = [str(task.get("id") or "") for task in tasks]
+        duplicate_ids = sorted({task_id for task_id in task_ids if task_ids.count(task_id) > 1})
+        if duplicate_ids:
+            return f"Duplicate plan task id(s): {', '.join(duplicate_ids)}"
+
+        task_by_id = {
+            str(task.get("id") or ""): task
+            for task in tasks
+            if str(task.get("id") or "")
+        }
+        for task in tasks:
+            task_id = str(task.get("id") or "")
+            dependencies = self._normalize_depends_on(task.get("depends_on"))
+            task["depends_on"] = dependencies
+            if task_id in dependencies:
+                return f"Task {task_id} cannot depend on itself"
+            missing = [dep for dep in dependencies if dep not in task_by_id]
+            if missing:
+                return f"Task {task_id} depends on unknown task(s): {', '.join(missing)}"
+
+        cycle = self._find_dependency_cycle(task_by_id)
+        if cycle:
+            return f"Plan task dependency cycle detected: {' -> '.join(cycle)}"
+
         in_progress = [
             (index, task)
             for index, task in enumerate(tasks)
@@ -583,16 +688,28 @@ class AgentToolsPlugin(Plugin):
 
         if in_progress:
             active_index, active_task = in_progress[0]
-            earlier_open = [
-                str(task.get("id") or "")
-                for task in tasks[:active_index]
-                if task.get("status") not in CLOSED_STATUSES
-            ]
-            if earlier_open:
-                return (
-                    f"Cannot set {active_task.get('id')} in_progress while earlier "
-                    f"tasks are still open: {', '.join(earlier_open)}"
-                )
+            dependencies = self._normalize_depends_on(active_task.get("depends_on"))
+            if dependencies:
+                open_dependencies = [
+                    dep for dep in dependencies
+                    if (task_by_id.get(dep) or {}).get("status") not in CLOSED_STATUSES
+                ]
+                if open_dependencies:
+                    return (
+                        f"Cannot set {active_task.get('id')} in_progress while "
+                        f"dependencies are still open: {', '.join(open_dependencies)}"
+                    )
+            else:
+                earlier_open = [
+                    str(task.get("id") or "")
+                    for task in tasks[:active_index]
+                    if task.get("status") not in CLOSED_STATUSES
+                ]
+                if earlier_open:
+                    return (
+                        f"Cannot set {active_task.get('id')} in_progress while earlier "
+                        f"tasks are still open: {', '.join(earlier_open)}"
+                    )
 
         delivery_tasks = [
             task
@@ -610,20 +727,60 @@ class AgentToolsPlugin(Plugin):
 
         return None
 
+    @staticmethod
+    def _find_dependency_cycle(task_by_id: Dict[str, Dict[str, Any]]) -> List[str] | None:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        path: List[str] = []
+
+        def visit(task_id: str) -> List[str] | None:
+            if task_id in visited:
+                return None
+            if task_id in visiting:
+                if task_id in path:
+                    return path[path.index(task_id):] + [task_id]
+                return [task_id, task_id]
+            visiting.add(task_id)
+            path.append(task_id)
+            for dependency in task_by_id.get(task_id, {}).get("depends_on") or []:
+                cycle = visit(str(dependency))
+                if cycle:
+                    return cycle
+            path.pop()
+            visiting.remove(task_id)
+            visited.add(task_id)
+            return None
+
+        for task_id in task_by_id:
+            cycle = visit(task_id)
+            if cycle:
+                return cycle
+        return None
+
     def _manage_plan_tasks(self, helper, **kwargs) -> Dict:
+        if self.db is None:
+            return {"success": False, "error": "agent_tools plan storage requires database"}
         action = str(kwargs.get("action") or "").strip()
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
-        tasks = self.tasks.setdefault(scope, [])
+        plan = self._get_scope_plan(scope)
+        tasks = plan.get("tasks") or []
+        current_contract = plan.get("contract")
+        contract_update, contract_error = self._contract_from_kwargs(kwargs)
+        if contract_error:
+            return {"success": False, "error": contract_error}
+        effective_contract = current_contract if contract_update is _CONTRACT_UNSET else contract_update
+        contract_changed = contract_update is not _CONTRACT_UNSET and contract_update != current_contract
 
         if action == "add":
             items = kwargs.get("tasks") or []
-            if not items:
+            if not items and contract_update is _CONTRACT_UNSET:
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 content = str(item.get("content") or "").strip()
                 status = str(item.get("status") or "pending").strip()
+                depends_on = self._normalize_depends_on(item.get("depends_on"))
                 if not task_id or not content:
                     return {"success": False, "error": "Task requires id and content"}
                 if status not in TASK_STATUSES:
@@ -632,30 +789,39 @@ class AgentToolsPlugin(Plugin):
                 if existing:
                     existing["content"] = content
                     existing["status"] = status
+                    existing["depends_on"] = depends_on
                     existing["updated_at"] = int(time.time())
                 else:
+                    now = int(time.time())
                     candidate_tasks.append(
                         {
                             "id": task_id,
                             "content": content,
                             "status": status,
-                            "created_at": int(time.time()),
-                            "updated_at": int(time.time()),
+                            "depends_on": depends_on,
+                            "created_at": now,
+                            "updated_at": now,
                         }
                     )
             validation_error = self._validate_plan_tasks(candidate_tasks)
             if validation_error:
                 return {"success": False, "error": validation_error}
-            self.tasks[scope] = candidate_tasks
-            self.save_tasks()
-            return self._tasks_response(action, candidate_tasks, changed=True)
+            changed = bool(items) or contract_changed
+            if changed:
+                self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
+            return self._tasks_response(
+                action,
+                candidate_tasks,
+                changed=changed,
+                contract=effective_contract,
+            )
 
         if action == "update":
             items = kwargs.get("tasks") or []
-            if not items:
+            if not items and contract_update is _CONTRACT_UNSET:
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
-            changed = False
+            changed = contract_changed
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
@@ -674,6 +840,11 @@ class AgentToolsPlugin(Plugin):
                     if existing.get("status") != status:
                         existing["status"] = status
                         item_changed = True
+                if "depends_on" in item:
+                    depends_on = self._normalize_depends_on(item.get("depends_on"))
+                    if self._normalize_depends_on(existing.get("depends_on")) != depends_on:
+                        existing["depends_on"] = depends_on
+                        item_changed = True
                 if item_changed:
                     existing["updated_at"] = int(time.time())
                     changed = True
@@ -681,29 +852,47 @@ class AgentToolsPlugin(Plugin):
                 validation_error = self._validate_plan_tasks(candidate_tasks)
                 if validation_error:
                     return {"success": False, "error": validation_error}
-                self.tasks[scope] = candidate_tasks
-                self.save_tasks()
-            return self._tasks_response(action, candidate_tasks, changed=changed)
+                self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
+            return self._tasks_response(
+                action,
+                candidate_tasks,
+                changed=changed,
+                contract=effective_contract,
+            )
 
         if action == "list":
-            return self._tasks_response(action, tasks, changed=False)
+            return self._tasks_response(action, tasks, changed=False, contract=current_contract)
 
         if action == "clear":
             active = [task for task in tasks if task.get("status") not in CLOSED_STATUSES]
             changed = len(active) != len(tasks)
-            self.tasks[scope] = active
+            if contract_changed:
+                changed = True
             if changed:
-                self.save_tasks()
-            return self._tasks_response(action, active, changed=changed)
+                self._save_scope_plan(scope, active, contract=effective_contract)
+            return self._tasks_response(
+                action,
+                active,
+                changed=changed,
+                contract=effective_contract,
+            )
 
         return {"success": False, "error": f"Unknown action: {action}"}
 
-    def _tasks_response(self, action: str, tasks: List[Dict[str, Any]], *, changed: bool) -> Dict:
+    def _tasks_response(
+        self,
+        action: str,
+        tasks: List[Dict[str, Any]],
+        *,
+        changed: bool,
+        contract: Dict[str, Any] | None = None,
+    ) -> Dict:
         snapshot = [
             {
                 "id": str(task.get("id") or ""),
                 "content": str(task.get("content") or ""),
                 "status": str(task.get("status") or "pending"),
+                "depends_on": self._normalize_depends_on(task.get("depends_on")),
             }
             for task in tasks
         ]
@@ -721,6 +910,7 @@ class AgentToolsPlugin(Plugin):
                 "action": action,
                 "changed": changed,
                 "tasks": snapshot,
+                "definition_of_done": contract,
                 "progress": {
                     "total": total,
                     "closed": closed,

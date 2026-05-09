@@ -90,6 +90,64 @@ class Database:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS chat_settings (
+                        chat_id TEXT PRIMARY KEY,
+                        settings TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS agent_plan_contracts (
+                        scope TEXT PRIMARY KEY,
+                        contract TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS agent_plan_tasks (
+                        scope TEXT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        depends_on TEXT NOT NULL DEFAULT '[]',
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (scope, task_id)
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_agent_plan_tasks_scope_position
+                    ON agent_plan_tasks(scope, position)
+                ''')
+
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS tool_call_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        request_id TEXT,
+                        chat_id TEXT,
+                        user_id TEXT,
+                        plugin_name TEXT,
+                        function_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        duration_ms INTEGER NOT NULL DEFAULT 0,
+                        error TEXT,
+                        direct_result INTEGER NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_tool_call_events_chat_created
+                    ON tool_call_events(chat_id, created_at)
+                ''')
                 
                 # Таблица для контекста разговора с поддержкой сессий
                 cursor.execute('''
@@ -204,6 +262,221 @@ class Database:
                 return None
         except Exception as e:
             logger.error(f'Error getting user settings: {e}', exc_info=True)
+            raise
+
+    def save_chat_settings(self, chat_id: int | str, settings: Dict[str, Any]) -> None:
+        """Сохранение настроек чата"""
+        try:
+            logger.info(f'Saving settings for chat_id={chat_id}')
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                settings_json = json.dumps(settings, ensure_ascii=False)
+                cursor.execute('''
+                    INSERT INTO chat_settings (chat_id, settings)
+                    VALUES (?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET
+                    settings = excluded.settings,
+                    updated_at = CURRENT_TIMESTAMP
+                ''', (str(chat_id), settings_json))
+        except Exception as e:
+            logger.error(f'Error saving chat settings: {e}', exc_info=True)
+            raise
+
+    def get_chat_settings(self, chat_id: int | str) -> Optional[Dict[str, Any]]:
+        """Получение настроек чата"""
+        try:
+            logger.info(f'Getting settings for chat_id={chat_id}')
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT settings FROM chat_settings WHERE chat_id = ?', (str(chat_id),))
+                result = cursor.fetchone()
+                if result:
+                    logger.info(f'Settings found for chat_id={chat_id}')
+                    return json.loads(result[0])
+                logger.info(f'No settings found for chat_id={chat_id}')
+                return None
+        except Exception as e:
+            logger.error(f'Error getting chat settings: {e}', exc_info=True)
+            raise
+
+    def save_agent_plan(
+        self,
+        scope: str,
+        tasks: List[Dict[str, Any]],
+        contract: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist the full agent plan for a scope."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM agent_plan_tasks WHERE scope = ?', (scope,))
+                for position, task in enumerate(tasks):
+                    cursor.execute('''
+                        INSERT INTO agent_plan_tasks
+                        (scope, task_id, position, content, status, depends_on, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        scope,
+                        str(task.get('id') or ''),
+                        position,
+                        str(task.get('content') or ''),
+                        str(task.get('status') or 'pending'),
+                        json.dumps(task.get('depends_on') or [], ensure_ascii=False),
+                        int(task.get('created_at') or 0),
+                        int(task.get('updated_at') or 0),
+                    ))
+                if contract is not None:
+                    cursor.execute('''
+                        INSERT INTO agent_plan_contracts (scope, contract)
+                        VALUES (?, ?)
+                        ON CONFLICT(scope) DO UPDATE SET
+                        contract = excluded.contract,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (scope, json.dumps(contract, ensure_ascii=False)))
+        except Exception as e:
+            logger.error(f'Error saving agent plan: {e}', exc_info=True)
+            raise
+
+    def get_agent_plan(self, scope: str) -> Dict[str, Any]:
+        """Return persisted agent plan tasks and optional DoD contract."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT task_id, content, status, depends_on, created_at, updated_at
+                    FROM agent_plan_tasks
+                    WHERE scope = ?
+                    ORDER BY position ASC
+                ''', (scope,))
+                tasks = []
+                for row in cursor.fetchall():
+                    try:
+                        depends_on = json.loads(row['depends_on'] or '[]')
+                    except json.JSONDecodeError:
+                        depends_on = []
+                    tasks.append({
+                        'id': row['task_id'],
+                        'content': row['content'],
+                        'status': row['status'],
+                        'depends_on': depends_on if isinstance(depends_on, list) else [],
+                        'created_at': int(row['created_at']),
+                        'updated_at': int(row['updated_at']),
+                    })
+
+                cursor.execute(
+                    'SELECT contract FROM agent_plan_contracts WHERE scope = ?',
+                    (scope,),
+                )
+                result = cursor.fetchone()
+                contract = None
+                if result:
+                    try:
+                        loaded = json.loads(result['contract'])
+                    except json.JSONDecodeError:
+                        loaded = None
+                    contract = loaded if isinstance(loaded, dict) else None
+                return {'tasks': tasks, 'contract': contract}
+        except Exception as e:
+            logger.error(f'Error getting agent plan: {e}', exc_info=True)
+            raise
+
+    def clear_agent_plan(self, scope: str, *, clear_contract: bool = False) -> None:
+        """Remove persisted agent plan tasks and optionally the DoD contract."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM agent_plan_tasks WHERE scope = ?', (scope,))
+                if clear_contract:
+                    cursor.execute('DELETE FROM agent_plan_contracts WHERE scope = ?', (scope,))
+        except Exception as e:
+            logger.error(f'Error clearing agent plan: {e}', exc_info=True)
+            raise
+
+    def prune_agent_plans(self, cutoff_timestamp: int) -> int:
+        """Delete stale agent plan tasks and empty contracts older than cutoff."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM agent_plan_tasks WHERE updated_at < ?',
+                    (int(cutoff_timestamp),),
+                )
+                deleted = cursor.rowcount
+                cursor.execute('''
+                    DELETE FROM agent_plan_contracts
+                    WHERE scope NOT IN (SELECT DISTINCT scope FROM agent_plan_tasks)
+                    AND strftime('%s', updated_at) < ?
+                ''', (int(cutoff_timestamp),))
+                return deleted
+        except Exception as e:
+            logger.error(f'Error pruning agent plans: {e}', exc_info=True)
+            raise
+
+    def record_tool_call_event(
+        self,
+        *,
+        function_name: str,
+        plugin_name: str | None = None,
+        status: str,
+        duration_ms: int = 0,
+        error: str | None = None,
+        direct_result: bool = False,
+        chat_id: int | str | None = None,
+        user_id: int | str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        """Persist one tool-call telemetry event."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO tool_call_events
+                    (request_id, chat_id, user_id, plugin_name, function_name, status, duration_ms, error, direct_result)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    request_id,
+                    str(chat_id) if chat_id is not None else None,
+                    str(user_id) if user_id is not None else None,
+                    plugin_name,
+                    function_name,
+                    status,
+                    int(duration_ms),
+                    error,
+                    1 if direct_result else 0,
+                ))
+        except Exception as e:
+            logger.error(f'Error recording tool call event: {e}', exc_info=True)
+            raise
+
+    def list_tool_call_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent tool-call telemetry events."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT request_id, chat_id, user_id, plugin_name, function_name,
+                           status, duration_ms, error, direct_result, created_at
+                    FROM tool_call_events
+                    ORDER BY id DESC
+                    LIMIT ?
+                ''', (int(limit),))
+                return [
+                    {
+                        'request_id': row['request_id'],
+                        'chat_id': row['chat_id'],
+                        'user_id': row['user_id'],
+                        'plugin_name': row['plugin_name'],
+                        'function_name': row['function_name'],
+                        'status': row['status'],
+                        'duration_ms': int(row['duration_ms']),
+                        'error': row['error'],
+                        'direct_result': bool(row['direct_result']),
+                        'created_at': row['created_at'],
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.error(f'Error listing tool call events: {e}', exc_info=True)
             raise
     
     def get_active_session_id(self, user_id: int) -> Optional[str]:

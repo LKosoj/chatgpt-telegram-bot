@@ -6,6 +6,7 @@ import pytest
 
 from bot.plugin_manager import PluginManager
 from bot.i18n import localized_text
+from bot.database import Database
 from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.request_context import RequestContext
 
@@ -171,6 +172,20 @@ class FakeMessage:
         self.replies.append(text)
 
 
+@pytest.fixture()
+def agent_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    Database._instance = None
+    return Database()
+
+
+def _db_backed_agent_plugin(tmp_path, db):
+    helper = SimpleNamespace(user_id=42, db=db)
+    plugin = AgentToolsPlugin()
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    return plugin, helper
+
+
 def test_agent_tools_registers_specs_and_handlers():
     pm = PluginManager(config={"plugins": ["agent_tools"]})
 
@@ -186,6 +201,10 @@ def test_agent_tools_registers_specs_and_handlers():
     ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.ask_telegram_user")
     assert ask_spec["parameters"]["required"] == ["question", "options"]
     assert ask_spec["parameters"]["properties"]["options"]["minItems"] == 1
+    plan_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.manage_plan_tasks")
+    task_props = plan_spec["parameters"]["properties"]["tasks"]["items"]["properties"]
+    assert "depends_on" in task_props
+    assert "definition_of_done" in plan_spec["parameters"]["properties"]
 
     commands = pm.get_plugin_commands()
     assert any(command.get("callback_pattern") == "^agentask:" for command in commands)
@@ -200,24 +219,30 @@ def test_agent_tools_preserves_full_option_text():
 
 
 @pytest.mark.asyncio
-async def test_manage_plan_tasks_tracks_progress(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",
         helper,
         chat_id=10,
         action="add",
+        definition_of_done={
+            "goal": "Improve agent planning",
+            "success_criteria": ["Plan persists"],
+            "verification": ["Run focused tests"],
+            "constraints": ["Keep tool names stable"],
+        },
         tasks=[
             {"id": "T1", "content": "Inspect implementation", "status": "completed"},
-            {"id": "T2", "content": "Add Telegram ask tool", "status": "in_progress"},
+            {"id": "T2", "content": "Add Telegram ask tool", "status": "in_progress", "depends_on": ["T1"]},
         ],
     )
 
     assert added["success"] is True
     assert added["plan_tasks"]["progress"] == {"total": 2, "closed": 1, "open": 1}
+    assert added["plan_tasks"]["definition_of_done"]["goal"] == "Improve agent planning"
+    assert added["plan_tasks"]["tasks"][1]["depends_on"] == ["T1"]
 
     updated = await plugin.execute(
         "manage_plan_tasks",
@@ -236,10 +261,99 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_clear_plan_tasks_removes_open_plan(tmp_path):
+async def test_manage_plan_tasks_persists_dag_and_contract_in_database(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="add",
+        definition_of_done={
+            "goal": "Ship SQLite planning",
+            "success_criteria": ["DAG is persisted"],
+            "verification": ["Reload plugin and list plan"],
+        },
+        tasks=[
+            {"id": "T1", "content": "Add schema", "status": "completed"},
+            {"id": "T2", "content": "Wire plugin", "status": "pending", "depends_on": ["T1"]},
+        ],
+    )
+    assert added["success"] is True
+
+    reloaded = AgentToolsPlugin()
+    reloaded.initialize(openai=helper, storage_root=str(tmp_path))
+    listed = await reloaded.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+
+    assert listed["plan_tasks"]["definition_of_done"]["goal"] == "Ship SQLite planning"
+    assert listed["plan_tasks"]["tasks"][1]["depends_on"] == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_requires_database(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
     helper = SimpleNamespace(user_id=42)
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="list",
+    )
+
+    assert result["success"] is False
+    assert "requires database" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_rejects_open_dependency(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[
+            {"id": "T1", "content": "Inspect", "status": "pending"},
+            {"id": "T2", "content": "Implement", "status": "in_progress", "depends_on": ["T1"]},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "dependencies are still open" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_rejects_dependency_cycle(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[
+            {"id": "T1", "content": "One", "status": "pending", "depends_on": ["T2"]},
+            {"id": "T2", "content": "Two", "status": "pending", "depends_on": ["T1"]},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "dependency cycle" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_clear_plan_tasks_removes_open_plan(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",
@@ -256,10 +370,8 @@ async def test_clear_plan_tasks_removes_open_plan(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_clear_terminal_plan_tasks_preserves_open_plan(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_clear_terminal_plan_tasks_preserves_open_plan(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",
@@ -272,15 +384,13 @@ async def test_clear_terminal_plan_tasks_preserves_open_plan(tmp_path):
 
     assert plugin.clear_terminal_plan_tasks(chat_id=10, user_id=42) is False
     assert plugin.get_plan_tasks(chat_id=10, user_id=42) == [
-        {"id": "T1", "content": "Create presentation", "status": "in_progress"}
+        {"id": "T1", "content": "Create presentation", "status": "in_progress", "depends_on": []}
     ]
 
 
 @pytest.mark.asyncio
-async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",
@@ -296,10 +406,8 @@ async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     result = await plugin.execute(
         "manage_plan_tasks",
@@ -318,10 +426,8 @@ async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_manage_plan_tasks_rejects_in_progress_when_earlier_tasks_are_open(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_manage_plan_tasks_rejects_in_progress_when_earlier_tasks_are_open(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",
@@ -350,10 +456,8 @@ async def test_manage_plan_tasks_rejects_in_progress_when_earlier_tasks_are_open
 
 
 @pytest.mark.asyncio
-async def test_manage_plan_tasks_rejects_duplicate_delivery_task(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = SimpleNamespace(user_id=42)
+async def test_manage_plan_tasks_rejects_duplicate_delivery_task(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
     added = await plugin.execute(
         "manage_plan_tasks",

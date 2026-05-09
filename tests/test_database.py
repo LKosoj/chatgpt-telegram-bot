@@ -219,6 +219,77 @@ def test_concurrent_access_smoke(db):
         t.join()
 
 
+def test_chat_settings_are_persisted_by_chat_id(db):
+    db.save_chat_settings("-100123", {"text_document_qa_rag_enabled": True})
+
+    assert db.get_chat_settings("-100123") == {"text_document_qa_rag_enabled": True}
+    assert db.get_chat_settings("-100456") is None
+
+    db.save_chat_settings("-100123", {"text_document_qa_rag_enabled": False, "other": "value"})
+    assert db.get_chat_settings("-100123") == {
+        "text_document_qa_rag_enabled": False,
+        "other": "value",
+    }
+
+
+def test_agent_plan_persists_tasks_contract_and_dependencies(db):
+    db.save_agent_plan(
+        "chat:10",
+        [
+            {
+                "id": "T1",
+                "content": "Inspect",
+                "status": "completed",
+                "depends_on": [],
+                "created_at": 100,
+                "updated_at": 101,
+            },
+            {
+                "id": "T2",
+                "content": "Verify",
+                "status": "pending",
+                "depends_on": ["T1"],
+                "created_at": 102,
+                "updated_at": 103,
+            },
+        ],
+        {
+            "goal": "Ship the change",
+            "success_criteria": ["Tests pass"],
+            "verification": ["Run pytest"],
+            "constraints": ["Keep scope small"],
+        },
+    )
+
+    plan = db.get_agent_plan("chat:10")
+
+    assert [task["id"] for task in plan["tasks"]] == ["T1", "T2"]
+    assert plan["tasks"][1]["depends_on"] == ["T1"]
+    assert plan["contract"]["goal"] == "Ship the change"
+
+
+def test_tool_call_events_are_recorded(db):
+    db.record_tool_call_event(
+        request_id="r1",
+        chat_id=10,
+        user_id=42,
+        plugin_name="demo",
+        function_name="demo.run",
+        status="success",
+        duration_ms=12,
+        direct_result=True,
+    )
+
+    events = db.list_tool_call_events()
+
+    assert len(events) == 1
+    assert events[0]["function_name"] == "demo.run"
+    assert events[0]["plugin_name"] == "demo"
+    assert events[0]["status"] == "success"
+    assert events[0]["duration_ms"] == 12
+    assert events[0]["direct_result"] is True
+
+
 def test_save_image_creates_missing_user_settings(db):
     image_id = db.save_image(42, 42, "telegram-file-id")
 

@@ -13,4 +13,10 @@ Skill usage:
 
 Output:
 - Return concise findings for the parent agent to synthesize.
+- Use this structure unless the assigned task explicitly asks for another format:
+  - Summary: what you concluded.
+  - Evidence checked: files, commands, sources, or tool results you actually inspected.
+  - Changes made: file paths changed, or "none".
+  - Artifacts: local paths you created, or "none".
+  - Risks / unknowns: remaining uncertainty and what would verify it.
 - Reference artifact paths rather than dumping large content; the parent decides what to deliver.

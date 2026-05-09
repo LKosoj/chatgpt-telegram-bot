@@ -651,6 +651,8 @@ class ChatGPTTelegramBot:
         commands = self.group_commands if is_group_chat(update) else self.commands
         commands_description = [f'/{command.command} - {command.description}' for command in commands]
         bot_language = self.config['bot_language']
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        plugin_help_text = self._plugin_help_text(user_id)
         #tool_list = "\n".join([f"- {tool['name']}" for tool in TOOLS])
         help_text = (
             localized_text('help_text', bot_language)[0]
@@ -660,10 +662,26 @@ class ChatGPTTelegramBot:
             + localized_text('help_text', bot_language)[1]
             + '\n\n'
             + localized_text('help_text', bot_language)[2]
+            + (('\n\n' + plugin_help_text) if plugin_help_text else '')
             + '\n\n'
             + localized_text('help_extra', bot_language)
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
+
+    def _plugin_help_text(self, user_id: int | None) -> str:
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        get_plugin_help_texts = getattr(plugin_manager, 'get_plugin_help_texts', None)
+        if not callable(get_plugin_help_texts):
+            return ''
+        help_sections = []
+        for item in get_plugin_help_texts():
+            plugin_name = item.get('plugin_name')
+            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+                continue
+            text = str(item.get('text') or '').strip()
+            if text:
+                help_sections.append(text)
+        return '\n\n'.join(help_sections)
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -2534,6 +2552,9 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _describe, constants.ChatAction.TYPING)
                 return
 
+        if await self._try_handle_plugin_prompt(prompt, update, context, user_id):
+            return
+
         replied_file_context = None
         analytics_prompt = prompt
         try:
@@ -2743,6 +2764,71 @@ class ChatGPTTelegramBot:
             )
         finally:
             self._cleanup_replied_file_context(replied_file_context)
+
+    async def _try_handle_plugin_prompt(
+        self,
+        prompt: str,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+    ) -> bool:
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        get_prompt_handlers = getattr(plugin_manager, 'get_prompt_handlers', None)
+        if not plugin_manager or not callable(get_prompt_handlers):
+            return False
+
+        for handler_config in get_prompt_handlers():
+            plugin_name = handler_config.get("plugin_name")
+            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+                continue
+            handler = handler_config.get("handler")
+            if not callable(handler):
+                continue
+
+            async def _run_handler(h=handler):
+                result = h(
+                    prompt=prompt,
+                    update=update,
+                    context=context,
+                    helper=self.openai,
+                    bot=self,
+                )
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return await self._handle_plugin_prompt_result(result, update)
+
+            chat_action = handler_config.get("chat_action")
+            if chat_action:
+                handled = await wrap_with_indicator(update, context, _run_handler, chat_action)
+            else:
+                handled = await _run_handler()
+            if handled:
+                return True
+        return False
+
+    async def _handle_plugin_prompt_result(self, result, update: Update) -> bool:
+        if result is False or result is None:
+            return False
+        if result is True:
+            return True
+        if is_direct_result(result):
+            await self._handle_direct_result(update, result)
+            return True
+        if isinstance(result, dict) and "error" in result:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                text=localized_text('error_with_details', self.config['bot_language']).format(
+                    error=result['error']
+                ),
+            )
+            return True
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            reply_to_message_id=get_reply_to_message_id(self.config, update),
+            text=str(result),
+        )
+        return True
 
     async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -3065,15 +3151,6 @@ class ChatGPTTelegramBot:
         if getattr(self, "_message_tail_handlers_registered", False):
             return
 
-        application.add_handler(MessageHandler(
-            filters.Document.TXT |
-            filters.Document.DOC |
-            filters.Document.DOCX |
-            filters.Document.MimeType('application/pdf') |
-            filters.Document.MimeType('application/rtf') |
-            filters.Document.MimeType('text/markdown'),
-            self.handle_document))
-
         application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
             constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
         ]))
@@ -3236,7 +3313,16 @@ class ChatGPTTelegramBot:
                 # Для обработчиков команд Telegram
                 result = await handler(update_for_handler, context)
                 if result:  # Если обработчик что-то вернул
-                    if isinstance(result, dict) and "text" in result and "parse_mode" in result:
+                    if is_direct_result(result):
+                        await self._handle_direct_result(update_for_handler, result)
+                    elif isinstance(result, dict) and "error" in result:
+                        if message:
+                            await message.reply_text(
+                                localized_text('error_with_details', self.config['bot_language']).format(
+                                    error=result['error']
+                                )
+                            )
+                    elif isinstance(result, dict) and "text" in result and "parse_mode" in result:
                         if message:
                             await message.reply_text(
                                 text=result["text"],
@@ -3683,97 +3769,6 @@ class ChatGPTTelegramBot:
                 
                 # Sleep for a minute between checks to avoid excessive processing
                 await asyncio.sleep(60)
-
-    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Обработчик для загруженных документов
-        """
-        if not await is_allowed(self.config, update, context):
-            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                          'is not allowed to upload documents')
-            await self.send_disallowed_message(update, context)
-            return
-
-        try:
-            document = update.message.document
-            logger.info(f"Получен документ: {document.file_name}, mime_type: {document.mime_type}")
-            
-            # Список поддерживаемых MIME-типов
-            supported_mimes = [
-                'text/plain',                   # .txt
-                'application/msword',           # .doc
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',  # .docx
-                'application/pdf',              # .pdf
-                'application/rtf',              # .rtf
-                'application/vnd.oasis.opendocument.text',  # .odt
-                'text/markdown'                 # .md
-            ]
-            
-            # Список поддерживаемых расширений (как запасной вариант)
-            supported_extensions = ['.txt', '.doc', '.docx', '.pdf', '.rtf', '.odt', '.md']
-            file_extension = os.path.splitext(document.file_name)[1].lower()
-            
-            logger.info(f"Проверка типа файла: mime_type={document.mime_type}, extension={file_extension}")
-            
-            # Проверяем сначала MIME-тип, потом расширение
-            if document.mime_type not in supported_mimes and file_extension not in supported_extensions:
-                await update.message.reply_text(
-                    localized_text('document_unsupported_format', self.config['bot_language']).format(
-                        formats=", ".join(supported_extensions)
-                    )
-                )
-                logger.warning(f"Файл отклонен: неподдерживаемый формат {document.mime_type} / {file_extension}")
-                return
-
-            logger.info("Начинаем скачивание файла...")
-            # Скачиваем файл
-            file = await context.bot.get_file(document.file_id)
-            file_content = await file.download_as_bytearray()
-            logger.info(f"Файл успешно скачан, размер: {len(file_content)} байт")
-            
-            # Вызываем плагин для обработки документа
-            plugin = self.openai.plugin_manager.get_plugin('text_document_qa')
-            if not plugin:
-                logger.error("Плагин text_document_qa не найден")
-                await update.effective_message.reply_text(
-                    message_thread_id=get_thread_id(update),
-                    text=localized_text('document_processing_unavailable', self.config['bot_language'])
-                )
-                return
-
-            logger.info("Передаем файл в плагин для обработки...")
-            # Execute the plugin function directly
-            result = await plugin.execute(
-                'upload_document',
-                self.openai,
-                file_content=file_content,
-                file_name=document.file_name,
-                chat_id=str(update.effective_chat.id),
-                update=update
-            )
-
-            # Обрабатываем результат
-            if isinstance(result, dict) and "error" in result:
-                logger.error(f"Ошибка от плагина: {result['error']}")
-                await update.message.reply_text(
-                    localized_text('error_with_details', self.config['bot_language']).format(
-                        error=result['error']
-                    )
-                )
-            else:
-                try:
-                    logger.info("Файл успешно обработан, отправляем результат")
-                    await self._handle_direct_result(update, result)
-                except Exception as e:
-                    logger.error(f"Error handling direct result: {e}")
-                    await update.message.reply_text(str(result))
-
-        except Exception as e:
-            error_text = localized_text('document_processing_error', self.config['bot_language']).format(
-                error=str(e)
-            )
-            logger.error(error_text)
-            await update.message.reply_text(error_text)
 
     async def handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """

@@ -3,6 +3,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 import difflib
@@ -166,9 +167,25 @@ class PluginManager:
         """
         Call a function based on the name and parameters provided
         """
+        started = time.monotonic()
+        parsed_args: Dict[str, Any] = {}
+        status = "error"
+        error_msg = None
+        direct_result = False
         plugin = self.__get_plugin_by_function_name(function_name)
         if not plugin:
-            return json.dumps({'error': f'Function {function_name} not found'})
+            error_msg = f'Function {function_name} not found'
+            self._record_tool_call_event(
+                helper,
+                function_name,
+                parsed_args,
+                status=status,
+                duration_ms=self._elapsed_ms(started),
+                error=error_msg,
+                direct_result=direct_result,
+                request_context=request_context,
+            )
+            return json.dumps({'error': error_msg})
 
         try:
             logger.debug(f"Пытаемся разобрать аргументы функции {function_name}: {arguments}")
@@ -178,7 +195,8 @@ class PluginManager:
             if spec:
                 errors = validate_function_args(spec, parsed_args)
                 if errors:
-                    return json.dumps({'error': f'Invalid args for {function_name}: {errors}'}, ensure_ascii=False)
+                    error_msg = f'Invalid args for {function_name}: {errors}'
+                    return json.dumps({'error': error_msg}, ensure_ascii=False)
 
             if request_context is not None:
                 parsed_args['request_context'] = request_context
@@ -188,6 +206,13 @@ class PluginManager:
             result = await plugin.execute(base_name, helper, **parsed_args)
 
             logger.debug(f"Результат выполнения функции {function_name}: {result}")
+            status = "success"
+            if isinstance(result, dict):
+                direct_result = isinstance(result.get("direct_result"), dict)
+                if result.get("error") or result.get("success") is False:
+                    status = "error"
+                    error_value = result.get("error")
+                    error_msg = str(error_value) if error_value else None
             return json.dumps(result, default=str, ensure_ascii=False)
 
         except json.JSONDecodeError as e:
@@ -198,6 +223,61 @@ class PluginManager:
             error_msg = f"Ошибка выполнения функции {function_name}: {str(e)}"
             logger.error(error_msg)
             return json.dumps({'error': error_msg}, ensure_ascii=False)
+        finally:
+            self._record_tool_call_event(
+                helper,
+                function_name,
+                parsed_args,
+                status=status,
+                duration_ms=self._elapsed_ms(started),
+                error=error_msg,
+                direct_result=direct_result,
+                request_context=request_context,
+            )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        return max(0, int((time.monotonic() - started) * 1000))
+
+    def _record_tool_call_event(
+        self,
+        helper,
+        function_name: str,
+        parsed_args: Dict[str, Any],
+        *,
+        status: str,
+        duration_ms: int,
+        error: str | None,
+        direct_result: bool,
+        request_context=None,
+    ) -> None:
+        db = getattr(helper, "db", None) if helper is not None else None
+        record = getattr(db, "record_tool_call_event", None)
+        if not callable(record):
+            return
+
+        chat_id = getattr(request_context, "chat_id", None) if request_context is not None else None
+        user_id = getattr(request_context, "user_id", None) if request_context is not None else None
+        request_id = getattr(request_context, "request_id", None) if request_context is not None else None
+        if chat_id is None:
+            chat_id = parsed_args.get("chat_id")
+        if user_id is None:
+            user_id = parsed_args.get("user_id")
+
+        try:
+            record(
+                function_name=function_name,
+                plugin_name=self.get_plugin_name_by_function_name(function_name),
+                status=status,
+                duration_ms=duration_ms,
+                error=error,
+                direct_result=direct_result,
+                chat_id=chat_id,
+                user_id=user_id,
+                request_id=request_id,
+            )
+        except Exception:
+            logger.debug("Failed to record tool-call telemetry for %s", function_name, exc_info=True)
 
     def get_plugin_source_name(self, function_name) -> str:
         """
@@ -531,3 +611,34 @@ class PluginManager:
                         handler['plugin_name'] = plugin_name
                 handlers.extend(plugin_handlers)
         return handlers
+
+    def get_prompt_handlers(self) -> List[Dict]:
+        """Возвращает список pre-chat обработчиков обычного текста от всех плагинов."""
+        handlers = []
+        for plugin_name in self.plugins.keys():
+            plugin_instance = self.get_plugin(plugin_name)
+            if plugin_instance:
+                plugin_handlers = plugin_instance.get_prompt_handlers()
+                for handler in plugin_handlers:
+                    if 'plugin_name' not in handler:
+                        handler['plugin_name'] = plugin_name
+                handlers.extend(plugin_handlers)
+        return handlers
+
+    def get_plugin_help_texts(self) -> List[Dict]:
+        """Возвращает дополнительные help-тексты от всех плагинов."""
+        help_texts = []
+        for plugin_name in self.plugins.keys():
+            try:
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                help_text = plugin_instance.get_help_text()
+                if help_text:
+                    help_texts.append({
+                        "plugin_name": plugin_name,
+                        "text": help_text,
+                    })
+            except Exception as e:
+                logger.error(f"Ошибка при получении help-текста плагина {plugin_name}: {e}")
+        return help_texts

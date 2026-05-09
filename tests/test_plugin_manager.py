@@ -1,6 +1,7 @@
 import json
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,32 @@ class ContextPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_prompt_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class PromptPlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Prompt"
+
+    def get_spec(self):
+        return []
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"result": "ok"}
+
+    def get_prompt_handlers(self):
+        return [{"handler": self.handle_prompt, "chat_action": "typing"}]
+
+    def get_help_text(self):
+        return "Prompt plugin help"
+
+    async def handle_prompt(self, **kwargs):
+        return False
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def test_namespacing_and_collision(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
@@ -88,6 +115,33 @@ def test_function_allowlist_uses_plugin_ownership(tmp_path):
     assert pm.is_function_allowed("beta.run", ["All"]) is True
 
 
+def test_prompt_handlers_include_plugin_name(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_prompt_plugin(plugin_dir / "prompt_plugin.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    handlers = pm.get_prompt_handlers()
+
+    assert len(handlers) == 1
+    assert handlers[0]["plugin_name"] == "prompt_plugin"
+    assert handlers[0]["chat_action"] == "typing"
+
+
+def test_plugin_help_texts_include_plugin_name(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_prompt_plugin(plugin_dir / "prompt_plugin.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    assert pm.get_plugin_help_texts() == [{
+        "plugin_name": "prompt_plugin",
+        "text": "Prompt plugin help",
+    }]
+
+
 def test_strict_validation_raises_on_duplicate_function_names(tmp_path, monkeypatch):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
@@ -126,3 +180,41 @@ async def test_call_function_passes_request_context_to_plugin_execute(tmp_path):
     assert payload["chat_id"] == 77
     assert payload["context_user_id"] == 42
     assert payload["context_message_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_call_function_records_tool_telemetry(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    events = []
+
+    class FakeDB:
+        def record_tool_call_event(self, **kwargs):
+            events.append(kwargs)
+
+    request_context = RequestContext(
+        chat_id=77,
+        user_id=42,
+        message_id=123,
+        session_id="session-1",
+        request_id="req-1",
+    )
+
+    result = await pm.call_function(
+        "alpha.do",
+        helper=SimpleNamespace(db=FakeDB()),
+        arguments=json.dumps({"chat_id": 77, "user_id": 42}),
+        request_context=request_context,
+    )
+
+    assert json.loads(result) == {"result": "ok"}
+    assert len(events) == 1
+    assert events[0]["function_name"] == "alpha.do"
+    assert events[0]["plugin_name"] == "alpha"
+    assert events[0]["status"] == "success"
+    assert events[0]["chat_id"] == 77
+    assert events[0]["user_id"] == 42
+    assert events[0]["request_id"] == "req-1"
