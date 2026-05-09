@@ -164,7 +164,7 @@ Startup order:
 | `bot/chat_modes.yml` | User-facing chat modes, per-mode allowed plugin IDs |
 | `bot/database.py` | SQLite singleton, sessions, conversation context, image refs, usage tracking |
 | `bot/usage_tracker.py` | Token / image / TTS / transcription cost tracking and budget windows |
-| `bot/hindsight_client.py` | Hindsight HTTP client (recall, retain, list, stats) |
+| `bot/hindsight_client.py` | Hindsight HTTP client (recall, retain, list, stats, clear) |
 | `bot/request_context.py` | Frozen `RequestContext` dataclass passed through tool execution |
 | `bot/skill_script_routing.py` | Router that nudges skill scripts toward `terminal` vs. `codeinterpreter` |
 | `bot/utils.py` | `BusyStatusMessage`, `compute_scope_key`, message splitting, file delivery, helpers |
