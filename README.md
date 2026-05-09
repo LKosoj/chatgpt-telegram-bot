@@ -951,7 +951,7 @@ lineage and uses, among others:
 
 - [python-telegram-bot](https://python-telegram-bot.org)
 - [OpenAI Python SDK](https://github.com/openai/openai-python)
-- LLMGateway-compatible OpenAI-style APIs
+- [LLMGateway-compatible OpenAI-style APIs](https://github.com/LKosoj/LLMApiGateway)
 - [Hindsight](#hindsight-memory) (long-term memory service)
 - [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) (document Q&A)
 - [PlantUML](https://plantuml.com/) (diagrams)
