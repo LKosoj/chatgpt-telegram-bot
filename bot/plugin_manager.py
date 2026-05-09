@@ -159,9 +159,18 @@ class PluginManager:
                 logger.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
 
+        return self._format_specs_for_model(all_specs, model_to_use)
+
+    @staticmethod
+    def _format_specs_for_model(specs, model_to_use):
+        """
+        Wrap function specs in the envelope expected by the target provider.
+        Google models use {"function_declarations": [...]}, OpenAI-compatible
+        models use the [{"type": "function", "function": {...}}] form.
+        """
         if model_to_use in GOOGLE_MODELS:
-            return {"function_declarations": all_specs}
-        return [{"type": "function", "function": spec} for spec in all_specs]
+            return {"function_declarations": specs}
+        return [{"type": "function", "function": spec} for spec in specs]
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
         """

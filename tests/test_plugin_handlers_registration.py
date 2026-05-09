@@ -234,6 +234,44 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
 
 
 @pytest.mark.asyncio
+async def test_filtered_plugin_message_handler_forwards_plugin_name_without_kwargs(monkeypatch):
+    message_handlers = [
+        {
+            "filters": filters.TEXT,
+            "handler": plugin_message_callback,
+            "plugin_name": "text_document_qa",
+        },
+    ]
+    bot, _plugin_manager = _make_bot(message_handlers)
+    application = FakeApplication()
+    captured = []
+
+    async def fake_handle_plugin_command(update, context, cmd):
+        captured.append(cmd)
+
+    monkeypatch.setattr(bot, "handle_plugin_command", fake_handle_plugin_command)
+
+    bot._register_plugin_message_handlers(application, "test")
+    generated = [
+        handler
+        for handler in application.handlers
+        if (
+            isinstance(handler, MessageHandler)
+            and getattr(handler.callback, "__name__", None)
+            == "plugin_message_handler"
+        )
+    ][0]
+
+    await generated.callback(object(), object())
+
+    assert captured == [{
+        "handler": plugin_message_callback,
+        "plugin_name": "text_document_qa",
+        "handler_kwargs": {},
+    }]
+
+
+@pytest.mark.asyncio
 async def test_post_init_guard_skips_plugin_message_handlers_on_second_call():
     ready_handler = MessageHandler(
         filters.Document.ALL,

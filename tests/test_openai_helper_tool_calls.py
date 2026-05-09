@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import sys
@@ -44,7 +45,9 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.openai_tool_handler import _call_function_bounded  # noqa: E402
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
+from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
@@ -370,6 +373,30 @@ def test_resolve_allowed_plugins_removes_user_disabled_plugins():
     assert pm.filtered[-1] == ["time"]
 
 
+def test_subagent_parent_allowed_plugins_are_resolved_with_user_id():
+    calls = []
+
+    def resolve_allowed_plugins(chat_id, session_id=None, user_id=None):
+        calls.append((chat_id, session_id, user_id))
+        return ["terminal"]
+
+    helper = types.SimpleNamespace(resolve_allowed_plugins=resolve_allowed_plugins)
+    request_context = RequestContext(
+        chat_id=10,
+        user_id=42,
+        session_id="session-1",
+    )
+
+    allowed = AgentToolsPlugin._resolve_parent_allowed_plugins(
+        helper,
+        request_context,
+        {"chat_id": 99, "user_id": 99},
+    )
+
+    assert allowed == ["terminal"]
+    assert calls == [(10, "session-1", 42)]
+
+
 @pytest.mark.asyncio
 async def test_tts_options_are_loaded_from_api():
     helper = _make_helper(DummyPluginManager({}), client=DummyModelsClient([
@@ -437,6 +464,33 @@ async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     assert answer == "done"
     assert total_tokens is not None
     assert pm.spec_calls == [["weather"]]
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_allows_nested_chat_response_with_same_chat_lock():
+    class NestedPluginManager(DummyPluginManager):
+        async def call_function(self, name, helper, arguments, request_context=None):
+            return await helper.get_chat_response(chat_id=1, query="nested", user_id=1)
+
+    helper = _make_helper(
+        NestedPluginManager({}),
+        client=DummyClient([FakeResponse(content="nested done")]),
+    )
+    lock = await helper._chat_lock(1)
+
+    async with lock:
+        result = await asyncio.wait_for(
+            _call_function_bounded(
+                helper,
+                "prompt_perfect.optimize_prompt",
+                json.dumps({"chat_id": 1}),
+                None,
+                asyncio.Semaphore(1),
+            ),
+            timeout=1,
+        )
+
+    assert result == ("nested done", 3)
 
 
 @pytest.mark.asyncio
@@ -770,6 +824,57 @@ async def test_skills_agent_retries_plain_text_final_response_through_delivery_t
         and "agent_tools.deliver_to_user" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_retries_initial_plain_text_response_through_delivery_tool():
+    responses = {
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
+    }
+    helper = _make_helper(
+        DummyPluginManager(
+            responses,
+            specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
+        ),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({"text": "Готово"}),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1,
+        response=FakeResponse(content="plain text should not pass through"),
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=1,
+    )
+
+    assert helper.client.calls == 1
+    assert helper.client.create_kwargs[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "agent_tools.deliver_to_user"},
+    }
+    assert set(tools_used) == {"agent_tools.deliver_to_user"}
+    assert out["direct_result"]["text"] == "Готово"
 
 
 @pytest.mark.asyncio

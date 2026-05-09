@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 from typing import Dict, Any, Optional, List, ContextManager, Generator
 from contextlib import contextmanager
@@ -34,11 +35,29 @@ class Database:
                 cls._instance = instance
                 instance.init_db()
             return cls._instance
-    
+
     def __init__(self):
         """Этот метод может быть вызван несколько раз, поэтому здесь не должно быть инициализации"""
         pass
-        
+
+    @classmethod
+    def _reset_singleton(cls) -> None:
+        """Reset the cached singleton (intended for tests)."""
+        with cls._lock:
+            if cls._instance is not None:
+                local_conn = getattr(cls._local, 'connection', None)
+                if local_conn is not None:
+                    try:
+                        local_conn.close()
+                    except sqlite3.Error:
+                        pass
+                    try:
+                        del cls._local.connection
+                    except AttributeError:
+                        pass
+            cls._instance = None
+            cls._local = threading.local()
+
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         """
@@ -69,10 +88,21 @@ class Database:
             self._local.connection.commit()
 
     def __del__(self):
-        """Закрываем соединения при удалении объекта"""
-        if hasattr(self._local, 'connection'):
-            self._local.connection.close()
-            del self._local.connection
+        """Закрываем соединение текущего треда при сборке объекта."""
+        local = getattr(self, '_local', None)
+        if local is None:
+            return
+        connection = getattr(local, 'connection', None)
+        if connection is None:
+            return
+        try:
+            connection.close()
+        except Exception:
+            pass
+        try:
+            del local.connection
+        except AttributeError:
+            pass
         
     def init_db(self):
         """Инициализация базы данных и создание необходимых таблиц"""
@@ -1194,6 +1224,10 @@ class Database:
         except Exception as e:
             logger.error(f'Ошибка получения списка сессий: {e}', exc_info=True)
             return []
+
+    async def list_user_sessions_async(self, user_id: int, is_active: int = 0) -> List[Dict[str, Any]]:
+        """Async-обёртка над list_user_sessions для вызова из event loop."""
+        return await asyncio.to_thread(self.list_user_sessions, user_id, is_active)
 
     def switch_active_session(self, user_id: int, session_id: str) -> bool:
         """Переключение активной сессии"""

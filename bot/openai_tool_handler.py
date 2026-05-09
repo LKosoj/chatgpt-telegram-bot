@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 import openai
 
@@ -19,6 +20,55 @@ from .skill_script_routing import (
 from .utils import is_direct_result
 
 logger = logging.getLogger(__name__)
+
+
+def _tool_call_semaphore(helper) -> asyncio.Semaphore:
+    """Per-helper semaphore that bounds parallel tool execution.
+
+    Why: a single batch from the model can request many tool calls; without a
+    bound, asyncio.gather fans out unbounded subprocess/HTTP work and starves
+    the event loop. Lazy-init keeps the semaphore bound to the current loop.
+    """
+    sem = getattr(helper, "_tool_call_semaphore", None)
+    if sem is None:
+        try:
+            limit = max(1, int(os.getenv("TOOL_CALL_PARALLELISM", "5")))
+        except ValueError:
+            limit = 5
+        sem = asyncio.Semaphore(limit)
+        helper._tool_call_semaphore = sem
+    return sem
+
+
+async def _call_function_bounded(helper, name, args, request_context, semaphore):
+    async with semaphore:
+        without_chat_lock = getattr(helper, "_without_chat_lock", None)
+        tool_chat_id = None
+        if callable(without_chat_lock):
+            try:
+                tool_args = json.loads(args) if isinstance(args, str) else args
+                if isinstance(tool_args, dict):
+                    tool_chat_id = tool_args.get("chat_id")
+            except (TypeError, json.JSONDecodeError):
+                tool_chat_id = None
+        if callable(without_chat_lock) and tool_chat_id is not None:
+            with without_chat_lock(tool_chat_id):
+                return await helper.plugin_manager.call_function(
+                    name, helper, args, request_context=request_context
+                )
+        return await helper.plugin_manager.call_function(
+            name, helper, args, request_context=request_context
+        )
+
+
+async def _list_user_sessions(db, user_id, *, is_active: int = 0):
+    """Use the async DB API when available, fall back to sync for test doubles."""
+    fn = getattr(db, "list_user_sessions_async", None)
+    if fn is not None:
+        return await fn(user_id, is_active=is_active)
+    return db.list_user_sessions(user_id, is_active=is_active)
+
+
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_REPAIR_PROMPT = (
     "Protocol violation: this chat mode requires the final user-facing response "
@@ -155,15 +205,22 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
     return merged
 
 
-def _delivery_contract_required(helper, chat_id, final_delivery_required: bool) -> bool:
+def _delivery_contract_required(
+    helper,
+    chat_id,
+    final_delivery_required: bool,
+    *,
+    initial_plain_response: bool = False,
+) -> bool:
+    if _is_skills_agent_mode(helper, chat_id) and (
+        final_delivery_required or initial_plain_response
+    ):
+        return True
     if not final_delivery_required:
         return False
-    messages = getattr(helper, "conversations", {}).get(chat_id, [])
-    system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
+    system_message = _system_message(helper, chat_id)
     if not isinstance(system_message, dict):
         return False
-    if system_message.get("mode_key") == "skills_agent":
-        return True
     mode_from_system = getattr(helper, "_mode_from_system_message", None)
     if not callable(mode_from_system):
         return False
@@ -244,7 +301,7 @@ async def _retry_missing_delivery_tool(
     )
 
     model_to_use = helper.get_current_model(user_id)
-    sessions = helper.db.list_user_sessions(user_id, is_active=1)
+    sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
     active_session = next((s for s in sessions if s['is_active']), None)
     session_id = active_session['session_id'] if active_session else None
     max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
@@ -298,7 +355,12 @@ async def handle_function_call(
         allowed_plugins = helper.plugin_manager.filter_allowed_plugins(allowed_plugins)
 
         async def enforce_delivery_contract_if_needed():
-            if not _delivery_contract_required(helper, chat_id, final_delivery_required):
+            if not _delivery_contract_required(
+                helper,
+                chat_id,
+                final_delivery_required,
+                initial_plain_response=times == 0 and not tools_used,
+            ):
                 return None
             if delivery_retry_attempted:
                 logger.error("Delivery contract retry failed for chat_id=%s", chat_id)
@@ -448,8 +510,9 @@ async def handle_function_call(
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
                 errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
+        semaphore = _tool_call_semaphore(helper)
         tasks = [
-            helper.plugin_manager.call_function(name, helper, args, request_context=request_context)
+            _call_function_bounded(helper, name, args, request_context, semaphore)
             for name, args, _ in prepared
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -492,7 +555,7 @@ async def handle_function_call(
                 return direct_results_collected[0], tools_used
             return _merge_direct_results_into_final(direct_results_collected), tools_used
 
-        sessions = helper.db.list_user_sessions(user_id, is_active=1)
+        sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
         active_session = next((s for s in sessions if s['is_active']), None)
         session_id = active_session['session_id'] if active_session else None
         max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80

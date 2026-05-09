@@ -82,7 +82,9 @@ class ChatGPTTelegramBot:
         self.openai = openai
         self.openai.bot = None
         self._user_language_cache = {}
-        # Устанавливаем openai в plugin_manager
+        # PluginManager wiring: in normal startup (__main__) set_openai is
+        # already called, but legacy call sites and tests construct the bot
+        # directly without that step, so re-wire here too.
         self.openai.plugin_manager.set_openai(self.openai)
         
         # Кешируем chat_modes.yml
@@ -2222,7 +2224,9 @@ class ChatGPTTelegramBot:
                     prev = ''
                     sent_message = None
                     backoff = 0
-                    stream_chunk = 0
+                    # Индекс последнего «закрытого» чанка, опубликованного как
+                    # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
+                    last_published_chunk = 0
 
                     async for content, tokens in stream_response:
                         if is_direct_result(content):
@@ -2234,20 +2238,43 @@ class ChatGPTTelegramBot:
                         stream_chunks = split_into_chunks(content)
                         if len(stream_chunks) > 1:
                             content = stream_chunks[-1]
-                            if stream_chunk != len(stream_chunks) - 1:
-                                stream_chunk += 1
-                                try:
-                                    await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                                stream_chunks[-2])
-                                except:
-                                    pass
+                            if last_published_chunk != len(stream_chunks) - 1:
+                                last_published_chunk += 1
+                                previous_chunk = stream_chunks[-2]
+                                if sent_message is not None:
+                                    try:
+                                        await edit_message_with_retry(
+                                            context, chat_id, str(sent_message.message_id),
+                                            previous_chunk,
+                                        )
+                                    except Exception:
+                                        logger.debug(
+                                            "vision stream: edit previous chunk failed",
+                                            exc_info=True,
+                                        )
+                                else:
+                                    # Первое сообщение ещё не отправлено: публикуем
+                                    # завершённый предыдущий чанк как новое сообщение.
+                                    try:
+                                        sent_message = await update.effective_message.reply_text(
+                                            message_thread_id=get_thread_id(update),
+                                            text=previous_chunk or "...",
+                                        )
+                                    except Exception:
+                                        logger.debug(
+                                            "vision stream: initial reply for previous chunk failed",
+                                            exc_info=True,
+                                        )
                                 try:
                                     sent_message = await update.effective_message.reply_text(
                                         message_thread_id=get_thread_id(update),
                                         text=content if len(content) > 0 else "..."
                                     )
-                                except:
-                                    pass
+                                except Exception:
+                                    logger.debug(
+                                        "vision stream: reply for new chunk failed",
+                                        exc_info=True,
+                                    )
                                 continue
 
                         cutoff = get_stream_cutoff_values(update, content)
@@ -2263,7 +2290,8 @@ class ChatGPTTelegramBot:
                                     reply_to_message_id=get_reply_to_message_id(self.config, update),
                                     text=content,
                                 )
-                            except:
+                            except Exception:
+                                logger.debug("vision stream: initial reply failed", exc_info=True)
                                 continue
 
                         elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -2584,7 +2612,9 @@ class ChatGPTTelegramBot:
                 prev = ''
                 sent_message = None
                 backoff = 0
-                stream_chunk = 0
+                # Индекс последнего «закрытого» чанка, опубликованного как
+                # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
+                last_published_chunk = 0
 
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
@@ -2596,20 +2626,43 @@ class ChatGPTTelegramBot:
                     stream_chunks = split_into_chunks(content)
                     if len(stream_chunks) > 1:
                         content = stream_chunks[-1]
-                        if stream_chunk != len(stream_chunks) - 1:
-                            stream_chunk += 1
-                            try:
-                                await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                              stream_chunks[-2])
-                            except:
-                                pass
+                        if last_published_chunk != len(stream_chunks) - 1:
+                            last_published_chunk += 1
+                            previous_chunk = stream_chunks[-2]
+                            if sent_message is not None:
+                                try:
+                                    await edit_message_with_retry(
+                                        context, chat_id, str(sent_message.message_id),
+                                        previous_chunk,
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "chat stream: edit previous chunk failed",
+                                        exc_info=True,
+                                    )
+                            else:
+                                # Первое сообщение ещё не отправлено: публикуем
+                                # завершённый предыдущий чанк как новое сообщение.
+                                try:
+                                    sent_message = await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        text=previous_chunk or "...",
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "chat stream: initial reply for previous chunk failed",
+                                        exc_info=True,
+                                    )
                             try:
                                 sent_message = await update.effective_message.reply_text(
                                     message_thread_id=get_thread_id(update),
                                     text=content if len(content) > 0 else "..."
                                 )
-                            except:
-                                pass
+                            except Exception:
+                                logger.debug(
+                                    "chat stream: reply for new chunk failed",
+                                    exc_info=True,
+                                )
                             continue
 
                     cutoff = get_stream_cutoff_values(update, content)
@@ -2945,7 +2998,8 @@ class ChatGPTTelegramBot:
                                                                   message_id=inline_message_id,
                                                                   text=f'{query}\n\n{answer_tr}:\n{content}',
                                                                   is_inline=True)
-                            except:
+                            except Exception:
+                                logger.debug("inline stream: initial edit failed", exc_info=True)
                                 continue
 
                         elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -3133,10 +3187,16 @@ class ChatGPTTelegramBot:
                     continue
 
                 def plugin_message_handler(update, context, h=handler_config):
+                    handler_kwargs = h.get('handler_kwargs') or {}
                     return self.handle_plugin_command(
                         update,
                         context,
-                        {"handler": h['handler'], **h['handler_kwargs']},
+                        {
+                            "handler": h['handler'],
+                            "plugin_name": h.get('plugin_name'),
+                            "handler_kwargs": handler_kwargs,
+                            **handler_kwargs,
+                        },
                     )
 
                 handler = MessageHandler(

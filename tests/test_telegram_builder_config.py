@@ -192,7 +192,7 @@ def _set_required_env(monkeypatch):
 def _run_main_with_fake_dependencies(monkeypatch):
     CapturingTelegramBot.instances.clear()
     monkeypatch.setattr(bot_main, "load_dotenv", lambda: None)
-    monkeypatch.setattr(bot_main, "PluginManager", lambda config: object())
+    monkeypatch.setattr(bot_main, "PluginManager", lambda config: FakePluginManager())
     monkeypatch.setattr(bot_main, "Database", lambda: object())
     monkeypatch.setattr(bot_main, "OpenAIHelper", FakeOpenAIHelper)
     monkeypatch.setattr(bot_main, "ChatGPTTelegramBot", CapturingTelegramBot)

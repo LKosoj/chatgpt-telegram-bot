@@ -6,6 +6,9 @@ import asyncio
 import uuid
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Optional
 from datetime import datetime as dt
 
@@ -70,6 +73,7 @@ THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOT
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
 TTS_OPTIONS_CACHE_SECONDS = 300
+_CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 
 
 def _choice_message_text(choice) -> str:
@@ -101,6 +105,14 @@ def _required_choice_message_text(choice) -> str:
 
 def _response_has_message_text(response) -> bool:
     return any(_choice_message_text(choice) for choice in getattr(response, "choices", []) or [])
+
+
+def _first_choice_or_raise(response):
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        logger.warning("Model response has no choices")
+        raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
+    return choices[0]
 
 HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
 Long-term memory recalled for this Telegram user:
@@ -172,6 +184,19 @@ def are_functions_available(model: str) -> bool:
     return model in LLMGATEWAY_CHAT_MODELS
 
 
+# Per-chat state held by OpenAIHelper. Exists as documentation-as-code:
+# the four mappings (conversations, conversations_vision, last_updated,
+# loaded_conversation_sessions, last_image_file_ids) all key on chat_id and
+# must be reset together — see _clear_chat_state.
+@dataclass
+class ChatState:
+    messages: list
+    vision: bool = False
+    last_updated: datetime.datetime | None = None
+    session_id: str | None = None
+    last_image_file_id: str | None = None
+
+
 class OpenAIHelper:
     """
     ChatGPT helper class.
@@ -201,13 +226,13 @@ class OpenAIHelper:
         self.client = openai.AsyncOpenAI(**client_kwargs)
         self.gateway_client = LLMGatewayClient(config.get("openai_base", ""), config["api_key"])
         validate_openai_config(config)
-        self.config = config
+        self.config = dict(config)
         self.plugin_manager = plugin_manager
         self.db = db
-        self.conversations: dict[int: list] = {}  # {chat_id: history}
+        self.conversations: dict[int, list] = {}  # {chat_id: history}
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
-        self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
-        self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
+        self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
+        self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
         self._tts_voices_cache: dict[str, tuple[float, list[str]]] = {}
@@ -279,7 +304,7 @@ class OpenAIHelper:
             stream=False,
             extra_headers={ "X-Title": "tgBot" },
         )
-        content = response.choices[0].message.content or ""
+        content = _first_choice_or_raise(response).message.content or ""
         allowed_intents = {"image_edit", "image_describe", "text_reply"}
         intent_aliases = {
             "image_description": "image_describe",
@@ -352,7 +377,7 @@ class OpenAIHelper:
                 self.conversations_vision[user_id] = False
                 
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
-            if assistant_prompt == None:
+            if assistant_prompt is None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
             if model:
@@ -375,7 +400,7 @@ class OpenAIHelper:
                 stream=False,
                 extra_headers={ "X-Title": "tgBot" }
             )
-            content = _required_choice_message_text(response.choices[0])
+            content = _required_choice_message_text(_first_choice_or_raise(response))
             self.__add_to_history(user_id, role="assistant", content=content)
             return content, response.usage.total_tokens
         except Exception as e:
@@ -401,13 +426,43 @@ class OpenAIHelper:
         :param **kwargs: Additional keyword arguments
         :return: The answer from the model and the number of tokens used
         """
-        try:
-            if request_context is not None:
-                chat_id = request_context.chat_id
-                user_id = request_context.user_id
-                if session_id is None:
-                    session_id = request_context.session_id
+        if request_context is not None:
+            chat_id = request_context.chat_id
+            user_id = request_context.user_id
+            if session_id is None:
+                session_id = request_context.session_id
 
+        if self._chat_lock_bypass_enabled(chat_id):
+            return await self._get_chat_response_locked(
+                chat_id=chat_id,
+                query=query,
+                session_id=session_id,
+                user_id=user_id,
+                request_context=request_context,
+                **kwargs,
+            )
+
+        lock = await self._chat_lock(chat_id)
+        async with lock:
+            return await self._get_chat_response_locked(
+                chat_id=chat_id,
+                query=query,
+                session_id=session_id,
+                user_id=user_id,
+                request_context=request_context,
+                **kwargs,
+            )
+
+    async def _get_chat_response_locked(
+        self,
+        chat_id,
+        query,
+        session_id,
+        user_id,
+        request_context,
+        **kwargs,
+    ):
+        try:
             # Add the last image file ID to the context if available
             if chat_id in self.last_image_file_ids:
                 # The model can now access this through the function calls
@@ -415,8 +470,8 @@ class OpenAIHelper:
             plugins_used = ()
             # Вызов с учетом возможного отсутствия session_id
             response = await self.__common_get_chat_response(
-                chat_id, 
-                query, 
+                chat_id,
+                query,
                 session_id=session_id,
                 user_id=user_id,
                 **kwargs
@@ -488,7 +543,7 @@ class OpenAIHelper:
                     answer += content
                     answer += '\n\n'
             else:
-                answer = _required_choice_message_text(response.choices[0])
+                answer = _required_choice_message_text(_first_choice_or_raise(response))
                 self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
 
             bot_language = self.config['bot_language']
@@ -530,16 +585,46 @@ class OpenAIHelper:
         :param session_id: Optional session identifier
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
+        if request_context is not None:
+            chat_id = request_context.chat_id
+            user_id = request_context.user_id
+            if session_id is None:
+                session_id = request_context.session_id
+
+        if self._chat_lock_bypass_enabled(chat_id):
+            async for chunk in self._get_chat_response_stream_locked(
+                chat_id=chat_id,
+                query=query,
+                session_id=session_id,
+                user_id=user_id,
+                request_context=request_context,
+            ):
+                yield chunk
+            return
+
+        lock = await self._chat_lock(chat_id)
+        async with lock:
+            async for chunk in self._get_chat_response_stream_locked(
+                chat_id=chat_id,
+                query=query,
+                session_id=session_id,
+                user_id=user_id,
+                request_context=request_context,
+            ):
+                yield chunk
+
+    async def _get_chat_response_stream_locked(
+        self,
+        chat_id,
+        query,
+        session_id,
+        user_id,
+        request_context,
+    ):
         plugins_used = ()
         try:
             logger.info(f'Starting chat response stream for chat_id={chat_id}')
 
-            if request_context is not None:
-                chat_id = request_context.chat_id
-                user_id = request_context.user_id
-                if session_id is None:
-                    session_id = request_context.session_id
-            
             # Проверяем, инициализирован ли контекст разговора
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
             loaded_session_id = self.loaded_conversation_sessions.get(chat_id)
@@ -983,7 +1068,11 @@ class OpenAIHelper:
         session_owner = user_id if user_id is not None else chat_id
         max_tokens_percent = 80
         try:
-            sessions = self.db.list_user_sessions(session_owner, is_active=1)
+            list_async = getattr(self.db, "list_user_sessions_async", None)
+            if list_async is not None:
+                sessions = await list_async(session_owner, is_active=1)
+            else:
+                sessions = self.db.list_user_sessions(session_owner, is_active=1)
             active_session = next((s for s in sessions if s['is_active']), None)
             if active_session:
                 max_tokens_percent = active_session.get('max_tokens_percent') or max_tokens_percent
@@ -1368,6 +1457,11 @@ class OpenAIHelper:
         """
         Interprets a given PNG image file using the Vision model.
         """
+        lock = await self._chat_lock(chat_id)
+        async with lock:
+            return await self._interpret_image_locked(chat_id, fileobj, prompt)
+
+    async def _interpret_image_locked(self, chat_id, fileobj, prompt):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
@@ -1396,7 +1490,7 @@ class OpenAIHelper:
                 answer += content
                 answer += '\n\n'
         else:
-            answer = _required_choice_message_text(response.choices[0])
+            answer = _required_choice_message_text(_first_choice_or_raise(response))
             self.__add_to_history(chat_id, role="assistant", content=answer)
 
         bot_language = self.config['bot_language']
@@ -1419,6 +1513,12 @@ class OpenAIHelper:
         """
         Interprets a given PNG image file using the Vision model.
         """
+        lock = await self._chat_lock(chat_id)
+        async with lock:
+            async for chunk in self._interpret_image_stream_locked(chat_id, fileobj, prompt):
+                yield chunk
+
+    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
@@ -1676,7 +1776,7 @@ class OpenAIHelper:
             stream=False,
             extra_headers={ "X-Title": "tgBot" },
         )
-        content = response.choices[0].message.content or ""
+        content = _first_choice_or_raise(response).message.content or ""
         items = self._parse_hindsight_memory_items(content)
         if not items:
             logger.info("Hindsight extractor returned no memory items. content_preview=%r", content[:300])
@@ -1734,6 +1834,57 @@ class OpenAIHelper:
             "ai-serv-",
         )
         return any(marker in lowered for marker in sensitive_markers)
+
+    async def _chat_lock(self, chat_id) -> asyncio.Lock:
+        """Per-chat asyncio.Lock guarding mutations of self.conversations.
+
+        Why: telegram_bot.process_message holds a per-conversation lock for
+        the prompt path, but callback queries, inline handlers and plugin
+        commands may call top-level OpenAIHelper methods independently for
+        the same chat_id. Holding this lock around top-level entry points
+        (get_chat_response, get_chat_response_stream, interpret_image*) keeps
+        mutations of conversations[chat_id] serialized for that chat_id.
+        Note: do not acquire this lock in inner helpers — asyncio.Lock is
+        not reentrant and the recursive call paths (handle_function_call,
+        retry helpers) would deadlock.
+        """
+        guard = getattr(self, '_chat_locks_guard', None)
+        if guard is None:
+            guard = asyncio.Lock()
+            self._chat_locks_guard = guard
+            self._per_chat_locks = {}
+        async with guard:
+            lock = self._per_chat_locks.get(chat_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._per_chat_locks[chat_id] = lock
+            return lock
+
+    def _chat_lock_bypass_enabled(self, chat_id) -> bool:
+        bypass_chat_id = _CHAT_LOCK_BYPASS_CHAT_ID.get()
+        return bypass_chat_id is not None and str(bypass_chat_id) == str(chat_id)
+
+    @contextmanager
+    def _without_chat_lock(self, chat_id):
+        token = _CHAT_LOCK_BYPASS_CHAT_ID.set(chat_id)
+        try:
+            yield
+        finally:
+            _CHAT_LOCK_BYPASS_CHAT_ID.reset(token)
+
+    def _clear_chat_state(self, chat_id) -> None:
+        """Atomically drop all per-chat state for chat_id.
+
+        Why: conversations / conversations_vision / last_updated /
+        loaded_conversation_sessions / last_image_file_ids share the same
+        chat_id key. Clearing only one of them leaves the others stale,
+        and __max_age_reached / vision routing read stale flags.
+        """
+        self.conversations.pop(chat_id, None)
+        self.conversations_vision.pop(chat_id, None)
+        self.last_updated.pop(chat_id, None)
+        self.loaded_conversation_sessions.pop(chat_id, None)
+        self.last_image_file_ids.pop(chat_id, None)
 
     def reset_chat_history(self, chat_id, content='', session_id=None):
         """
@@ -1890,8 +2041,8 @@ class OpenAIHelper:
                 extra_headers={ "X-Title": "tgBot" },
             )
             
-            summary = response.choices[0].message.content
-            
+            summary = _first_choice_or_raise(response).message.content
+
             if chat_id is not None:
                 # Получаем текущие настройки из базы данных
                 _, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)

@@ -1193,8 +1193,13 @@ class AgentToolsPlugin(Plugin):
             getattr(request_context, "chat_id", None) if request_context is not None else None
         ) or kwargs.get("chat_id")
         session_id = getattr(request_context, "session_id", None) if request_context is not None else None
+        user_id = (
+            getattr(request_context, "user_id", None) if request_context is not None else None
+        )
+        if user_id is None:
+            user_id = kwargs.get("user_id")
         try:
-            allowed = resolver(chat_id, session_id) if chat_id is not None else ["All"]
+            allowed = resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
         except Exception:
             logging.exception("Failed to resolve parent allowed_plugins for subagents")
             return ["All"]

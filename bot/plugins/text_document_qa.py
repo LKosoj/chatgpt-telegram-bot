@@ -226,6 +226,7 @@ class TextDocumentQAPlugin(Plugin):
 
             if not chat_id:
                 return {"error": self.t("text_doc_generic_error", error="chat_id is required")}
+            chat_id = str(chat_id)
 
             if function_name == "list_documents":
                 documents = await self._get_user_documents(chat_id)
@@ -632,6 +633,7 @@ class TextDocumentQAPlugin(Plugin):
             metadata_path.unlink()
 
     async def _get_user_documents(self, chat_id: str) -> List[Dict]:
+        chat_id = str(chat_id)
         documents = []
         for metadata_path in self._metadata_files():
             try:
@@ -642,7 +644,7 @@ class TextDocumentQAPlugin(Plugin):
 
             if metadata.get("backend") != "anythingllm":
                 continue
-            if metadata.get("owner_chat_id") != chat_id:
+            if str(metadata.get("owner_chat_id")) != chat_id:
                 continue
 
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(metadata["created_at"]))
@@ -657,13 +659,14 @@ class TextDocumentQAPlugin(Plugin):
         return documents
 
     async def _touch_documents(self, chat_id: str) -> None:
+        chat_id = str(chat_id)
         for metadata_path in self._metadata_files():
             try:
                 metadata = self._load_json_file(metadata_path)
             except Exception as exc:
                 logger.error("Failed to read document metadata %s: %s", metadata_path, exc)
                 continue
-            if metadata.get("backend") != "anythingllm" or metadata.get("owner_chat_id") != chat_id:
+            if metadata.get("backend") != "anythingllm" or str(metadata.get("owner_chat_id")) != chat_id:
                 continue
             metadata["last_accessed"] = time.time()
             metadata["warning_sent"] = False
@@ -671,13 +674,14 @@ class TextDocumentQAPlugin(Plugin):
                 json.dump(metadata, f, ensure_ascii=False)
 
     async def _get_document_metadata(self, doc_id: str, chat_id: str) -> Dict | None:
+        chat_id = str(chat_id)
         metadata_path = self._metadata_path(doc_id)
         if not metadata_path.exists():
             return None
         metadata = self._load_json_file(metadata_path)
         if metadata.get("backend") != "anythingllm":
             return None
-        if metadata.get("owner_chat_id") != chat_id:
+        if str(metadata.get("owner_chat_id")) != chat_id:
             return None
         return metadata
 

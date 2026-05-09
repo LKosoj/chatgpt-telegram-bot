@@ -152,6 +152,33 @@ async def test_ask_question_uses_anythingllm_workspace_chat(tmp_path, monkeypatc
     assert updated_metadata["last_accessed"] > 100
 
 
+@pytest.mark.asyncio
+async def test_document_metadata_lookups_accept_integer_chat_id(tmp_path):
+    plugin = _plugin(tmp_path, httpx.MockTransport(lambda request: httpx.Response(404)))
+    location = "custom-documents/notes.txt-hash.json"
+    doc_id = plugin._document_id("123", location)
+    metadata_path = tmp_path / "document_metadata" / f"{doc_id}.json"
+    metadata_path.write_text(json.dumps({
+        "backend": "anythingllm",
+        "doc_id": doc_id,
+        "owner_chat_id": "123",
+        "workspace_slug": "telegram-chat-abc",
+        "anythingllm_location": location,
+        "file_name": "notes.txt",
+        "created_at": 100,
+        "last_accessed": 100,
+    }))
+
+    documents = await plugin._get_user_documents(123)
+    metadata = await plugin._get_document_metadata(doc_id, 123)
+    await plugin._touch_documents(123)
+
+    updated_metadata = json.loads(metadata_path.read_text())
+    assert [doc["doc_id"] for doc in documents] == [doc_id]
+    assert metadata["owner_chat_id"] == "123"
+    assert updated_metadata["last_accessed"] > 100
+
+
 def test_rag_mode_state_is_persisted_per_chat_in_database(tmp_path, monkeypatch):
     db = _database(tmp_path, monkeypatch)
     plugin = _plugin(tmp_path, httpx.MockTransport(lambda request: httpx.Response(404)))
