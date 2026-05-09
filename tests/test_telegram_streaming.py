@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import logging
 import sys
@@ -60,15 +61,18 @@ for _module_name in _INSERTED_MODULES:
 
 
 class FakeAgentTools:
-    def __init__(self, terminal_clear_result=True):
+    def __init__(self, terminal_clear_result=True, plan_tasks=None):
         self.clear_calls = []
         self.terminal_clear_calls = []
         self.plan_calls = []
         self.terminal_clear_result = terminal_clear_result
+        self.plan_tasks = list(plan_tasks or [])
 
     def clear_plan_tasks(self, chat_id=None, user_id=None):
         self.clear_calls.append((chat_id, user_id))
-        return True
+        had_tasks = bool(self.plan_tasks)
+        self.plan_tasks = []
+        return had_tasks
 
     def clear_terminal_plan_tasks(self, chat_id=None, user_id=None):
         self.terminal_clear_calls.append((chat_id, user_id))
@@ -76,7 +80,7 @@ class FakeAgentTools:
 
     def get_plan_tasks(self, chat_id=None, user_id=None):
         self.plan_calls.append((chat_id, user_id))
-        return []
+        return list(self.plan_tasks)
 
 
 class FakePluginManager:
@@ -106,6 +110,18 @@ class FakeOpenAI:
                 yield chunk
 
         return stream()
+
+
+class FakeOpenAINonStream(FakeOpenAI):
+    def __init__(self, response, agent_tools=None):
+        super().__init__([], agent_tools)
+        self.response = response
+        self.chat_requests = []
+
+    async def get_chat_response(self, **kwargs):
+        self.chat_requests.append(kwargs)
+        await asyncio.sleep(0.01)
+        return self.response, 1
 
 
 class FakeDB:
@@ -192,7 +208,7 @@ def _make_bot(chunks, conversation_context, agent_tools=None):
 
 
 @pytest.mark.asyncio
-async def test_process_message_clears_terminal_plan_before_agent_request(monkeypatch):
+async def test_process_message_clears_plan_before_agent_request(monkeypatch):
     edit_message = AsyncMock()
     monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
     agent_tools = FakeAgentTools()
@@ -206,8 +222,40 @@ async def test_process_message_clears_terminal_plan_before_agent_request(monkeyp
 
     await bot.process_message("hello", FakeUpdate(FakeMessage()), _make_context())
 
-    assert agent_tools.terminal_clear_calls == [(1234, 42)]
-    assert agent_tools.clear_calls == []
+    assert agent_tools.clear_calls == [(1234, 42)]
+    assert agent_tools.terminal_clear_calls == []
+
+
+@pytest.mark.asyncio
+async def test_process_message_does_not_show_stale_plan_in_busy_status(monkeypatch):
+    async def direct_wrap(_update, _context, coroutine, _chat_action, is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", direct_wrap)
+    agent_tools = FakeAgentTools(
+        plan_tasks=[
+            {"id": "T1", "content": "Old recipe plan", "status": "in_progress"},
+        ],
+    )
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        agent_tools=agent_tools,
+    )
+    bot.config["stream"] = False
+    bot.openai = FakeOpenAINonStream("Installed", agent_tools)
+    update = FakeUpdate(FakeMessage())
+
+    await bot.process_message("install skill", update, _make_context())
+
+    assert agent_tools.clear_calls == [(1234, 42)]
+    busy_messages = [
+        call["text"]
+        for call in update.effective_message.reply_text_calls
+        if "Wait time" in call["text"]
+    ]
+    assert busy_messages
+    assert all("Old recipe plan" not in text for text in busy_messages)
 
 
 @pytest.mark.asyncio

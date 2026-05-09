@@ -2053,7 +2053,7 @@ class ChatGPTTelegramBot:
                         }
                     else:
                         kwargs = {}
-                    self._clear_agent_plan(chat_id, user_id, reason="request_start", terminal_only=True)
+                    self._clear_agent_plan(chat_id, user_id, reason="request_start")
                     response, total_tokens = await self.openai.get_chat_response(
                         chat_id=chat_id,
                         query=transcript,
@@ -2543,7 +2543,7 @@ class ChatGPTTelegramBot:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
             model_to_use = self.openai.get_current_model(user_id)
-            self._clear_agent_plan(chat_id, user_id, reason="request_start", terminal_only=True)
+            self._clear_agent_plan(chat_id, user_id, reason="request_start")
                 
             if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
 
@@ -2825,7 +2825,7 @@ class ChatGPTTelegramBot:
 
                 model_to_use = self.openai.get_current_model(user_id)
                 request_context = RequestContext(chat_id=user_id, user_id=user_id)
-                self._clear_agent_plan(user_id, user_id, reason="request_start", terminal_only=True)
+                self._clear_agent_plan(user_id, user_id, reason="request_start")
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
