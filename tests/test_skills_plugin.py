@@ -1,10 +1,20 @@
+import importlib.machinery
+import importlib.util
 import json
 import logging
 import shutil
+import sys
+import types
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+if importlib.util.find_spec("markdown2") is None:
+    _markdown2 = types.ModuleType("markdown2")
+    _markdown2.__spec__ = importlib.machinery.ModuleSpec("markdown2", loader=None)
+    _markdown2.markdown = lambda text, *args, **kwargs: text
+    sys.modules["markdown2"] = _markdown2
 
 from bot.plugin_manager import PluginManager
 from bot.plugins.skills import SkillsPlugin
@@ -38,6 +48,20 @@ def _write_skill(root, name="demo", *, allow_scripts=True):
     return skill_dir
 
 
+def _write_skill_agent(skill_dir, name="openai"):
+    agents_dir = skill_dir / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / f"{name}.yaml").write_text(
+        (
+            "interface:\n"
+            "  display_name: \"Novel Writing\"\n"
+            "  short_description: \"Plan, draft, and review fiction\"\n"
+            "  default_prompt: \"Use $novel-writing to plan, draft, or review a fiction chapter.\"\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def _make_plugin(tmp_path, monkeypatch, *, allow_scripts=False, admin_ids=""):
     skills_dir = tmp_path / "skills"
     storage_dir = tmp_path / "storage"
@@ -66,6 +90,31 @@ class FakeSettingsDB:
         return self.settings.get(user_id)
 
 
+class FakeAgentTools:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, function_name, helper, **kwargs):
+        self.calls.append((function_name, kwargs))
+        return {
+            "success": True,
+            "subagents": [{
+                "id": kwargs["subagents"][0]["id"],
+                "role": kwargs["subagents"][0]["role"],
+                "status": "completed",
+                "result": "drafted",
+            }],
+        }
+
+
+class FakePluginManager:
+    def __init__(self, agent_tools):
+        self.agent_tools = agent_tools
+
+    def get_plugin(self, name):
+        return self.agent_tools if name == "agent_tools" else None
+
+
 def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
     skills_dir = tmp_path / "skills"
     storage_dir = tmp_path / "storage"
@@ -89,6 +138,7 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
         "skills.update_skill_progress",
         "skills.deactivate_skill",
         "skills.run_skill_script",
+        "skills.run_skill_agent",
         "skills.record_skill_reflection",
     }
 
@@ -188,6 +238,59 @@ async def test_skill_scan_activation_and_progress(tmp_path, monkeypatch):
         "tool_name": "skills.run_skill_script",
         "arguments": {"skill_name": "demo", "script_name": "echo.py"},
     }]
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_exposes_agents_folder(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    skill_dir = tmp_path / "skills" / "demo"
+    _write_skill_agent(skill_dir)
+    plugin.available_skills = plugin._scan_skills()
+
+    listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
+    details = await plugin.execute("get_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    assert listed["skills"][0]["agents"] == ["openai"]
+    assert details["skill"]["agents"] == [{
+        "id": "openai",
+        "file": "agents/openai.yaml",
+        "display_name": "Novel Writing",
+        "short_description": "Plan, draft, and review fiction",
+        "default_prompt": "Use $novel-writing to plan, draft, or review a fiction chapter.",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_agent_delegates_to_agent_tools(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    _write_skill_agent(tmp_path / "skills" / "demo")
+    plugin.available_skills = plugin._scan_skills()
+    agent_tools = FakeAgentTools()
+    helper = SimpleNamespace(plugin_manager=FakePluginManager(agent_tools))
+
+    result = await plugin.execute(
+        "run_skill_agent",
+        helper=helper,
+        skill_name="demo",
+        agent_name="openai",
+        task="Draft chapter one.",
+        context="Keep it concise.",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    assert result["subagent"]["result"] == "drafted"
+    [(function_name, kwargs)] = agent_tools.calls
+    assert function_name == "run_subagents"
+    assert kwargs["chat_id"] == 10
+    assert kwargs["user_id"] == 42
+    [subagent] = kwargs["subagents"]
+    assert subagent["id"] == "demo_openai"
+    assert subagent["role"] == "Novel Writing"
+    assert "Use $novel-writing" in subagent["task"]
+    assert "Draft chapter one." in subagent["task"]
+    assert "Keep it concise." in subagent["context"]
 
 
 @pytest.mark.asyncio

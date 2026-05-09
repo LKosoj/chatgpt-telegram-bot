@@ -348,7 +348,7 @@ configurable through env vars unless noted. See
 | `DELIVERY_DEDUP_WINDOW_SECONDS` | `60` | constant | Idempotency window for `deliver_to_user`. |
 | `DELIVERY_MAX_ARTIFACT_BYTES` | `49 MiB` | constant | Hard cap on artifacts pushed via `deliver_to_user`. |
 | `TASKS_TTL_SECONDS` | `2 days` | constant | TTL after which agent plan tasks are pruned. |
-| `SUBAGENT_BLOCKED_FUNCTIONS` | 4 self-protection tools | constant | Tool names a subagent cannot call (`agent_tools.run_subagents`, `…ask_telegram_user`, `…deliver_to_user`, `…cancel_pending_question`). |
+| `SUBAGENT_BLOCKED_FUNCTIONS` | 5 self-protection tools | constant | Tool names a subagent cannot call (`agent_tools.run_subagents`, `…ask_telegram_user`, `…deliver_to_user`, `…cancel_pending_question`, `skills.run_skill_agent`). |
 
 ### Skills Plugin
 
@@ -650,7 +650,7 @@ standard conversation path.
 |---|---|---|
 | `agent_tools` | `manage_plan_tasks`, `ask_telegram_user`, `cancel_pending_question`, `deliver_to_user`, `run_subagents` | See [Agent Runtime](#agent--subagent-runtime); `/background` runs same-chat background agent jobs. |
 | `agent_cron` | `create_cron_job` | Separate scheduled agent tasks via `/cron add <schedule> \| <prompt>`, list/pause/resume/run/remove. |
-| `skills` | `list_skills`, `get_skill`, `get_skill_status`, `list_active_skills`, `activate_skill`, `deactivate_skill`, `update_skill_progress`, `record_skill_reflection`, `run_skill_script` | See [Skills Runtime](#skills-runtime). |
+| `skills` | `list_skills`, `get_skill`, `get_skill_status`, `list_active_skills`, `activate_skill`, `deactivate_skill`, `update_skill_progress`, `record_skill_reflection`, `run_skill_script`, `run_skill_agent` | See [Skills Runtime](#skills-runtime). |
 | `mcp_server` | dynamic | See [MCP Integration](#mcp-integration). |
 | `hindsight_memory` | `recall`, `list_memories`, `stats` | Manual Hindsight inspection; `/memory` exposes status, search, export, and clear when Hindsight is configured. |
 | `terminal` | `terminal` | Direct shell execution; pair with `skills.run_skill_script`. |
@@ -742,8 +742,8 @@ plugin every 5 seconds.
 ## Skills Runtime
 
 The `skills` plugin exposes Codex-style local skills (one folder per skill,
-with a `SKILL.md` file describing intent and any optional Python scripts) as
-tools the model can call.
+with a `SKILL.md` file describing intent, optional scripts, and optional
+`agents/*.yaml` specialist profiles) as tools the model can call.
 
 Tools:
 
@@ -759,6 +759,9 @@ Tools:
 - `run_skill_script` — execute a script under `skills/<skill>/scripts/*.py`
   (gated by `SKILLS_ALLOW_SCRIPTS=true` and the `SKILLS_SCRIPT_ADMIN_USER_IDS`
   allowlist).
+- `run_skill_agent` — create a subagent lazily from a skill's `agents/*.yaml`
+  profile and run it through `agent_tools.run_subagents` only when the model
+  explicitly needs that specialist.
 - `update_skill_progress` — persist a skill's progress note for later runs.
 - `record_skill_reflection` — accumulate repeated improvement proposals after
   skill failures; the fourth identical proposal is appended to that skill's

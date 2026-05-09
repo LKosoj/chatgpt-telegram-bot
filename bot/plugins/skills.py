@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 SCRIPT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
+AGENT_SUFFIXES = {".yaml", ".yml"}
 REFLECTION_REPEAT_THRESHOLD = 3
 REFLECTION_MAX_TEXT_CHARS = 1200
 SKILLS_CLI_TIMEOUT_SECONDS = 180
@@ -276,6 +277,48 @@ class SkillsPlugin(Plugin):
                 },
             },
             {
+                "name": "run_skill_agent",
+                "description": (
+                    "Run a tool-capable subagent declared by a skill under agents/*.yaml. "
+                    "Use when a skill exposes a specialist agent profile for the task. "
+                    "The skill agent is executed through agent_tools.run_subagents, so agent_tools must be enabled."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill directory id or metadata name.",
+                        },
+                        "agent_name": {
+                            "type": "string",
+                            "description": "Agent id from the skill's agents directory, for example openai.",
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Concrete bounded task for this skill agent.",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional task-specific context to pass to the skill agent.",
+                        },
+                        "max_rounds": {
+                            "type": "integer",
+                            "description": "Optional subagent tool-call rounds budget.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model override accepted by agent_tools.run_subagents.",
+                        },
+                        "temperature": {
+                            "type": "number",
+                            "description": "Optional subagent temperature.",
+                        },
+                    },
+                    "required": ["skill_name", "agent_name", "task"],
+                },
+            },
+            {
                 "name": "record_skill_reflection",
                 "description": (
                     "Record a reflection proposal after a skill failure. "
@@ -329,7 +372,7 @@ class SkillsPlugin(Plugin):
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         self._ensure_ready()
-        kwargs.pop("request_context", None)
+        request_context = kwargs.pop("request_context", None)
         user_id = kwargs.get("user_id")
         disabled_skills = self._disabled_skills_for_user(helper, user_id)
         if function_name == "list_skills":
@@ -412,6 +455,24 @@ class SkillsPlugin(Plugin):
                 args_json,
                 **call_kwargs,
             )
+        if function_name == "run_skill_agent":
+            call_kwargs = dict(kwargs)
+            skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
+            agent_name = str(call_kwargs.pop("agent_name", "") or "")
+            task = str(call_kwargs.pop("task", "") or "")
+            context = call_kwargs.pop("context", None)
+            return await self._run_skill_agent(
+                helper,
+                skill_name,
+                agent_name,
+                task,
+                context=context,
+                request_context=request_context,
+                **call_kwargs,
+            )
         if function_name == "record_skill_reflection":
             call_kwargs = dict(kwargs)
             skill_name = str(call_kwargs.pop("skill_name", "") or "")
@@ -468,6 +529,7 @@ class SkillsPlugin(Plugin):
                 content = md_file.read_text(encoding="utf-8")
                 metadata, body = self._parse_skill_markdown(content)
                 scripts = self._list_skill_scripts(skill_path, metadata)
+                agents = self._list_skill_agents(skill_path)
                 skill_id = skill_path.name
                 skills[skill_id] = {
                     "id": skill_id,
@@ -476,6 +538,7 @@ class SkillsPlugin(Plugin):
                     "metadata": metadata,
                     "body": body,
                     "scripts": scripts,
+                    "agents": agents,
                     "path": str(skill_path),
                 }
             except Exception as exc:
@@ -511,7 +574,20 @@ class SkillsPlugin(Plugin):
                             script_entries.append((str(path.relative_to(scripts_dir)), path.stat().st_mtime_ns))
                         except OSError:
                             continue
-                entries.append((skill_path.name, md_mtime, tuple(script_entries)))
+                agents_dir = skill_path / "agents"
+                agent_entries: List[tuple] = []
+                if agents_dir.exists() and agents_dir.is_dir():
+                    for path in sorted(agents_dir.rglob("*")):
+                        try:
+                            if not path.is_file() or path.suffix.lower() not in AGENT_SUFFIXES:
+                                continue
+                        except OSError:
+                            continue
+                        try:
+                            agent_entries.append((str(path.relative_to(agents_dir)), path.stat().st_mtime_ns))
+                        except OSError:
+                            continue
+                entries.append((skill_path.name, md_mtime, tuple(script_entries), tuple(agent_entries)))
         except OSError:
             return ()
         return tuple(entries)
@@ -582,6 +658,55 @@ class SkillsPlugin(Plugin):
                 continue
             scripts.append(path.relative_to(scripts_dir).as_posix())
         return sorted(scripts)
+
+    def _list_skill_agents(self, skill_path: Path) -> List[Dict[str, Any]]:
+        agents_dir = skill_path / "agents"
+        if not agents_dir.exists() or not agents_dir.is_dir():
+            return []
+
+        agents: List[Dict[str, Any]] = []
+        try:
+            paths = sorted(agents_dir.iterdir(), key=lambda path: path.name)
+        except OSError:
+            return []
+        for path in paths:
+            if not path.is_file() or path.suffix.lower() not in AGENT_SUFFIXES:
+                continue
+            try:
+                payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                logger.warning("Failed to parse skill agent %s: %s", path, exc)
+                continue
+            if not isinstance(payload, dict):
+                payload = {}
+            interface = payload.get("interface")
+            if not isinstance(interface, dict):
+                interface = {}
+            agent_id = path.stem
+            display_name = str(
+                interface.get("display_name")
+                or payload.get("display_name")
+                or payload.get("name")
+                or agent_id
+            )
+            agents.append({
+                "id": agent_id,
+                "file": path.relative_to(skill_path).as_posix(),
+                "display_name": display_name,
+                "short_description": str(
+                    interface.get("short_description")
+                    or payload.get("short_description")
+                    or payload.get("description")
+                    or ""
+                ),
+                "default_prompt": str(
+                    interface.get("default_prompt")
+                    or payload.get("default_prompt")
+                    or payload.get("prompt")
+                    or ""
+                ),
+            })
+        return agents
 
     def _resolve_explicit_entrypoints(
         self, metadata: Dict[str, Any], scripts_dir: Path
@@ -674,6 +799,7 @@ class SkillsPlugin(Plugin):
                     "name": info["name"],
                     "description": info["description"],
                     "scripts": info["scripts"],
+                    "agents": [agent["id"] for agent in info.get("agents", [])],
                     "allow_scripts": self._skill_scripts_allowed(info),
                 }
                 for skill_id, info in self.available_skills.items()
@@ -1052,6 +1178,7 @@ class SkillsPlugin(Plugin):
                 "metadata": info["metadata"],
                 "body": info["body"],
                 "scripts": info["scripts"],
+                "agents": info.get("agents", []),
             },
         }
 
@@ -1082,6 +1209,7 @@ class SkillsPlugin(Plugin):
                 "description": info["description"],
                 "body": info["body"],
                 "scripts": info["scripts"],
+                "agents": info.get("agents", []),
                 "script_tool_calls": self._script_tool_calls(skill_id),
             },
             "scope": scope,
@@ -1139,6 +1267,146 @@ class SkillsPlugin(Plugin):
                 "state": scope_state[skill_id],
                 "script_tool_calls": self._script_tool_calls(skill_id),
             }
+
+    async def _run_skill_agent(
+        self,
+        helper,
+        skill_name: str,
+        agent_name: str,
+        task: str,
+        *,
+        context: Any = None,
+        request_context=None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        skill_id = self._resolve_skill_id(skill_name)
+        if not skill_id:
+            return {"success": False, "error": f"Skill '{skill_name}' not found"}
+        if not task.strip():
+            return {"success": False, "error": "task must be a non-empty string"}
+
+        info = self.available_skills[skill_id]
+        agent = self._resolve_skill_agent(info, agent_name)
+        if not agent:
+            return {
+                "success": False,
+                "error": f"Agent '{agent_name}' not found in skill '{skill_id}'",
+                "available_agents": [item["id"] for item in info.get("agents", [])],
+            }
+
+        plugin_manager = getattr(helper, "plugin_manager", None) if helper is not None else None
+        agent_tools = None
+        if plugin_manager is not None:
+            resolver = getattr(helper, "resolve_allowed_plugins", None)
+            is_function_allowed = getattr(plugin_manager, "is_function_allowed", None)
+            if callable(resolver) and callable(is_function_allowed):
+                chat_id = getattr(request_context, "chat_id", None) if request_context is not None else kwargs.get("chat_id")
+                session_id = getattr(request_context, "session_id", None) if request_context is not None else None
+                user_id = getattr(request_context, "user_id", None) if request_context is not None else kwargs.get("user_id")
+                allowed_plugins = resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
+                if not is_function_allowed("agent_tools.run_subagents", allowed_plugins):
+                    return {
+                        "success": False,
+                        "error": "agent_tools.run_subagents is not available in the current chat mode or user settings.",
+                    }
+            try:
+                agent_tools = plugin_manager.get_plugin("agent_tools")
+            except Exception:
+                agent_tools = None
+        if agent_tools is None or not hasattr(agent_tools, "execute"):
+            return {
+                "success": False,
+                "error": "agent_tools plugin is required for skills.run_skill_agent.",
+            }
+
+        subagent = self._skill_agent_subagent_spec(skill_id, info, agent, task, context, kwargs)
+        result = await agent_tools.execute(
+            "run_subagents",
+            helper,
+            subagents=[subagent],
+            max_rounds=kwargs.get("max_rounds"),
+            request_context=request_context,
+            chat_id=kwargs.get("chat_id"),
+            user_id=kwargs.get("user_id"),
+        )
+        if not result.get("success"):
+            return {
+                "success": False,
+                "skill": skill_id,
+                "agent": agent["id"],
+                "error": result.get("error") or "skill agent failed to start",
+                "subagent_result": result,
+            }
+        subagents = result.get("subagents") or []
+        return {
+            "success": True,
+            "skill": skill_id,
+            "agent": agent["id"],
+            "subagent": subagents[0] if subagents else None,
+        }
+
+    @staticmethod
+    def _resolve_skill_agent(info: Dict[str, Any], agent_name: str) -> Dict[str, Any] | None:
+        wanted = str(agent_name or "").strip().lower()
+        if not wanted:
+            return None
+        for agent in info.get("agents", []):
+            if wanted in {
+                str(agent.get("id") or "").lower(),
+                str(agent.get("display_name") or "").lower(),
+            }:
+                return agent
+        return None
+
+    def _skill_agent_subagent_spec(
+        self,
+        skill_id: str,
+        info: Dict[str, Any],
+        agent: Dict[str, Any],
+        task: str,
+        context: Any,
+        kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        agent_id = str(agent.get("id") or "agent")
+        display_name = str(agent.get("display_name") or agent_id)
+        default_prompt = str(agent.get("default_prompt") or "").strip()
+        short_description = str(agent.get("short_description") or "").strip()
+        task_parts = [
+            f"Use the skill `{skill_id}` as the governing instruction set.",
+            f"Skill name: {info.get('name') or skill_id}",
+        ]
+        if short_description:
+            task_parts.append(f"Skill agent purpose: {short_description}")
+        if default_prompt:
+            task_parts.append(f"Agent default prompt:\n{default_prompt}")
+        task_parts.extend([
+            f"Parent task:\n{task.strip()}",
+            f"Skill instructions:\n{self._truncate(str(info.get('body') or ''))}",
+        ])
+
+        context_parts = [
+            f"Skill path: {info.get('path')}",
+            f"Agent definition: {agent.get('file')}",
+        ]
+        if context is not None:
+            context_parts.append(f"Task context:\n{context}")
+
+        subagent: Dict[str, Any] = {
+            "id": self._safe_subagent_id(f"{skill_id}_{agent_id}"),
+            "role": display_name,
+            "task": "\n\n".join(task_parts),
+            "context": "\n\n".join(context_parts),
+        }
+        for optional in ("max_rounds", "model", "temperature"):
+            if kwargs.get(optional) is not None:
+                subagent[optional] = kwargs[optional]
+        return subagent
+
+    @staticmethod
+    def _safe_subagent_id(value: str) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+        normalized = normalized.strip("._-")
+        return (normalized or "skill_agent")[:80]
 
     def _update_skill_progress(
         self,

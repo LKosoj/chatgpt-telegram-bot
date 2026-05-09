@@ -56,6 +56,7 @@ SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.cancel_pending_question",
     "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
+    "skills.run_skill_agent",
 }
 _CONTRACT_UNSET = object()
 

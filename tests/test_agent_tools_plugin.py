@@ -110,6 +110,14 @@ class FakePluginManager:
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.run_skill_agent",
+                    "description": "nested skill agent",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
         ]
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
@@ -538,6 +546,7 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
     assert "skills.list_skills" in tool_names
     assert "agent_tools.deliver_to_user" not in tool_names
     assert "agent_tools.run_subagents" not in tool_names
+    assert "skills.run_skill_agent" not in tool_names
     assert [call[0] for call in helper.plugin_manager.calls] == ["skills.list_skills", "skills.list_skills"]
     assert any(
         "Shared facts" in message["content"]
