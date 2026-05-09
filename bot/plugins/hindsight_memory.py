@@ -214,12 +214,7 @@ class HindsightMemoryPlugin(Plugin):
 
     async def _memory_status_text(self, helper, user_id: int) -> str:
         bank_id = helper.get_hindsight_bank_id(user_id)
-        try:
-            stats = await helper.hindsight_client.stats(bank_id)
-            count = self._stats_memory_count(stats)
-        except Exception as exc:
-            return f"Hindsight memory is enabled for bank `{bank_id}`.\nStats failed: {exc}"
-        count_text = str(count) if count is not None else "unknown"
+        count_text = await self._memory_count_text(helper, bank_id)
         return (
             f"Hindsight memory is enabled.\n"
             f"Bank: `{bank_id}`\n"
@@ -264,6 +259,24 @@ class HindsightMemoryPlugin(Plugin):
         bank_id = helper.get_hindsight_bank_id(user_id)
         await helper.hindsight_client.clear_bank(bank_id)
 
+    async def _memory_count_text(self, helper, bank_id: str) -> str:
+        try:
+            stats = await helper.hindsight_client.stats(bank_id)
+            count = self._stats_memory_count(stats)
+            if count is not None:
+                return str(count)
+        except Exception:
+            pass
+
+        try:
+            data = await helper.hindsight_client.list_memories(bank_id, limit=1000, offset=0)
+            count = self._stats_memory_count(data)
+            if count is not None:
+                return str(count)
+        except Exception:
+            return "unknown"
+        return "unknown"
+
     @staticmethod
     def _stats_memory_count(stats: Dict[str, Any]) -> int | None:
         candidates = [
@@ -278,9 +291,23 @@ class HindsightMemoryPlugin(Plugin):
                 memories.get("count"),
                 memories.get("total"),
             ])
+        for nested_key in ("memory", "stats", "summary", "pagination", "meta"):
+            nested = stats.get(nested_key)
+            if isinstance(nested, dict):
+                candidates.extend([
+                    nested.get("memory_count"),
+                    nested.get("memories_count"),
+                    nested.get("total_memories"),
+                    nested.get("count"),
+                    nested.get("total"),
+                ])
         for value in candidates:
             if isinstance(value, int):
                 return value
             if isinstance(value, str) and value.isdigit():
                 return int(value)
+        for list_key in ("items", "memories", "results", "data"):
+            value = stats.get(list_key)
+            if isinstance(value, list):
+                return len(value)
         return None

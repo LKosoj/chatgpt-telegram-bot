@@ -19,12 +19,14 @@ from bot.plugins.hindsight_memory import HindsightMemoryPlugin
 class FakeHindsightClient:
     def __init__(self):
         self.cleared = []
+        self.stats_payload = {"memory_count": 3}
+        self.memories_payload = {"items": [{"id": "m1", "text": "Remember this"}]}
 
     async def stats(self, bank_id):
-        return {"memory_count": 3, "bank_id": bank_id}
+        return {**self.stats_payload, "bank_id": bank_id}
 
     async def list_memories(self, bank_id, **kwargs):
-        return {"items": [{"id": "m1", "text": "Remember this"}], "bank_id": bank_id}
+        return {**self.memories_payload, "bank_id": bank_id}
 
     async def clear_bank(self, bank_id):
         self.cleared.append(bank_id)
@@ -67,6 +69,24 @@ async def test_hindsight_memory_status_export_and_clear():
     assert "Memories: `3`" in status
     message.reply_document.assert_awaited_once()
     assert helper.hindsight_client.cleared == ["telegram-42"]
+
+
+@pytest.mark.asyncio
+async def test_hindsight_memory_status_falls_back_to_list_count():
+    plugin = HindsightMemoryPlugin()
+    helper = FakeHelper()
+    helper.hindsight_client.stats_payload = {"documents": 1}
+    helper.hindsight_client.memories_payload = {
+        "items": [
+            {"id": "m1", "text": "Remember this"},
+            {"id": "m2", "text": "Remember that"},
+        ]
+    }
+    plugin.initialize(openai=helper)
+
+    status = await plugin._memory_status_text(helper, 42)
+
+    assert "Memories: `2`" in status
 
 
 @pytest.mark.asyncio

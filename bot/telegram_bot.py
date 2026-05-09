@@ -859,9 +859,7 @@ class ChatGPTTelegramBot:
             return ""
         bank_id = self.openai.get_hindsight_bank_id(user_id)
         try:
-            stats = await self.openai.hindsight_client.stats(bank_id)
-            count = plugin._stats_memory_count(stats)
-            count_text = str(count) if count is not None else "unknown"
+            count_text = await plugin._memory_count_text(self.openai, bank_id)
             return f"\nHindsight memory: enabled; bank `{bank_id}`; memories `{count_text}`.\n"
         except Exception as exc:
             return f"\nHindsight memory: enabled; bank `{bank_id}`; stats failed: {exc}\n"
