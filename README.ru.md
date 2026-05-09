@@ -962,7 +962,7 @@ Hindsight хранит сырые документы и сам гонит экс
 
 - [python-telegram-bot](https://python-telegram-bot.org)
 - [OpenAI Python SDK](https://github.com/openai/openai-python)
-- LLMGateway-совместимые OpenAI-style API
+- [LLMGateway-compatible OpenAI-style APIs](https://github.com/LKosoj/LLMApiGateway)
 - [Hindsight](#память-hindsight) (сервис долговременной памяти)
 - [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) (Q&A по документам)
 - [PlantUML](https://plantuml.com/) (диаграммы)
