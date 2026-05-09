@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
+from ..model_constants import LLMGATEWAY_CHAT_MODELS
 from ..skill_script_routing import _skill_script_routing_error
 from ..utils import compute_scope_key
 from .plugin import Plugin
@@ -393,6 +394,15 @@ class AgentToolsPlugin(Plugin):
                                         "description": (
                                             f"Optional per-subagent rounds budget overriding the parent value. "
                                             f"Floor is {MIN_SUBAGENT_TOOL_ROUNDS}."
+                                        ),
+                                    },
+                                    "model": {
+                                        "type": "string",
+                                        "enum": list(LLMGATEWAY_CHAT_MODELS),
+                                        "description": (
+                                            "Optional model override for this subagent only. "
+                                            "Pick a lighter model for parsing/routing/lookup work and a heavier model "
+                                            "for reasoning. Defaults to the parent's current model."
                                         ),
                                     },
                                 },
@@ -1229,8 +1239,19 @@ class AgentToolsPlugin(Plugin):
             }
 
         user_id = kwargs.get("user_id")
-        model_to_use = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
-        model_to_use = model_to_use or getattr(helper, "model", None) or "llmgateway/high"
+        override_model = str(item.get("model") or "").strip() or None
+        if override_model and override_model not in LLMGATEWAY_CHAT_MODELS:
+            logging.warning(
+                "Subagent %s requested unsupported model %r; falling back to parent model",
+                subagent_id,
+                override_model,
+            )
+            override_model = None
+        if override_model:
+            model_to_use = override_model
+        else:
+            model_to_use = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
+            model_to_use = model_to_use or getattr(helper, "model", None) or "llmgateway/high"
 
         max_rounds = self._normalize_max_rounds(item.get("max_rounds"), parent_max_rounds)
         temperature = self._normalize_temperature(item.get("temperature"))

@@ -547,6 +547,46 @@ async def test_run_subagents_applies_per_subagent_overrides(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_subagents_applies_per_subagent_model_override(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(model_name="llmgateway/high")
+
+    await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[
+            {"id": "a1", "role": "r", "task": "t", "model": "llmgateway/light_model"},
+        ],
+    )
+
+    assert helper.completions.calls
+    assert helper.completions.calls[0]["model"] == "llmgateway/light_model"
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_ignores_unsupported_model_override(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(model_name="llmgateway/high")
+
+    await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[
+            {"id": "a1", "role": "r", "task": "t", "model": "openai/gpt-4o"},
+        ],
+    )
+
+    assert helper.completions.calls
+    assert helper.completions.calls[0]["model"] == "llmgateway/high"
+
+
+@pytest.mark.asyncio
 async def test_run_subagents_executes_same_round_tool_calls_in_parallel(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
