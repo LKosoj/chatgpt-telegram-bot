@@ -1,6 +1,14 @@
 .env
-.dockerignore
+.git
 .github
+.cli-proxy
+.venv
+.pytest_cache
+.ai-docs
+.ai_docs_cache
+__pycache__
+*.py[cod]
+.dockerignore
 .gitignore
 docker-compose.yml
 Dockerfile
