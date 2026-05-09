@@ -22,7 +22,7 @@ _markdown2 = types.ModuleType("markdown2")
 _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
-from bot.utils import handle_direct_result, is_direct_result
+from bot.utils import direct_result_inline_fallback_text, handle_direct_result, is_direct_result, should_send_text_as_file
 from bot.plugins.reaction import ReactionPlugin
 
 for _module_name in _INSERTED_MODULES:
@@ -231,6 +231,31 @@ def test_is_direct_result_requires_dict_payload_with_kind():
     assert is_direct_result({"other": "x"}) is False
     assert is_direct_result("not json at all") is False
     assert is_direct_result('{"direct_result": {"kind": "text", "value": "hi"}}') is True
+
+
+def test_direct_result_inline_fallback_preserves_text_and_artifact_names(tmp_path):
+    artifact = tmp_path / "report.pdf"
+    artifact.write_bytes(b"pdf")
+
+    text = direct_result_inline_fallback_text(
+        {
+            "direct_result": {
+                "kind": "final",
+                "text": "summary",
+                "artifacts": [{"kind": "file", "format": "path", "value": str(artifact)}],
+            }
+        },
+        "unavailable",
+    )
+
+    assert "summary" in text
+    assert "report.pdf" in text
+    assert "inline mode cannot attach files" in text
+
+
+def test_markdown_tables_are_sent_as_html_file_when_large():
+    table = "| A | B |\n| --- | --- |\n" + "\n".join("| x | y |" for _ in range(300))
+    assert should_send_text_as_file(table)
 
 
 @pytest.mark.asyncio

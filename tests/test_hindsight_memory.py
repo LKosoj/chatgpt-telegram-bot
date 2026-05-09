@@ -179,6 +179,8 @@ async def test_hindsight_client_uses_expected_rest_paths_and_auth():
         if request.url.path.endswith("/memories"):
             assert json.loads(request.content)["async"] is True
             return httpx.Response(200, json={"success": True, "bank_id": "telegram-123", "items_count": 1, "async": True})
+        if request.url.path.endswith("/clear"):
+            return httpx.Response(200, json={"success": True, "bank_id": "telegram-123"})
         return httpx.Response(404, json={"error": "unexpected"})
 
     client = HindsightClient(
@@ -189,12 +191,15 @@ async def test_hindsight_client_uses_expected_rest_paths_and_auth():
 
     recall = await client.recall("telegram-123", "profile")
     retain = await client.retain_memories("telegram-123", [{"content": "Known fact"}])
+    clear = await client.clear_bank("telegram-123")
     await client.close()
 
     assert recall["results"][0]["text"] == "Known fact"
     assert retain["success"] is True
+    assert clear["success"] is True
     assert requests[0].url.path == "/hindsight/v1/default/banks/telegram-123/memories/recall"
     assert requests[1].url.path == "/hindsight/v1/default/banks/telegram-123/memories"
+    assert requests[2].url.path == "/hindsight/v1/default/banks/telegram-123/clear"
 
 
 @pytest.mark.asyncio

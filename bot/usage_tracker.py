@@ -12,13 +12,14 @@ def year_month(date_str):
 class UsageTracker:
     """
     UsageTracker class
-    Enables tracking of daily/monthly usage per user.
+    Enables tracking of daily/weekly/monthly usage per user.
     User files are stored as JSON in /usage_logs directory.
     JSON example:
     {
         "user_name": "@user_name",
         "current_cost": {
             "day": 0.45,
+            "week": 1.20,
             "month": 3.23,
             "all_time": 3.23,
             "last_update": "2023-03-14"},
@@ -67,7 +68,7 @@ class UsageTracker:
             # create new dictionary for this user
             self.usage = {
                 "user_name": user_name,
-                "current_cost": {"day": 0.0, "month": 0.0, "all_time": 0.0, "last_update": str(date.today())},
+                "current_cost": {"day": 0.0, "week": 0.0, "month": 0.0, "all_time": 0.0, "last_update": str(date.today())},
                 "usage_history": {"chat_tokens": {}, "transcription_seconds": {}, "number_images": {}, "tts_characters": {}, "vision_tokens":{}}
             }
 
@@ -280,7 +281,7 @@ class UsageTracker:
 
     def add_current_costs(self, request_cost):
         """
-        Add current cost to all_time, day and month cost and update last_update date.
+        Add current cost to all_time, day, week and month cost and update last_update date.
         """
         today = date.today()
         last_update = date.fromisoformat(self.usage["current_cost"]["last_update"])
@@ -291,8 +292,13 @@ class UsageTracker:
         # add current cost, update new day
         if today == last_update:
             self.usage["current_cost"]["day"] += request_cost
+            self.usage["current_cost"]["week"] = self.usage["current_cost"].get("week", 0.0) + request_cost
             self.usage["current_cost"]["month"] += request_cost
         else:
+            if today.isocalendar()[:2] == last_update.isocalendar()[:2]:
+                self.usage["current_cost"]["week"] = self.usage["current_cost"].get("week", 0.0) + request_cost
+            else:
+                self.usage["current_cost"]["week"] = request_cost
             if today.month == last_update.month:
                 self.usage["current_cost"]["month"] += request_cost
             else:
@@ -321,24 +327,29 @@ class UsageTracker:
 
     # general functions
     def get_current_cost(self):
-        """Get total USD amount of all requests of the current day and month
+        """Get total USD amount of all requests of the current day, week and month
 
-        :return: cost of current day and month
+        :return: cost of current day, week and month
         """
         today = date.today()
         last_update = date.fromisoformat(self.usage["current_cost"]["last_update"])
         if today == last_update:
             cost_day = self.usage["current_cost"]["day"]
+            cost_week = self.usage["current_cost"].get("week", cost_day)
             cost_month = self.usage["current_cost"]["month"]
         else:
             cost_day = 0.0
+            if today.isocalendar()[:2] == last_update.isocalendar()[:2]:
+                cost_week = self.usage["current_cost"].get("week", 0.0)
+            else:
+                cost_week = 0.0
             if today.month == last_update.month:
                 cost_month = self.usage["current_cost"]["month"]
             else:
                 cost_month = 0.0
         # add to all_time cost, initialize with calculation of total_cost if key doesn't exist
         cost_all_time = self.usage["current_cost"].get("all_time", self.initialize_all_time_cost())
-        return {"cost_today": cost_day, "cost_month": cost_month, "cost_all_time": cost_all_time}
+        return {"cost_today": cost_day, "cost_week": cost_week, "cost_month": cost_month, "cost_all_time": cost_all_time}
 
     def initialize_all_time_cost(self, tokens_price=0.002, image_prices="0.016,0.018,0.02", minute_price=0.006, vision_token_price=0.01, tts_prices='0.015,0.030'):
         """Get total USD amount of all requests in history

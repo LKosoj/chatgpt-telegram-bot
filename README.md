@@ -581,7 +581,7 @@ PLUGINS=ddg_web_search,ddg_image_search,deepl,gtts_text_to_speech,auto_tts,\
 website_content,stable_diffusion,github_analysis,youtube_transcript,\
 prompt_perfect,reminders,show_me_diagrams,chief,vkusvill,codeinterpreter,\
 mcp_server,text_document_qa,hindsight_memory,skills,terminal,agent_tools,\
-web_research
+agent_cron,web_research
 ```
 
 ### Web And Search
@@ -648,10 +648,11 @@ standard conversation path.
 
 | Plugin | Tools | Notes |
 |---|---|---|
-| `agent_tools` | `manage_plan_tasks`, `ask_telegram_user`, `cancel_pending_question`, `deliver_to_user`, `run_subagents` | See [Agent Runtime](#agent--subagent-runtime). |
+| `agent_tools` | `manage_plan_tasks`, `ask_telegram_user`, `cancel_pending_question`, `deliver_to_user`, `run_subagents` | See [Agent Runtime](#agent--subagent-runtime); `/background` runs same-chat background agent jobs. |
+| `agent_cron` | `create_cron_job` | Separate scheduled agent tasks via `/cron add <schedule> \| <prompt>`, list/pause/resume/run/remove. |
 | `skills` | `list_skills`, `get_skill`, `get_skill_status`, `list_active_skills`, `activate_skill`, `deactivate_skill`, `update_skill_progress`, `record_skill_reflection`, `run_skill_script` | See [Skills Runtime](#skills-runtime). |
 | `mcp_server` | dynamic | See [MCP Integration](#mcp-integration). |
-| `hindsight_memory` | `recall`, `list_memories`, `stats` | Manual Hindsight inspection. |
+| `hindsight_memory` | `recall`, `list_memories`, `stats` | Manual Hindsight inspection; `/memory` exposes status, search, export, and clear when Hindsight is configured. |
 | `terminal` | `terminal` | Direct shell execution; pair with `skills.run_skill_script`. |
 | `codeinterpreter` | `deep_analysis` | Sandboxed Python with pandas / numpy / matplotlib / plotly. |
 | `github_analysis` | `analyze_github_code` | Reads and summarises GitHub repos with syntax highlighting. |
@@ -706,6 +707,18 @@ Key tools:
   `cancelled`. Runtime state is persisted only in SQLite (`agent_plan_tasks`
   and `agent_plan_contracts`). Tasks older than `TASKS_TTL_SECONDS` (2 days)
   are pruned on load.
+
+Telegram UX:
+
+- `/background <prompt>` starts an agent job outside the current request path
+  and delivers the result back to the same chat.
+- `/background list`, `/background status <job_id>`,
+  `/background cancel <job_id>`, and `/background clear` manage those jobs.
+
+The separate `agent_cron` plugin owns scheduled agent tasks:
+`/cron add daily at 09:00 | send me a morning brief`, `/cron list`,
+`/cron pause <job_id>`, `/cron resume <job_id>`, `/cron run <job_id>`, and
+`/cron remove <job_id>`.
 
 Every plugin tool call is also recorded in SQLite `tool_call_events` with the
 function name, owning plugin, chat/user/request ids when available, status,
@@ -797,7 +810,9 @@ statements, but skips one-off image edits, single technical questions,
 transient web searches, or secrets.
 
 The `hindsight_memory` plugin (`recall`, `list_memories`, `stats`) is also
-available as a regular tool when manual memory inspection is needed.
+available as a regular tool when manual memory inspection is needed. When the
+plugin is enabled and Hindsight is configured, `/memory` and Settings show
+status, memory count, manual search, export, and clear actions.
 
 ---
 

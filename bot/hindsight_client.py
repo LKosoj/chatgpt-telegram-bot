@@ -140,6 +140,9 @@ class HindsightClient:
     async def stats(self, bank_id: str) -> dict[str, Any]:
         return await self.request("GET", self._bank_path(bank_id, "stats"), timeout=30.0)
 
+    async def clear_bank(self, bank_id: str) -> dict[str, Any]:
+        return await self.request("POST", self._bank_path(bank_id, "clear"), timeout=60.0)
+
 
 def format_recall_results(data: dict[str, Any], *, max_items: int = 8) -> str:
     results = data.get("results")

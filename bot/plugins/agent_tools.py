@@ -12,14 +12,17 @@ from typing import Any, Dict, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
+from ..agent_delivery import send_agent_response, send_text_chunks
 from ..model_constants import LLMGATEWAY_CHAT_MODELS
+from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
-from ..utils import compute_scope_key
+from ..utils import compute_scope_key, get_thread_id, message_text
 from .plugin import Plugin
 
 
 CLOSED_STATUSES = {"completed", "cancelled"}
 TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+BACKGROUND_CLOSED_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 DELIVERY_ACTION_WORDS = (
     "attach",
     "deliver",
@@ -103,12 +106,16 @@ class AgentToolsPlugin(Plugin):
     def __init__(self):
         self.db = None
         self.pending_file = os.path.join(os.path.dirname(__file__), "agent_pending_questions.json")
+        self.background_jobs_file = os.path.join(os.path.dirname(__file__), "agent_background_jobs.json")
         self.pending_questions: Dict[str, Dict[str, Any]] = {}
         self.pending_by_chat: Dict[int, str] = {}
+        self.background_jobs: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._background_job_tasks: Dict[str, asyncio.Task] = {}
         self._orphaned_pending: List[Dict[str, Any]] = []
         self._recent_deliveries: Dict[str, float] = {}
         self._background_subagent_tasks: set[asyncio.Task] = set()
         self._load_orphaned_pending()
+        self._load_background_jobs()
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
@@ -116,7 +123,9 @@ class AgentToolsPlugin(Plugin):
         self.db = None
         if storage_root:
             self.pending_file = os.path.join(storage_root, "agent_pending_questions.json")
+            self.background_jobs_file = os.path.join(storage_root, "agent_background_jobs.json")
             self._load_orphaned_pending()
+            self._load_background_jobs()
         self.db = runtime_db
         if self.db is not None:
             self._prune_stale_tasks()
@@ -145,6 +154,9 @@ class AgentToolsPlugin(Plugin):
         for task in list(self._background_subagent_tasks):
             task.cancel()
         self._background_subagent_tasks.clear()
+        for task in list(self._background_job_tasks.values()):
+            task.cancel()
+        self._background_job_tasks.clear()
 
     @staticmethod
     async def _clear_question_markup(bot, chat_id: int, message_id: int) -> None:
@@ -418,6 +430,13 @@ class AgentToolsPlugin(Plugin):
     def get_commands(self) -> List[Dict]:
         return [
             {
+                "command": "background",
+                "description": "Run an agent task in the background and deliver the result to this chat.",
+                "handler": self.handle_background_command,
+                "handler_kwargs": {},
+                "add_to_menu": True,
+            },
+            {
                 "callback_query_handler": self.handle_ask_callback,
                 "callback_pattern": "^agentask:",
                 "handler_kwargs": {},
@@ -431,6 +450,252 @@ class AgentToolsPlugin(Plugin):
                 "handler": MessageHandler(_PendingAskReplyFilter(self), self.handle_text_answer),
             }
         ]
+
+    async def handle_background_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message = update.effective_message
+        if not message:
+            return
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id if update.effective_user else chat_id
+        args_text = message_text(message).strip()
+        if not args_text or args_text == "list":
+            await message.reply_text(self._format_background_jobs(chat_id, user_id))
+            return
+
+        action, _, rest = args_text.partition(" ")
+        action = action.lower().strip()
+        if action == "status":
+            await message.reply_text(
+                self._format_background_job_status(chat_id, user_id, rest.strip()),
+            )
+            return
+        if action == "cancel":
+            await message.reply_text(
+                await self._cancel_background_job(chat_id, user_id, rest.strip()),
+                parse_mode="Markdown",
+            )
+            return
+        if action == "clear":
+            await message.reply_text(self._clear_background_jobs(chat_id, user_id), parse_mode="Markdown")
+            return
+
+        job = self._create_background_job(
+            chat_id=chat_id,
+            user_id=user_id,
+            prompt=args_text,
+            reply_to_message_id=message.message_id,
+            message_thread_id=get_thread_id(update),
+        )
+        task = context.application.create_task(
+            self._run_background_job(context.bot, job["scope"], job["id"]),
+            update=update,
+        )
+        self._background_job_tasks[job["id"]] = task
+        task.add_done_callback(lambda _task, job_id=job["id"]: self._background_job_tasks.pop(job_id, None))
+        await message.reply_text(
+            (
+                f"Background job `{job['id']}` started.\n"
+                f"Use `/background status {job['id']}` or `/background cancel {job['id']}`."
+            ),
+            parse_mode="Markdown",
+        )
+
+    def _background_scope(self, chat_id: int | None, user_id: int | None) -> str:
+        return compute_scope_key(chat_id=chat_id, user_id=user_id)
+
+    def _load_background_jobs(self) -> None:
+        try:
+            if not os.path.exists(self.background_jobs_file):
+                self.background_jobs = {}
+                return
+            with open(self.background_jobs_file, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.background_jobs = data if isinstance(data, dict) else {}
+            changed = False
+            for jobs in self.background_jobs.values():
+                if not isinstance(jobs, dict):
+                    continue
+                for job in jobs.values():
+                    if isinstance(job, dict) and job.get("status") in {"queued", "running"}:
+                        job["status"] = "interrupted"
+                        job["finished_at"] = int(time.time())
+                        changed = True
+            if changed:
+                self._save_background_jobs()
+        except Exception:
+            logging.exception("Failed to load agent background jobs")
+            self.background_jobs = {}
+
+    def _save_background_jobs(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.background_jobs_file), exist_ok=True)
+            with open(self.background_jobs_file, "w", encoding="utf-8") as fh:
+                json.dump(self.background_jobs, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            logging.exception("Failed to save agent background jobs")
+
+    def _create_background_job(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        prompt: str,
+        reply_to_message_id: int | None,
+        message_thread_id: int | None,
+    ) -> Dict[str, Any]:
+        scope = self._background_scope(chat_id, user_id)
+        job_id = time.strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        job = {
+            "id": job_id,
+            "scope": scope,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "prompt": prompt,
+            "status": "queued",
+            "created_at": int(time.time()),
+            "reply_to_message_id": reply_to_message_id,
+            "message_thread_id": message_thread_id,
+        }
+        self.background_jobs.setdefault(scope, {})[job_id] = job
+        self._save_background_jobs()
+        return job
+
+    def _get_background_job(self, scope: str, job_id: str) -> Dict[str, Any] | None:
+        if not job_id:
+            return None
+        return (self.background_jobs.get(scope) or {}).get(job_id)
+
+    def _format_background_jobs(self, chat_id: int, user_id: int) -> str:
+        scope = self._background_scope(chat_id, user_id)
+        jobs = list((self.background_jobs.get(scope) or {}).values())
+        if not jobs:
+            return (
+                "No background jobs yet.\n\n"
+                "Usage:\n"
+                "`/background summarize the latest uploaded document`\n"
+                "`/background status <job_id>`\n"
+                "`/background cancel <job_id>`"
+            )
+        jobs.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+        lines = ["Background jobs:"]
+        for job in jobs[:10]:
+            prompt = str(job.get("prompt") or "").replace("\n", " ")
+            if len(prompt) > 80:
+                prompt = prompt[:77] + "..."
+            lines.append(f"- `{job.get('id')}` {job.get('status')}: {prompt}")
+        lines.append("\nUse `/background clear` to remove closed jobs from this list.")
+        return "\n".join(lines)
+
+    def _format_background_job_status(self, chat_id: int, user_id: int, job_id: str) -> str:
+        scope = self._background_scope(chat_id, user_id)
+        job = self._get_background_job(scope, job_id)
+        if not job:
+            return "Background job not found."
+        lines = [
+            f"Background job `{job['id']}`",
+            f"Status: {job.get('status')}",
+            f"Prompt: {job.get('prompt')}",
+        ]
+        if job.get("result_preview"):
+            lines.append(f"Result preview: {job['result_preview']}")
+        if job.get("error"):
+            lines.append(f"Error: {job['error']}")
+        return "\n".join(lines)
+
+    async def _cancel_background_job(self, chat_id: int, user_id: int, job_id: str) -> str:
+        scope = self._background_scope(chat_id, user_id)
+        job = self._get_background_job(scope, job_id)
+        if not job:
+            return "Background job not found."
+        if job.get("status") in BACKGROUND_CLOSED_STATUSES:
+            return f"Background job `{job_id}` is already {job.get('status')}."
+        job["status"] = "cancelled"
+        job["finished_at"] = int(time.time())
+        task = self._background_job_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+        self._save_background_jobs()
+        return f"Background job `{job_id}` cancelled."
+
+    def _clear_background_jobs(self, chat_id: int, user_id: int) -> str:
+        scope = self._background_scope(chat_id, user_id)
+        jobs = self.background_jobs.get(scope) or {}
+        before = len(jobs)
+        self.background_jobs[scope] = {
+            job_id: job
+            for job_id, job in jobs.items()
+            if job.get("status") not in BACKGROUND_CLOSED_STATUSES
+        }
+        removed = before - len(self.background_jobs[scope])
+        self._save_background_jobs()
+        return f"Removed {removed} closed background job(s)."
+
+    async def _run_background_job(self, bot, scope: str, job_id: str) -> None:
+        job = self._get_background_job(scope, job_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = int(time.time())
+        self._save_background_jobs()
+        try:
+            helper = getattr(self, "openai", None)
+            if not helper or not hasattr(helper, "get_chat_response"):
+                raise RuntimeError("OpenAI helper is not available for background jobs")
+            request_context = RequestContext(
+                chat_id=int(job["chat_id"]),
+                user_id=int(job["user_id"]),
+                message_id=job.get("reply_to_message_id"),
+                request_id=f"background_{job_id}",
+            )
+            response, total_tokens = await helper.get_chat_response(
+                chat_id=int(job["chat_id"]),
+                query=str(job["prompt"]),
+                request_id=f"background_{job_id}",
+                user_id=int(job["user_id"]),
+                request_context=request_context,
+            )
+            if job.get("status") == "cancelled":
+                return
+            job["status"] = "completed"
+            job["finished_at"] = int(time.time())
+            job["tokens"] = total_tokens
+            job["result_preview"] = self._background_result_preview(response)
+            self._save_background_jobs()
+            await send_agent_response(
+                bot,
+                chat_id=int(job["chat_id"]),
+                response=response,
+                reply_to_message_id=job.get("reply_to_message_id"),
+                message_thread_id=job.get("message_thread_id"),
+                title=f"Background job `{job_id}` completed.",
+            )
+        except asyncio.CancelledError:
+            job["status"] = "cancelled"
+            job["finished_at"] = int(time.time())
+            self._save_background_jobs()
+            return
+        except Exception as exc:
+            logging.exception("Background job %s failed", job_id)
+            job["status"] = "failed"
+            job["finished_at"] = int(time.time())
+            job["error"] = str(exc)
+            self._save_background_jobs()
+            await send_text_chunks(
+                bot,
+                chat_id=int(job["chat_id"]),
+                text=f"Background job `{job_id}` failed: {exc}",
+                reply_to_message_id=job.get("reply_to_message_id"),
+                message_thread_id=job.get("message_thread_id"),
+            )
+
+    @staticmethod
+    def _background_result_preview(response: Any) -> str:
+        if isinstance(response, dict):
+            payload = response.get("direct_result")
+            if isinstance(payload, dict):
+                text = payload.get("text") or payload.get("value") or payload.get("caption") or payload.get("kind")
+                return str(text or "")[:300]
+        return str(response or "")[:300]
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         request_context = kwargs.pop("request_context", None)

@@ -1,8 +1,18 @@
 import asyncio
+import importlib.util
+import importlib.machinery
 import json
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
+
+if importlib.util.find_spec("markdown2") is None:
+    _markdown2 = types.ModuleType("markdown2")
+    _markdown2.__spec__ = importlib.machinery.ModuleSpec("markdown2", loader=None)
+    _markdown2.markdown = lambda text, *args, **kwargs: text
+    sys.modules["markdown2"] = _markdown2
 
 from bot.plugin_manager import PluginManager
 from bot.i18n import localized_text
@@ -137,6 +147,16 @@ class FakeLLMHelper:
         return self.model_name
 
 
+class FakeBackgroundHelper(FakeLLMHelper):
+    def __init__(self):
+        super().__init__()
+        self.requests = []
+
+    async def get_chat_response(self, **kwargs):
+        self.requests.append(kwargs)
+        return "background done", 11
+
+
 class ParallelToolPluginManager(FakePluginManager):
     def __init__(self):
         super().__init__()
@@ -207,6 +227,7 @@ def test_agent_tools_registers_specs_and_handlers():
     assert "definition_of_done" in plan_spec["parameters"]["properties"]
 
     commands = pm.get_plugin_commands()
+    assert any(command.get("command") == "background" for command in commands)
     assert any(command.get("callback_pattern") == "^agentask:" for command in commands)
     assert pm.get_message_handlers()
 
@@ -658,6 +679,32 @@ async def test_run_subagents_can_schedule_background_workers(tmp_path):
     assert plugin._background_subagent_tasks == set()
     assert helper.completions.calls[0]["model"] == "llmgateway/env-main"
     assert [call[0] for call in helper.plugin_manager.calls] == ["skills.list_skills"]
+
+
+@pytest.mark.asyncio
+async def test_background_job_runs_and_delivers_to_chat(tmp_path):
+    plugin = AgentToolsPlugin()
+    helper = FakeBackgroundHelper()
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    bot = FakeBot()
+
+    job = plugin._create_background_job(
+        chat_id=100,
+        user_id=42,
+        prompt="do background work",
+        reply_to_message_id=555,
+        message_thread_id=None,
+    )
+    await plugin._run_background_job(bot, job["scope"], job["id"])
+
+    stored = plugin.background_jobs[job["scope"]][job["id"]]
+    assert stored["status"] == "completed"
+    assert stored["tokens"] == 11
+    assert helper.requests[0]["chat_id"] == 100
+    assert helper.requests[0]["user_id"] == 42
+    assert bot.messages[0]["chat_id"] == 100
+    assert "Background job" in bot.messages[0]["text"]
+    assert "background done" in bot.messages[0]["text"]
 
 
 @pytest.mark.asyncio

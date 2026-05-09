@@ -7,6 +7,7 @@ import logging
 import os
 import io
 import base64
+import re
 import time
 from PIL import Image
 import uuid
@@ -304,6 +305,31 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     
     return chunks
 
+
+def looks_like_markdown_table(text: str) -> bool:
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    for index in range(len(lines) - 1):
+        header = lines[index]
+        separator = lines[index + 1]
+        if "|" not in header or "|" not in separator:
+            continue
+        cells = [cell.strip() for cell in separator.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            return True
+    return False
+
+
+def should_send_text_as_file(text: str, chunks: list[str] | None = None, *, force_html_file: bool = False) -> bool:
+    chunks = chunks if chunks is not None else split_into_chunks(text)
+    return (
+        len(chunks) > 3
+        or (len(chunks) > 1 and '```' in str(text or ""))
+        or (force_html_file and len(chunks) > 1)
+        or (looks_like_markdown_table(text) and (len(chunks) > 1 or len(str(text or "")) > 1500))
+    )
+
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
                             chat_action: constants.ChatAction = "", is_inline=False):
     """
@@ -479,8 +505,10 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
     # Mapping of budget period to cost period
     budget_cost_map = {
         "monthly": "cost_month",
+        "weekly": "cost_week",
         "daily": "cost_today",
-        "all-time": "cost_all_time"
+        "all-time": "cost_all_time",
+        "total": "cost_all_time",
     }
 
     if is_inline and update.inline_query:
@@ -502,13 +530,13 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
     user_budget = get_user_budget(config, user_id)
     budget_period = config['budget_period']
     if user_budget is not None:
-        cost = usage[user_id].get_current_cost()[budget_cost_map[budget_period]]
+        cost = usage[user_id].get_current_cost()[budget_cost_map.get(budget_period, "cost_month")]
         return user_budget - cost
 
     # Get budget for guests
     if 'guests' not in usage:
         usage['guests'] = UsageTracker('guests', 'all guest users in group chats')
-    cost = usage['guests'].get_current_cost()[budget_cost_map[budget_period]]
+    cost = usage['guests'].get_current_cost()[budget_cost_map.get(budget_period, "cost_month")]
     return config['guest_budget'] - cost
 
 def is_within_budget(config, usage, update: Update, is_inline=False) -> bool:
@@ -600,6 +628,54 @@ def is_direct_result(response: any) -> bool:
     if not isinstance(direct_result, dict):
         return False
     return bool(direct_result.get('kind'))
+
+
+def direct_result_inline_fallback_text(response: any, unavailable_message: str, *, max_chars: int = 3500) -> str:
+    if type(response) is not dict:
+        try:
+            response = json.loads(response)
+        except Exception:
+            return str(response)[:max_chars]
+    result = response.get('direct_result') if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return str(response)[:max_chars]
+
+    def _clip(value: str) -> str:
+        value = str(value or "").strip()
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars - 20].rstrip() + "\n... [truncated]"
+
+    def _artifact_line(item: dict) -> str | None:
+        kind = str(item.get("kind") or "artifact")
+        value = str(item.get("value") or item.get("file_path") or item.get("url") or "").strip()
+        if not value:
+            return None
+        if item.get("format") == "path" or os.path.isabs(value):
+            value = os.path.basename(value)
+        return f"- {kind}: {value}"
+
+    kind = result.get("kind")
+    if kind == "final":
+        text = str(result.get("text") or "").strip()
+        artifact_lines = [
+            line for line in (_artifact_line(item) for item in result.get("artifacts") or [])
+            if line
+        ]
+        parts = []
+        if text:
+            parts.append(text)
+        if artifact_lines:
+            parts.append("Artifacts produced, but inline mode cannot attach files:\n" + "\n".join(artifact_lines))
+        return _clip("\n\n".join(parts) or unavailable_message)
+
+    if kind == "text":
+        return _clip(result.get("add_value") or result.get("value") or unavailable_message)
+
+    artifact_line = _artifact_line(result)
+    if artifact_line:
+        return _clip(f"{artifact_line}\n\n{unavailable_message}")
+    return _clip(unavailable_message)
 
 def escape_markdown(text: str, exclude_code_blocks: bool = True) -> str:
     """
@@ -797,8 +873,10 @@ async def handle_direct_result(config, update: Update, response: any):
         # Отправляем как файл если: 
         # - ответ больше 3х частей ИЛИ 
         # - (ответ больше одной части И содержит вставки кода)
-        if len(chunks) > 3 or (len(chunks) > 1 and '```' in text) or (
-            result.get("force_html_file") and len(chunks) > 1
+        if should_send_text_as_file(
+            text,
+            chunks,
+            force_html_file=bool(result.get("force_html_file")),
         ):
             # Получаем имя текущей сессии
             session_name = text[:10]
@@ -867,11 +945,18 @@ def cleanup_intermediate_files(response: any):
     if type(response) is not dict:
         response = json.loads(response)
 
-    result = response['direct_result']
-    format = result['format']
-    value = result['value']
+    result = response.get('direct_result') if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return
+    if result.get("kind") == "final":
+        for artifact in result.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                cleanup_intermediate_files({"direct_result": artifact})
+        return
+    format = result.get('format')
+    value = result.get('value') or result.get('file_path')
 
-    if format == 'path':
+    if format == 'path' and value:
         if os.path.exists(value):
             os.remove(value)
 

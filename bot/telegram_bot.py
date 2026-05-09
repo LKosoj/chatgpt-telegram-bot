@@ -27,7 +27,8 @@ from PIL import Image
 from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
-    cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage
+    cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
+    should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
@@ -834,10 +835,11 @@ class ChatGPTTelegramBot:
         # text_budget filled with conditional content
         text_budget = "\n\n"
         budget_period = self.config['budget_period']
+        budget_period_label = 'all-time' if budget_period == 'total' else budget_period
         if remaining_budget < float('inf'):
             text_budget += (
                 f"{localized_text('stats_budget', bot_language)}"
-                f"{localized_text(budget_period, bot_language)}: "
+                f"{localized_text(budget_period_label, bot_language)}: "
                 f"${remaining_budget:.2f}.\n"
             )
         # If use vsegpt, return money rest
@@ -847,8 +849,22 @@ class ChatGPTTelegramBot:
                  f"{self.get_credits()}"
              )
 
-        usage_text = text_current_session + text_all_sessions + text_today + text_month + text_budget
+        text_hindsight = await self._hindsight_stats_text(user_id)
+        usage_text = text_current_session + text_all_sessions + text_today + text_month + text_budget + text_hindsight
         await update.message.reply_text(usage_text, parse_mode=constants.ParseMode.MARKDOWN)
+
+    async def _hindsight_stats_text(self, user_id: int | None) -> str:
+        plugin = self._hindsight_memory_plugin_for_user(user_id)
+        if not plugin or user_id is None:
+            return ""
+        bank_id = self.openai.get_hindsight_bank_id(user_id)
+        try:
+            stats = await self.openai.hindsight_client.stats(bank_id)
+            count = plugin._stats_memory_count(stats)
+            count_text = str(count) if count is not None else "unknown"
+            return f"\nHindsight memory: enabled; bank `{bank_id}`; memories `{count_text}`.\n"
+        except Exception as exc:
+            return f"\nHindsight memory: enabled; bank `{bank_id}`; stats failed: {exc}\n"
     
     def get_credits(self):
         api_key = self.config['api_key']
@@ -1022,6 +1038,22 @@ class ChatGPTTelegramBot:
             )
             return
 
+        if action == 'hindsight':
+            await query.answer()
+            plugin = self._hindsight_memory_plugin_for_user(user_id)
+            if not plugin:
+                await query.edit_message_text(
+                    text="Hindsight memory is not available.",
+                    reply_markup=self._build_back_settings_menu(),
+                )
+                return
+            await query.edit_message_text(
+                text=await plugin._memory_status_text(self.openai, user_id),
+                reply_markup=plugin._memory_menu(),
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+            return
+
         if action == 'skill_toggle' and len(parts) >= 4:
             await self._toggle_skill_setting(query, parts, user_id)
             return
@@ -1121,13 +1153,20 @@ class ChatGPTTelegramBot:
                     callback_data='settings:skills:0',
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    localized_text('settings_close', self.config['bot_language']),
-                    callback_data='settings:close',
-                )
-            ],
         ]
+        if self._hindsight_memory_plugin_for_user(user_id):
+            keyboard.append([
+                InlineKeyboardButton(
+                    "Hindsight memory",
+                    callback_data='settings:hindsight',
+                )
+            ])
+        keyboard.append([
+            InlineKeyboardButton(
+                localized_text('settings_close', self.config['bot_language']),
+                callback_data='settings:close',
+            )
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     def _build_language_settings_menu(self, page: int, current_language: str) -> InlineKeyboardMarkup:
@@ -1363,6 +1402,20 @@ class ChatGPTTelegramBot:
         )
         available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
         return sorted(str(name) for name in available_skills.keys())
+
+    def _hindsight_memory_plugin_for_user(self, user_id: int | None):
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        has_plugin = getattr(plugin_manager, 'has_plugin', None)
+        get_plugin = getattr(plugin_manager, 'get_plugin', None)
+        if (
+            not callable(has_plugin)
+            or not callable(get_plugin)
+            or not has_plugin('hindsight_memory')
+            or self._is_plugin_disabled_for_user('hindsight_memory', user_id)
+            or not getattr(self.openai, "is_hindsight_enabled", lambda: False)()
+        ):
+            return None
+        return get_plugin('hindsight_memory')
 
     def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
         settings = self._settings_for_user(user_id)
@@ -2097,13 +2150,13 @@ class ChatGPTTelegramBot:
                     logger.info(f"Transcript output: {transcript_output}")
                     chunks = split_into_chunks(transcript_output)
                     # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-                    if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
+                    if should_send_text_as_file(transcript_output, chunks):
                         # Получаем имя текущей сессии
                         sessions = self.db.list_user_sessions(user_id, is_active=1)
                         active_session = next((s for s in sessions if s['is_active']), None)
                         session_name = active_session['session_name'] if active_session else 'transcription'
                         
-                        await send_long_response_as_file(self.config, update, response, session_name)
+                        await send_long_response_as_file(self.config, update, transcript_output, session_name)
                     else:
                         for index, transcript_chunk in enumerate(chunks):
                             await update.effective_message.reply_text(
@@ -2761,7 +2814,7 @@ class ChatGPTTelegramBot:
                         chunks = split_into_chunks(response)
 
                         # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
-                        if len(chunks) > 3 or (len(chunks) > 1 and '```' in response):
+                        if should_send_text_as_file(response, chunks):
                             # Получаем имя текущей сессии
                             sessions = self.db.list_user_sessions(user_id, is_active=1)
                             active_session = next((s for s in sessions if s['is_active']), None)
@@ -2979,10 +3032,11 @@ class ChatGPTTelegramBot:
                     backoff = 0
                     async for content, tokens in stream_response:
                         if is_direct_result(content):
+                            fallback_text = direct_result_inline_fallback_text(content, unavailable_message)
                             cleanup_intermediate_files(content)
                             await edit_message_with_retry(context, chat_id=None,
                                                           message_id=inline_message_id,
-                                                          text=f'{query}\n\n_{answer_tr}:_\n{unavailable_message}',
+                                                          text=f'{query}\n\n_{answer_tr}:_\n{fallback_text}',
                                                           is_inline=True)
                             return
 
@@ -3047,10 +3101,11 @@ class ChatGPTTelegramBot:
                         )
 
                         if is_direct_result(response):
+                            fallback_text = direct_result_inline_fallback_text(response, unavailable_message)
                             cleanup_intermediate_files(response)
                             await edit_message_with_retry(context, chat_id=None,
                                                           message_id=inline_message_id,
-                                                          text=f'{query}\n\n_{answer_tr}:_\n{unavailable_message}',
+                                                          text=f'{query}\n\n_{answer_tr}:_\n{fallback_text}',
                                                           is_inline=True)
                             return
 
