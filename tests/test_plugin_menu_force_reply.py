@@ -59,6 +59,7 @@ for _module_name in _INSERTED_MODULES:
 class FakeCallbackMessage:
     def __init__(self):
         self.reply_text = AsyncMock(return_value=SimpleNamespace(message_id=777))
+        self.delete = AsyncMock()
 
 
 class FakeCallbackQuery:
@@ -72,6 +73,7 @@ class FakeCallbackQuery:
 def _make_bot():
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {"bot_language": "en"}
+    bot.plugin_menu_page_size = 6
     bot.plugin_menu_entries = [
         {
             "plugin_name": "notes",
@@ -108,3 +110,45 @@ async def test_plugin_menu_input_imports_force_reply():
         "cmd_id": "0",
         "prompt_message_id": 777,
     }
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_close_deletes_menu_and_clears_pending_state():
+    bot = _make_bot()
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:close"
+    update = SimpleNamespace(callback_query=query)
+    context = SimpleNamespace(user_data={"plugin_menu_pending": {"plugin": "notes"}})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    query.answer.assert_awaited_once()
+    query.message.delete.assert_awaited_once()
+    query.edit_message_text.assert_not_called()
+    assert "plugin_menu_pending" not in context.user_data
+
+
+def test_plugins_menu_markup_has_close_button():
+    bot = _make_bot()
+
+    markup = bot._build_plugins_menu(page=0, plugin=None)
+
+    close_button = markup.inline_keyboard[-1][0]
+    assert close_button.text == "❌ Close"
+    assert close_button.callback_data == "pluginmenu:close"
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_command_usage_view_has_close_button():
+    bot = _make_bot()
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:cmd:notes:0"
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    context = SimpleNamespace(user_data={})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    reply_markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+    close_button = reply_markup.inline_keyboard[-1][0]
+    assert close_button.text == "❌ Close"
+    assert close_button.callback_data == "pluginmenu:close"

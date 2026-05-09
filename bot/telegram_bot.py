@@ -3507,6 +3507,11 @@ class ChatGPTTelegramBot:
             return
         bot_language = self.config['bot_language']
         action = data[1]
+        if action == "close":
+            context.user_data.pop("plugin_menu_pending", None)
+            await query.message.delete()
+            return
+
         if action == "page" and len(data) == 4:
             scope = data[2]
             try:
@@ -3599,6 +3604,12 @@ class ChatGPTTelegramBot:
                     InlineKeyboardButton(
                         localized_text('plugins_menu_back', bot_language),
                         callback_data=f"pluginmenu:page:{plugin_name}:{back_page}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"❌ {localized_text('settings_close', bot_language)}",
+                        callback_data="pluginmenu:close"
                     )
                 ],
             ]
@@ -3698,6 +3709,12 @@ class ChatGPTTelegramBot:
             ))
         if nav_row:
             keyboard.append(nav_row)
+        keyboard.append([
+            InlineKeyboardButton(
+                f"❌ {localized_text('settings_close', self.config['bot_language'])}",
+                callback_data="pluginmenu:close"
+            )
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     def _get_plugins_list(self) -> list[str]:
