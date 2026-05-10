@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -247,9 +248,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "install_skill",
                 "description": (
-                    "Install a skill from a skills package id, URL, local directory, markdown file, "
-                    "or .zip/.tar* archive, then sync it into SKILLS_DIR and refresh the local "
-                    "skill registry. Enabled by default unless "
+                    "Install a skill from a skills package id, GitHub/git repository URL, URL, "
+                    "local directory, markdown file, or .zip/.tar* archive, then sync it into "
+                    "SKILLS_DIR and refresh the local skill registry. Enabled by default unless "
                     "SKILLS_ALLOW_INSTALLS=false. SKILLS_INSTALL_ADMIN_USER_IDS is a user allow-list "
                     "that defaults to '*'. confirmed=true is required after explicit user approval."
                 ),
@@ -259,8 +260,9 @@ class SkillsPlugin(Plugin):
                         "package": {
                             "type": "string",
                             "description": (
-                                "Source to install: owner/repo@skill, http(s) URL, file:// URL, "
-                                "local skill directory, local SKILL.md/markdown file, or .zip/.tar* archive."
+                                "Source to install: owner/repo@skill, GitHub/git repo URL, http(s) URL, "
+                                "file:// URL, local skill directory, local SKILL.md/markdown file, "
+                                "or .zip/.tar* archive."
                             ),
                         },
                         "skill_name": {
@@ -274,6 +276,14 @@ class SkillsPlugin(Plugin):
                         "confirmed": {
                             "type": "boolean",
                             "description": "Must be true only after the user explicitly approved this exact package install.",
+                        },
+                        "install_all": {
+                            "type": "boolean",
+                            "description": (
+                                "For URL/local/archive/git sources containing multiple SKILL.md files, "
+                                "install all discovered skills. Defaults to false."
+                            ),
+                            "default": False,
                         },
                     },
                     "required": ["package", "confirmed"],
@@ -534,10 +544,12 @@ class SkillsPlugin(Plugin):
             package = str(call_kwargs.pop("package", "") or "")
             skill_name = call_kwargs.pop("skill_name", None)
             confirmed = self._bool_arg(call_kwargs.pop("confirmed", False), default=False)
+            install_all = self._bool_arg(call_kwargs.pop("install_all", False), default=False)
             return await self._install_skill(
                 package,
                 skill_name=str(skill_name or "") if skill_name is not None else None,
                 confirmed=confirmed,
+                install_all=install_all,
                 **call_kwargs,
             )
         if function_name == "create_skill":
@@ -1207,6 +1219,7 @@ class SkillsPlugin(Plugin):
         *,
         skill_name: str | None,
         confirmed: bool,
+        install_all: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         user_id = kwargs.get("user_id")
@@ -1231,12 +1244,13 @@ class SkillsPlugin(Plugin):
             return {"success": False, "error": "package must be a non-empty source string"}
 
         source_kind = self._skill_install_source_kind(package_id)
-        if source_kind in {"url", "local"}:
+        if source_kind in {"git", "url", "local"}:
             return await asyncio.to_thread(
                 self._install_skill_from_external_source,
                 package_id,
                 source_kind,
                 requested_skill_name=(skill_name or "").strip(),
+                install_all=install_all,
                 user_id=user_id,
             )
         if any(char.isspace() for char in package_id):
@@ -1378,6 +1392,7 @@ class SkillsPlugin(Plugin):
         source_kind: str,
         *,
         requested_skill_name: str,
+        install_all: bool,
         user_id: int | None,
     ) -> Dict[str, Any]:
         self._ensure_paths()
@@ -1392,17 +1407,29 @@ class SkillsPlugin(Plugin):
                     "error": materialize_error or "Failed to prepare skill source.",
                 }
 
+            if install_all and requested_skill_name:
+                return {
+                    "success": False,
+                    "package": source,
+                    "source_kind": source_kind,
+                    "error": "install_all cannot be combined with skill_name",
+                }
+            if install_all:
+                return self._install_all_skill_sources(source, source_kind, source_path, user_id=user_id)
+
             preferred_name = requested_skill_name.rsplit("/", 1)[-1] if requested_skill_name else ""
             skill_source_path, inferred_name, source_error = self._find_skill_source_dir(
                 source_path,
                 preferred_name=preferred_name,
             )
             if source_error or skill_source_path is None:
+                candidates = self._list_skill_source_candidates(source_path)
                 return {
                     "success": False,
                     "package": source,
                     "source_kind": source_kind,
                     "error": source_error or "No SKILL.md found in source.",
+                    "available_skills": candidates,
                 }
 
             raw_target_name = requested_skill_name or inferred_name
@@ -1546,6 +1573,8 @@ class SkillsPlugin(Plugin):
 
     def _skill_install_source_kind(self, source: str) -> str:
         parsed = urllib.parse.urlparse(source)
+        if self._is_git_repo_url(source):
+            return "git"
         if parsed.scheme in {"http", "https", "file"}:
             return "url"
 
@@ -1565,6 +1594,12 @@ class SkillsPlugin(Plugin):
         source_kind: str,
         temp_dir: Path,
     ) -> tuple[Path | None, str | None]:
+        if source_kind == "git":
+            if shutil.which("git"):
+                return self._clone_git_source(source, temp_dir)
+            if self._github_repo_info(source) is not None:
+                return self._download_github_repo_source(source, temp_dir)
+            return None, "git executable not found; use an archive URL instead"
         if source_kind == "url":
             parsed = urllib.parse.urlparse(source)
             if parsed.scheme == "file":
@@ -1592,7 +1627,7 @@ class SkillsPlugin(Plugin):
                 self._extract_skill_archive(path, extract_dir)
             except (OSError, tarfile.TarError, zipfile.BadZipFile, ValueError) as exc:
                 return None, f"Failed to extract archive '{path}': {exc}"
-            return extract_dir, None
+            return self._archive_content_root(extract_dir), None
         if path.suffix.lower() == MARKDOWN_SUFFIX:
             if path.name == "SKILL.md":
                 return path.parent, None
@@ -1601,6 +1636,80 @@ class SkillsPlugin(Plugin):
             shutil.copy2(path, skill_dir / "SKILL.md")
             return skill_dir, None
         return None, "Source must be a skill directory, markdown file, or .zip/.tar* archive"
+
+    def _clone_git_source(self, source: str, temp_dir: Path) -> tuple[Path | None, str | None]:
+        git_path = shutil.which("git")
+        if not git_path:
+            return None, "git executable not found; use an archive URL instead"
+        clone_dir = temp_dir / "git-source"
+        command = [git_path, "clone", "--depth", "1", source, str(clone_dir)]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.install_timeout,
+                check=False,
+            )
+        except Exception as exc:
+            return None, f"Failed to clone git source: {exc}"
+        if result.returncode != 0:
+            stderr = self._truncate(self._strip_ansi(result.stderr or ""))
+            return None, f"git clone failed with code {result.returncode}: {stderr}"
+        return clone_dir, None
+
+    def _download_github_repo_source(self, source: str, temp_dir: Path) -> tuple[Path | None, str | None]:
+        repo_info = self._github_repo_info(source)
+        if repo_info is None:
+            return None, "Invalid GitHub repository URL"
+        owner, repo, branch = repo_info
+        branches: List[str] = []
+        if branch:
+            branches.append(branch)
+        else:
+            default_branch = self._github_default_branch(owner, repo)
+            if default_branch:
+                branches.append(default_branch)
+            branches.extend(branch for branch in ("main", "master") if branch not in branches)
+
+        last_error = ""
+        for branch_name in branches:
+            quoted_branch = urllib.parse.quote(branch_name, safe="/")
+            archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{quoted_branch}"
+            archive_path, download_error = self._download_url_to_path(archive_url, temp_dir)
+            if download_error or archive_path is None:
+                last_error = download_error or "download failed"
+                continue
+            return self._materialize_local_skill_source(archive_path, temp_dir)
+        return None, f"Failed to download GitHub repository archive: {last_error}"
+
+    def _github_default_branch(self, owner: str, repo: str) -> str:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        request = urllib.request.Request(api_url, headers={"User-Agent": "chatgpt-telegram-bot-skills"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.install_timeout) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return ""
+        if isinstance(payload, dict):
+            return str(payload.get("default_branch") or "").strip()
+        return ""
+
+    def _github_repo_info(self, source: str) -> tuple[str, str, str] | None:
+        parsed = urllib.parse.urlparse(source)
+        if (parsed.hostname or "").lower() not in {"github.com", "www.github.com"}:
+            return None
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            return None
+        owner = parts[0]
+        repo = parts[1].removesuffix(".git")
+        branch = ""
+        if len(parts) > 3 and parts[2] == "tree":
+            branch = "/".join(parts[3:])
+        if not owner or not repo:
+            return None
+        return owner, repo, branch
 
     def _download_url_to_path(self, url: str, temp_dir: Path) -> tuple[Path | None, str | None]:
         parsed = urllib.parse.urlparse(url)
@@ -1623,21 +1732,10 @@ class SkillsPlugin(Plugin):
         if (source_path / "SKILL.md").is_file():
             return source_path, source_path.name, None
 
-        candidates: List[Path] = []
         try:
-            skill_files = sorted(source_path.rglob("SKILL.md"))
+            candidates = self._skill_source_candidates(source_path)
         except OSError as exc:
             return None, "", f"Failed to inspect skill source: {exc}"
-
-        for md_file in skill_files:
-            skill_dir = md_file.parent
-            try:
-                relative = skill_dir.relative_to(source_path)
-            except ValueError:
-                continue
-            if any(part.startswith(".") or part == "__pycache__" for part in relative.parts):
-                continue
-            candidates.append(skill_dir)
 
         if preferred_name:
             matches = [
@@ -1653,6 +1751,129 @@ class SkillsPlugin(Plugin):
         if not candidates:
             return None, "", "No SKILL.md found in source"
         return None, "", "Source contains multiple skills; pass skill_name to select the target skill"
+
+    def _install_all_skill_sources(
+        self,
+        source: str,
+        source_kind: str,
+        source_path: Path,
+        *,
+        user_id: int | None,
+    ) -> Dict[str, Any]:
+        try:
+            candidates = self._skill_source_candidates(source_path)
+        except OSError as exc:
+            return {
+                "success": False,
+                "package": source,
+                "source_kind": source_kind,
+                "error": f"Failed to inspect skill source: {exc}",
+            }
+        if not candidates and (source_path / "SKILL.md").is_file():
+            candidates = [source_path]
+        if not candidates:
+            return {
+                "success": False,
+                "package": source,
+                "source_kind": source_kind,
+                "error": "No SKILL.md found in source",
+            }
+
+        installed: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        seen_targets: set[str] = set()
+        for candidate in candidates:
+            raw_target_name = self._target_name_for_source_candidate(source_path, candidate)
+            target_name, name_error = self._normalize_skill_target_name(raw_target_name)
+            if name_error or target_name in seen_targets:
+                skipped.append({
+                    "skill": raw_target_name,
+                    "error": name_error or "duplicate target skill name",
+                })
+                continue
+            seen_targets.add(target_name)
+            target_path = (self.skills_dir / target_name).resolve()
+            if target_path.exists():
+                skipped.append({
+                    "skill": target_name,
+                    "error": f"Skill '{target_name}' already exists in SKILLS_DIR.",
+                    "path": str(target_path),
+                })
+                continue
+            sync_mode, sync_error = self._sync_installed_skill(candidate, target_path)
+            if sync_error is not None:
+                skipped.append({
+                    "skill": target_name,
+                    "error": sync_error,
+                    "source_path": str(candidate),
+                    "path": str(target_path),
+                })
+                continue
+            self._audit(
+                "install_skill",
+                skill=target_name,
+                source_kind=source_kind,
+                package=source,
+                user_id=user_id,
+                source_path=str(candidate),
+                path=str(target_path),
+                install_all=True,
+            )
+            installed.append({
+                "skill": target_name,
+                "source_path": str(candidate),
+                "path": str(target_path),
+                "sync": sync_mode,
+            })
+
+        self._scan_cache = None
+        self.available_skills = self._scan_skills()
+        return {
+            "success": bool(installed),
+            "package": source,
+            "source_kind": source_kind,
+            "install_all": True,
+            "installed": installed,
+            "skipped": skipped,
+            "count": len(installed),
+        }
+
+    def _skill_source_candidates(self, source_path: Path) -> List[Path]:
+        candidates: List[Path] = []
+        for md_file in sorted(source_path.rglob("SKILL.md")):
+            skill_dir = md_file.parent
+            try:
+                relative = skill_dir.relative_to(source_path)
+            except ValueError:
+                continue
+            if any(part.startswith(".") or part == "__pycache__" for part in relative.parts):
+                continue
+            candidates.append(skill_dir)
+        return candidates
+
+    def _list_skill_source_candidates(self, source_path: Path) -> List[Dict[str, str]]:
+        try:
+            candidates = self._skill_source_candidates(source_path)
+        except OSError:
+            return []
+        return [
+            {
+                "skill_name": self._target_name_for_source_candidate(source_path, candidate),
+                "path": candidate.relative_to(source_path).as_posix(),
+            }
+            for candidate in candidates
+        ]
+
+    def _target_name_for_source_candidate(self, source_path: Path, candidate: Path) -> str:
+        if candidate == source_path:
+            return source_path.name
+        return candidate.relative_to(source_path).as_posix()
+
+    def _archive_content_root(self, extract_dir: Path) -> Path:
+        entries = [path for path in extract_dir.iterdir() if not path.name.startswith(".")]
+        if len(entries) == 1 and entries[0].is_dir() and not (extract_dir / "SKILL.md").exists():
+            return entries[0]
+        return extract_dir
 
     def _extract_skill_archive(self, archive_path: Path, extract_dir: Path) -> None:
         extract_dir.mkdir(parents=True, exist_ok=True)
@@ -1711,6 +1932,24 @@ class SkillsPlugin(Plugin):
     def _is_archive_name(self, name: str) -> bool:
         lowered = name.lower()
         return any(lowered.endswith(suffix) for suffix in ARCHIVE_SUFFIXES)
+
+    def _is_git_repo_url(self, source: str) -> bool:
+        parsed = urllib.parse.urlparse(source)
+        if parsed.scheme in {"git", "ssh"}:
+            return True
+        if source.startswith("git@") or source.endswith(".git"):
+            return True
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in {"github.com", "www.github.com"}:
+            return False
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            return False
+        if len(parts) > 2 and parts[2] in {"archive", "blob", "raw", "releases", "tree"}:
+            return False
+        return True
 
     def _archive_stem(self, name: str) -> str:
         lowered = name.lower()

@@ -1074,6 +1074,154 @@ async def test_install_skill_supports_url_archive_source(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_install_skill_supports_github_repo_url_install_all(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "research").mkdir(parents=True)
+    (repo_dir / "META-SKILLS" / "belief-check").mkdir(parents=True)
+    (repo_dir / "research" / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: research\n"
+            "description: Research skill\n"
+            "---\n"
+            "# Research\n"
+        ),
+        encoding="utf-8",
+    )
+    (repo_dir / "META-SKILLS" / "belief-check" / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: belief-check\n"
+            "description: Belief check skill\n"
+            "---\n"
+            "# Belief Check\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: "/usr/bin/git" if name == "git" else real_which(name),
+    )
+
+    def fake_clone(source, temp_dir):
+        assert source == "https://github.com/LKosoj/skills"
+        target = temp_dir / "git-source"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source = fake_clone
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/LKosoj/skills",
+        install_all=True,
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "git"
+    assert result["count"] == 2
+    assert {entry["skill"] for entry in result["installed"]} == {
+        "META-SKILLS/belief-check",
+        "research",
+    }
+    assert "META-SKILLS/belief-check" in plugin.available_skills
+    assert "research" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_github_repo_url_falls_back_to_archive_without_git(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "fallback").mkdir(parents=True)
+    (repo_dir / "fallback" / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: fallback\n"
+            "description: Fallback skill\n"
+            "---\n"
+            "# Fallback\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: None if name == "git" else real_which(name),
+    )
+
+    def fail_clone(source, temp_dir):
+        raise AssertionError("git clone should not be used when git is unavailable")
+
+    def fake_download_github(source, temp_dir):
+        assert source == "https://github.com/LKosoj/skills"
+        target = temp_dir / "github-archive"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source = fail_clone
+    plugin._download_github_repo_source = fake_download_github
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/LKosoj/skills",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "git"
+    assert result["skill"] == "fallback"
+    assert "fallback" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_lists_candidates_for_multi_skill_repo_without_install_all(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "one").mkdir(parents=True)
+    (repo_dir / "two").mkdir(parents=True)
+    (repo_dir / "one" / "SKILL.md").write_text("# One\n", encoding="utf-8")
+    (repo_dir / "two" / "SKILL.md").write_text("# Two\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: "/usr/bin/git" if name == "git" else real_which(name),
+    )
+
+    def fake_clone(source, temp_dir):
+        target = temp_dir / "git-source"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source = fake_clone
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/LKosoj/skills",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert result["source_kind"] == "git"
+    assert "multiple skills" in result["error"]
+    assert result["available_skills"] == [
+        {"skill_name": "one", "path": "one"},
+        {"skill_name": "two", "path": "two"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_install_skill_rejects_archive_path_traversal(tmp_path, monkeypatch):
     archive_path = tmp_path / "bad.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
