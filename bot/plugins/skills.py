@@ -31,6 +31,10 @@ REFLECTION_MAX_TEXT_CHARS = 1200
 SKILLS_CLI_TIMEOUT_SECONDS = 180
 SKILLS_CLI_AGENT = "codex"
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+MARKDOWN_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])((?:\.\./|[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.md)"
+    r"(?![A-Za-z0-9_./-])"
+)
 
 
 class SkillsPlugin(Plugin):
@@ -139,6 +143,27 @@ class SkillsPlugin(Plugin):
                         }
                     },
                     "required": ["skill_name"],
+                },
+            },
+            {
+                "name": "get_skill_reference",
+                "description": (
+                    "Return one markdown reference file used by a skill, such as references/*.md "
+                    "or META-SKILLS/_shared/*.md. The path must come from skills.get_skill."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill directory id or metadata name.",
+                        },
+                        "reference_path": {
+                            "type": "string",
+                            "description": "Reference path returned by skills.get_skill.",
+                        },
+                    },
+                    "required": ["skill_name", "reference_path"],
                 },
             },
             {
@@ -386,6 +411,12 @@ class SkillsPlugin(Plugin):
             if disabled_error:
                 return disabled_error
             return self._get_skill(skill_name)
+        if function_name == "get_skill_reference":
+            skill_name = str(kwargs.get("skill_name") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
+            return self._get_skill_reference(skill_name, str(kwargs.get("reference_path") or ""))
         if function_name == "find_installable_skills":
             return await self._find_installable_skills(str(kwargs.get("query") or ""))
         if function_name == "install_skill":
@@ -518,19 +549,16 @@ class SkillsPlugin(Plugin):
             return self._scan_cache[1]
 
         skills: Dict[str, Dict[str, Any]] = {}
-        for skill_path in sorted(self.skills_dir.iterdir(), key=lambda p: p.name):
-            if not skill_path.is_dir():
-                continue
+        for skill_path in self._iter_skill_paths():
             md_file = skill_path / "SKILL.md"
-            if not md_file.exists():
-                continue
 
             try:
                 content = md_file.read_text(encoding="utf-8")
                 metadata, body = self._parse_skill_markdown(content)
                 scripts = self._list_skill_scripts(skill_path, metadata)
                 agents = self._list_skill_agents(skill_path)
-                skill_id = skill_path.name
+                references = self._list_skill_references(skill_path, body)
+                skill_id = self._skill_id_for_path(skill_path)
                 skills[skill_id] = {
                     "id": skill_id,
                     "name": str(metadata.get("name") or skill_id),
@@ -539,6 +567,7 @@ class SkillsPlugin(Plugin):
                     "body": body,
                     "scripts": scripts,
                     "agents": agents,
+                    "references": references,
                     "path": str(skill_path),
                 }
             except Exception as exc:
@@ -550,13 +579,10 @@ class SkillsPlugin(Plugin):
         if self.skills_dir is None or not self.skills_dir.exists():
             return ()
         entries: List[tuple] = []
+        markdown_entries: List[tuple] = []
         try:
-            for skill_path in sorted(self.skills_dir.iterdir(), key=lambda p: p.name):
-                if not skill_path.is_dir():
-                    continue
+            for skill_path in self._iter_skill_paths():
                 md_file = skill_path / "SKILL.md"
-                if not md_file.exists():
-                    continue
                 try:
                     md_mtime = md_file.stat().st_mtime_ns
                 except OSError:
@@ -587,10 +613,59 @@ class SkillsPlugin(Plugin):
                             agent_entries.append((str(path.relative_to(agents_dir)), path.stat().st_mtime_ns))
                         except OSError:
                             continue
-                entries.append((skill_path.name, md_mtime, tuple(script_entries), tuple(agent_entries)))
+                entries.append((
+                    self._skill_id_for_path(skill_path),
+                    md_mtime,
+                    tuple(script_entries),
+                    tuple(agent_entries),
+                ))
+            for path in sorted(self.skills_dir.rglob("*.md")):
+                try:
+                    if not path.is_file():
+                        continue
+                    relative_path = path.relative_to(self.skills_dir)
+                    if any(part.startswith(".") or part == "__pycache__" for part in relative_path.parts):
+                        continue
+                    markdown_entries.append((relative_path.as_posix(), path.stat().st_mtime_ns))
+                except OSError:
+                    continue
         except OSError:
             return ()
-        return tuple(entries)
+        return tuple(entries), tuple(markdown_entries)
+
+    def _iter_skill_paths(self) -> List[Path]:
+        if self.skills_dir is None or not self.skills_dir.exists():
+            return []
+        paths: List[Path] = []
+        for md_file in self.skills_dir.rglob("SKILL.md"):
+            skill_path = md_file.parent
+            try:
+                relative = skill_path.relative_to(self.skills_dir)
+            except ValueError:
+                continue
+            if not relative.parts:
+                continue
+            if any(
+                part.startswith(".") or part in {"__pycache__", "_shared", "scripts", "agents"}
+                for part in relative.parts
+            ):
+                continue
+            paths.append(skill_path)
+        return sorted(
+            paths,
+            key=lambda path: (
+                len(path.relative_to(self.skills_dir).parts),
+                path.relative_to(self.skills_dir).as_posix().lower(),
+            ),
+        )
+
+    def _skill_id_for_path(self, skill_path: Path) -> str:
+        if self.skills_dir is None:
+            return skill_path.name
+        try:
+            return skill_path.relative_to(self.skills_dir).as_posix()
+        except ValueError:
+            return skill_path.name
 
     def _parse_skill_markdown(self, content: str) -> tuple[Dict[str, Any], str]:
         if content.startswith("﻿"):
@@ -708,6 +783,55 @@ class SkillsPlugin(Plugin):
             })
         return agents
 
+    def _list_skill_references(self, skill_path: Path, body: str) -> List[Dict[str, str]]:
+        references: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for match in MARKDOWN_REFERENCE_RE.finditer(body or ""):
+            reference_path = match.group(1)
+            path, relative_path, error = self._resolve_skill_reference_path(skill_path, reference_path)
+            if error or path is None or relative_path is None or relative_path in seen:
+                continue
+            seen.add(relative_path)
+            references.append({
+                "reference_path": reference_path,
+                "path": relative_path,
+            })
+        return references
+
+    def _resolve_skill_reference_path(
+        self,
+        skill_path: Path,
+        reference_path: str,
+    ) -> tuple[Path | None, str | None, str | None]:
+        self._ensure_paths()
+        normalized = str(reference_path or "").strip().strip("`")
+        if not normalized:
+            return None, None, "reference_path must be non-empty"
+        raw_path = Path(normalized)
+        if raw_path.is_absolute():
+            return None, None, "reference_path must be relative"
+        if raw_path.suffix.lower() != ".md":
+            return None, None, "reference_path must point to a markdown file"
+
+        try:
+            skills_dir = self.skills_dir.resolve() if self.skills_dir is not None else skill_path.resolve()
+        except OSError:
+            return None, None, f"Reference '{reference_path}' not found"
+
+        base_paths = [skill_path]
+        if self.skills_dir is not None:
+            base_paths.append(self.skills_dir)
+        for base_path in base_paths:
+            try:
+                candidate = (base_path / raw_path).resolve()
+            except OSError:
+                continue
+            if not self._is_relative_to(candidate, skills_dir):
+                continue
+            if candidate.is_file():
+                return candidate, candidate.relative_to(skills_dir).as_posix(), None
+        return None, None, f"Reference '{reference_path}' not found"
+
     def _resolve_explicit_entrypoints(
         self, metadata: Dict[str, Any], scripts_dir: Path
     ) -> List[str] | None:
@@ -800,6 +924,7 @@ class SkillsPlugin(Plugin):
                     "description": info["description"],
                     "scripts": info["scripts"],
                     "agents": [agent["id"] for agent in info.get("agents", [])],
+                    "references": info.get("references", []),
                     "allow_scripts": self._skill_scripts_allowed(info),
                 }
                 for skill_id, info in self.available_skills.items()
@@ -1179,7 +1304,42 @@ class SkillsPlugin(Plugin):
                 "body": info["body"],
                 "scripts": info["scripts"],
                 "agents": info.get("agents", []),
+                "references": info.get("references", []),
             },
+        }
+
+    def _get_skill_reference(self, skill_name: str, reference_path: str) -> Dict[str, Any]:
+        skill_id = self._resolve_skill_id(skill_name)
+        if not skill_id:
+            return {"success": False, "error": f"Skill '{skill_name}' not found"}
+        info = self.available_skills[skill_id]
+        normalized_reference_path = str(reference_path or "").strip().strip("`")
+        allowed_paths = {
+            path
+            for reference in info.get("references", [])
+            for key in ("reference_path", "path")
+            for path in (str(reference.get(key) or ""),)
+            if path
+        }
+        if normalized_reference_path not in allowed_paths:
+            return {
+                "success": False,
+                "error": f"Reference '{normalized_reference_path}' is not listed by skill '{skill_id}'",
+            }
+        skill_path = Path(info["path"]).resolve()
+        path, relative_path, error = self._resolve_skill_reference_path(skill_path, normalized_reference_path)
+        if error or path is None or relative_path is None:
+            return {"success": False, "error": error or f"Reference '{normalized_reference_path}' not found"}
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"success": False, "error": f"Failed to read reference '{normalized_reference_path}': {exc}"}
+        return {
+            "success": True,
+            "skill": skill_id,
+            "reference_path": normalized_reference_path,
+            "path": relative_path,
+            "content": content,
         }
 
     def _activate_skill(self, skill_name: str, initial_context: Any = None, **kwargs) -> Dict[str, Any]:
@@ -1210,6 +1370,7 @@ class SkillsPlugin(Plugin):
                 "body": info["body"],
                 "scripts": info["scripts"],
                 "agents": info.get("agents", []),
+                "references": info.get("references", []),
                 "script_tool_calls": self._script_tool_calls(skill_id),
             },
             "scope": scope,
@@ -1383,6 +1544,16 @@ class SkillsPlugin(Plugin):
             f"Parent task:\n{task.strip()}",
             f"Skill instructions:\n{self._truncate(str(info.get('body') or ''))}",
         ])
+        references = info.get("references") or []
+        if references:
+            task_parts.append(
+                "Available skill references:\n"
+                + "\n".join(
+                    f"- {reference.get('reference_path')}"
+                    for reference in references
+                    if reference.get("reference_path")
+                )
+            )
 
         context_parts = [
             f"Skill path: {info.get('path')}",

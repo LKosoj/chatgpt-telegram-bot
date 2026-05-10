@@ -130,6 +130,7 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
     assert names == {
         "skills.list_skills",
         "skills.get_skill",
+        "skills.get_skill_reference",
         "skills.find_installable_skills",
         "skills.install_skill",
         "skills.activate_skill",
@@ -167,6 +168,100 @@ def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeyp
 
     assert plugin.available_skills["workflow"]["description"] == "Full workflow: extract -> analyze -> report"
     assert plugin.available_skills["workflow"]["metadata"]["allow_scripts"] is False
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    skill_dir = skills_dir / "META-SKILLS" / "belief-examination"
+    (skill_dir / "references").mkdir(parents=True)
+    (skills_dir / "META-SKILLS" / "_shared").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: belief-examination\n"
+            "description: Nested meta skill\n"
+            "---\n"
+            "# Belief Examination\n\n"
+            "Use `references/factual.md` and `META-SKILLS/_shared/core-principles.md` when needed.\n"
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "references" / "factual.md").write_text("# Factual\n", encoding="utf-8")
+    (skills_dir / "META-SKILLS" / "_shared" / "core-principles.md").write_text("# Core\n", encoding="utf-8")
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    listed = await plugin.execute("list_skills", helper=None, chat_id=10, user_id=42)
+    assert [skill["id"] for skill in listed["skills"]] == ["META-SKILLS/belief-examination"]
+
+    details = await plugin.execute(
+        "get_skill",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        chat_id=10,
+        user_id=42,
+    )
+    assert details["success"] is True
+    assert details["skill"]["references"] == [
+        {
+            "reference_path": "references/factual.md",
+            "path": "META-SKILLS/belief-examination/references/factual.md",
+        },
+        {
+            "reference_path": "META-SKILLS/_shared/core-principles.md",
+            "path": "META-SKILLS/_shared/core-principles.md",
+        },
+    ]
+
+    reference = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        reference_path="META-SKILLS/_shared/core-principles.md",
+        chat_id=10,
+        user_id=42,
+    )
+    assert reference == {
+        "success": True,
+        "skill": "META-SKILLS/belief-examination",
+        "reference_path": "META-SKILLS/_shared/core-principles.md",
+        "path": "META-SKILLS/_shared/core-principles.md",
+        "content": "# Core\n",
+    }
+
+    local_reference = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        reference_path="references/factual.md",
+        chat_id=10,
+        user_id=42,
+    )
+    assert local_reference["success"] is True
+    assert local_reference["path"] == "META-SKILLS/belief-examination/references/factual.md"
+    assert local_reference["content"] == "# Factual\n"
+
+
+@pytest.mark.asyncio
+async def test_skill_reference_rejects_unlisted_paths(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="demo",
+        reference_path="../../outside.md",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "not listed" in result["error"]
 
 
 def test_initialize_logs_available_skills(tmp_path, monkeypatch, caplog):
@@ -378,6 +473,27 @@ def test_skill_scan_invalidates_cache_when_script_added(tmp_path, monkeypatch):
     second = plugin._scan_skills()
     assert second is not first
     assert "extra.py" in second["demo"]["scripts"]
+
+
+def test_skill_scan_invalidates_cache_when_reference_added(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    skill_md = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8") + "\nSee `references/new.md`.\n",
+        encoding="utf-8",
+    )
+    first = plugin._scan_skills()
+
+    references_dir = tmp_path / "skills" / "demo" / "references"
+    references_dir.mkdir()
+    (references_dir / "new.md").write_text("# New\n", encoding="utf-8")
+
+    second = plugin._scan_skills()
+    assert second is not first
+    assert second["demo"]["references"] == [{
+        "reference_path": "references/new.md",
+        "path": "demo/references/new.md",
+    }]
 
 
 @pytest.mark.asyncio

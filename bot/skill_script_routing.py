@@ -5,7 +5,7 @@ import re
 from .utils import compute_scope_key
 
 SKILL_SCRIPT_PATH_RE = re.compile(
-    r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\][^\s'\"`/\\]+[/\\]scripts[/\\][^\s'\"`]+",
+    r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\](?:[^\s'\"`/\\]+[/\\])+scripts[/\\][^\s'\"`]+",
     re.IGNORECASE,
 )
 SCRIPT_FILE_CREATION_RE = re.compile(

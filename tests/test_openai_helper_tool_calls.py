@@ -1223,7 +1223,7 @@ async def test_skills_agent_routes_skill_scripts_away_from_codeinterpreter():
             json.dumps({
                 "code_prompt": (
                     "import subprocess\n"
-                    "subprocess.run(['python3', '/srv/chatgpt-telegram-bot/bot/skills/pptx/scripts/build.py'])"
+                    "subprocess.run(['python3', '/srv/chatgpt-telegram-bot/bot/skills/META-SKILLS/pptx/scripts/build.py'])"
                 ),
             }),
             id="call-code",

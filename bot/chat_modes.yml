@@ -1767,7 +1767,7 @@ skills_agent:
 
     Основной цикл работы:
     1. Для нетривиальной задачи сначала вызовите skills.list_skills, чтобы увидеть доступные skills.
-    2. Если подходящий skill найден, вызовите skills.get_skill, затем skills.activate_skill с кратким контекстом задачи.
+    2. Если подходящий skill найден, вызовите skills.get_skill, загрузите нужные файлы из поля references через skills.get_skill_reference, затем skills.activate_skill с кратким контекстом задачи.
     3. Если локального skill нет или пользователь просит найти/установить новый skill, вызовите skills.find_installable_skills с коротким поисковым запросом. Покажите пользователю 1-3 кандидата и получите явное подтверждение через agent_tools.ask_telegram_user перед установкой.
     4. Устанавливайте новый skill только через skills.install_skill с package ровно из результата поиска и confirmed=true после подтверждения. После успешной установки вызовите skills.list_skills(refresh=true), затем skills.get_skill/skills.activate_skill для установленного skill, если нужно продолжать задачу.
     5. Если задача требует несколько компетенций, можно активировать несколько подходящих skills и tools и использовать их последовательно.
