@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -9,8 +10,13 @@ import re
 import shutil
 import stat
 import sys
+import tarfile
+import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -26,14 +32,48 @@ logger = logging.getLogger(__name__)
 TRUE_VALUES = {"1", "true", "yes", "on"}
 SCRIPT_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
 AGENT_SUFFIXES = {".yaml", ".yml"}
+MARKDOWN_SUFFIX = ".md"
+TEXT_RESOURCE_SUFFIXES = {
+    ".cfg",
+    ".cjs",
+    ".css",
+    ".csv",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".md",
+    ".mjs",
+    ".py",
+    ".rst",
+    ".sh",
+    ".svg",
+    ".toml",
+    ".tsv",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
 REFLECTION_REPEAT_THRESHOLD = 3
 REFLECTION_MAX_TEXT_CHARS = 1200
 SKILLS_CLI_TIMEOUT_SECONDS = 180
 SKILLS_CLI_AGENT = "codex"
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-MARKDOWN_REFERENCE_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])((?:\.\./|[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.md)"
+RESOURCE_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./:-])"
+    r"((?:\.\./|[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9][A-Za-z0-9_.-]*)"
     r"(?![A-Za-z0-9_./-])"
+)
+ARCHIVE_SUFFIXES = (
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tbz2",
+    ".tgz",
+    ".txz",
+    ".tar",
+    ".zip",
 )
 
 
@@ -167,6 +207,27 @@ class SkillsPlugin(Plugin):
                 },
             },
             {
+                "name": "get_skill_resource",
+                "description": (
+                    "Return one non-markdown resource file used by a skill, such as templates/*.txt "
+                    "or assets/*.png. The path must come from skills.get_skill."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill directory id or metadata name.",
+                        },
+                        "resource_path": {
+                            "type": "string",
+                            "description": "Resource path returned by skills.get_skill.",
+                        },
+                    },
+                    "required": ["skill_name", "resource_path"],
+                },
+            },
+            {
                 "name": "find_installable_skills",
                 "description": (
                     "Search skills.sh through the `skills` CLI for new skills that can be installed. "
@@ -186,8 +247,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "install_skill",
                 "description": (
-                    "Install a skill package found by skills.find_installable_skills, then sync it into "
-                    "SKILLS_DIR and refresh the local skill registry. Enabled by default unless "
+                    "Install a skill from a skills package id, URL, local directory, markdown file, "
+                    "or .zip/.tar* archive, then sync it into SKILLS_DIR and refresh the local "
+                    "skill registry. Enabled by default unless "
                     "SKILLS_ALLOW_INSTALLS=false. SKILLS_INSTALL_ADMIN_USER_IDS is a user allow-list "
                     "that defaults to '*'. confirmed=true is required after explicit user approval."
                 ),
@@ -196,11 +258,18 @@ class SkillsPlugin(Plugin):
                     "properties": {
                         "package": {
                             "type": "string",
-                            "description": "Install package id, usually owner/repo@skill from skills.find_installable_skills.",
+                            "description": (
+                                "Source to install: owner/repo@skill, http(s) URL, file:// URL, "
+                                "local skill directory, local SKILL.md/markdown file, or .zip/.tar* archive."
+                            ),
                         },
                         "skill_name": {
                             "type": "string",
-                            "description": "Optional target skill directory name. Required when package does not include @skill.",
+                            "description": (
+                                "Optional target skill path under SKILLS_DIR, for example "
+                                "webapp-testing or META-SKILLS/webapp-testing. Required when "
+                                "package does not include @skill."
+                            ),
                         },
                         "confirmed": {
                             "type": "boolean",
@@ -208,6 +277,41 @@ class SkillsPlugin(Plugin):
                         },
                     },
                     "required": ["package", "confirmed"],
+                },
+            },
+            {
+                "name": "create_skill",
+                "description": (
+                    "Create a new local skill directory with SKILL.md under SKILLS_DIR. "
+                    "Uses the same filesystem mutation policy as install_skill: "
+                    "SKILLS_ALLOW_INSTALLS and SKILLS_INSTALL_ADMIN_USER_IDS apply, and "
+                    "confirmed=true is required after explicit user approval."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Target skill path under SKILLS_DIR, for example writing/reviewer.",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional display name stored in SKILL.md frontmatter.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional short description stored in SKILL.md frontmatter.",
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Markdown instruction body for SKILL.md.",
+                        },
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "Must be true only after the user explicitly approved creating this skill.",
+                        },
+                    },
+                    "required": ["skill_name", "instructions", "confirmed"],
                 },
             },
             {
@@ -417,6 +521,12 @@ class SkillsPlugin(Plugin):
             if disabled_error:
                 return disabled_error
             return self._get_skill_reference(skill_name, str(kwargs.get("reference_path") or ""))
+        if function_name == "get_skill_resource":
+            skill_name = str(kwargs.get("skill_name") or "")
+            disabled_error = self._disabled_skill_error(skill_name, disabled_skills)
+            if disabled_error:
+                return disabled_error
+            return self._get_skill_resource(skill_name, str(kwargs.get("resource_path") or ""))
         if function_name == "find_installable_skills":
             return await self._find_installable_skills(str(kwargs.get("query") or ""))
         if function_name == "install_skill":
@@ -427,6 +537,21 @@ class SkillsPlugin(Plugin):
             return await self._install_skill(
                 package,
                 skill_name=str(skill_name or "") if skill_name is not None else None,
+                confirmed=confirmed,
+                **call_kwargs,
+            )
+        if function_name == "create_skill":
+            call_kwargs = dict(kwargs)
+            skill_name = str(call_kwargs.pop("skill_name", "") or "")
+            name = call_kwargs.pop("name", None)
+            description = call_kwargs.pop("description", None)
+            instructions = str(call_kwargs.pop("instructions", "") or "")
+            confirmed = self._bool_arg(call_kwargs.pop("confirmed", False), default=False)
+            return self._create_skill(
+                skill_name,
+                name=name,
+                description=description,
+                instructions=instructions,
                 confirmed=confirmed,
                 **call_kwargs,
             )
@@ -557,7 +682,7 @@ class SkillsPlugin(Plugin):
                 metadata, body = self._parse_skill_markdown(content)
                 scripts = self._list_skill_scripts(skill_path, metadata)
                 agents = self._list_skill_agents(skill_path)
-                references = self._list_skill_references(skill_path, body)
+                references, resources = self._list_skill_files(skill_path, body)
                 skill_id = self._skill_id_for_path(skill_path)
                 skills[skill_id] = {
                     "id": skill_id,
@@ -568,6 +693,7 @@ class SkillsPlugin(Plugin):
                     "scripts": scripts,
                     "agents": agents,
                     "references": references,
+                    "resources": resources,
                     "path": str(skill_path),
                 }
             except Exception as exc:
@@ -579,7 +705,7 @@ class SkillsPlugin(Plugin):
         if self.skills_dir is None or not self.skills_dir.exists():
             return ()
         entries: List[tuple] = []
-        markdown_entries: List[tuple] = []
+        file_entries: List[tuple] = []
         try:
             for skill_path in self._iter_skill_paths():
                 md_file = skill_path / "SKILL.md"
@@ -619,19 +745,19 @@ class SkillsPlugin(Plugin):
                     tuple(script_entries),
                     tuple(agent_entries),
                 ))
-            for path in sorted(self.skills_dir.rglob("*.md")):
+            for path in sorted(self.skills_dir.rglob("*")):
                 try:
                     if not path.is_file():
                         continue
                     relative_path = path.relative_to(self.skills_dir)
                     if any(part.startswith(".") or part == "__pycache__" for part in relative_path.parts):
                         continue
-                    markdown_entries.append((relative_path.as_posix(), path.stat().st_mtime_ns))
+                    file_entries.append((relative_path.as_posix(), path.stat().st_mtime_ns))
                 except OSError:
                     continue
         except OSError:
             return ()
-        return tuple(entries), tuple(markdown_entries)
+        return tuple(entries), tuple(file_entries)
 
     def _iter_skill_paths(self) -> List[Path]:
         if self.skills_dir is None or not self.skills_dir.exists():
@@ -741,7 +867,10 @@ class SkillsPlugin(Plugin):
 
         agents: List[Dict[str, Any]] = []
         try:
-            paths = sorted(agents_dir.iterdir(), key=lambda path: path.name)
+            paths = sorted(
+                agents_dir.rglob("*"),
+                key=lambda path: path.relative_to(agents_dir).as_posix().lower(),
+            )
         except OSError:
             return []
         for path in paths:
@@ -757,7 +886,7 @@ class SkillsPlugin(Plugin):
             interface = payload.get("interface")
             if not isinstance(interface, dict):
                 interface = {}
-            agent_id = path.stem
+            agent_id = path.relative_to(agents_dir).with_suffix("").as_posix()
             display_name = str(
                 interface.get("display_name")
                 or payload.get("display_name")
@@ -783,54 +912,171 @@ class SkillsPlugin(Plugin):
             })
         return agents
 
-    def _list_skill_references(self, skill_path: Path, body: str) -> List[Dict[str, str]]:
-        references: List[Dict[str, str]] = []
-        seen: set[str] = set()
-        for match in MARKDOWN_REFERENCE_RE.finditer(body or ""):
-            reference_path = match.group(1)
-            path, relative_path, error = self._resolve_skill_reference_path(skill_path, reference_path)
-            if error or path is None or relative_path is None or relative_path in seen:
+    def _list_skill_files(self, skill_path: Path, body: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        references: List[Dict[str, Any]] = []
+        resources: List[Dict[str, Any]] = []
+        seen_references: set[str] = set()
+        seen_resources: set[str] = set()
+        markdown_queue: List[Path] = []
+        scanned_markdown: set[str] = set()
+
+        self._collect_skill_file_references(
+            skill_path,
+            body,
+            references,
+            resources,
+            seen_references,
+            seen_resources,
+            markdown_queue,
+        )
+
+        while markdown_queue:
+            markdown_path = markdown_queue.pop(0)
+            try:
+                relative_markdown = markdown_path.relative_to(self.skills_dir).as_posix()
+            except (TypeError, ValueError):
                 continue
-            seen.add(relative_path)
-            references.append({
-                "reference_path": reference_path,
-                "path": relative_path,
-            })
-        return references
+            if relative_markdown in scanned_markdown:
+                continue
+            scanned_markdown.add(relative_markdown)
+            try:
+                reference_body = markdown_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                logger.warning("Failed to read skill reference %s: %s", markdown_path, exc)
+                continue
+            self._collect_skill_file_references(
+                markdown_path.parent,
+                reference_body,
+                references,
+                resources,
+                seen_references,
+                seen_resources,
+                markdown_queue,
+            )
+        return references, resources
+
+    def _collect_skill_file_references(
+        self,
+        base_path: Path,
+        content: str,
+        references: List[Dict[str, Any]],
+        resources: List[Dict[str, Any]],
+        seen_references: set[str],
+        seen_resources: set[str],
+        markdown_queue: List[Path],
+    ) -> None:
+        for file_path in self._referenced_file_paths(content):
+            path, relative_path, error = self._resolve_skill_file_path(base_path, file_path)
+            if error or path is None or relative_path is None:
+                continue
+            if path.suffix.lower() == MARKDOWN_SUFFIX:
+                if relative_path in seen_references:
+                    continue
+                seen_references.add(relative_path)
+                references.append({
+                    "reference_path": file_path,
+                    "path": relative_path,
+                })
+                markdown_queue.append(path)
+                continue
+
+            if relative_path in seen_resources:
+                continue
+            seen_resources.add(relative_path)
+            resources.append(self._resource_metadata(file_path, path, relative_path))
+
+    def _referenced_file_paths(self, content: str) -> List[str]:
+        paths: List[str] = []
+        seen: set[str] = set()
+        for match in RESOURCE_REFERENCE_RE.finditer(content or ""):
+            file_path = match.group(1)
+            if file_path in seen:
+                continue
+            seen.add(file_path)
+            paths.append(file_path)
+        return paths
 
     def _resolve_skill_reference_path(
         self,
         skill_path: Path,
         reference_path: str,
     ) -> tuple[Path | None, str | None, str | None]:
+        return self._resolve_skill_file_path(skill_path, reference_path, required_suffix=MARKDOWN_SUFFIX)
+
+    def _resolve_skill_resource_path(
+        self,
+        skill_path: Path,
+        resource_path: str,
+    ) -> tuple[Path | None, str | None, str | None]:
+        path, relative_path, error = self._resolve_skill_file_path(skill_path, resource_path)
+        if error or path is None or relative_path is None:
+            return path, relative_path, error
+        if path.suffix.lower() == MARKDOWN_SUFFIX:
+            return None, None, "resource_path must point to a non-markdown file; use get_skill_reference for .md"
+        return path, relative_path, None
+
+    def _resolve_skill_file_path(
+        self,
+        base_path: Path,
+        file_path: str,
+        *,
+        required_suffix: str | None = None,
+    ) -> tuple[Path | None, str | None, str | None]:
         self._ensure_paths()
-        normalized = str(reference_path or "").strip().strip("`")
+        normalized = str(file_path or "").strip().strip("`").replace("\\", "/")
         if not normalized:
-            return None, None, "reference_path must be non-empty"
+            return None, None, "file path must be non-empty"
+        if re.match(r"^[A-Za-z]:", normalized):
+            return None, None, "file path must be relative"
         raw_path = Path(normalized)
         if raw_path.is_absolute():
-            return None, None, "reference_path must be relative"
-        if raw_path.suffix.lower() != ".md":
-            return None, None, "reference_path must point to a markdown file"
+            return None, None, "file path must be relative"
+        if required_suffix is not None and raw_path.suffix.lower() != required_suffix:
+            if required_suffix == MARKDOWN_SUFFIX:
+                return None, None, "reference_path must point to a markdown file"
+            return None, None, f"file path must end with {required_suffix}"
 
         try:
-            skills_dir = self.skills_dir.resolve() if self.skills_dir is not None else skill_path.resolve()
+            skills_dir = self.skills_dir.resolve() if self.skills_dir is not None else base_path.resolve()
         except OSError:
-            return None, None, f"Reference '{reference_path}' not found"
+            return None, None, f"File '{file_path}' not found"
 
-        base_paths = [skill_path]
+        base_paths = [base_path]
         if self.skills_dir is not None:
             base_paths.append(self.skills_dir)
-        for base_path in base_paths:
+        for search_base_path in base_paths:
             try:
-                candidate = (base_path / raw_path).resolve()
+                candidate = (search_base_path / raw_path).resolve()
             except OSError:
                 continue
             if not self._is_relative_to(candidate, skills_dir):
                 continue
+            try:
+                relative_candidate = candidate.relative_to(skills_dir)
+            except ValueError:
+                continue
+            if any(part.startswith(".") or part == "__pycache__" for part in relative_candidate.parts):
+                continue
             if candidate.is_file():
-                return candidate, candidate.relative_to(skills_dir).as_posix(), None
-        return None, None, f"Reference '{reference_path}' not found"
+                return candidate, relative_candidate.as_posix(), None
+        return None, None, f"File '{file_path}' not found"
+
+    def _resource_metadata(self, resource_path: str, path: Path, relative_path: str) -> Dict[str, Any]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return {
+            "resource_path": resource_path,
+            "path": relative_path,
+            "size": size,
+            "encoding": self._resource_encoding(path),
+        }
+
+    def _resource_encoding(self, path: Path) -> str:
+        if path.suffix.lower() in TEXT_RESOURCE_SUFFIXES:
+            return "utf-8"
+        return "base64"
 
     def _resolve_explicit_entrypoints(
         self, metadata: Dict[str, Any], scripts_dir: Path
@@ -925,6 +1171,7 @@ class SkillsPlugin(Plugin):
                     "scripts": info["scripts"],
                     "agents": [agent["id"] for agent in info.get("agents", [])],
                     "references": info.get("references", []),
+                    "resources": info.get("resources", []),
                     "allow_scripts": self._skill_scripts_allowed(info),
                 }
                 for skill_id, info in self.available_skills.items()
@@ -980,18 +1227,44 @@ class SkillsPlugin(Plugin):
             }
 
         package_id = (package or "").strip()
-        if not package_id or any(char.isspace() for char in package_id):
-            return {"success": False, "error": "package must be a non-empty skills package id without whitespace"}
+        if not package_id:
+            return {"success": False, "error": "package must be a non-empty source string"}
 
-        target_name = (skill_name or "").strip() or self._infer_skill_name_from_package(package_id)
-        if not target_name:
+        source_kind = self._skill_install_source_kind(package_id)
+        if source_kind in {"url", "local"}:
+            return await asyncio.to_thread(
+                self._install_skill_from_external_source,
+                package_id,
+                source_kind,
+                requested_skill_name=(skill_name or "").strip(),
+                user_id=user_id,
+            )
+        if any(char.isspace() for char in package_id):
+            return {"success": False, "error": "skills package id must not contain whitespace"}
+
+        return await self._install_skill_from_cli_package(
+            package_id,
+            skill_name=(skill_name or "").strip(),
+            user_id=user_id,
+        )
+
+    async def _install_skill_from_cli_package(
+        self,
+        package_id: str,
+        *,
+        skill_name: str,
+        user_id: int | None,
+    ) -> Dict[str, Any]:
+        raw_target_name = skill_name or self._infer_skill_name_from_package(package_id)
+        if not raw_target_name:
             return {
                 "success": False,
                 "error": "skill_name is required when package does not include an @skill suffix.",
             }
-        name_error = self._validate_skill_dir_name(target_name)
+        target_name, name_error = self._normalize_skill_target_name(raw_target_name)
         if name_error:
             return {"success": False, "error": name_error}
+        source_skill_name = self._infer_skill_name_from_package(package_id) or target_name.rsplit("/", 1)[-1]
 
         self._ensure_paths()
         target_path = (self.skills_dir / target_name).resolve()
@@ -1009,7 +1282,7 @@ class SkillsPlugin(Plugin):
         install_stdout = self._strip_ansi(install_result.get("stdout", ""))
         install_stderr = self._strip_ansi(install_result.get("stderr", ""))
         if not install_result.get("success"):
-            source_path, list_result = await self._find_cli_installed_skill_path(target_name)
+            source_path, list_result = await self._find_cli_installed_skill_path(source_skill_name)
             if source_path is not None:
                 sync_mode, sync_error = self._sync_installed_skill(source_path, target_path)
                 if sync_error is None:
@@ -1018,6 +1291,7 @@ class SkillsPlugin(Plugin):
                     self._audit(
                         "install_skill",
                         skill=target_name,
+                        source_skill=source_skill_name,
                         package=package_id,
                         user_id=user_id,
                         source_path=str(source_path),
@@ -1028,6 +1302,7 @@ class SkillsPlugin(Plugin):
                         "success": True,
                         "package": package_id,
                         "skill": target_name,
+                        "source_skill": source_skill_name,
                         "source_path": str(source_path),
                         "path": str(target_path),
                         "sync": sync_mode,
@@ -1040,6 +1315,7 @@ class SkillsPlugin(Plugin):
                 "success": False,
                 "package": package_id,
                 "skill": target_name,
+                "source_skill": source_skill_name,
                 "returncode": install_result.get("returncode"),
                 "stdout": self._truncate(install_stdout),
                 "stderr": self._truncate(install_stderr),
@@ -1047,12 +1323,13 @@ class SkillsPlugin(Plugin):
                 "list_result": list_result,
             }
 
-        source_path, list_result = await self._find_cli_installed_skill_path(target_name)
+        source_path, list_result = await self._find_cli_installed_skill_path(source_skill_name)
         if source_path is None:
             return {
                 "success": False,
                 "package": package_id,
                 "skill": target_name,
+                "source_skill": source_skill_name,
                 "stdout": self._truncate(install_stdout),
                 "stderr": self._truncate(install_stderr),
                 "error": "skills CLI reported success, but the installed skill path was not found.",
@@ -1065,6 +1342,7 @@ class SkillsPlugin(Plugin):
                 "success": False,
                 "package": package_id,
                 "skill": target_name,
+                "source_skill": source_skill_name,
                 "source_path": str(source_path),
                 "path": str(target_path),
                 "error": sync_error,
@@ -1075,6 +1353,7 @@ class SkillsPlugin(Plugin):
         self._audit(
             "install_skill",
             skill=target_name,
+            source_skill=source_skill_name,
             package=package_id,
             user_id=user_id,
             source_path=str(source_path),
@@ -1084,6 +1363,7 @@ class SkillsPlugin(Plugin):
             "success": True,
             "package": package_id,
             "skill": target_name,
+            "source_skill": source_skill_name,
             "source_path": str(source_path),
             "path": str(target_path),
             "sync": sync_mode,
@@ -1092,10 +1372,358 @@ class SkillsPlugin(Plugin):
             "available": target_name in self.available_skills,
         }
 
+    def _install_skill_from_external_source(
+        self,
+        source: str,
+        source_kind: str,
+        *,
+        requested_skill_name: str,
+        user_id: int | None,
+    ) -> Dict[str, Any]:
+        self._ensure_paths()
+        with tempfile.TemporaryDirectory(prefix="skills-install-") as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            source_path, materialize_error = self._materialize_skill_source(source, source_kind, temp_dir)
+            if materialize_error or source_path is None:
+                return {
+                    "success": False,
+                    "package": source,
+                    "source_kind": source_kind,
+                    "error": materialize_error or "Failed to prepare skill source.",
+                }
+
+            preferred_name = requested_skill_name.rsplit("/", 1)[-1] if requested_skill_name else ""
+            skill_source_path, inferred_name, source_error = self._find_skill_source_dir(
+                source_path,
+                preferred_name=preferred_name,
+            )
+            if source_error or skill_source_path is None:
+                return {
+                    "success": False,
+                    "package": source,
+                    "source_kind": source_kind,
+                    "error": source_error or "No SKILL.md found in source.",
+                }
+
+            raw_target_name = requested_skill_name or inferred_name
+            if not raw_target_name:
+                return {
+                    "success": False,
+                    "package": source,
+                    "source_kind": source_kind,
+                    "error": "skill_name is required when the source does not imply a skill name.",
+                }
+            target_name, name_error = self._normalize_skill_target_name(raw_target_name)
+            if name_error:
+                return {"success": False, "package": source, "source_kind": source_kind, "error": name_error}
+
+            target_path = (self.skills_dir / target_name).resolve()
+            skills_dir = self.skills_dir.resolve()
+            if not self._is_relative_to(target_path, skills_dir):
+                return {
+                    "success": False,
+                    "package": source,
+                    "skill": target_name,
+                    "error": "Target skill path escapes SKILLS_DIR.",
+                }
+            if target_path.exists():
+                return {
+                    "success": False,
+                    "package": source,
+                    "skill": target_name,
+                    "error": f"Skill '{target_name}' already exists in SKILLS_DIR.",
+                    "path": str(target_path),
+                }
+
+            sync_mode, sync_error = self._sync_installed_skill(skill_source_path, target_path)
+            if sync_error is not None:
+                return {
+                    "success": False,
+                    "package": source,
+                    "source_kind": source_kind,
+                    "skill": target_name,
+                    "source_path": str(skill_source_path),
+                    "path": str(target_path),
+                    "error": sync_error,
+                }
+
+            self._scan_cache = None
+            self.available_skills = self._scan_skills()
+            self._audit(
+                "install_skill",
+                skill=target_name,
+                source_kind=source_kind,
+                package=source,
+                user_id=user_id,
+                source_path=str(skill_source_path),
+                path=str(target_path),
+            )
+            return {
+                "success": True,
+                "package": source,
+                "source_kind": source_kind,
+                "skill": target_name,
+                "source_path": str(skill_source_path),
+                "path": str(target_path),
+                "sync": sync_mode,
+                "available": target_name in self.available_skills,
+            }
+
+    def _create_skill(
+        self,
+        skill_name: str,
+        *,
+        name: Any = None,
+        description: Any = None,
+        instructions: str,
+        confirmed: bool,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        user_id = kwargs.get("user_id")
+        if not self.allow_installs:
+            return {
+                "success": False,
+                "error": "Skill creation is disabled by SKILLS_ALLOW_INSTALLS=false. Set it to true or unset it to enable skill creation.",
+            }
+        if not self._is_install_admin(user_id):
+            return {
+                "success": False,
+                "error": "Skill creation is restricted by the SKILLS_INSTALL_ADMIN_USER_IDS user allow-list.",
+            }
+        if not confirmed:
+            return {
+                "success": False,
+                "error": "confirmed must be true after explicit user approval for creating this skill.",
+            }
+
+        target_name, name_error = self._normalize_skill_target_name(skill_name)
+        if name_error:
+            return {"success": False, "error": name_error}
+        body = str(instructions or "").strip()
+        if not body:
+            return {"success": False, "error": "instructions must be a non-empty markdown string"}
+
+        self._ensure_paths()
+        target_path = (self.skills_dir / target_name).resolve()
+        skills_dir = self.skills_dir.resolve()
+        if not self._is_relative_to(target_path, skills_dir):
+            return {"success": False, "skill": target_name, "error": "Target skill path escapes SKILLS_DIR."}
+        if target_path.exists():
+            return {
+                "success": False,
+                "skill": target_name,
+                "error": f"Skill '{target_name}' already exists in SKILLS_DIR.",
+                "path": str(target_path),
+            }
+
+        display_name = str(name or "").strip() or target_name.rsplit("/", 1)[-1]
+        metadata = {
+            "name": display_name,
+            "description": str(description or "").strip(),
+        }
+        frontmatter = yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True).strip()
+        content = f"---\n{frontmatter}\n---\n{body}\n"
+        try:
+            target_path.mkdir(parents=True, exist_ok=False)
+            (target_path / "SKILL.md").write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return {"success": False, "skill": target_name, "error": f"Failed to create skill: {exc}"}
+
+        self._scan_cache = None
+        self.available_skills = self._scan_skills()
+        self._audit(
+            "create_skill",
+            skill=target_name,
+            user_id=user_id,
+            path=str(target_path),
+        )
+        return {
+            "success": True,
+            "skill": target_name,
+            "path": str(target_path),
+            "available": target_name in self.available_skills,
+        }
+
+    def _skill_install_source_kind(self, source: str) -> str:
+        parsed = urllib.parse.urlparse(source)
+        if parsed.scheme in {"http", "https", "file"}:
+            return "url"
+
+        expanded = Path(source).expanduser()
+        if expanded.exists():
+            return "local"
+        if source.startswith(("/", "./", "../", "~")) or re.match(r"^[A-Za-z]:[\\/]", source):
+            return "local"
+        lowered = source.lower()
+        if lowered.endswith(".md") or self._is_archive_name(lowered):
+            return "local"
+        return "cli"
+
+    def _materialize_skill_source(
+        self,
+        source: str,
+        source_kind: str,
+        temp_dir: Path,
+    ) -> tuple[Path | None, str | None]:
+        if source_kind == "url":
+            parsed = urllib.parse.urlparse(source)
+            if parsed.scheme == "file":
+                local_path = Path(urllib.request.url2pathname(urllib.parse.unquote(parsed.path)))
+                return self._materialize_local_skill_source(local_path, temp_dir)
+            downloaded_path, download_error = self._download_url_to_path(source, temp_dir)
+            if download_error or downloaded_path is None:
+                return None, download_error
+            return self._materialize_local_skill_source(downloaded_path, temp_dir)
+
+        return self._materialize_local_skill_source(Path(source).expanduser(), temp_dir)
+
+    def _materialize_local_skill_source(self, source_path: Path, temp_dir: Path) -> tuple[Path | None, str | None]:
+        try:
+            path = source_path.resolve()
+        except OSError as exc:
+            return None, f"Source path '{source_path}' is invalid: {exc}"
+        if not path.exists():
+            return None, f"Source path '{source_path}' does not exist"
+        if path.is_dir():
+            return path, None
+        if self._is_archive_path(path):
+            extract_dir = temp_dir / "extracted"
+            try:
+                self._extract_skill_archive(path, extract_dir)
+            except (OSError, tarfile.TarError, zipfile.BadZipFile, ValueError) as exc:
+                return None, f"Failed to extract archive '{path}': {exc}"
+            return extract_dir, None
+        if path.suffix.lower() == MARKDOWN_SUFFIX:
+            if path.name == "SKILL.md":
+                return path.parent, None
+            skill_dir = temp_dir / self._archive_stem(path.name)
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, skill_dir / "SKILL.md")
+            return skill_dir, None
+        return None, "Source must be a skill directory, markdown file, or .zip/.tar* archive"
+
+    def _download_url_to_path(self, url: str, temp_dir: Path) -> tuple[Path | None, str | None]:
+        parsed = urllib.parse.urlparse(url)
+        filename = Path(urllib.parse.unquote(parsed.path)).name or "skill-source"
+        target_path = temp_dir / filename
+        try:
+            with urllib.request.urlopen(url, timeout=self.install_timeout) as response:
+                with target_path.open("wb") as target:
+                    shutil.copyfileobj(response, target)
+        except Exception as exc:
+            return None, f"Failed to download skill source URL: {exc}"
+        return target_path, None
+
+    def _find_skill_source_dir(
+        self,
+        source_path: Path,
+        *,
+        preferred_name: str,
+    ) -> tuple[Path | None, str, str | None]:
+        if (source_path / "SKILL.md").is_file():
+            return source_path, source_path.name, None
+
+        candidates: List[Path] = []
+        try:
+            skill_files = sorted(source_path.rglob("SKILL.md"))
+        except OSError as exc:
+            return None, "", f"Failed to inspect skill source: {exc}"
+
+        for md_file in skill_files:
+            skill_dir = md_file.parent
+            try:
+                relative = skill_dir.relative_to(source_path)
+            except ValueError:
+                continue
+            if any(part.startswith(".") or part == "__pycache__" for part in relative.parts):
+                continue
+            candidates.append(skill_dir)
+
+        if preferred_name:
+            matches = [
+                candidate
+                for candidate in candidates
+                if candidate.name == preferred_name
+                or candidate.relative_to(source_path).as_posix() == preferred_name
+            ]
+            if len(matches) == 1:
+                return matches[0], matches[0].name, None
+        if len(candidates) == 1:
+            return candidates[0], candidates[0].name, None
+        if not candidates:
+            return None, "", "No SKILL.md found in source"
+        return None, "", "Source contains multiple skills; pass skill_name to select the target skill"
+
+    def _extract_skill_archive(self, archive_path: Path, extract_dir: Path) -> None:
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        if zipfile.is_zipfile(archive_path):
+            self._extract_zip_archive(archive_path, extract_dir)
+            return
+        if tarfile.is_tarfile(archive_path):
+            self._extract_tar_archive(archive_path, extract_dir)
+            return
+        raise ValueError("unsupported archive format")
+
+    def _extract_zip_archive(self, archive_path: Path, extract_dir: Path) -> None:
+        extract_root = extract_dir.resolve()
+        with zipfile.ZipFile(archive_path) as archive:
+            for info in archive.infolist():
+                target_path = (extract_dir / info.filename).resolve()
+                if not self._is_relative_to(target_path, extract_root):
+                    raise ValueError(f"archive entry escapes target directory: {info.filename}")
+                mode = (info.external_attr >> 16) & 0o777777
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"archive symlink entries are not supported: {info.filename}")
+                if info.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, target_path.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+                if mode:
+                    target_path.chmod(mode & 0o777)
+
+    def _extract_tar_archive(self, archive_path: Path, extract_dir: Path) -> None:
+        extract_root = extract_dir.resolve()
+        with tarfile.open(archive_path) as archive:
+            for member in archive.getmembers():
+                target_path = (extract_dir / member.name).resolve()
+                if not self._is_relative_to(target_path, extract_root):
+                    raise ValueError(f"archive entry escapes target directory: {member.name}")
+                if member.issym() or member.islnk():
+                    raise ValueError(f"archive link entries are not supported: {member.name}")
+                if member.isdir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    continue
+                source = archive.extractfile(member)
+                if source is None:
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with source, target_path.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+                target_path.chmod(member.mode & 0o777)
+
+    def _is_archive_path(self, path: Path) -> bool:
+        return self._is_archive_name(path.name) or zipfile.is_zipfile(path) or tarfile.is_tarfile(path)
+
+    def _is_archive_name(self, name: str) -> bool:
+        lowered = name.lower()
+        return any(lowered.endswith(suffix) for suffix in ARCHIVE_SUFFIXES)
+
+    def _archive_stem(self, name: str) -> str:
+        lowered = name.lower()
+        for suffix in ARCHIVE_SUFFIXES:
+            if lowered.endswith(suffix):
+                return name[: -len(suffix)] or "skill"
+        return Path(name).stem or "skill"
+
     def _sync_installed_skill(self, source_path: Path, target_path: Path) -> tuple[str, str | None]:
         try:
             if source_path.resolve() == target_path:
                 return "already_in_skills_dir", None
+            target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source_path, target_path, symlinks=True)
             return "copied_to_skills_dir", None
         except OSError as exc:
@@ -1218,15 +1846,24 @@ class SkillsPlugin(Plugin):
             return ""
         return package.rsplit("@", 1)[-1].strip()
 
+    def _normalize_skill_target_name(self, value: str) -> tuple[str, str | None]:
+        normalized = str(value or "").strip().replace("\\", "/")
+        if not normalized:
+            return "", "skill_name must be a non-empty directory name"
+        if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+            return "", "skill_name must be relative to SKILLS_DIR"
+        if any(char.isspace() for char in normalized):
+            return "", "skill_name must not contain whitespace"
+        parts = normalized.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            return "", "skill_name must not contain empty, current, or parent path segments"
+        if any(part.startswith(".") for part in parts):
+            return "", "skill_name must not contain hidden path segments"
+        return "/".join(parts), None
+
     def _validate_skill_dir_name(self, value: str) -> str | None:
-        if not value or value in {".", ".."}:
-            return "skill_name must be a non-empty directory name"
-        altsep = os.path.altsep
-        if os.path.sep in value or (altsep and altsep in value):
-            return "skill_name must be a single directory name, not a path"
-        if any(char.isspace() for char in value):
-            return "skill_name must not contain whitespace"
-        return None
+        _, error = self._normalize_skill_target_name(value)
+        return error
 
     def _strip_ansi(self, value: str) -> str:
         return ANSI_ESCAPE_RE.sub("", value or "")
@@ -1305,6 +1942,7 @@ class SkillsPlugin(Plugin):
                 "scripts": info["scripts"],
                 "agents": info.get("agents", []),
                 "references": info.get("references", []),
+                "resources": info.get("resources", []),
             },
         }
 
@@ -1314,20 +1952,19 @@ class SkillsPlugin(Plugin):
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
         info = self.available_skills[skill_id]
         normalized_reference_path = str(reference_path or "").strip().strip("`")
-        allowed_paths = {
-            path
-            for reference in info.get("references", [])
-            for key in ("reference_path", "path")
-            for path in (str(reference.get(key) or ""),)
-            if path
-        }
-        if normalized_reference_path not in allowed_paths:
+        listed_reference = self._listed_skill_file(
+            info.get("references", []),
+            normalized_reference_path,
+            original_key="reference_path",
+        )
+        if listed_reference is None:
             return {
                 "success": False,
                 "error": f"Reference '{normalized_reference_path}' is not listed by skill '{skill_id}'",
             }
         skill_path = Path(info["path"]).resolve()
-        path, relative_path, error = self._resolve_skill_reference_path(skill_path, normalized_reference_path)
+        lookup_path = str(listed_reference.get("path") or normalized_reference_path)
+        path, relative_path, error = self._resolve_skill_reference_path(skill_path, lookup_path)
         if error or path is None or relative_path is None:
             return {"success": False, "error": error or f"Reference '{normalized_reference_path}' not found"}
         try:
@@ -1341,6 +1978,60 @@ class SkillsPlugin(Plugin):
             "path": relative_path,
             "content": content,
         }
+
+    def _get_skill_resource(self, skill_name: str, resource_path: str) -> Dict[str, Any]:
+        skill_id = self._resolve_skill_id(skill_name)
+        if not skill_id:
+            return {"success": False, "error": f"Skill '{skill_name}' not found"}
+        info = self.available_skills[skill_id]
+        normalized_resource_path = str(resource_path or "").strip().strip("`")
+        listed_resource = self._listed_skill_file(
+            info.get("resources", []),
+            normalized_resource_path,
+            original_key="resource_path",
+        )
+        if listed_resource is None:
+            return {
+                "success": False,
+                "error": f"Resource '{normalized_resource_path}' is not listed by skill '{skill_id}'",
+            }
+        skill_path = Path(info["path"]).resolve()
+        lookup_path = str(listed_resource.get("path") or normalized_resource_path)
+        path, relative_path, error = self._resolve_skill_resource_path(skill_path, lookup_path)
+        if error or path is None or relative_path is None:
+            return {"success": False, "error": error or f"Resource '{normalized_resource_path}' not found"}
+
+        encoding = self._resource_encoding(path)
+        try:
+            if encoding == "utf-8":
+                content = path.read_text(encoding="utf-8", errors="replace")
+            else:
+                content = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            return {"success": False, "error": f"Failed to read resource '{normalized_resource_path}': {exc}"}
+        return {
+            "success": True,
+            "skill": skill_id,
+            "resource_path": normalized_resource_path,
+            "path": relative_path,
+            "encoding": encoding,
+            "content": content,
+        }
+
+    @staticmethod
+    def _listed_skill_file(
+        files: List[Dict[str, Any]],
+        requested_path: str,
+        *,
+        original_key: str,
+    ) -> Dict[str, Any] | None:
+        for file_info in files:
+            if requested_path in {
+                str(file_info.get(original_key) or ""),
+                str(file_info.get("path") or ""),
+            }:
+                return file_info
+        return None
 
     def _activate_skill(self, skill_name: str, initial_context: Any = None, **kwargs) -> Dict[str, Any]:
         skill_id = self._resolve_skill_id(skill_name)
@@ -1371,6 +2062,7 @@ class SkillsPlugin(Plugin):
                 "scripts": info["scripts"],
                 "agents": info.get("agents", []),
                 "references": info.get("references", []),
+                "resources": info.get("resources", []),
                 "script_tool_calls": self._script_tool_calls(skill_id),
             },
             "scope": scope,
@@ -1552,6 +2244,16 @@ class SkillsPlugin(Plugin):
                     f"- {reference.get('reference_path')}"
                     for reference in references
                     if reference.get("reference_path")
+                )
+            )
+        resources = info.get("resources") or []
+        if resources:
+            task_parts.append(
+                "Available skill resources:\n"
+                + "\n".join(
+                    f"- {resource.get('resource_path')}"
+                    for resource in resources
+                    if resource.get("resource_path")
                 )
             )
 

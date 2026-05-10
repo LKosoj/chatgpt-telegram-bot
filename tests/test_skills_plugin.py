@@ -4,7 +4,9 @@ import json
 import logging
 import shutil
 import sys
+import tarfile
 import types
+import zipfile
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -131,8 +133,10 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
         "skills.list_skills",
         "skills.get_skill",
         "skills.get_skill_reference",
+        "skills.get_skill_resource",
         "skills.find_installable_skills",
         "skills.install_skill",
+        "skills.create_skill",
         "skills.activate_skill",
         "skills.get_skill_status",
         "skills.list_active_skills",
@@ -177,6 +181,8 @@ async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, 
     storage_dir.mkdir()
     skill_dir = skills_dir / "META-SKILLS" / "belief-examination"
     (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "templates").mkdir(parents=True)
+    (skill_dir / "data").mkdir(parents=True)
     (skills_dir / "META-SKILLS" / "_shared").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         (
@@ -185,12 +191,19 @@ async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, 
             "description: Nested meta skill\n"
             "---\n"
             "# Belief Examination\n\n"
-            "Use `references/factual.md` and `META-SKILLS/_shared/core-principles.md` when needed.\n"
+            "Use `references/factual.md`, `META-SKILLS/_shared/core-principles.md`, "
+            "and `templates/prompt.txt` when needed.\n"
         ),
         encoding="utf-8",
     )
-    (skill_dir / "references" / "factual.md").write_text("# Factual\n", encoding="utf-8")
+    (skill_dir / "references" / "factual.md").write_text(
+        "See `../../_shared/output-template.md` and `../data/schema.json`.\n",
+        encoding="utf-8",
+    )
     (skills_dir / "META-SKILLS" / "_shared" / "core-principles.md").write_text("# Core\n", encoding="utf-8")
+    (skills_dir / "META-SKILLS" / "_shared" / "output-template.md").write_text("# Output\n", encoding="utf-8")
+    (skill_dir / "templates" / "prompt.txt").write_text("Prompt template\n", encoding="utf-8")
+    (skill_dir / "data" / "schema.json").write_text('{"type": "object"}\n', encoding="utf-8")
     monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
 
     plugin = SkillsPlugin()
@@ -215,6 +228,24 @@ async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, 
         {
             "reference_path": "META-SKILLS/_shared/core-principles.md",
             "path": "META-SKILLS/_shared/core-principles.md",
+        },
+        {
+            "reference_path": "../../_shared/output-template.md",
+            "path": "META-SKILLS/_shared/output-template.md",
+        },
+    ]
+    assert details["skill"]["resources"] == [
+        {
+            "resource_path": "templates/prompt.txt",
+            "path": "META-SKILLS/belief-examination/templates/prompt.txt",
+            "size": len("Prompt template\n"),
+            "encoding": "utf-8",
+        },
+        {
+            "resource_path": "../data/schema.json",
+            "path": "META-SKILLS/belief-examination/data/schema.json",
+            "size": len('{"type": "object"}\n'),
+            "encoding": "utf-8",
         },
     ]
 
@@ -244,7 +275,57 @@ async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, 
     )
     assert local_reference["success"] is True
     assert local_reference["path"] == "META-SKILLS/belief-examination/references/factual.md"
-    assert local_reference["content"] == "# Factual\n"
+    assert local_reference["content"] == "See `../../_shared/output-template.md` and `../data/schema.json`.\n"
+
+    recursive_reference = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        reference_path="META-SKILLS/_shared/output-template.md",
+        chat_id=10,
+        user_id=42,
+    )
+    assert recursive_reference["success"] is True
+    assert recursive_reference["content"] == "# Output\n"
+
+    recursive_reference_by_original_path = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        reference_path="../../_shared/output-template.md",
+        chat_id=10,
+        user_id=42,
+    )
+    assert recursive_reference_by_original_path["success"] is True
+    assert recursive_reference_by_original_path["path"] == "META-SKILLS/_shared/output-template.md"
+
+    resource = await plugin.execute(
+        "get_skill_resource",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        resource_path="META-SKILLS/belief-examination/data/schema.json",
+        chat_id=10,
+        user_id=42,
+    )
+    assert resource == {
+        "success": True,
+        "skill": "META-SKILLS/belief-examination",
+        "resource_path": "META-SKILLS/belief-examination/data/schema.json",
+        "path": "META-SKILLS/belief-examination/data/schema.json",
+        "encoding": "utf-8",
+        "content": '{"type": "object"}\n',
+    }
+
+    resource_by_original_path = await plugin.execute(
+        "get_skill_resource",
+        helper=None,
+        skill_name="META-SKILLS/belief-examination",
+        resource_path="../data/schema.json",
+        chat_id=10,
+        user_id=42,
+    )
+    assert resource_by_original_path["success"] is True
+    assert resource_by_original_path["path"] == "META-SKILLS/belief-examination/data/schema.json"
 
 
 @pytest.mark.asyncio
@@ -256,6 +337,23 @@ async def test_skill_reference_rejects_unlisted_paths(tmp_path, monkeypatch):
         helper=None,
         skill_name="demo",
         reference_path="../../outside.md",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "not listed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_skill_resource_rejects_unlisted_paths(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "get_skill_resource",
+        helper=None,
+        skill_name="demo",
+        resource_path="templates/prompt.txt",
         chat_id=10,
         user_id=42,
     )
@@ -352,6 +450,33 @@ async def test_skill_scan_exposes_agents_folder(tmp_path, monkeypatch):
         "display_name": "Novel Writing",
         "short_description": "Plan, draft, and review fiction",
         "default_prompt": "Use $novel-writing to plan, draft, or review a fiction chapter.",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_skill_scan_exposes_nested_agent_files(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    agents_dir = tmp_path / "skills" / "demo" / "agents" / "writing"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "openai.yaml").write_text(
+        (
+            "interface:\n"
+            "  display_name: \"Writing Reviewer\"\n"
+            "  short_description: \"Review long-form drafts\"\n"
+            "  default_prompt: \"Use nested writing review instructions.\"\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+
+    details = await plugin.execute("get_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    assert details["skill"]["agents"] == [{
+        "id": "writing/openai",
+        "file": "agents/writing/openai.yaml",
+        "display_name": "Writing Reviewer",
+        "short_description": "Review long-form drafts",
+        "default_prompt": "Use nested writing review instructions.",
     }]
 
 
@@ -493,6 +618,29 @@ def test_skill_scan_invalidates_cache_when_reference_added(tmp_path, monkeypatch
     assert second["demo"]["references"] == [{
         "reference_path": "references/new.md",
         "path": "demo/references/new.md",
+    }]
+
+
+def test_skill_scan_invalidates_cache_when_resource_added(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    skill_md = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8") + "\nUse `templates/prompt.txt`.\n",
+        encoding="utf-8",
+    )
+    first = plugin._scan_skills()
+
+    templates_dir = tmp_path / "skills" / "demo" / "templates"
+    templates_dir.mkdir()
+    (templates_dir / "prompt.txt").write_text("Prompt\n", encoding="utf-8")
+
+    second = plugin._scan_skills()
+    assert second is not first
+    assert second["demo"]["resources"] == [{
+        "resource_path": "templates/prompt.txt",
+        "path": "demo/templates/prompt.txt",
+        "size": len("Prompt\n"),
+        "encoding": "utf-8",
     }]
 
 
@@ -708,6 +856,293 @@ async def test_install_skill_syncs_existing_cli_install_when_add_fails(tmp_path,
     assert result["sync"] == "copied_to_skills_dir"
     assert "warning" in result
     assert "existing-skill" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_nested_target_path(tmp_path, monkeypatch):
+    installed_dir = tmp_path / "global" / "existing-skill"
+    installed_dir.mkdir(parents=True)
+    (installed_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: existing-skill\n"
+            "description: Existing skill installed into nested target\n"
+            "---\n"
+            "# Existing Skill\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "true")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    async def fake_run(args, *, timeout):
+        if args[:2] == ["add", "owner/repo@existing-skill"]:
+            return {"success": True, "returncode": 0, "stdout": "installed\n", "stderr": ""}
+        if args == ["ls", "-g", "--json"]:
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": json.dumps([{"name": "existing-skill", "path": str(installed_dir)}]),
+                "stderr": "",
+            }
+        raise AssertionError(f"Unexpected skills CLI args: {args}")
+
+    plugin._run_skills_cli = fake_run
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="owner/repo@existing-skill",
+        skill_name="META-SKILLS/existing-skill",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["skill"] == "META-SKILLS/existing-skill"
+    assert result["source_skill"] == "existing-skill"
+    assert "META-SKILLS/existing-skill" in plugin.available_skills
+    assert (tmp_path / "skills" / "META-SKILLS" / "existing-skill" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_local_directory_source(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source skills" / "local-skill"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: local-skill\n"
+            "description: Local directory skill\n"
+            "---\n"
+            "# Local Skill\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package=str(source_dir),
+        skill_name="META-SKILLS/local-skill",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "local"
+    assert result["skill"] == "META-SKILLS/local-skill"
+    assert "META-SKILLS/local-skill" in plugin.available_skills
+    assert (tmp_path / "skills" / "META-SKILLS" / "local-skill" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_zip_archive_source(tmp_path, monkeypatch):
+    archive_path = tmp_path / "archived-skill.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "repo-main/archived-skill/SKILL.md",
+            (
+                "---\n"
+                "name: archived-skill\n"
+                "description: Archived skill\n"
+                "---\n"
+                "# Archived Skill\n"
+            ),
+        )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package=str(archive_path),
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "local"
+    assert result["skill"] == "archived-skill"
+    assert "archived-skill" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_tar_archive_source(tmp_path, monkeypatch):
+    source_dir = tmp_path / "tar-src" / "tar-skill"
+    source_dir.mkdir(parents=True)
+    (source_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: tar-skill\n"
+            "description: Tar skill\n"
+            "---\n"
+            "# Tar Skill\n"
+        ),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "tar-skill.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(source_dir, arcname="bundle/tar-skill")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package=str(archive_path),
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "local"
+    assert result["skill"] == "tar-skill"
+    assert "tar-skill" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_markdown_file_source(tmp_path, monkeypatch):
+    source_file = tmp_path / "single-skill.md"
+    source_file.write_text(
+        (
+            "---\n"
+            "name: single-skill\n"
+            "description: Single file skill\n"
+            "---\n"
+            "# Single Skill\n"
+        ),
+        encoding="utf-8",
+    )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package=str(source_file),
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "local"
+    assert result["skill"] == "single-skill"
+    assert (tmp_path / "skills" / "single-skill" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_url_archive_source(tmp_path, monkeypatch):
+    archive_path = tmp_path / "remote-skill.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "remote-skill/SKILL.md",
+            (
+                "---\n"
+                "name: remote-skill\n"
+                "description: Remote archive skill\n"
+                "---\n"
+                "# Remote Skill\n"
+            ),
+        )
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    def fake_download(url, temp_dir):
+        assert url == "https://example.test/remote-skill.zip"
+        target = temp_dir / "remote-skill.zip"
+        shutil.copy2(archive_path, target)
+        return target, None
+
+    plugin._download_url_to_path = fake_download
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://example.test/remote-skill.zip",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["source_kind"] == "url"
+    assert result["skill"] == "remote-skill"
+    assert "remote-skill" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_rejects_archive_path_traversal(tmp_path, monkeypatch):
+    archive_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../escape/SKILL.md", "# Escape\n")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package=str(archive_path),
+        skill_name="bad",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "escapes target directory" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_skill_creates_skill_markdown_and_refreshes_registry(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "create_skill",
+        helper=None,
+        skill_name="custom/reviewer",
+        name="Reviewer",
+        description="Review generated text",
+        instructions="# Reviewer\n\nCheck factual claims.\n",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["skill"] == "custom/reviewer"
+    assert "custom/reviewer" in plugin.available_skills
+    skill_md = tmp_path / "skills" / "custom" / "reviewer" / "SKILL.md"
+    assert skill_md.exists()
+    details = await plugin.execute(
+        "get_skill",
+        helper=None,
+        skill_name="custom/reviewer",
+        chat_id=10,
+        user_id=999,
+    )
+    assert details["skill"]["name"] == "Reviewer"
+    assert "Check factual claims" in details["skill"]["body"]
+
+
+@pytest.mark.asyncio
+async def test_create_skill_requires_confirmation(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    result = await plugin.execute(
+        "create_skill",
+        helper=None,
+        skill_name="custom/reviewer",
+        instructions="# Reviewer\n",
+        confirmed=False,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "confirmed" in result["error"]
+    assert "custom/reviewer" not in plugin.available_skills
 
 
 @pytest.mark.asyncio
