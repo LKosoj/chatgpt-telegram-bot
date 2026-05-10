@@ -3,7 +3,7 @@ import types
 import pytest
 
 from bot.llm_gateway_client import LLMGatewayClient, LLMGatewayError
-from bot.model_constants import LLMGATEWAY_IMAGE_EDIT_MODEL
+from bot.plugins.stable_diffusion import StableDiffusionPlugin
 
 
 class FakeResponse:
@@ -57,7 +57,11 @@ async def test_image_edit_file_uses_multipart_payload():
     client = LLMGatewayClient("https://gateway.example/v1", "test-key")
     client._client = http_client
 
-    result = await client.image_edit_file("add a hat", b"image-bytes")
+    result = await client.image_edit_file(
+        "add a hat",
+        b"image-bytes",
+        model="llmgateway/ai-klein-generation",
+    )
 
     assert result["data"][0]["url"] == "https://example.com/edited.png"
     call = http_client.calls[0]
@@ -67,10 +71,81 @@ async def test_image_edit_file_uses_multipart_payload():
         "X-Title": "tgBot",
     }
     assert call.kwargs["data"] == {
-        "model": LLMGATEWAY_IMAGE_EDIT_MODEL,
+        "model": "llmgateway/ai-klein-generation",
         "prompt": "add a hat",
     }
     assert call.kwargs["files"] == [("image", ("source.png", b"image-bytes", "image/png"))]
+
+
+def test_image_edit_requires_model():
+    client = LLMGatewayClient("https://gateway.example/v1", "test-key")
+
+    with pytest.raises(TypeError):
+        client.image_edit("add a hat", ["https://example.com/source.png"])
+
+
+def test_image_edit_file_requires_model():
+    client = LLMGatewayClient("https://gateway.example/v1", "test-key")
+
+    with pytest.raises(TypeError):
+        client.image_edit_file("add a hat", b"image-bytes")
+
+
+@pytest.mark.asyncio
+async def test_image_edit_file_accepts_configured_model():
+    http_client = FakeAsyncClient()
+    client = LLMGatewayClient("https://gateway.example/v1", "test-key")
+    client._client = http_client
+
+    await client.image_edit_file(
+        "add a hat",
+        b"image-bytes",
+        model="llmgateway/ai-klein-generation",
+    )
+
+    call = http_client.calls[0]
+    assert call.kwargs["data"]["model"] == "llmgateway/ai-klein-generation"
+
+
+@pytest.mark.asyncio
+async def test_image_edit_accepts_configured_model():
+    http_client = FakeAsyncClient()
+    client = LLMGatewayClient("https://gateway.example/v1", "test-key")
+    client._client = http_client
+
+    await client.image_edit(
+        "add a hat",
+        ["https://example.com/source.png"],
+        model="llmgateway/ai-klein-generation",
+    )
+
+    call = http_client.calls[0]
+    assert call.kwargs["json"]["model"] == "llmgateway/ai-klein-generation"
+
+
+@pytest.mark.asyncio
+async def test_stable_diffusion_edit_uses_configured_image_model():
+    class FakeGateway:
+        def __init__(self):
+            self.calls = []
+
+        async def image_edit(self, prompt, images, **kwargs):
+            self.calls.append((prompt, images, kwargs))
+            return {"data": [{"url": "https://example.com/edited.png"}]}
+
+    helper = types.SimpleNamespace(
+        config={"image_model": "llmgateway/ai-klein-generation"},
+        gateway_client=FakeGateway(),
+    )
+    plugin = StableDiffusionPlugin()
+
+    result = await plugin._edit_image(helper, "add a hat", "https://example.com/source.png")
+
+    assert result == ("https://example.com/edited.png", "url")
+    [(prompt, images, kwargs)] = helper.gateway_client.calls
+    assert prompt == "add a hat"
+    assert images == ["https://example.com/source.png"]
+    assert kwargs["model"] == "llmgateway/ai-klein-generation"
 
 
 @pytest.mark.asyncio

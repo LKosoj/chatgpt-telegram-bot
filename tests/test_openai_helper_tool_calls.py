@@ -284,6 +284,38 @@ def test_vision_history_content_keeps_only_text():
     assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
 
 
+@pytest.mark.asyncio
+async def test_edit_telegram_image_uses_configured_image_model():
+    class FakeGateway:
+        def __init__(self):
+            self.calls = []
+
+        async def image_edit_file(self, prompt, image_bytes, **kwargs):
+            self.calls.append((prompt, image_bytes, kwargs))
+            return {"data": [{"url": "https://example.com/edited.png"}]}
+
+    helper = object.__new__(OpenAIHelper)
+    helper.config = {
+        "bot_language": "en",
+        "image_model": "llmgateway/ai-klein-generation",
+    }
+    helper.gateway_client = FakeGateway()
+
+    async def fake_download_file_as_bytes(file_id):
+        assert file_id == "telegram-file-id"
+        return b"image-bytes"
+
+    helper.download_file_as_bytes = fake_download_file_as_bytes
+
+    result = await OpenAIHelper.edit_telegram_image(helper, "add a hat", "telegram-file-id")
+
+    assert result == ("https://example.com/edited.png", "url")
+    [(prompt, image_bytes, kwargs)] = helper.gateway_client.calls
+    assert prompt == "add a hat"
+    assert image_bytes == b"image-bytes"
+    assert kwargs["model"] == "llmgateway/ai-klein-generation"
+
+
 def test_hindsight_memory_parser_preserves_full_fields():
     helper = _make_helper(DummyPluginManager({}))
     content = "memory-" + ("x" * 2500)

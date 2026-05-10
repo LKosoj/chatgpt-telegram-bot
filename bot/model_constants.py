@@ -11,7 +11,6 @@ LLMGATEWAY_CHAT_MODELS = (
 )
 
 LLMGATEWAY_IMAGE_GENERATION_MODEL = "llmgateway/ai-klein-generation"
-LLMGATEWAY_IMAGE_EDIT_MODEL = "llmgateway/ai-klein-edit"
 LLMGATEWAY_WEB_SEARCH_MODEL = "llmgateway/web-search"
 LLMGATEWAY_WEB_READ_MODEL = "llmgateway/web-read"
 LLMGATEWAY_WEB_RESEARCH_MODEL = "llmgateway/web-research"

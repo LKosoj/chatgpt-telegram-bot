@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 
 from .model_constants import (
-    LLMGATEWAY_IMAGE_EDIT_MODEL,
     LLMGATEWAY_WEB_DEEP_RESEARCH_MODEL,
     LLMGATEWAY_WEB_READ_MODEL,
     LLMGATEWAY_WEB_RESEARCH_MODEL,
@@ -173,11 +172,17 @@ class LLMGatewayClient:
             timeout=1800.0,
         )
 
-    async def image_edit(self, prompt: str, images: list[str | dict[str, Any]]) -> dict[str, Any]:
+    async def image_edit(
+        self,
+        prompt: str,
+        images: list[str | dict[str, Any]],
+        *,
+        model: str,
+    ) -> dict[str, Any]:
         return await self.post_json(
             "/images/edits",
             {
-                "model": LLMGATEWAY_IMAGE_EDIT_MODEL,
+                "model": model,
                 "prompt": prompt,
                 "images": images,
             },
@@ -193,13 +198,14 @@ class LLMGatewayClient:
         prompt: str,
         image_bytes: bytes,
         *,
+        model: str,
         filename: str = "source.png",
         content_type: str = "image/png",
     ) -> dict[str, Any]:
         return await self.post_multipart(
             "/images/edits",
             data={
-                "model": LLMGATEWAY_IMAGE_EDIT_MODEL,
+                "model": model,
                 "prompt": prompt,
             },
             files=[("image", (filename, image_bytes, content_type))],

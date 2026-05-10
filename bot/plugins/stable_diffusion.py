@@ -54,7 +54,11 @@ class StableDiffusionPlugin(Plugin):
         return extract_image_result(response)
 
     async def _edit_image(self, helper, prompt: str, image_url: str) -> tuple[str, str]:
-        response = await helper.gateway_client.image_edit(prompt, [image_url])
+        response = await helper.gateway_client.image_edit(
+            prompt,
+            [image_url],
+            model=helper.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+        )
         return extract_image_result(response)
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:

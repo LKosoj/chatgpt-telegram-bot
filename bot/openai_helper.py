@@ -1200,12 +1200,16 @@ class OpenAIHelper:
 
     async def edit_telegram_image(self, prompt: str, file_id: str) -> tuple[str, str]:
         """
-        Edits a Telegram image by downloading it and sending it to the LLMGateway image edit model.
+        Edits a Telegram image by downloading it and sending it to the LLMGateway image edit endpoint.
         """
         bot_language = self.config['bot_language']
         try:
             image_bytes = await self.download_file_as_bytes(file_id)
-            response = await self.gateway_client.image_edit_file(prompt, image_bytes)
+            response = await self.gateway_client.image_edit_file(
+                prompt,
+                image_bytes,
+                model=self.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+            )
             return extract_image_result(response)
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
