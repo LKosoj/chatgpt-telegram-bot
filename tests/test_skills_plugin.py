@@ -1221,6 +1221,378 @@ async def test_install_skill_lists_candidates_for_multi_skill_repo_without_insta
     ]
 
 
+def test_github_repo_info_parses_tree_url_with_subpath():
+    plugin = SkillsPlugin()
+    info = plugin._github_repo_info(
+        "https://github.com/wgwtest/novel-writing/tree/main/novel-writing"
+    )
+    assert info == ("wgwtest", "novel-writing", "main", "novel-writing")
+
+
+def test_github_repo_info_parses_tree_url_with_nested_subpath():
+    plugin = SkillsPlugin()
+    info = plugin._github_repo_info(
+        "https://github.com/owner/repo/tree/main/path/to/skill"
+    )
+    assert info == ("owner", "repo", "main", "path/to/skill")
+
+
+def test_is_git_repo_url_accepts_tree_subpath_url():
+    plugin = SkillsPlugin()
+    assert plugin._is_git_repo_url(
+        "https://github.com/wgwtest/novel-writing/tree/main/novel-writing"
+    ) is True
+    # blob/raw/archive/releases should still be rejected
+    assert plugin._is_git_repo_url(
+        "https://github.com/owner/repo/blob/main/README.md"
+    ) is False
+
+
+def test_github_blob_info_parses_skill_md_url():
+    plugin = SkillsPlugin()
+    info = plugin._github_blob_info(
+        "https://github.com/wgwtest/novel-writing/blob/main/novel-writing/SKILL.md"
+    )
+    assert info == ("wgwtest", "novel-writing", "main", ["novel-writing", "SKILL.md"])
+
+
+def test_github_blob_info_returns_none_for_non_blob_url():
+    plugin = SkillsPlugin()
+    assert plugin._github_blob_info("https://github.com/owner/repo") is None
+    assert (
+        plugin._github_blob_info("https://github.com/owner/repo/tree/main/dir") is None
+    )
+
+
+def test_source_kind_for_blob_skill_md_is_git():
+    plugin = SkillsPlugin()
+    assert (
+        plugin._skill_install_source_kind(
+            "https://github.com/wgwtest/novel-writing/blob/main/novel-writing/SKILL.md"
+        )
+        == "git"
+    )
+    assert (
+        plugin._skill_install_source_kind(
+            "https://github.com/wgwtest/novel-writing/blob/main/CONTRIBUTING.md"
+        )
+        == "url"
+    )
+
+
+def test_rewrite_github_blob_to_raw_for_markdown():
+    plugin = SkillsPlugin()
+    info = plugin._github_blob_info(
+        "https://github.com/owner/repo/blob/main/docs/skill.md"
+    )
+    rewritten, err = plugin._rewrite_github_blob_to_raw(info)
+    assert err is None
+    assert rewritten == "https://raw.githubusercontent.com/owner/repo/main/docs/skill.md"
+
+
+def test_rewrite_github_blob_to_raw_rejects_non_markdown():
+    plugin = SkillsPlugin()
+    info = plugin._github_blob_info("https://github.com/owner/repo/blob/main/LICENSE")
+    rewritten, err = plugin._rewrite_github_blob_to_raw(info)
+    assert rewritten is None
+    assert "SKILL.md" in err
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_github_blob_url_pointing_at_skill_md(
+    tmp_path, monkeypatch
+):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "novel-writing" / "agents").mkdir(parents=True)
+    (repo_dir / "novel-writing" / "SKILL.md").write_text(
+        "---\nname: novel-writing\ndescription: Fiction\n---\n# Novel\n",
+        encoding="utf-8",
+    )
+    (repo_dir / "novel-writing" / "agents" / "openai.yaml").write_text(
+        "interface:\n  display_name: Novel\n", encoding="utf-8"
+    )
+    (repo_dir / "README.md").write_text("# Repo README\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: "/usr/bin/git" if name == "git" else real_which(name),
+    )
+
+    captured = {}
+
+    def fake_clone_branch(source, temp_dir, branch):
+        captured["source"] = source
+        captured["branch"] = branch
+        target = temp_dir / "git-source"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source_branch = fake_clone_branch
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/wgwtest/novel-writing/blob/main/novel-writing/SKILL.md",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True, result
+    assert result["source_kind"] == "git"
+    assert result["skill"] == "novel-writing"
+    assert captured["branch"] == "main"
+    assert captured["source"] == "https://github.com/wgwtest/novel-writing"
+    installed = tmp_path / "skills" / "novel-writing"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "agents" / "openai.yaml").is_file()
+    assert not (installed / "README.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_github_blob_url_pointing_at_markdown_file(
+    tmp_path, monkeypatch
+):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_download(url, temp_dir):
+        captured["url"] = url
+        target = temp_dir / "helper.md"
+        target.write_text(
+            "---\nname: helper\ndescription: One-off helper\n---\n# Helper\n",
+            encoding="utf-8",
+        )
+        return target, None
+
+    plugin._download_url_to_path = fake_download
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/owner/repo/blob/main/docs/helper.md",
+        skill_name="helper",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True, result
+    assert result["source_kind"] == "url"
+    assert captured["url"] == (
+        "https://raw.githubusercontent.com/owner/repo/main/docs/helper.md"
+    )
+    assert (tmp_path / "skills" / "helper" / "SKILL.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_install_skill_rejects_github_blob_url_for_non_markdown(
+    tmp_path, monkeypatch
+):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    def fail_download(url, temp_dir):
+        raise AssertionError("must reject before download")
+
+    plugin._download_url_to_path = fail_download
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/owner/repo/blob/main/LICENSE",
+        skill_name="bad",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "SKILL.md" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_rejects_html_disguised_as_markdown(
+    tmp_path, monkeypatch
+):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    def fake_download(url, temp_dir):
+        target = temp_dir / "page.md"
+        target.write_text(
+            "<!DOCTYPE html>\n<html><body>not markdown</body></html>",
+            encoding="utf-8",
+        )
+        return target, None
+
+    plugin._download_url_to_path = fake_download
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://example.com/page.md",
+        skill_name="page",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "HTML" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_supports_github_tree_url_with_subpath(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "novel-writing" / "agents").mkdir(parents=True)
+    (repo_dir / "novel-writing" / "SKILL.md").write_text(
+        "---\nname: novel-writing\ndescription: Fiction\n---\n# Novel\n",
+        encoding="utf-8",
+    )
+    (repo_dir / "novel-writing" / "agents" / "openai.yaml").write_text(
+        "interface:\n  display_name: Novel\n", encoding="utf-8"
+    )
+    (repo_dir / "README.md").write_text("# Repo README\n", encoding="utf-8")
+    (repo_dir / "other" / "stuff.txt").parent.mkdir(parents=True)
+    (repo_dir / "other" / "stuff.txt").write_text("noise", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: "/usr/bin/git" if name == "git" else real_which(name),
+    )
+
+    captured = {}
+
+    def fake_clone_branch(source, temp_dir, branch):
+        captured["source"] = source
+        captured["branch"] = branch
+        target = temp_dir / "git-source"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source_branch = fake_clone_branch
+
+    def reject_plain_clone(source, temp_dir):
+        raise AssertionError("plain clone should not be used for tree-URL with branch")
+
+    plugin._clone_git_source = reject_plain_clone
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/wgwtest/novel-writing/tree/main/novel-writing",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True, result
+    assert result["source_kind"] == "git"
+    assert result["skill"] == "novel-writing"
+    assert captured["branch"] == "main"
+    assert captured["source"] == "https://github.com/wgwtest/novel-writing"
+    installed = tmp_path / "skills" / "novel-writing"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "agents" / "openai.yaml").is_file()
+    # subpath isolation: files outside novel-writing/ must not leak in
+    assert not (installed / "README.md").exists()
+    assert not (installed / "other").exists()
+    assert "novel-writing" in plugin.available_skills
+
+
+@pytest.mark.asyncio
+async def test_install_skill_github_tree_url_rejects_missing_subpath(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "novel-writing").mkdir(parents=True)
+    (repo_dir / "novel-writing" / "SKILL.md").write_text("# X\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: "/usr/bin/git" if name == "git" else real_which(name),
+    )
+
+    def fake_clone_branch(source, temp_dir, branch):
+        target = temp_dir / "git-source"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    plugin._clone_git_source_branch = fake_clone_branch
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/wgwtest/novel-writing/tree/main/does-not-exist",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "does-not-exist" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_github_tree_url_falls_back_to_archive_without_git(
+    tmp_path, monkeypatch
+):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "novel-writing").mkdir(parents=True)
+    (repo_dir / "novel-writing" / "SKILL.md").write_text(
+        "---\nname: novel-writing\ndescription: Fiction\n---\n# Novel\n",
+        encoding="utf-8",
+    )
+    (repo_dir / "other.md").write_text("noise", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "bot.plugins.skills.shutil.which",
+        lambda name: None if name == "git" else real_which(name),
+    )
+
+    captured = {}
+
+    def fake_download(source, temp_dir):
+        captured["source"] = source
+        target = temp_dir / "archive-root"
+        shutil.copytree(repo_dir, target)
+        return target, None
+
+    # Patch _materialize_local_skill_source indirectly via _download_github_repo_source:
+    # we still want the subpath logic inside _download_github_repo_source to run.
+    plugin._download_url_to_path = lambda url, temp_dir: (None, "skip-real-download")
+
+    def fake_download_github(source, temp_dir):
+        # mimic full pipeline: materialize archive then enter subpath
+        captured["source"] = source
+        info = plugin._github_repo_info(source)
+        assert info is not None
+        _, _, _, subpath = info
+        target = temp_dir / "archive-root"
+        shutil.copytree(repo_dir, target)
+        if subpath:
+            return plugin._enter_repo_subpath(target, subpath)
+        return target, None
+
+    plugin._download_github_repo_source = fake_download_github
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="https://github.com/wgwtest/novel-writing/tree/main/novel-writing",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is True, result
+    assert result["skill"] == "novel-writing"
+    installed = tmp_path / "skills" / "novel-writing"
+    assert (installed / "SKILL.md").is_file()
+    assert not (installed / "other.md").exists()
+
+
 @pytest.mark.asyncio
 async def test_install_skill_rejects_archive_path_traversal(tmp_path, monkeypatch):
     archive_path = tmp_path / "bad.zip"

@@ -2438,10 +2438,44 @@ class OpenAIHelper:
     def get_all_modes(self):
         return self.chat_modes_registry.get_all_modes_list()
 
+    def _get_available_skills_summary(self) -> list[str]:
+        try:
+            skills_plugin = self.plugin_manager.get_plugin("skills")
+        except Exception:
+            return []
+        available = getattr(skills_plugin, "available_skills", None) or {}
+        summary = []
+        for skill_id, info in available.items():
+            desc = (info.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 240:
+                desc = desc[:240].rstrip() + "..."
+            summary.append(f"{skill_id}: {desc}" if desc else skill_id)
+        return summary
+
     def _build_auto_chat_mode_prompt(self, query: str) -> str:
+        skills_lines = self._get_available_skills_summary()
+        priority_block = ""
+        if skills_lines:
+            joined = "\n".join(f"- {line}" for line in skills_lines)
+            priority_block = (
+                "ПРИОРИТЕТНОЕ ПРАВИЛО (применяется ПЕРВЫМ, до всех остальных правил):\n"
+                "Если хотя бы один из установленных локальных skills (см. список ниже) по своему "
+                "description покрывает домен задачи пользователя — верни skills_agent. Точка. "
+                "Это правило ПЕРЕБИВАЕТ любые другие режимы, даже если они выглядят ближе по названию: "
+                "content_creator, writing_assistant, code_assistant и подобные НЕ заменяют skills_agent "
+                "при наличии релевантного skill, потому что только skills_agent умеет следовать "
+                "пошаговой инструкции skill (planning → drafting → review) и подгружать его references. "
+                "Сравнение делай по семантике description: skill про fiction/прозу/рассказы → подходит "
+                "для запроса на рассказ, стих, главу, художественный текст; skill про код-ревью → "
+                "подходит для запроса на проверку кода; и т.п. Если хотя бы одно описание skill "
+                "семантически пересекается с задачей — выбирай skills_agent.\n\n"
+                "Установленные локальные skills (id: description):\n"
+                f"{joined}\n\n"
+                "Если ни один skill из списка по семантике не подходит к задаче — переходи к остальным правилам ниже.\n\n"
+            )
         return f"""Определи режим работы для сообщения и верни только ключ режима.
 
-Правила выбора:
+{priority_block}Остальные правила выбора:
 1. Если задача простая и может быть решена одним коротким ответом или одним очевидным инструментом, выбирай наиболее простой подходящий режим.
 2. Если задача сложная, открытая или многошаговая, выбирай skills_agent, если такой режим есть в списке доступных режимов.
 3. Сложная задача - это задача, где нужно построить план, выполнить несколько связанных шагов, последовательно использовать инструменты, обработать файлы или артефакты, запустить локальные scripts, проверить результат, исправить ошибки или уточнить требования у пользователя.

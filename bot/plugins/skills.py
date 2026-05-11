@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -1575,6 +1575,9 @@ class SkillsPlugin(Plugin):
         parsed = urllib.parse.urlparse(source)
         if self._is_git_repo_url(source):
             return "git"
+        blob_info = self._github_blob_info(source)
+        if blob_info is not None:
+            return "git" if blob_info[3] and blob_info[3][-1] == "SKILL.md" else "url"
         if parsed.scheme in {"http", "https", "file"}:
             return "url"
 
@@ -1595,9 +1598,34 @@ class SkillsPlugin(Plugin):
         temp_dir: Path,
     ) -> tuple[Path | None, str | None]:
         if source_kind == "git":
+            blob_info = self._github_blob_info(source)
+            if blob_info is not None and blob_info[3] and blob_info[3][-1] == "SKILL.md":
+                blob_owner, blob_repo, blob_branch, blob_parts = blob_info
+                source = self._make_github_tree_url(
+                    blob_owner, blob_repo, blob_branch, blob_parts[:-1]
+                )
+            repo_info = self._github_repo_info(source)
+            tree_branch = ""
+            tree_subpath = ""
+            clone_url = source
+            if repo_info is not None:
+                owner, repo, tree_branch, tree_subpath = repo_info
+                if tree_branch or tree_subpath:
+                    clone_url = f"https://github.com/{owner}/{repo}"
+
             if shutil.which("git"):
-                return self._clone_git_source(source, temp_dir)
-            if self._github_repo_info(source) is not None:
+                if tree_branch:
+                    path, err = self._clone_git_source_branch(
+                        clone_url, temp_dir, branch=tree_branch
+                    )
+                else:
+                    path, err = self._clone_git_source(clone_url, temp_dir)
+                if err is not None or path is None:
+                    return None, err
+                if tree_subpath:
+                    return self._enter_repo_subpath(path, tree_subpath)
+                return path, None
+            if repo_info is not None:
                 return self._download_github_repo_source(source, temp_dir)
             return None, "git executable not found; use an archive URL instead"
         if source_kind == "url":
@@ -1605,6 +1633,12 @@ class SkillsPlugin(Plugin):
             if parsed.scheme == "file":
                 local_path = Path(urllib.request.url2pathname(urllib.parse.unquote(parsed.path)))
                 return self._materialize_local_skill_source(local_path, temp_dir)
+            blob_info = self._github_blob_info(source)
+            if blob_info is not None:
+                rewritten, blob_error = self._rewrite_github_blob_to_raw(blob_info)
+                if blob_error is not None or rewritten is None:
+                    return None, blob_error
+                source = rewritten
             downloaded_path, download_error = self._download_url_to_path(source, temp_dir)
             if download_error or downloaded_path is None:
                 return None, download_error
@@ -1629,6 +1663,9 @@ class SkillsPlugin(Plugin):
                 return None, f"Failed to extract archive '{path}': {exc}"
             return self._archive_content_root(extract_dir), None
         if path.suffix.lower() == MARKDOWN_SUFFIX:
+            html_error = self._reject_html_markdown(path)
+            if html_error is not None:
+                return None, html_error
             if path.name == "SKILL.md":
                 return path.parent, None
             skill_dir = temp_dir / self._archive_stem(path.name)
@@ -1636,6 +1673,20 @@ class SkillsPlugin(Plugin):
             shutil.copy2(path, skill_dir / "SKILL.md")
             return skill_dir, None
         return None, "Source must be a skill directory, markdown file, or .zip/.tar* archive"
+
+    def _reject_html_markdown(self, path: Path) -> str | None:
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(512)
+        except OSError as exc:
+            return f"Failed to inspect markdown source: {exc}"
+        sniff = head.lstrip().lower()
+        if sniff.startswith(b"<!doctype html") or sniff.startswith(b"<html"):
+            return (
+                "Downloaded file looks like an HTML page, not markdown. "
+                "GitHub blob URLs render HTML; use the raw URL or a tree URL instead."
+            )
+        return None
 
     def _clone_git_source(self, source: str, temp_dir: Path) -> tuple[Path | None, str | None]:
         git_path = shutil.which("git")
@@ -1658,11 +1709,46 @@ class SkillsPlugin(Plugin):
             return None, f"git clone failed with code {result.returncode}: {stderr}"
         return clone_dir, None
 
+    def _clone_git_source_branch(
+        self, source: str, temp_dir: Path, branch: str
+    ) -> tuple[Path | None, str | None]:
+        git_path = shutil.which("git")
+        if not git_path:
+            return None, "git executable not found; use an archive URL instead"
+        clone_dir = temp_dir / "git-source"
+        command = [git_path, "clone", "--depth", "1", "-b", branch, source, str(clone_dir)]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.install_timeout,
+                check=False,
+            )
+        except Exception as exc:
+            return None, f"Failed to clone git source: {exc}"
+        if result.returncode != 0:
+            stderr = self._truncate(self._strip_ansi(result.stderr or ""))
+            return None, f"git clone failed with code {result.returncode}: {stderr}"
+        return clone_dir, None
+
+    def _enter_repo_subpath(self, root: Path, subpath: str) -> tuple[Path | None, str | None]:
+        try:
+            root_resolved = root.resolve()
+            nested = (root / subpath).resolve()
+        except OSError as exc:
+            return None, f"Subpath '{subpath}' is invalid: {exc}"
+        if not self._is_relative_to(nested, root_resolved):
+            return None, f"Subpath '{subpath}' escapes repository root"
+        if not nested.is_dir():
+            return None, f"Subpath '{subpath}' not found in repository"
+        return nested, None
+
     def _download_github_repo_source(self, source: str, temp_dir: Path) -> tuple[Path | None, str | None]:
         repo_info = self._github_repo_info(source)
         if repo_info is None:
             return None, "Invalid GitHub repository URL"
-        owner, repo, branch = repo_info
+        owner, repo, branch, subpath = repo_info
         branches: List[str] = []
         if branch:
             branches.append(branch)
@@ -1680,7 +1766,12 @@ class SkillsPlugin(Plugin):
             if download_error or archive_path is None:
                 last_error = download_error or "download failed"
                 continue
-            return self._materialize_local_skill_source(archive_path, temp_dir)
+            extracted, extract_error = self._materialize_local_skill_source(archive_path, temp_dir)
+            if extract_error is not None or extracted is None:
+                return None, extract_error
+            if subpath:
+                return self._enter_repo_subpath(extracted, subpath)
+            return extracted, None
         return None, f"Failed to download GitHub repository archive: {last_error}"
 
     def _github_default_branch(self, owner: str, repo: str) -> str:
@@ -1695,7 +1786,52 @@ class SkillsPlugin(Plugin):
             return str(payload.get("default_branch") or "").strip()
         return ""
 
-    def _github_repo_info(self, source: str) -> tuple[str, str, str] | None:
+    def _github_blob_info(
+        self, source: str
+    ) -> tuple[str, str, str, list[str]] | None:
+        parsed = urllib.parse.urlparse(source)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        if (parsed.hostname or "").lower() not in {"github.com", "www.github.com"}:
+            return None
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 5 or parts[2] != "blob":
+            return None
+        owner = parts[0]
+        repo = parts[1].removesuffix(".git")
+        branch = urllib.parse.unquote(parts[3])
+        path_parts = [urllib.parse.unquote(part) for part in parts[4:]]
+        if not owner or not repo or not branch or not path_parts:
+            return None
+        return owner, repo, branch, path_parts
+
+    def _make_github_tree_url(
+        self, owner: str, repo: str, branch: str, subpath_parts: list[str]
+    ) -> str:
+        quoted_branch = urllib.parse.quote(branch, safe="")
+        base = f"https://github.com/{owner}/{repo}"
+        if not subpath_parts:
+            return f"{base}/tree/{quoted_branch}"
+        quoted_subpath = "/".join(urllib.parse.quote(part, safe="") for part in subpath_parts)
+        return f"{base}/tree/{quoted_branch}/{quoted_subpath}"
+
+    def _rewrite_github_blob_to_raw(
+        self, blob_info: tuple[str, str, str, list[str]]
+    ) -> tuple[str | None, str | None]:
+        owner, repo, branch, path_parts = blob_info
+        filename = path_parts[-1].lower()
+        if not (filename.endswith(MARKDOWN_SUFFIX) or self._is_archive_name(filename)):
+            return None, (
+                "GitHub blob URL must point to a SKILL.md, a markdown file, or a .zip/.tar* archive"
+            )
+        quoted_branch = urllib.parse.quote(branch, safe="")
+        quoted_path = "/".join(urllib.parse.quote(part, safe="") for part in path_parts)
+        raw_url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{quoted_branch}/{quoted_path}"
+        )
+        return raw_url, None
+
+    def _github_repo_info(self, source: str) -> tuple[str, str, str, str] | None:
         parsed = urllib.parse.urlparse(source)
         if (parsed.hostname or "").lower() not in {"github.com", "www.github.com"}:
             return None
@@ -1705,11 +1841,14 @@ class SkillsPlugin(Plugin):
         owner = parts[0]
         repo = parts[1].removesuffix(".git")
         branch = ""
+        subpath = ""
         if len(parts) > 3 and parts[2] == "tree":
-            branch = "/".join(parts[3:])
+            tail = [urllib.parse.unquote(part) for part in parts[3:]]
+            branch = tail[0]
+            subpath = "/".join(tail[1:])
         if not owner or not repo:
             return None
-        return owner, repo, branch
+        return owner, repo, branch, subpath
 
     def _download_url_to_path(self, url: str, temp_dir: Path) -> tuple[Path | None, str | None]:
         parsed = urllib.parse.urlparse(url)
@@ -1947,7 +2086,7 @@ class SkillsPlugin(Plugin):
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) < 2:
             return False
-        if len(parts) > 2 and parts[2] in {"archive", "blob", "raw", "releases", "tree"}:
+        if len(parts) > 2 and parts[2] in {"archive", "blob", "raw", "releases"}:
             return False
         return True
 
@@ -2536,6 +2675,7 @@ class SkillsPlugin(Plugin):
                 return {"success": False, "error": f"Skill '{skill_name}' is not active", "scope": scope}
 
             state = self.active_skills[scope][skill_id]
+            prev_context = dict(state.get("context") or {})
             state["current_step"] = step
             update = self._decode_context(context_update)
             if isinstance(update, dict):
@@ -2544,7 +2684,35 @@ class SkillsPlugin(Plugin):
                 state.setdefault("context", {})["last_update"] = str(update)
             state["updated_at"] = int(time.time())
             self._save_state()
-            return {"success": True, "scope": scope, "skill": skill_id, "state": state}
+
+            response: Dict[str, Any] = {
+                "success": True,
+                "scope": scope,
+                "skill": skill_id,
+                "state": state,
+            }
+            warning = self._planning_warning(step, prev_context, update)
+            if warning:
+                response["warning"] = warning
+            return response
+
+    @staticmethod
+    def _planning_warning(
+        step: int,
+        prev_context: Dict[str, Any],
+        new_update: Any,
+    ) -> Optional[str]:
+        if step < 1:
+            return None
+        update_has_planning = isinstance(new_update, dict) and "planning" in new_update
+        if "planning" in prev_context or update_has_planning:
+            return None
+        return (
+            "No planning artifact found in skill context. "
+            "Best practice: call update_skill_progress(step=0, "
+            "context_update={\"planning\": {...}}) BEFORE moving to drafting/execution steps, "
+            "so the plan is observable to the user."
+        )
 
     def _deactivate_skill(self, skill_name: str, **kwargs) -> Dict[str, Any]:
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
