@@ -1,8 +1,9 @@
 import types
+from pathlib import Path
 
 import pytest
 
-from bot.llm_gateway_client import LLMGatewayClient, LLMGatewayError
+from bot.llm_gateway_client import LLMGatewayClient, LLMGatewayError, extract_image_result
 from bot.plugins.stable_diffusion import StableDiffusionPlugin
 
 
@@ -75,6 +76,25 @@ async def test_image_edit_file_uses_multipart_payload():
         "prompt": "add a hat",
     }
     assert call.kwargs["files"] == [("image", ("source.png", b"image-bytes", "image/png"))]
+
+
+def test_extract_image_result_keeps_http_url():
+    value, result_format = extract_image_result({"data": [{"url": "https://example.com/image.png"}]})
+
+    assert value == "https://example.com/image.png"
+    assert result_format == "url"
+
+
+def test_extract_image_result_writes_data_image_url_to_path():
+    value, result_format = extract_image_result({"data": [{"url": "data:image/jpeg;base64,aGVsbG8="}]})
+    path = Path(value)
+
+    try:
+        assert result_format == "path"
+        assert path.suffix == ".jpg"
+        assert path.read_bytes() == b"hello"
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def test_image_edit_requires_model():

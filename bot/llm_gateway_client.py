@@ -213,6 +213,32 @@ class LLMGatewayClient:
         )
 
 
+def _write_base64_image(encoded: str, suffix: str) -> str:
+    output_dir = Path(tempfile.gettempdir()) / "llmgateway_images"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{uuid4().hex}{suffix}"
+    output_path.write_bytes(base64.b64decode("".join(encoded.split()), validate=True))
+    return str(output_path)
+
+
+def _data_image_url_to_path(value: str) -> str | None:
+    data_url = value.strip()
+    if not data_url.lower().startswith("data:image/"):
+        return None
+    header, separator, encoded = data_url.partition(",")
+    if not separator or ";base64" not in header.lower():
+        return None
+    mime_type = header[5:].split(";", 1)[0]
+    suffix = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(mime_type.lower(), ".png")
+    return _write_base64_image(encoded, suffix)
+
+
 def extract_image_result(response: Any) -> tuple[str, str]:
     data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)
     if not data:
@@ -221,14 +247,13 @@ def extract_image_result(response: Any) -> tuple[str, str]:
     first = data[0]
     url = first.get("url") if isinstance(first, dict) else getattr(first, "url", None)
     if url:
+        data_url_path = _data_image_url_to_path(str(url))
+        if data_url_path:
+            return data_url_path, "path"
         return str(url), "url"
 
     b64_json = first.get("b64_json") if isinstance(first, dict) else getattr(first, "b64_json", None)
     if not b64_json:
         raise LLMGatewayError("Image response contains neither url nor b64_json.")
 
-    output_dir = Path(tempfile.gettempdir()) / "llmgateway_images"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{uuid4().hex}.png"
-    output_path.write_bytes(base64.b64decode(b64_json))
-    return str(output_path), "path"
+    return _write_base64_image(str(b64_json), ".png"), "path"
