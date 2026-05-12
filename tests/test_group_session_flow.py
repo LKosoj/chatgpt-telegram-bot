@@ -111,7 +111,37 @@ def _make_db(active_sessions=None):
     )
 
 
+class _FakeHindsightPlugin:
+    """Stand-in for HindsightMemoryPlugin in group-flow tests.
+
+    Stage 4A: bot code checks plugin.is_active and plugin.auto_save_enabled
+    instead of helper.is_hindsight_enabled / helper.config[hindsight_auto_save].
+    """
+
+    def __init__(self):
+        self.is_active = False
+        self.auto_save_enabled = True
+
+    def bank_id_for(self, user_id):
+        return f"telegram-{user_id}"
+
+
+class _FakeGroupPluginManager:
+    def __init__(self):
+        self.hindsight = _FakeHindsightPlugin()
+
+    def has_plugin(self, name):
+        return name == "hindsight_memory"
+
+    def get_plugin(self, name):
+        return self.hindsight if name == "hindsight_memory" else None
+
+    def is_plugin_disabled_for_user(self, name, user_id):
+        return False
+
+
 def _make_openai():
+    plugin_manager = _FakeGroupPluginManager()
     return SimpleNamespace(
         config={"temperature": 0.1, "hindsight_auto_save": True},
         conversations={},
@@ -119,6 +149,7 @@ def _make_openai():
         is_hindsight_enabled=MagicMock(return_value=False),
         finalize_hindsight_session_memory=AsyncMock(return_value=0),
         reset_chat_history=MagicMock(),
+        plugin_manager=plugin_manager,
     )
 
 
@@ -283,6 +314,8 @@ async def test_enqueue_hindsight_session_finalize_before_delete_persists_snapsho
     )
     bot.openai.is_hindsight_enabled.return_value = True
     bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.plugin_manager.hindsight.is_active = True
+    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
 
     job_id = await ChatGPTTelegramBot._enqueue_hindsight_session_finalize_before_delete(
         bot,
@@ -328,6 +361,8 @@ async def test_process_pending_hindsight_finalize_jobs_marks_done_after_save():
     messages = [{"role": "user", "content": "remember this"}]
     bot.openai.is_hindsight_enabled.return_value = True
     bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.plugin_manager.hindsight.is_active = True
+    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
     bot.openai.finalize_hindsight_session_memory = AsyncMock(return_value=2)
     bot.db.claim_hindsight_finalize_jobs.return_value = [{
         "id": 11,
@@ -355,6 +390,8 @@ async def test_process_pending_hindsight_finalize_jobs_marks_failed_for_retry():
     bot = _make_bot()
     bot.openai.is_hindsight_enabled.return_value = True
     bot.openai.config["hindsight_auto_save"] = True
+    bot.openai.plugin_manager.hindsight.is_active = True
+    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
     bot.openai.finalize_hindsight_session_memory = AsyncMock(side_effect=RuntimeError("retain failed"))
     bot.db.claim_hindsight_finalize_jobs.return_value = [{
         "id": 11,

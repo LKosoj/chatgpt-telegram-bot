@@ -49,9 +49,21 @@ class DummyDB:
 
 class DummyPluginManager:
     db = None
+    _hm_plugin = None
 
     def has_plugin(self, plugin_name):
         return True
+
+    def get_plugin(self, plugin_name):
+        if plugin_name != "hindsight_memory":
+            return None
+        if self._hm_plugin is None:
+            self._hm_plugin = HindsightMemoryPlugin()
+            self._hm_plugin.initialize(plugin_config={
+                'hindsight_base_url': 'http://x',
+                'hindsight_api_token': 't',
+            })
+        return self._hm_plugin
 
     def filter_allowed_plugins(self, allowed_plugins):
         return allowed_plugins
@@ -70,6 +82,17 @@ class DummyPluginManager:
 
     def is_plugin_disabled_for_user(self, plugin_name, user_id):
         return False
+
+    async def apply_mutators(self, event_name, payload, value, *, user_id=None):
+        plugin = self.get_plugin("hindsight_memory")
+        method = getattr(plugin, event_name, None)
+        if method is None:
+            return value
+        try:
+            new_value = await method(value, payload)
+        except Exception:
+            return value
+        return value if new_value is None else new_value
 
 
 class FakeHindsight:
@@ -102,6 +125,9 @@ class SlowFinalizeOpenAI:
         self.finish = asyncio.Event()
         self.finished = asyncio.Event()
         self.calls = []
+        self.plugin_manager = DummyPluginManager()
+        # Force an active hindsight plugin so the bot enqueues the job.
+        self.plugin_manager.get_plugin("hindsight_memory")
 
     def is_hindsight_enabled(self):
         return True
@@ -218,7 +244,7 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
     helper = make_helper()
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
-    helper.hindsight_client = FakeHindsight()
+    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
 
     answer, tokens = await helper.get_chat_response(chat_id=1, query="How should you answer me?", user_id=123)
 
@@ -259,8 +285,9 @@ def test_hindsight_memory_parser_skips_sensitive_content():
 
 def test_hindsight_is_disabled_without_token():
     helper = make_helper()
-    helper.config["hindsight_enabled"] = True
-    helper.hindsight_client = FakeHindsight()
+    # Re-initialize plugin without token to ensure it's inactive.
+    helper.plugin_manager._hm_plugin = HindsightMemoryPlugin()
+    helper.plugin_manager._hm_plugin.initialize(plugin_config={})
 
     assert helper.is_hindsight_enabled() is False
 
@@ -277,7 +304,7 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
     helper.config["hindsight_auto_save"] = True
-    helper.hindsight_client = FakeHindsight()
+    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
     helper.fake_completions.content = json.dumps({
         "items": [{
             "content": "User prefers concise Python examples.",
@@ -311,7 +338,7 @@ async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
     helper.config["hindsight_auto_save"] = True
-    helper.hindsight_client = FakeHindsight()
+    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
     helper.fake_completions.content = json.dumps({
         "items": [{
             "content": "User prefers short answers.",
@@ -347,17 +374,14 @@ async def test_hindsight_session_finalize_is_enqueued_before_delete():
 @pytest.mark.asyncio
 async def test_hindsight_plugin_recall_uses_user_bank():
     plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={
+        'hindsight_base_url': 'http://x',
+        'hindsight_api_token': 't',
+    })
     fake = FakeHindsight()
-    helper = types.SimpleNamespace(
-        hindsight_client=fake,
-        config={"hindsight_recall_max_tokens": 4096, "hindsight_recall_budget": "mid"},
-        is_hindsight_enabled=lambda: True,
-        get_hindsight_bank_id=lambda user_id: f"telegram-{user_id}",
-        _looks_sensitive_memory=lambda content: False,
-        _hindsight_memory_types=lambda: ["world", "experience"],
-    )
+    plugin.client = fake
 
-    result = await plugin.execute("recall", helper, user_id=123, query="preferences")
+    result = await plugin.execute("recall", types.SimpleNamespace(), user_id=123, query="preferences")
 
     assert result["bank_id"] == "telegram-123"
     assert fake.recall_calls[0][0] == "telegram-123"

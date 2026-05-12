@@ -2,19 +2,186 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any, Dict, List
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .plugin import Plugin
-from ..hindsight_client import format_recall_results
+from ..hindsight_client import HindsightClient, format_recall_results
 from ..utils import message_text
+
+logger = logging.getLogger(__name__)
+
+
+HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
+
+HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
+Long-term memory recalled for this Telegram user:
+{{memory}}
+
+Use this only as background context when it is relevant. If the current user message
+contradicts this memory, prefer the current message. Do not mention Hindsight or memory
+retrieval unless the user asks about it."""
 
 
 class HindsightMemoryPlugin(Plugin):
     plugin_id = "hindsight_memory"
     function_prefix = "hindsight_memory"
+
+    def get_config_prefix(self) -> str | None:
+        return "hindsight_"
+
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None,
+                   db=None, plugin_config=None) -> None:
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        # Plugin-owned config slice (prefix "hindsight_"). Defaults set HERE.
+        self.config: Dict[str, Any] = dict(plugin_config or {})
+        self.config.setdefault('hindsight_base_url', '')
+        self.config.setdefault('hindsight_api_token', '')
+        self.config['hindsight_enabled'] = bool(
+            self.config.get('hindsight_base_url')
+            and self.config.get('hindsight_api_token')
+        )
+        self.config.setdefault('hindsight_auto_recall', True)
+        self.config.setdefault('hindsight_auto_save', True)
+        self.config.setdefault('hindsight_namespace', 'default')
+        self.config.setdefault('hindsight_bank_prefix', 'telegram-')
+        self.config.setdefault('hindsight_recall_budget', 'mid')
+        self.config.setdefault('hindsight_recall_max_tokens', 4096)
+        self.config.setdefault('hindsight_memory_types', 'world,experience')
+        self.config.setdefault('hindsight_async_store', True)
+        self.config.setdefault('hindsight_timeout', 30.0)
+        self.config.setdefault('hindsight_max_auto_save_items', 5)
+        # Stage 4A: mirror defaults into openai.config so remaining helper-side
+        # readers (_prepare_*/finalize_*) keep working until removed in 4B/4C.
+        # setdefault (not assignment) — never overwrite an already-set value.
+        if openai is not None and getattr(openai, "config", None) is not None:
+            for key in (
+                'hindsight_base_url', 'hindsight_api_token',
+                'hindsight_enabled', 'hindsight_auto_recall', 'hindsight_auto_save',
+                'hindsight_namespace', 'hindsight_bank_prefix',
+                'hindsight_recall_budget', 'hindsight_recall_max_tokens',
+                'hindsight_memory_types', 'hindsight_async_store',
+                'hindsight_timeout', 'hindsight_max_auto_save_items',
+            ):
+                openai.config.setdefault(key, self.config[key])
+
+        self.client: HindsightClient | None = None
+        if self.config['hindsight_enabled']:
+            self.client = HindsightClient(
+                self.config.get('hindsight_base_url', ''),
+                self.config.get('hindsight_api_token', ''),
+                namespace=self.config.get('hindsight_namespace', 'default'),
+                timeout=float(self.config.get('hindsight_timeout', 30.0)),
+            )
+
+    @property
+    def is_active(self) -> bool:
+        cfg = getattr(self, "config", None) or {}
+        return bool(
+            cfg.get('hindsight_enabled')
+            and cfg.get('hindsight_api_token')
+            and self.client is not None
+            and self.client.enabled
+        )
+
+    @property
+    def auto_recall_enabled(self) -> bool:
+        return bool((getattr(self, "config", None) or {}).get('hindsight_auto_recall', True))
+
+    @property
+    def auto_save_enabled(self) -> bool:
+        return bool((getattr(self, "config", None) or {}).get('hindsight_auto_save', True))
+
+    def bank_id_for(self, user_id: int | str) -> str:
+        prefix = (getattr(self, "config", None) or {}).get('hindsight_bank_prefix', 'telegram-')
+        return f"{prefix}{user_id}"
+
+    @property
+    def memory_types(self) -> list[str]:
+        value = (getattr(self, "config", None) or {}).get('hindsight_memory_types', 'world,experience')
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(',') if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return ['world', 'experience']
+
+    @staticmethod
+    def is_hindsight_memory_message(message: Dict[str, Any]) -> bool:
+        if not isinstance(message, dict):
+            return False
+        if message.get("role") != "system":
+            return False
+        content = message.get("content")
+        return isinstance(content, str) and content.startswith(HINDSIGHT_MEMORY_MARKER)
+
+    def close(self) -> None:
+        """No-op: client teardown handled by OpenAIHelper.close() via property
+        delegation in Stage 4A; moves to plugin lifecycle in Stage 4C."""
+        return None
+
+    async def on_before_chat_request(
+        self,
+        messages: List[Dict[str, Any]],
+        payload: Any,
+    ) -> List[Dict[str, Any]] | None:
+        """Inject Hindsight long-term memory as a system message before chat request.
+
+        Returns ``None`` for "no change" (inactive/disabled/cached/empty/failed).
+        """
+        if not self.is_active or not self.auto_recall_enabled:
+            return None
+        user_id = getattr(payload, "user_id", None)
+        if user_id is None:
+            return None
+        if any(self.is_hindsight_memory_message(msg) for msg in messages):
+            return None
+        last_user = next(
+            (msg for msg in reversed(messages)
+             if isinstance(msg, dict) and msg.get("role") == "user"),
+            None,
+        )
+        if not last_user:
+            return None
+        query = last_user.get("content")
+        if not isinstance(query, str) or not query.strip():
+            return None
+
+        try:
+            data = await self.client.recall(
+                self.bank_id_for(user_id),
+                query,
+                budget=self.config.get('hindsight_recall_budget', 'mid'),
+                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
+                memory_types=self.memory_types,
+                trace=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Hindsight recall failed for user_id=%s: %s", user_id, exc,
+            )
+            return None
+
+        memory = format_recall_results(data) if data else None
+        if not memory:
+            return None
+
+        memory_message = {
+            "role": "system",
+            "content": HINDSIGHT_CONTEXT_PROMPT.format(memory=memory),
+        }
+        new_messages = list(messages)
+        insert_at = 0
+        for msg in new_messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                insert_at += 1
+            else:
+                break
+        new_messages.insert(insert_at, memory_message)
+        logger.info("Hindsight recalled memory for bank %s", self.bank_id_for(user_id))
+        return new_messages
 
     def get_source_name(self) -> str:
         return "Hindsight Memory"
@@ -85,23 +252,23 @@ class HindsightMemoryPlugin(Plugin):
         ]
 
     async def execute(self, function_name: str, helper: Any, **kwargs) -> Dict:
-        if not getattr(helper, "is_hindsight_enabled", lambda: False)():
+        if not self.is_active:
             return {"error": "Hindsight memory is not configured."}
 
         user_id = kwargs.get("user_id")
         if not user_id:
             return {"error": "Telegram user_id is required for Hindsight memory."}
 
-        bank_id = helper.get_hindsight_bank_id(user_id)
-        client = helper.hindsight_client
+        bank_id = self.bank_id_for(user_id)
+        client = self.client
 
         if function_name == "recall":
             data = await client.recall(
                 bank_id,
                 str(kwargs["query"]),
-                budget=str(kwargs.get("budget") or helper.config.get("hindsight_recall_budget", "mid")),
-                max_tokens=int(kwargs.get("max_tokens") or helper.config.get("hindsight_recall_max_tokens", 4096)),
-                memory_types=helper._hindsight_memory_types(),
+                budget=str(kwargs.get("budget") or self.config.get('hindsight_recall_budget', 'mid')),
+                max_tokens=int(kwargs.get("max_tokens") or self.config.get('hindsight_recall_max_tokens', 4096)),
+                memory_types=self.memory_types,
             )
             return {
                 "bank_id": bank_id,
@@ -129,7 +296,7 @@ class HindsightMemoryPlugin(Plugin):
         if not message or not user_id:
             return
         helper = getattr(self, "openai", None)
-        if not self._is_hindsight_available(helper):
+        if not self.is_active:
             await message.reply_text("Hindsight memory is not configured.")
             return
 
@@ -164,7 +331,7 @@ class HindsightMemoryPlugin(Plugin):
         if not query or not user_id:
             return
         await query.answer()
-        if not self._is_hindsight_available(helper):
+        if not self.is_active:
             await query.edit_message_text("Hindsight memory is not configured.")
             return
         action = str(query.data or "memory:status").split(":", 1)[1]
@@ -198,10 +365,6 @@ class HindsightMemoryPlugin(Plugin):
         )
 
     @staticmethod
-    def _is_hindsight_available(helper) -> bool:
-        return bool(helper and getattr(helper, "is_hindsight_enabled", lambda: False)())
-
-    @staticmethod
     def _memory_menu() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
@@ -213,8 +376,8 @@ class HindsightMemoryPlugin(Plugin):
         ])
 
     async def _memory_status_text(self, helper, user_id: int) -> str:
-        bank_id = helper.get_hindsight_bank_id(user_id)
-        count_text = await self._memory_count_text(helper, bank_id)
+        bank_id = self.bank_id_for(user_id)
+        count_text = await self._memory_count_text(bank_id)
         return (
             f"Hindsight memory is enabled.\n"
             f"Bank: `{bank_id}`\n"
@@ -226,14 +389,14 @@ class HindsightMemoryPlugin(Plugin):
         )
 
     async def _send_memory_search(self, message, helper, user_id: int, query: str) -> None:
-        bank_id = helper.get_hindsight_bank_id(user_id)
+        bank_id = self.bank_id_for(user_id)
         try:
-            data = await helper.hindsight_client.recall(
+            data = await self.client.recall(
                 bank_id,
                 query,
-                budget=helper.config.get("hindsight_recall_budget", "mid"),
-                max_tokens=int(helper.config.get("hindsight_recall_max_tokens", 4096)),
-                memory_types=helper._hindsight_memory_types(),
+                budget=self.config.get('hindsight_recall_budget', 'mid'),
+                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
+                memory_types=self.memory_types,
             )
             summary = format_recall_results(data) or "No matching memories found."
         except Exception as exc:
@@ -241,9 +404,9 @@ class HindsightMemoryPlugin(Plugin):
         await message.reply_text(summary, parse_mode=None)
 
     async def _send_memory_export(self, message, helper, user_id: int) -> None:
-        bank_id = helper.get_hindsight_bank_id(user_id)
+        bank_id = self.bank_id_for(user_id)
         try:
-            data = await helper.hindsight_client.list_memories(bank_id, limit=1000, offset=0)
+            data = await self.client.list_memories(bank_id, limit=1000, offset=0)
             payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
             file_obj = io.BytesIO(payload)
             file_obj.name = f"hindsight_{bank_id}.json"
@@ -256,12 +419,12 @@ class HindsightMemoryPlugin(Plugin):
             await message.reply_text(f"Memory export failed: {exc}")
 
     async def _clear_memory(self, helper, user_id: int) -> None:
-        bank_id = helper.get_hindsight_bank_id(user_id)
-        await helper.hindsight_client.clear_bank(bank_id)
+        bank_id = self.bank_id_for(user_id)
+        await self.client.clear_bank(bank_id)
 
-    async def _memory_count_text(self, helper, bank_id: str) -> str:
+    async def _memory_count_text(self, bank_id: str) -> str:
         try:
-            stats = await helper.hindsight_client.stats(bank_id)
+            stats = await self.client.stats(bank_id)
             count = self._stats_memory_count(stats)
             if count is not None:
                 return str(count)
@@ -269,7 +432,7 @@ class HindsightMemoryPlugin(Plugin):
             pass
 
         try:
-            data = await helper.hindsight_client.list_memories(bank_id, limit=1000, offset=0)
+            data = await self.client.list_memories(bank_id, limit=1000, offset=0)
             count = self._stats_memory_count(data)
             if count is not None:
                 return str(count)

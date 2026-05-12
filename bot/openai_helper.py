@@ -52,7 +52,8 @@ from .model_constants import (
     QWEN,
 )
 from .llm_gateway_client import LLMGatewayClient, extract_image_result
-from .hindsight_client import HindsightClient, format_recall_results
+from .hindsight_client import format_recall_results
+from .plugins.hooks import BeforeChatRequestPayload
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
@@ -65,7 +66,6 @@ from .user_settings import (
 
 logger = logging.getLogger(__name__)
 
-HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
 THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
@@ -111,14 +111,6 @@ def _first_choice_or_raise(response):
         logger.warning("Model response has no choices")
         raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
     return choices[0]
-
-HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
-Long-term memory recalled for this Telegram user:
-{{memory}}
-
-Use this only as background context when it is relevant. If the current user message
-contradicts this memory, prefer the current message. Do not mention Hindsight or memory
-retrieval unless the user asks about it."""
 
 HINDSIGHT_EXTRACTOR_PROMPT = """Extract durable memories from the Telegram conversation.
 Return only JSON in this exact shape:
@@ -251,30 +243,10 @@ class OpenAIHelper:
         self.config.setdefault('tts_voice', 'kseniya')
         self.config.setdefault('tts_response_format', 'wav')
         self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
-        self.config.setdefault('hindsight_base_url', '')
-        self.config.setdefault('hindsight_api_token', '')
-        self.config['hindsight_enabled'] = bool(
-            self.config.get('hindsight_base_url')
-            and self.config.get('hindsight_api_token')
-        )
-        self.config.setdefault('hindsight_auto_recall', True)
-        self.config.setdefault('hindsight_auto_save', True)
-        self.config.setdefault('hindsight_namespace', 'default')
-        self.config.setdefault('hindsight_bank_prefix', 'telegram-')
-        self.config.setdefault('hindsight_recall_budget', 'mid')
-        self.config.setdefault('hindsight_recall_max_tokens', 4096)
-        self.config.setdefault('hindsight_memory_types', 'world,experience')
-        self.config.setdefault('hindsight_async_store', True)
-        self.config.setdefault('hindsight_timeout', 30.0)
-        self.config.setdefault('hindsight_max_auto_save_items', 5)
-        self.hindsight_client = None
-        if self.config['hindsight_enabled']:
-            self.hindsight_client = HindsightClient(
-                self.config.get('hindsight_base_url', ''),
-                self.config.get('hindsight_api_token', ''),
-                namespace=self.config.get('hindsight_namespace', 'default'),
-                timeout=float(self.config.get('hindsight_timeout', 30.0)),
-            )
+        # Hindsight memory config and HTTP client live in HindsightMemoryPlugin
+        # (Stage 4A migration). Plugin's initialize() mirrors defaults back to
+        # self.config for legacy reads in _prepare_hindsight_* / finalize_*
+        # (removed in 4B/4C).
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -837,16 +809,6 @@ class OpenAIHelper:
                         )
             
             memory_user_id = kwargs.get('user_id') or chat_id
-            if len(user_messages) == 0:
-                await self._prepare_hindsight_session_memory_context(
-                    chat_id,
-                    memory_user_id,
-                    query,
-                    parse_mode,
-                    temperature,
-                    max_tokens_percent,
-                    session_id,
-                )
 
             self.last_updated[chat_id] = datetime.datetime.now()
 
@@ -885,9 +847,19 @@ class OpenAIHelper:
             if (token_count > max_tokens or big_context) and self.config['big_model_to_use']:
                 model_to_use = self.config['big_model_to_use']
 
+            messages = await self._apply_before_chat_request_mutators(
+                chat_id=chat_id,
+                user_id=memory_user_id,
+                session_id=session_id,
+                request_id=kwargs.get('request_id'),
+                parse_mode=parse_mode,
+                temperature=temperature,
+                max_tokens_percent=max_tokens_percent,
+                persist=True,
+            )
             common_args = {
                 'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
-                'messages': self._messages_with_hindsight_context(chat_id),
+                'messages': messages,
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': max_tokens,
@@ -1074,7 +1046,14 @@ class OpenAIHelper:
             logger.warning("Failed to read active session for empty response retry: %s", exc)
 
         max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
-        messages = list(self._messages_with_hindsight_context(chat_id))
+        messages = await self._apply_before_chat_request_mutators(
+            chat_id=chat_id,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=None,
+            persist=False,
+        )
+        messages = list(messages)
         messages.append({
             "role": "user",
             "content": (
@@ -1120,7 +1099,14 @@ class OpenAIHelper:
             session_id,
         )
         max_tokens = self.get_max_tokens(model_to_use, 80, chat_id)
-        messages = list(self._messages_with_hindsight_context(chat_id))
+        messages = await self._apply_before_chat_request_mutators(
+            chat_id=chat_id,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=None,
+            persist=False,
+        )
+        messages = list(messages)
         messages.append({
             "role": "user",
             "content": (
@@ -1556,86 +1542,39 @@ class OpenAIHelper:
 
         yield answer, tokens_used
 
+    # Stage 4A: thin delegators to HindsightMemoryPlugin. Removed in 4C
+    # when finalize_hindsight_session_memory moves into the plugin.
+
+    def _hindsight_plugin(self):
+        pm = getattr(self, "plugin_manager", None)
+        get_plugin = getattr(pm, "get_plugin", None)
+        if not callable(get_plugin):
+            return None
+        try:
+            return get_plugin("hindsight_memory")
+        except Exception:
+            return None
+
+    @property
+    def hindsight_client(self):
+        plugin = self._hindsight_plugin()
+        return getattr(plugin, "client", None) if plugin else None
+
     def is_hindsight_enabled(self) -> bool:
-        return bool(
-            self.config.get('hindsight_enabled')
-            and self.config.get('hindsight_api_token')
-            and self.hindsight_client
-            and self.hindsight_client.enabled
-        )
+        plugin = self._hindsight_plugin()
+        return bool(plugin and getattr(plugin, "is_active", False))
 
     def get_hindsight_bank_id(self, user_id: int | str) -> str:
+        plugin = self._hindsight_plugin()
+        if plugin and hasattr(plugin, "bank_id_for"):
+            return plugin.bank_id_for(user_id)
         return f"{self.config.get('hindsight_bank_prefix', 'telegram-')}{user_id}"
 
     def _hindsight_memory_types(self) -> list[str]:
-        value = self.config.get('hindsight_memory_types', 'world,experience')
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(',') if item.strip()]
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
+        plugin = self._hindsight_plugin()
+        if plugin and hasattr(plugin, "memory_types"):
+            return list(plugin.memory_types)
         return ['world', 'experience']
-
-    async def _prepare_hindsight_session_memory_context(
-        self,
-        chat_id: int,
-        user_id: int | str,
-        query: str,
-        parse_mode: str,
-        temperature: float,
-        max_tokens_percent: int,
-        session_id: str | None,
-    ) -> None:
-        if not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_recall', True):
-            return
-        if not query or not str(query).strip():
-            return
-        if self._has_hindsight_memory_context(self.conversations.get(chat_id, [])):
-            return
-
-        try:
-            bank_id = self.get_hindsight_bank_id(user_id)
-            data = await self.hindsight_client.recall(
-                bank_id,
-                query,
-                budget=self.config.get('hindsight_recall_budget', 'mid'),
-                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
-                memory_types=self._hindsight_memory_types(),
-                trace=False,
-            )
-            memory = format_recall_results(data)
-            if memory:
-                self._insert_hindsight_memory_context(chat_id, memory)
-                self.db.save_conversation_context(
-                    chat_id,
-                    {'messages': self.conversations[chat_id]},
-                    parse_mode,
-                    temperature,
-                    max_tokens_percent,
-                    session_id,
-                    self
-                )
-                logger.info("Hindsight recalled memory for bank %s", bank_id)
-        except Exception as e:
-            logger.warning("Hindsight recall failed for chat_id=%s: %s", chat_id, e)
-
-    def _has_hindsight_memory_context(self, messages: list[dict[str, Any]]) -> bool:
-        return any(
-            msg.get("role") == "system"
-            and isinstance(msg.get("content"), str)
-            and msg["content"].startswith(HINDSIGHT_MEMORY_MARKER)
-            for msg in messages
-        )
-
-    def _insert_hindsight_memory_context(self, chat_id: int, memory: str) -> None:
-        memory_message = {
-            "role": "system",
-            "content": HINDSIGHT_CONTEXT_PROMPT.format(memory=memory),
-        }
-        messages = self.conversations[chat_id]
-        if messages and messages[0].get("role") == "system":
-            messages.insert(1, memory_message)
-        else:
-            messages.insert(0, memory_message)
 
     @staticmethod
     def _messages_with_language_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1650,6 +1589,74 @@ class OpenAIHelper:
         if messages and messages[0].get("role") == "system":
             return [messages[0], language_instruction, *messages[1:]]
         return [language_instruction, *messages]
+
+    async def _apply_before_chat_request_mutators(
+        self,
+        chat_id: int,
+        user_id: int | None,
+        session_id: str | None,
+        request_id: str | None,
+        parse_mode: str | None = None,
+        temperature: float | None = None,
+        max_tokens_percent: int | None = None,
+        persist: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Build outbound messages for a chat request.
+
+        Pipeline: repair tool-call history → snapshot with language instruction
+        → on_before_chat_request mutator chain → optional persistence of any
+        Hindsight memory injection so subsequent turns skip recall.
+        """
+        self._repair_tool_call_history(chat_id)
+        base = self._messages_with_language_instruction(self.conversations[chat_id])
+        payload = BeforeChatRequestPayload(
+            chat_id=chat_id, user_id=user_id, request_id=request_id,
+        )
+        mutated = await self.plugin_manager.apply_mutators(
+            'on_before_chat_request',
+            payload,
+            base,
+            user_id=user_id,
+        )
+        if not persist:
+            return mutated
+
+        plugin = self._hindsight_plugin()
+        if plugin is None:
+            return mutated
+        already_in_conv = any(
+            plugin.is_hindsight_memory_message(msg)
+            for msg in self.conversations[chat_id]
+        )
+        if already_in_conv:
+            return mutated
+        injected = next(
+            (msg for msg in mutated if plugin.is_hindsight_memory_message(msg)),
+            None,
+        )
+        if injected is None:
+            return mutated
+        conv = self.conversations[chat_id]
+        if conv and conv[0].get("role") == "system":
+            conv.insert(1, injected)
+        else:
+            conv.insert(0, injected)
+        try:
+            self.db.save_conversation_context(
+                chat_id,
+                {'messages': conv},
+                parse_mode,
+                temperature,
+                max_tokens_percent,
+                session_id,
+                self,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to persist hindsight memory message for chat_id=%s: %s",
+                chat_id, exc,
+            )
+        return mutated
 
     @staticmethod
     def _tool_call_ids(message: dict[str, Any]) -> list[str]:
@@ -1727,10 +1734,6 @@ class OpenAIHelper:
 
         if changed:
             self.conversations[chat_id] = repaired
-
-    def _messages_with_hindsight_context(self, chat_id: int) -> list[dict[str, Any]]:
-        self._repair_tool_call_history(chat_id)
-        return self._messages_with_language_instruction(self.conversations[chat_id])
 
     async def finalize_hindsight_session_memory(
         self,
@@ -2497,8 +2500,9 @@ class OpenAIHelper:
             if hasattr(self, 'gateway_client') and self.gateway_client:
                 await self.gateway_client.close()
                 logger.info("LLMGateway client closed successfully")
-            if hasattr(self, 'hindsight_client') and self.hindsight_client:
-                await self.hindsight_client.close()
+            client = self.hindsight_client  # property -> plugin.client (Stage 4A)
+            if client is not None:
+                await client.close()
                 logger.info("Hindsight client closed successfully")
         except Exception as e:
             logger.error(f"Error closing OpenAI client: {e}")

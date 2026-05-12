@@ -190,6 +190,8 @@ def main():
 
     # Setup and run ChatGPT and Telegram bot
     plugin_manager = PluginManager(config=plugin_config)
+    # Stage 4A: expose openai_config keys to plugins via get_config_prefix().
+    plugin_manager.config.update(openai_config)
     db = Database()
     plugin_manager.set_db(db)
     # Stage 0 hook wiring: plugins may declare DDL via Plugin.register_schema().

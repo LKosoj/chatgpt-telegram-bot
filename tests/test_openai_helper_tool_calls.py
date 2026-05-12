@@ -140,6 +140,9 @@ class DummyPluginManager:
         plugin_name = function_name.split(".", 1)[0]
         return plugin_name in allowed_plugins
 
+    async def apply_mutators(self, event_name, payload, value, *, user_id=None):
+        return value
+
 
 class DummyClient:
     def __init__(self, responses=None):
@@ -598,7 +601,7 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
     )
 
 
-def test_messages_with_hindsight_context_repairs_incomplete_tool_call_history():
+def test_repair_tool_call_history_emits_synthetic_tool_result():
     helper = _make_helper(DummyPluginManager({}))
     helper.conversations[1] = [
         {"role": "system", "content": "agent-mode", "mode_key": "skills_agent"},
@@ -617,7 +620,8 @@ def test_messages_with_hindsight_context_repairs_incomplete_tool_call_history():
         {"role": "user", "content": "continue"},
     ]
 
-    messages = helper._messages_with_hindsight_context(1)
+    helper._repair_tool_call_history(1)
+    messages = helper._messages_with_language_instruction(helper.conversations[1])
 
     synthetic_tool_result = helper.conversations[1][2]
     assert synthetic_tool_result["role"] == "tool"

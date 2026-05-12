@@ -56,6 +56,9 @@ for _module_name in _INSERTED_MODULES:
 
 
 class FakePluginManager:
+    def __init__(self):
+        self.config = {}
+
     def set_openai(self, openai):
         self.openai = openai
 

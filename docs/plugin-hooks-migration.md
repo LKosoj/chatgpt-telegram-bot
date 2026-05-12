@@ -290,33 +290,45 @@ Code-review: **APPROVE** после применения 6 should-fix:
 
 ~1000-1500 строк, высокая сложность, **высокий риск**. Разбит на 3 подкоммита; состояние рабочее после каждого.
 
-### Подэтап 4A — клиент и конфиг
+### Подэтап 4A — клиент и конфиг ✅
 
-- [ ] `from .hindsight_client import HindsightClient` удалён из `bot/openai_helper.py:55`.
-- [ ] Конструктор клиента (`openai_helper.py:272-279`) уехал в `HindsightMemoryPlugin.initialize`.
-- [ ] `HindsightMemoryPlugin.get_config_prefix() = 'hindsight_'`.
-- [ ] 14 ключей `hindsight_*` (`openai_helper.py:256-271`) переданы плагину через config-segment.
-- [ ] `setdefault`-блок (`:256-271`) удалён из `OpenAIHelper`. Дефолты ставит плагин в `initialize` **до** их чтения.
-- [ ] Удалены из `OpenAIHelper`:
-  - [ ] `self.hindsight_client` (`:272`)
-  - [ ] `is_hindsight_enabled` (`:1565`)
-  - [ ] `get_hindsight_bank_id` (`:1573`)
-  - [ ] `_hindsight_memory_types` (`:1576`)
-- [ ] Обращения внутри плагина (`bot/plugins/hindsight_memory.py:88, 95, 96, 102-104, 132, 167, 201, 216, 229, 231, 244, 246, 259, 260, 264, 272`) переключены на `self.client` / `self.is_active` / `self.bank_id_for(user_id)` / `self._memory_types`.
+- [x] `from .hindsight_client import HindsightClient` удалён из `bot/openai_helper.py:55`.
+- [x] Конструктор клиента (`openai_helper.py:272-279`) уехал в `HindsightMemoryPlugin.initialize`.
+- [x] `HindsightMemoryPlugin.get_config_prefix() = 'hindsight_'`.
+- [x] 13 ключей `hindsight_*` (`openai_helper.py:256-271`; 12 настраиваемых + вычисляемый `hindsight_enabled`) переданы плагину через config-segment.
+- [x] `setdefault`-блок (`:256-271`) удалён из `OpenAIHelper`. Дефолты ставит плагин в `initialize` **до** их чтения.
+- [x] `self.hindsight_client` (`:272`) удалён как атрибут; превращён в `@property`-делегатор к `plugin.client` (Стратегия A — shim, удаляется в 4B/4C).
+- [x] `is_hindsight_enabled` (`:1565`), `get_hindsight_bank_id` (`:1573`), `_hindsight_memory_types` (`:1576`) превращены в shim-делегаторы к плагину (тонкие, удаляются в 4B/4C вместе с потребителями `_prepare_hindsight_session_memory_context`/`finalize_hindsight_session_memory`).
+- [x] Обращения внутри плагина (`bot/plugins/hindsight_memory.py:88, 95, 96, 102-104, 132, 167, 201, 216, 229, 231, 244, 246, 259, 260, 264, 272`) переключены на `self.client` / `self.is_active` / `self.bank_id_for(user_id)` / `self.memory_types`.
+- [x] 5 потребителей в `bot/telegram_bot.py` (`:454`, `:489`, `:850`, `:1396`, `:3334`) переведены на чтение через плагин.
+- [x] `bot/__main__.py`: `plugin_manager.config.update(openai_config)` после конструирования PluginManager — необходимое предусловие для config-segment.
+- [x] Новый `tests/test_hindsight_plugin_init.py` (6 тестов): дефолты, overrides, conditional client, mirror в openai.config, bank_id_for, memory_types.
+- [x] Адаптированы `tests/test_hindsight_memory.py`, `tests/test_hindsight_memory_plugin.py`, `tests/test_group_session_flow.py`, `tests/test_telegram_builder_config.py` под property `hindsight_client` и новый shape `DummyPluginManager.get_plugin('hindsight_memory')`.
+- [x] Pytest: **419 passed, 0 failed** (база 413 + 6 новых).
+- [x] Code-review: APPROVE, must-fix нет. Применены 2 nice-to-have: переименование теста `_14_keys` → `_13_keys` (фактическое число) и `setdefault` вместо unconditional assignment в mirror-блоке.
+- [x] **Стратегия**: A — shim-делегаторы в helper'е. Альтернативы B (inline в helper'е) и C (helper читает плагин напрямую через `get_plugin('hindsight_memory')` в каждом call-сайте) отвергнуты ради «состояние рабочее после каждого подкоммита» и минимальной coupling.
+- [x] **Backwards-compat mirror**: плагин в `initialize` зеркалирует свои 13 ключей в `openai.config` через `setdefault` — для совместимости с `_prepare_hindsight_session_memory_context` и `finalize_hindsight_session_memory`, которые остаются в helper'е до 4B/4C. Mirror снимается в 4C.
 
-### Подэтап 4B — mutator-хук
+### Подэтап 4B — mutator-хук ✅
 
-- [ ] `_prepare_hindsight_session_memory_context` (`openai_helper.py:1584-1625`) полностью переехал в `HindsightMemoryPlugin.on_before_chat_request`. **Сам recall (HTTP-вызов к Hindsight)** делается внутри mutator'а: плагин получил `messages`, сам решил, делать ли recall (по маркеру в messages), сделал, инжектнул memory, вернул.
-- [ ] `_messages_with_hindsight_context` (`:1635`) переехал в плагин.
-- [ ] **3 точки вызова** в helper'е заменены на `messages = await plugin_manager.apply_mutators('on_before_chat_request', payload, messages)`:
-  - [ ] `__common_get_chat_response`: `:896` (обслуживает и обычный, и stream-режим — `get_chat_response_stream` ходит через тот же узел).
-  - [ ] `_retry_empty_response_after_tools`: `:1083`.
-  - [ ] `_retry_empty_response_with_tools`: `:1129`.
-- [ ] **`:847`** (бывший отдельный вызов `_prepare_hindsight_session_memory_context`) — **удалён**, его логика теперь внутри mutator'а.
-- [ ] Кэш «уже сделали recall» остался в маркере внутри `messages` (текущий подход через `_has_hindsight_memory_context`), плагин stateless по `chat_id`.
-- [ ] Удалены из `OpenAIHelper`: `_insert_hindsight_memory_context`, `_messages_with_hindsight_context` (`:1737`), `_has_hindsight_memory_context`.
-- [ ] Тест на изоляцию: при исключении в `on_before_chat_request` диспетчер возвращает `messages` без изменений, ответ пользователю не страдает.
-- [ ] Тест на HTTP-сбой клиента Hindsight внутри mutator'а: плагин ловит исключение, возвращает unmodified messages, логирует.
+- [x] `_prepare_hindsight_session_memory_context` (`openai_helper.py:1584-1625`) полностью переехал в `HindsightMemoryPlugin.on_before_chat_request`. Recall (HTTP к Hindsight) делается внутри mutator'а: плагин получил `messages`, проверил маркер в messages (кэш), сделал recall, инжектнул memory-message, вернул новый список.
+- [x] `_messages_with_hindsight_context` удалён из helper'а; его роль (`repair + language + recall + persist`) теперь у общего метода `OpenAIHelper._apply_before_chat_request_mutators`.
+- [x] **3 точки вызова** в helper'е заменены на `messages = await self._apply_before_chat_request_mutators(...)`:
+  - [x] `__common_get_chat_response` (`bot/openai_helper.py:850`) — `persist=True`.
+  - [x] `_retry_empty_response_after_tools` (`:1049`) — `persist=False`.
+  - [x] `_retry_empty_response_with_tools` (`:1102`) — `persist=False`.
+- [x] **Bonus**: 2 дополнительные точки в `bot/openai_tool_handler.py` (`:310`, `:574`, retry в tool-call path) тоже переключены на `_apply_before_chat_request_mutators(..., persist=False)`. План их не упоминал, но без миграции рантайм сломался бы после удаления `_messages_with_hindsight_context`.
+- [x] Отдельный вызов `_prepare_*` (`:821`) удалён, логика внутри mutator'а.
+- [x] Кэш «уже сделали recall» — маркер в `messages` (через `is_hindsight_memory_message`). Плагин stateless по chat_id; helper persist'ит маркер в `self.conversations[chat_id]` через persist-ветку `_apply_before_chat_request_mutators` (Стратегия Z).
+- [x] Удалены из `OpenAIHelper`: `_insert_hindsight_memory_context`, `_messages_with_hindsight_context`, `_has_hindsight_memory_context`, `_prepare_hindsight_session_memory_context`, константы `HINDSIGHT_MEMORY_MARKER`, `HINDSIGHT_CONTEXT_PROMPT`.
+- [x] Константы и хелпер `is_hindsight_memory_message` переехали в `bot/plugins/hindsight_memory.py` (вместо импорта маркера helper'ом — публичный метод плагина).
+- [x] Тест на изоляцию: `tests/test_hindsight_mutator.py::test_apply_mutators_isolates_plugin_exception` — при исключении в `on_before_chat_request` диспетчер возвращает оригинальный value, цепочка продолжается.
+- [x] Тест на HTTP-сбой: `tests/test_hindsight_mutator.py::test_mutator_returns_none_on_http_failure` — плагин ловит `client.recall` exception, возвращает `None`, логирует warning.
+- [x] Дополнительные тесты mutator'а: успешный recall+inject, кэш-hit, inactive, auto_recall=False, no user message, empty recall. Всего **8 новых тестов** в `tests/test_hindsight_mutator.py`.
+- [x] Адаптированы: `tests/test_openai_helper_tool_calls.py` (тест `_messages_with_hindsight_context_repairs_*` переименован и переключён на `_repair_tool_call_history` + `_messages_with_language_instruction`; добавлена identity-заглушка `apply_mutators` в DummyPluginManager), `tests/test_hindsight_memory.py` (`DummyPluginManager.apply_mutators` делегирует на лениво-кэшированный плагин), `tests/test_plugin_chat_id_contract.py` (заглушка `_apply_before_chat_request_mutators` вместо `_messages_with_hindsight_context`).
+- [x] Pytest: **427 passed, 0 failed** (база 419 + 8 новых). Контрольный `test_recalled_hindsight_memory_is_persisted_once_per_session` зелёный — Стратегия Z сохраняет инвариант «1 recall на сессию».
+- [x] Code-review: APPROVE, must-fix нет. Применён 1 nice-to-have: позиция вставки маркера теперь «после **всех** leading system-сообщений», а не только после первого — устраняет тонкое поведенческое отличие на первом turn'е (раньше outbound был `[language, mode_system, MARKER, user...]`, в первой версии 4B стал `[language, MARKER, mode_system, user...]`, сейчас снова `[language, mode_system, MARKER, user...]`).
+- [x] **Стратегия Z**: helper держит state (`self.conversations`, db.save), плагин stateless по chat_id. Альтернатива X (плагин пишет в `openai.conversations`) — анти-паттерн обратной связи. Альтернатива Y (полный stateless, recall каждый раз) — поведенческая регрессия в `_retry_*` (recall дублируется), потому что persisted маркер не сохранялся бы между запросами. Z — компромисс: чистый stateless-плагин, единый владелец state.
 
 ### Подэтап 4C — schema, jobs, worker
 

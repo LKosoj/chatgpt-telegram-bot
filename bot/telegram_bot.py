@@ -451,7 +451,8 @@ class ChatGPTTelegramBot:
     async def _enqueue_hindsight_session_finalize_before_delete(self, user_id: int, session_id: str | None) -> int:
         if not session_id:
             return 0
-        if not self.openai.is_hindsight_enabled() or not self.openai.config.get('hindsight_auto_save', True):
+        plugin = self._hindsight_memory_plugin_for_user(user_id)
+        if plugin is None or not plugin.auto_save_enabled:
             return 0
 
         try:
@@ -486,7 +487,10 @@ class ChatGPTTelegramBot:
             raise RuntimeError(f"Failed to delete old sessions for user {user_id}: {session_ids}")
 
     async def _process_pending_hindsight_finalize_jobs(self, limit: int = HINDSIGHT_FINALIZE_JOB_LIMIT) -> int:
-        if not self.openai.is_hindsight_enabled() or not self.openai.config.get('hindsight_auto_save', True):
+        # Bot-wide worker: per-user disable enforced inside the plugin in 4C.
+        pm = getattr(self.openai, "plugin_manager", None)
+        plugin = pm.get_plugin("hindsight_memory") if pm and pm.has_plugin("hindsight_memory") else None
+        if plugin is None or not getattr(plugin, "is_active", False) or not getattr(plugin, "auto_save_enabled", False):
             return 0
 
         jobs = self.db.claim_hindsight_finalize_jobs(
@@ -847,9 +851,9 @@ class ChatGPTTelegramBot:
         plugin = self._hindsight_memory_plugin_for_user(user_id)
         if not plugin or user_id is None:
             return ""
-        bank_id = self.openai.get_hindsight_bank_id(user_id)
+        bank_id = plugin.bank_id_for(user_id)
         try:
-            count_text = await plugin._memory_count_text(self.openai, bank_id)
+            count_text = await plugin._memory_count_text(bank_id)
             return f"\nHindsight memory: enabled; bank `{bank_id}`; memories `{count_text}`.\n"
         except Exception as exc:
             return f"\nHindsight memory: enabled; bank `{bank_id}`; stats failed: {exc}\n"
@@ -1392,11 +1396,11 @@ class ChatGPTTelegramBot:
             not callable(has_plugin)
             or not callable(get_plugin)
             or not has_plugin('hindsight_memory')
-            or self.openai.plugin_manager.is_plugin_disabled_for_user('hindsight_memory', user_id)
-            or not getattr(self.openai, "is_hindsight_enabled", lambda: False)()
+            or plugin_manager.is_plugin_disabled_for_user('hindsight_memory', user_id)
         ):
             return None
-        return get_plugin('hindsight_memory')
+        plugin = get_plugin('hindsight_memory')
+        return plugin if getattr(plugin, "is_active", False) else None
 
     def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
         settings = self._settings_for_user(user_id)
@@ -3330,10 +3334,10 @@ class ChatGPTTelegramBot:
             self._background_tasks = [
                 asyncio.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
             ]
-            if (
-                getattr(self.openai, "is_hindsight_enabled", lambda: False)()
-                and self.openai.config.get('hindsight_auto_save', True)
-            ):
+            pm = self.openai.plugin_manager
+            plugin = pm.get_plugin("hindsight_memory") if pm.has_plugin("hindsight_memory") else None
+            if plugin is not None and getattr(plugin, "is_active", False) \
+                    and getattr(plugin, "auto_save_enabled", False):
                 self._background_tasks.append(
                     asyncio.create_task(self.hindsight_finalize_worker(), name="hindsight_finalize_worker")
                 )

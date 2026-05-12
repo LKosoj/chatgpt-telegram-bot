@@ -134,7 +134,7 @@ class FakeHelper:
     def _add_function_call_to_history(self, chat_id, function_name, content):
         self.history.append((chat_id, function_name, content))
 
-    def _messages_with_hindsight_context(self, chat_id):
+    async def _apply_before_chat_request_mutators(self, **kwargs):
         return []
 
     def get_max_tokens(self, model_to_use, max_tokens_percent, chat_id):

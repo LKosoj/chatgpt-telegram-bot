@@ -307,9 +307,16 @@ async def _retry_missing_delivery_tool(
     max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
 
+    messages = await helper._apply_before_chat_request_mutators(
+        chat_id=chat_id,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=None,
+        persist=False,
+    )
     response = await helper.client.chat.completions.create(
         model=model_to_use,
-        messages=helper._messages_with_hindsight_context(chat_id),
+        messages=messages,
         tools=tools,
         tool_choice=_delivery_tool_choice(tools),
         max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
@@ -564,9 +571,16 @@ async def handle_function_call(
 
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
 
+        messages = await helper._apply_before_chat_request_mutators(
+            chat_id=chat_id,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=None,
+            persist=False,
+        )
         response = await helper.client.chat.completions.create(
             model=model_to_use,
-            messages=helper._messages_with_hindsight_context(chat_id),
+            messages=messages,
             tools=tools,
             tool_choice='auto' if times < helper.config['functions_max_consecutive_calls'] else 'none',
             max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),

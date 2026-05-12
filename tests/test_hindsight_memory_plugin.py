@@ -17,6 +17,8 @@ from bot.plugins.hindsight_memory import HindsightMemoryPlugin
 
 
 class FakeHindsightClient:
+    enabled = True
+
     def __init__(self):
         self.cleared = []
         self.stats_payload = {"memory_count": 3}
@@ -36,26 +38,21 @@ class FakeHindsightClient:
         return {"results": [{"text": f"match {query}", "type": "world"}], "bank_id": bank_id}
 
 
-class FakeHelper:
-    def __init__(self):
-        self.hindsight_client = FakeHindsightClient()
-        self.config = {"hindsight_recall_budget": "mid", "hindsight_recall_max_tokens": 4096}
-
-    def is_hindsight_enabled(self):
-        return True
-
-    def get_hindsight_bank_id(self, user_id):
-        return f"telegram-{user_id}"
-
-    def _hindsight_memory_types(self):
-        return ["world", "experience"]
+def _make_plugin_with_fake_client():
+    """Build an initialized plugin with a FakeHindsightClient swapped in."""
+    plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={
+        'hindsight_base_url': 'http://x',
+        'hindsight_api_token': 't',
+    })
+    plugin.client = FakeHindsightClient()
+    return plugin
 
 
 @pytest.mark.asyncio
 async def test_hindsight_memory_status_export_and_clear():
-    plugin = HindsightMemoryPlugin()
-    helper = FakeHelper()
-    plugin.initialize(openai=helper)
+    plugin = _make_plugin_with_fake_client()
+    helper = SimpleNamespace()
     message = SimpleNamespace(
         reply_text=AsyncMock(),
         reply_document=AsyncMock(),
@@ -68,21 +65,20 @@ async def test_hindsight_memory_status_export_and_clear():
     assert "Hindsight memory is enabled" in status
     assert "Memories: `3`" in status
     message.reply_document.assert_awaited_once()
-    assert helper.hindsight_client.cleared == ["telegram-42"]
+    assert plugin.client.cleared == ["telegram-42"]
 
 
 @pytest.mark.asyncio
 async def test_hindsight_memory_status_falls_back_to_list_count():
-    plugin = HindsightMemoryPlugin()
-    helper = FakeHelper()
-    helper.hindsight_client.stats_payload = {"documents": 1}
-    helper.hindsight_client.memories_payload = {
+    plugin = _make_plugin_with_fake_client()
+    plugin.client.stats_payload = {"documents": 1}
+    plugin.client.memories_payload = {
         "items": [
             {"id": "m1", "text": "Remember this"},
             {"id": "m2", "text": "Remember that"},
         ]
     }
-    plugin.initialize(openai=helper)
+    helper = SimpleNamespace()
 
     status = await plugin._memory_status_text(helper, 42)
 
@@ -91,9 +87,8 @@ async def test_hindsight_memory_status_falls_back_to_list_count():
 
 @pytest.mark.asyncio
 async def test_hindsight_memory_search_uses_recall():
-    plugin = HindsightMemoryPlugin()
-    helper = FakeHelper()
-    plugin.initialize(openai=helper)
+    plugin = _make_plugin_with_fake_client()
+    helper = SimpleNamespace()
     message = SimpleNamespace(reply_text=AsyncMock())
 
     await plugin._send_memory_search(message, helper, 42, "project")
