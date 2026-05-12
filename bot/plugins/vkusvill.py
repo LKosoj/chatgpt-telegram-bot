@@ -202,8 +202,7 @@ class VkusVillPlugin(Plugin):
                     "nutrition, step-by-step instructions, and photos. Real recipes with ingredients "
                     "linkable to a shopping cart via cart_link_create. Use when the user wants to "
                     "cook from VkusVill products, build a shopping list, or asks for popular/seasonal "
-                    "recipes from the catalog. For AI-generated custom recipes by ingredients use "
-                    "get_recipe instead. Call with page=1 to get the list of available filters."
+                    "recipes from the catalog. Call with page=1 to get the list of available filters."
                 ),
                 "parameters": {
                     "type": "object",

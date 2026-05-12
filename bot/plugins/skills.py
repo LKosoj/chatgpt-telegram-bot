@@ -420,7 +420,8 @@ class SkillsPlugin(Plugin):
                 "description": (
                     "Run a tool-capable subagent declared by a skill under agents/*.yaml. "
                     "Use when a skill exposes a specialist agent profile for the task. "
-                    "The skill agent is executed through agent_tools.run_subagents, so agent_tools must be enabled."
+                    "Fails with a clear error if the underlying subagent runtime is unavailable "
+                    "in the current chat mode."
                 ),
                 "parameters": {
                     "type": "object",
@@ -447,7 +448,7 @@ class SkillsPlugin(Plugin):
                         },
                         "model": {
                             "type": "string",
-                            "description": "Optional model override accepted by agent_tools.run_subagents.",
+                            "description": "Optional subagent model override. Validated against the active runtime.",
                         },
                         "temperature": {
                             "type": "number",
@@ -491,10 +492,9 @@ class SkillsPlugin(Plugin):
                 "name": "deactivate_skill",
                 "description": (
                     "Mark an active skill as completed and free its in-memory state. "
-                    "Use when the skill workflow is finished and you do not need its state anymore. "
-                    "Final delivery to the user is done separately via agent_tools.deliver_to_user, "
-                    "which auto-deactivates any still-active skills, so explicit deactivation is "
-                    "only needed mid-workflow."
+                    "Use mid-conversation when the skill workflow is finished and its state is no "
+                    "longer needed. Active skills are also released automatically when the agent "
+                    "loop ends, so explicit deactivation is only needed before that."
                 ),
                 "parameters": {
                     "type": "object",

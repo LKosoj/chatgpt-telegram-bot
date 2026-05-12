@@ -117,9 +117,8 @@ class CodeInterpreterPlugin(Plugin):
             "name": "deep_analysis",
             "description": (
                 "Run Python data analysis in a sandboxed Jupyter-style environment "
-                "(pandas, numpy, matplotlib, sympy). Use for numeric calculations, plots/charts, "
-                "statistics, data transformations, ML inference. Do NOT use to run shell commands "
-                "or pre-existing scripts — use terminal for that."
+                "(pandas, numpy, matplotlib, plotly, sympy). Use for numeric and symbolic math, "
+                "data manipulation, statistics, matplotlib/plotly plots, and ML inference."
             ),
             "parameters": {
                 "type": "object",

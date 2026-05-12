@@ -15,7 +15,7 @@ class PromptPerfectPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "optimize_prompt",
-            "description": "Optimize and refine a user prompt to get the best possible response from ChatGPT",
+            "description": "Rewrite the user's raw prompt into a clearer, more specific instruction and return the model's answer to that rewritten prompt.",
             "parameters": {
                 "type": "object",
                 "properties": {

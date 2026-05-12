@@ -34,14 +34,29 @@ class GitHubCodeAnalysisPlugin(Plugin):
         return [
             {
                 'name': 'analyze_github_code',
-                'description': 'Analyze the code from a GitHub repository and provide insights',
+                'description': (
+                    'Analyze code from a GitHub repository: fetches the file (or repository '
+                    'overview when path is empty) via the GitHub API and runs an LLM analysis '
+                    'against the user\'s question. Use when the user wants insights about '
+                    'code structure, quality, or behavior of a specific repo/file.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
-                        "prompt": {"type": "string", "description": "Text prompt"},
-                        'owner': {'type': 'string', 'description': 'Repository owner'},
-                        'repo': {'type': 'string', 'description': 'Repository name'},
-                        'path': {'type': 'string', 'description': 'File path (optional)', 'default': ''},
+                        "prompt": {
+                            "type": "string",
+                            "description": (
+                                "User\'s analysis question or instruction, e.g. 'find potential "
+                                "bugs', 'explain the auth flow', 'summarize what this file does'."
+                            ),
+                        },
+                        'owner': {'type': 'string', 'description': 'Repository owner (GitHub username or organization).'},
+                        'repo': {'type': 'string', 'description': 'Repository name.'},
+                        'path': {
+                            'type': 'string',
+                            'description': 'Path to a specific file inside the repository. Leave empty to fetch the repo root listing.',
+                            'default': '',
+                        },
                     },
                     'required': ['prompt', 'owner', 'repo'],
                 },

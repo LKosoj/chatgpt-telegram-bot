@@ -24,7 +24,7 @@ class WebResearchPlugin(Plugin):
                 'description': (
                     'In-depth research on a topic: pulls and synthesizes multiple web sources, '
                     'returns a long-form summary with citations. Use when the user asks to explain, '
-                    'compare, summarize, or write an overview. Slower and more expensive than web_search.'
+                    'compare, summarize, or write an overview.'
                 ),
                 'parameters': {
                     'type': 'object',

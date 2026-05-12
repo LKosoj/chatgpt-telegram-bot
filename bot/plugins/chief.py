@@ -36,8 +36,8 @@ class ChiefPlugin(Plugin):
             "description": (
                 "AI-generated cooking recipe by ingredients and preferences. Use when the user "
                 "lists ingredients they have, asks for a custom recipe by description, or wants "
-                "creative suggestions. For real recipes from the VkusVill grocery catalog with a "
-                "shopping-cart link use vkusvill.recipes instead."
+                "creative culinary suggestions. Returns a freshly AI-generated recipe with steps "
+                "and substitutions."
             ),
             "parameters": {
                 "type": "object",

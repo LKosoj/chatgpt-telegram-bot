@@ -28,8 +28,7 @@ class DDGWebSearchPlugin(Plugin):
             "name": "web_search",
             "description": (
                 "Quick web search for one concrete fact, current news, or local/regional info. "
-                "Returns short result snippets. For broad topic synthesis use research_articles; "
-                "for math, unit conversions, or precise scientific facts use answer_with_wolfram_alpha."
+                "Returns short result snippets with title, url, and excerpt."
             ),
             "parameters": {
                 "type": "object",

@@ -247,8 +247,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 "name": "convert_image_to_video",
                 "description": (
                     "Animate a still image into a short video. Use when the user has an image "
-                    "and wants it animated. For editing an image into another still image use "
-                    "edit_image; for generating an image from text use stable_diffusion."
+                    "and wants it turned into motion/animation."
                 ),
                 "parameters": {
                     "type": "object",

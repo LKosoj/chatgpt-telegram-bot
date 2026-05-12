@@ -17,8 +17,7 @@ class WebsiteContentPlugin(Plugin):
                 'name': 'website_content',
                 'description': (
                     'Fetch and clean the body text and title of a regular web page (article, blog, docs). '
-                    'Use only when you already have a specific URL. For YouTube URLs use '
-                    'youtube_video_transcript instead; for topic research without a URL use research_articles.'
+                    'Use only when you already have a specific URL to a text/HTML page.'
                 ),
                 'parameters': {
                     'type': 'object',

@@ -193,7 +193,14 @@ class TextDocumentQAPlugin(Plugin):
             },
         }, {
             "name": "set_rag_mode",
-            "description": "Enable or disable RAG mode for this Telegram chat.",
+            "description": (
+                "Enable or disable persistent RAG mode for this Telegram chat. When enabled, "
+                "every subsequent user text message is automatically answered against the "
+                "uploaded documents in this chat's workspace (equivalent to calling "
+                "ask_workspace each time), without the user having to invoke a tool. "
+                "When disabled, the chat returns to the normal conversational flow. "
+                "Call only when the user explicitly asks to switch document/RAG mode on or off."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

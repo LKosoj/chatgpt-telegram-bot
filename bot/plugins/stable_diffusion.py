@@ -22,8 +22,7 @@ class StableDiffusionPlugin(Plugin):
                 "name": "stable_diffusion",
                 "description": (
                     "Generate a NEW image from a text prompt (AI image generation). Use when the "
-                    "user wants an original/custom image. Do NOT use to find existing photos — "
-                    "use search_images for that."
+                    "user wants an original/custom/artistic image created from scratch."
                 ),
                 "parameters": {
                     "type": "object",
@@ -37,8 +36,7 @@ class StableDiffusionPlugin(Plugin):
                 "name": "edit_image",
                 "description": (
                     "Edit an existing image with text instructions (AI image-to-image). Use when "
-                    "the user has an image (URL) and wants to modify it. For converting an image "
-                    "into a short video use convert_image_to_video."
+                    "the user has an image (URL) and wants it modified into another still image."
                 ),
                 "parameters": {
                     "type": "object",

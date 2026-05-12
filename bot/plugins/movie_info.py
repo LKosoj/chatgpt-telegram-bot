@@ -37,7 +37,11 @@ class MovieInfoPlugin(Plugin):
         return [
             {
                 'name': 'get_new_movies',
-                'description': 'Get a list of newly released movies from TMDb.',
+                'description': (
+                    'List newly-released movies from TMDb now_playing. Returns a raw flat list '
+                    'of titles with release dates, genres and ratings — no ranking or commentary. '
+                    'Use when the user asks "what is in cinemas / what new movies are out".'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
@@ -56,7 +60,13 @@ class MovieInfoPlugin(Plugin):
             },
             {
                 'name': 'get_movie_recommendations',
-                'description': 'Get AI-driven movie recommendations from TMDb data.',
+                'description': (
+                    'Pick the best movies to watch from recent TMDb releases by analyzing critic '
+                    'reviews and ratings with an LLM. Returns a ranked recommendation with '
+                    'reasoning. Slower and more expensive than the raw new-movies listing — '
+                    'use only when the user explicitly asks "what should I watch / recommend me '
+                    'something".'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {

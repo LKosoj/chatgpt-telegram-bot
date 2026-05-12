@@ -33,8 +33,7 @@ class TerminalPlugin(Plugin):
                 "commands like 'node /tmp/x.js && ls /tmp/' work as written. "
                 "Pass shell=false to bypass the shell and exec a single program directly. "
                 "Use for shell workflows: pipes, redirects, file-system operations, invoking "
-                "installed CLI tools, running existing scripts. Do NOT use for general Python "
-                "data analysis — use deep_analysis instead."
+                "installed CLI tools, running existing scripts."
             ),
             "parameters": {
                 "type": "object",

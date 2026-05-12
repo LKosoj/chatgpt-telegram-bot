@@ -16,9 +16,8 @@ class DDGImageSearchPlugin(Plugin):
         return [{
             "name": "search_images",
             "description": (
-                "Search for existing images on the web (photos, gifs). Use to find real photos of "
-                "a person/place/thing, or to find a meme/gif. To generate a NEW image from a text "
-                "prompt use stable_diffusion."
+                "Search for existing images on the web (real photos, gifs, memes). Use to find "
+                "actual photographs of a person/place/thing or to retrieve an existing image."
             ),
             "parameters": {
                 "type": "object",
