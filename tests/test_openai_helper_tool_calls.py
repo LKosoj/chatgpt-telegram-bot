@@ -340,12 +340,15 @@ async def test_edit_telegram_image_uses_configured_image_model():
 
 
 def test_hindsight_memory_parser_preserves_full_fields():
-    helper = _make_helper(DummyPluginManager({}))
+    from bot.plugins.hindsight_memory import HindsightMemoryPlugin
+
+    plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={})
     content = "memory-" + ("x" * 2500)
     context = "context-" + ("y" * 700)
     tag = "tag-" + ("z" * 120)
 
-    items = helper._parse_hindsight_memory_items(json.dumps({
+    items = plugin._parse_hindsight_memory_items(json.dumps({
         "items": [{
             "content": content,
             "context": context,

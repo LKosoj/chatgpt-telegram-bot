@@ -29,6 +29,14 @@ class Plugin(ABC):
         """Optional lifecycle hook for plugin shutdown."""
         return None
 
+    async def close_async(self) -> None:
+        """Async cleanup hook called by PluginManager.close_all_async() on shutdown.
+
+        Default no-op. Plugins owning httpx clients or background queues should
+        override this to await proper teardown (close clients, drain queues, etc.).
+        """
+        return None
+
     async def on_startup(self, application: Any) -> None:
         """Optional async hook called once after the Telegram application is ready."""
         return None
@@ -62,8 +70,13 @@ class Plugin(ABC):
 
     async def contribute_prompt_fragment(
         self, slot: str, payload: Any
-    ) -> str | None:
-        """Collector hook: contribute a string fragment for a named prompt slot."""
+    ) -> Any | None:
+        """Collector hook: contribute a fragment (string or object) for a named slot.
+
+        Returns ``str`` for prompt-string slots (consumed by ``collect_fragments``),
+        or any non-None object for richer slots (consumed by ``collect_objects``).
+        Returning ``None`` opts out of the slot.
+        """
         return None
 
     def get_background_tasks(self) -> list:

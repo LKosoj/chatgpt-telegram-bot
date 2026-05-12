@@ -83,3 +83,16 @@ class PromptFragmentPayload:
     chat_id: int
     user_id: int | None
     query: str
+
+
+@dataclass(frozen=True, slots=True)
+class StatsBlockPayload:
+    user_id: int | None
+    chat_id: int | None
+    bot_language: str
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsMenuPayload:
+    user_id: int | None
+    bot_language: str

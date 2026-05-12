@@ -10,8 +10,8 @@ import pytest
 pytest.importorskip("tiktoken")
 
 from bot.hindsight_client import HindsightClient, format_recall_results
-from bot.openai_helper import HINDSIGHT_EXTRACTOR_PROMPT, OpenAIHelper
-from bot.plugins.hindsight_memory import HindsightMemoryPlugin
+from bot.openai_helper import OpenAIHelper
+from bot.plugins.hindsight_memory import HINDSIGHT_EXTRACTOR_PROMPT, HindsightMemoryPlugin
 from bot.telegram_bot import ChatGPTTelegramBot
 
 
@@ -200,6 +200,9 @@ def make_helper():
     helper.client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
     helper.fake_completions = completions
     helper.conversations[1] = [{"role": "system", "content": "system prompt"}]
+    # Wire the hindsight plugin to use this helper as its openai backend so the
+    # plugin's _extract_hindsight_memory_items can find the fake completions.
+    helper.plugin_manager.get_plugin("hindsight_memory").openai = helper
     return helper
 
 
@@ -269,7 +272,8 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
 
 def test_hindsight_memory_parser_skips_sensitive_content():
     helper = make_helper()
-    items = helper._parse_hindsight_memory_items(json.dumps({
+    plugin = helper.plugin_manager.get_plugin("hindsight_memory")
+    items = plugin._parse_hindsight_memory_items(json.dumps({
         "items": [
             {"content": "User prefers concise Python examples.", "context": "profile", "tags": ["preference"]},
             {"content": "The API token is ai-serv-example", "context": "secret"},
@@ -364,7 +368,7 @@ async def test_hindsight_session_finalize_is_enqueued_before_delete():
     bot.db = DummyDB()
     bot.openai = SlowFinalizeOpenAI()
 
-    job_id = await bot._enqueue_hindsight_session_finalize_before_delete(123, "session-1")
+    job_id = await bot._dispatch_session_before_delete(123, "session-1")
 
     assert job_id == 1
     assert bot.db.jobs == [(123, "session-1", bot.db.context["messages"])]

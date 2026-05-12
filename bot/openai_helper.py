@@ -112,30 +112,6 @@ def _first_choice_or_raise(response):
         raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
     return choices[0]
 
-HINDSIGHT_EXTRACTOR_PROMPT = """Extract durable memories from the Telegram conversation.
-Return only JSON in this exact shape:
-{"items":[{"content":"...","context":"...","tags":["..."]}]}
-
-Save only facts that are clearly durable and likely useful in future conversations with the same user:
-- explicit "remember this" facts;
-- stable user preferences, identity details, long-term goals, ongoing projects, durable constraints, and decisions;
-- important project facts or agreements that should survive across sessions.
-
-Do not infer preferences from weak signals. For example, do not save "user prefers Russian"
-only because the conversation is in Russian; save it only if the user explicitly says it or clearly corrects the assistant.
-
-Do not save one-off tasks or transient requests: image generation/editing requests, uploaded-image descriptions,
-audio/transcription requests, web searches, debugging logs, single SQL questions, generic chit-chat, or temporary commands.
-Do not save passwords, API keys, tokens, secrets, credentials, private auth data, or facts contradicted inside the exchange.
-
-Examples to reject:
-- User asked to draw or edit a cat with a hat.
-- User asked what is shown in an uploaded image.
-- User asked one isolated technical question and got an answer.
-
-When in doubt, save nothing.
-If there is nothing worth saving, return {"items":[]}."""
-
 REPLY_INTENT_CLASSIFIER_PROMPT = """Classify a Telegram user's reply intent.
 Return only JSON in this exact shape: {"intent":"<one of: image_edit, image_describe, text_reply>"}
 
@@ -1744,175 +1720,31 @@ class OpenAIHelper:
         raise_on_error: bool = False,
         async_store: bool | None = None,
     ) -> int:
-        if not session_id or not self.is_hindsight_enabled() or not self.config.get('hindsight_auto_save', True):
+        """Stage 4C-2 shim: read messages from DB if missing, delegate to plugin."""
+        plugin = self._hindsight_plugin()
+        if plugin is None:
             return 0
-
-        try:
-            if messages is None:
+        if not session_id:
+            return 0
+        if messages is None:
+            try:
                 context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self)
                 messages = context.get('messages', []) if isinstance(context, dict) else []
-            transcript = self._session_transcript_for_hindsight(messages)
-            if not transcript:
+            except Exception as e:
+                logger.warning(
+                    "Hindsight finalize: failed to load session %s for user_id=%s: %s",
+                    session_id, user_id, e,
+                )
+                if raise_on_error:
+                    raise
                 return 0
-
-            items = await self._extract_hindsight_memory_items(transcript)
-            if not items:
-                return 0
-
-            await self._retain_hindsight_items(
-                user_id=user_id,
-                chat_id=user_id,
-                session_id=session_id,
-                items=items,
-                mode="session_close",
-                document_id=f"telegram-{user_id}-{session_id}-final",
-                async_store=async_store,
-            )
-            return len(items)
-        except Exception as e:
-            logger.warning("Hindsight session finalize failed for user_id=%s session_id=%s: %s", user_id, session_id, e)
-            if raise_on_error:
-                raise
-            return 0
-
-    def _session_transcript_for_hindsight(self, messages: list[dict[str, Any]]) -> str:
-        lines = []
-        for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role == "system":
-                continue
-            if isinstance(content, list):
-                text = json.dumps(content, ensure_ascii=False)
-            else:
-                text = str(content or "")
-            text = text.strip()
-            if not text:
-                continue
-            lines.append(f"{role}: {text}")
-        return "\n\n".join(lines)
-
-    async def _retain_hindsight_items(
-        self,
-        chat_id: int,
-        user_id: int,
-        items: list[dict[str, Any]],
-        session_id: str | None,
-        mode: str,
-        document_id: str | None = None,
-        async_store: bool | None = None,
-    ) -> None:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        bank_id = self.get_hindsight_bank_id(user_id)
-        normalized = []
-        for item in items:
-            tags = item.get("tags") if isinstance(item.get("tags"), list) else []
-            tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-            for tag in ("telegram", "auto_memory", f"user:{user_id}"):
-                if tag not in tags:
-                    tags.append(tag)
-
-            normalized.append({
-                "content": item["content"],
-                "context": item.get("context") or "Auto-extracted from a Telegram bot conversation.",
-                "document_id": document_id or f"telegram-{user_id}-{session_id or chat_id}-{uuid.uuid4().hex}",
-                "timestamp": now,
-                "tags": tags,
-                "metadata": {
-                    "source": "telegram_bot",
-                    "chat_id": str(chat_id),
-                    "user_id": str(user_id),
-                    "session_id": str(session_id or ""),
-                    "mode": mode,
-                },
-            })
-
-        await self.hindsight_client.retain_memories(
-            bank_id,
-            normalized,
-            async_store=bool(self.config.get('hindsight_async_store', True)) if async_store is None else async_store,
+        return await plugin.finalize_session_memory(
+            user_id,
+            session_id,
+            messages,
+            raise_on_error=raise_on_error,
+            async_store=async_store,
         )
-        logger.info("Saved %s Hindsight memory item(s) to bank %s", len(normalized), bank_id)
-
-    async def _extract_hindsight_memory_items(self, transcript: str) -> list[dict[str, Any]]:
-        messages = [
-            {"role": "system", "content": HINDSIGHT_EXTRACTOR_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "<session_transcript>\n"
-                    f"{transcript}\n"
-                    "</session_transcript>"
-                ),
-            },
-        ]
-        response = await self.client.chat.completions.create(
-            model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
-            messages=messages,
-            temperature=0.0,
-            max_tokens=4000,
-            response_format={"type": "json_object"},
-            stream=False,
-            extra_headers={ "X-Title": "tgBot" },
-        )
-        content = _first_choice_or_raise(response).message.content or ""
-        items = self._parse_hindsight_memory_items(content)
-        if not items:
-            logger.info("Hindsight extractor returned no memory items. content_preview=%r", content[:300])
-        return items
-
-    def _parse_hindsight_memory_items(self, content: str) -> list[dict[str, Any]]:
-        text = (content or "").strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            return []
-
-        try:
-            data = json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            return []
-
-        raw_items = data.get("items") if isinstance(data, dict) else None
-        if not isinstance(raw_items, list):
-            return []
-
-        max_items = int(self.config.get('hindsight_max_auto_save_items', 5))
-        items = []
-        for item in raw_items[:max_items]:
-            if not isinstance(item, dict):
-                continue
-            content_text = str(item.get("content") or "").strip()
-            if not content_text or self._looks_sensitive_memory(content_text):
-                continue
-            parsed = {
-                "content": content_text,
-                "context": str(item.get("context") or "").strip(),
-            }
-            tags = item.get("tags")
-            if isinstance(tags, list):
-                parsed["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
-            items.append(parsed)
-        return items
-
-    def _looks_sensitive_memory(self, content: str) -> bool:
-        lowered = content.lower()
-        sensitive_markers = (
-            "api key",
-            "api_key",
-            "bearer ",
-            "password",
-            "secret",
-            "token",
-            "credential",
-            "пароль",
-            "секрет",
-            "токен",
-            "ключ api",
-            "sk-",
-            "ai-serv-",
-        )
-        return any(marker in lowered for marker in sensitive_markers)
 
     async def _chat_lock(self, chat_id) -> asyncio.Lock:
         """Per-chat asyncio.Lock guarding mutations of self.conversations.

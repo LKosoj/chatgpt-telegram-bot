@@ -121,6 +121,7 @@ def _make_openai():
         get_available_tts_models=AsyncMock(return_value=["tts-a", "tts-b"]),
         get_available_tts_voices=AsyncMock(return_value=["alice", "bob"]),
         reset_chat_history=MagicMock(),
+        plugin_manager=FakeSettingsPluginManager(),
     )
 
 
@@ -137,6 +138,9 @@ class FakeSettingsPluginManager:
         if plugin_name == "skills":
             return self.skills_plugin
         return None
+
+    async def collect_objects(self, slot, payload, *, user_id=None):
+        return []
 
 
 def _make_bot(allowed_user_ids):
@@ -160,8 +164,8 @@ def _make_bot(allowed_user_ids):
             "max_tokens_percent": 80,
         }
     })
-    bot._enqueue_hindsight_session_finalize_before_delete = AsyncMock()
-    bot._enqueue_hindsight_and_delete_oldest_sessions_for_limit = AsyncMock()
+    bot._dispatch_session_before_delete = AsyncMock()
+    bot._dispatch_and_delete_oldest_sessions_for_limit = AsyncMock()
     return bot
 
 

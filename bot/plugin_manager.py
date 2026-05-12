@@ -529,6 +529,23 @@ class PluginManager:
             except Exception as exc:
                 logger.warning(f"Error closing plugin {instance}: {exc}")
 
+    async def close_all_async(self) -> None:
+        """Await async cleanup on every loaded plugin.
+
+        Mirrors close_all() but for plugins that need async teardown.
+        Exceptions per plugin are logged and swallowed — every plugin gets
+        its chance to clean up.
+        """
+        for instance in self.plugin_instances.values():
+            try:
+                await instance.close_async()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Error in close_async for plugin %s: %s",
+                    type(instance).__name__,
+                    exc,
+                )
+
     def _normalize_specs(self, specs: List[Dict], plugin_instance: Plugin) -> List[Dict]:
         normalized = []
         prefix = plugin_instance.get_function_prefix()
@@ -867,6 +884,30 @@ class PluginManager:
             if fragment:
                 fragments.append(fragment)
         return fragments
+
+    async def collect_objects(
+        self, slot: str, payload: Any, *, user_id: int | None = None
+    ) -> List[Any]:
+        """Collect non-None object contributions from every subscribed plugin.
+
+        Order matches the deterministic plugin order (sorted by plugin_name).
+        Plugins that raise are skipped. Plugins returning ``None`` are skipped;
+        other falsy values (empty list, ``0``) are kept — caller decides semantics.
+        """
+        plugins = self._active_plugin_instances(user_id)
+        objects: List[Any] = []
+        for plugin in plugins:
+            method = getattr(plugin, "contribute_prompt_fragment", None)
+            if method is None:
+                continue
+            try:
+                obj = await method(slot, payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, slot, "object", exc)
+                continue
+            if obj is not None:
+                objects.append(obj)
+        return objects
 
     async def apply_mutators(
         self,

@@ -31,7 +31,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
     should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
-from .plugins.hooks import AssistantResponsePayload, SessionResetPayload, UserMessagePayload
+from .plugins.hooks import AssistantResponsePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
@@ -448,11 +448,22 @@ class ChatGPTTelegramBot:
             except Exception:
                 logger.exception("Post-delivery cleanup failed for %s", directive)
 
-    async def _enqueue_hindsight_session_finalize_before_delete(self, user_id: int, session_id: str | None) -> int:
+    async def _dispatch_session_before_delete(self, user_id: int, session_id: str | None) -> int:
         if not session_id:
             return 0
-        plugin = self._hindsight_memory_plugin_for_user(user_id)
-        if plugin is None or not plugin.auto_save_enabled:
+        pm = getattr(self.openai, "plugin_manager", None)
+        if (
+            pm is None
+            or not getattr(pm, "has_plugin", lambda _name: False)("hindsight_memory")
+            or pm.is_plugin_disabled_for_user("hindsight_memory", user_id)
+        ):
+            return 0
+        plugin = pm.get_plugin("hindsight_memory")
+        if (
+            plugin is None
+            or not getattr(plugin, "is_active", False)
+            or not getattr(plugin, "auto_save_enabled", False)
+        ):
             return 0
 
         try:
@@ -480,7 +491,7 @@ class ChatGPTTelegramBot:
         )
         return job_id
 
-    async def _enqueue_hindsight_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -> None:
+    async def _dispatch_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -> None:
         session_ids = self.db.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
         self.db.create_hindsight_finalize_jobs_for_sessions(user_id, session_ids)
         if session_ids and not self.db.delete_sessions_by_ids(user_id, session_ids):
@@ -843,21 +854,17 @@ class ChatGPTTelegramBot:
                  f"{self.get_credits()}"
              )
 
-        text_hindsight = await self._hindsight_stats_text(user_id)
-        usage_text = text_current_session + text_all_sessions + text_today + text_month + text_budget + text_hindsight
+        stats_fragments = await self.openai.plugin_manager.collect_fragments(
+            "stats_block",
+            StatsBlockPayload(user_id=user_id, chat_id=update.effective_chat.id, bot_language=bot_language),
+            user_id=user_id,
+        )
+        usage_text = (
+            text_current_session + text_all_sessions + text_today + text_month + text_budget
+            + "".join(stats_fragments)
+        )
         await update.message.reply_text(usage_text, parse_mode=constants.ParseMode.MARKDOWN)
 
-    async def _hindsight_stats_text(self, user_id: int | None) -> str:
-        plugin = self._hindsight_memory_plugin_for_user(user_id)
-        if not plugin or user_id is None:
-            return ""
-        bank_id = plugin.bank_id_for(user_id)
-        try:
-            count_text = await plugin._memory_count_text(bank_id)
-            return f"\nHindsight memory: enabled; bank `{bank_id}`; memories `{count_text}`.\n"
-        except Exception as exc:
-            return f"\nHindsight memory: enabled; bank `{bank_id}`; stats failed: {exc}\n"
-    
     def get_credits(self):
         api_key = self.config['api_key']
         response = requests.get(
@@ -915,7 +922,7 @@ class ChatGPTTelegramBot:
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
             text=self._settings_text(bot_language, user_id),
-            reply_markup=self._build_settings_menu(bot_language, user_id),
+            reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
     async def handle_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,7 +954,7 @@ class ChatGPTTelegramBot:
             await query.answer()
             await query.edit_message_text(
                 text=self._settings_text(bot_language, user_id),
-                reply_markup=self._build_settings_menu(bot_language, user_id),
+                reply_markup=await self._build_settings_menu(bot_language, user_id),
             )
             return
 
@@ -984,7 +991,7 @@ class ChatGPTTelegramBot:
             await query.answer(localized_text('settings_language_saved', self.config['bot_language']))
             await query.edit_message_text(
                 text=self._settings_text(new_language, user_id),
-                reply_markup=self._build_settings_menu(new_language, user_id),
+                reply_markup=await self._build_settings_menu(new_language, user_id),
             )
             return
 
@@ -1027,22 +1034,6 @@ class ChatGPTTelegramBot:
             await query.edit_message_text(
                 text=localized_text('settings_skills_choose', self.config['bot_language']),
                 reply_markup=self._build_skill_settings_menu(page, user_id),
-            )
-            return
-
-        if action == 'hindsight':
-            await query.answer()
-            plugin = self._hindsight_memory_plugin_for_user(user_id)
-            if not plugin:
-                await query.edit_message_text(
-                    text="Hindsight memory is not available.",
-                    reply_markup=self._build_back_settings_menu(),
-                )
-                return
-            await query.edit_message_text(
-                text=await plugin._memory_status_text(self.openai, user_id),
-                reply_markup=plugin._memory_menu(),
-                parse_mode=constants.ParseMode.MARKDOWN,
             )
             return
 
@@ -1104,7 +1095,7 @@ class ChatGPTTelegramBot:
             )
         )
 
-    def _build_settings_menu(self, bot_language: str, user_id: int | None = None) -> InlineKeyboardMarkup:
+    async def _build_settings_menu(self, bot_language: str, user_id: int | None = None) -> InlineKeyboardMarkup:
         settings = self._settings_for_user(user_id)
         tts_model = str(settings.get(USER_TTS_MODEL_SETTING) or self.openai.config.get('tts_model', ''))
         tts_voice = str(settings.get(USER_TTS_VOICE_SETTING) or self.openai.config.get('tts_voice', ''))
@@ -1146,13 +1137,16 @@ class ChatGPTTelegramBot:
                 )
             ],
         ]
-        if self._hindsight_memory_plugin_for_user(user_id):
-            keyboard.append([
-                InlineKeyboardButton(
-                    "Hindsight memory",
-                    callback_data='settings:hindsight',
-                )
-            ])
+        extra_button_groups = await self.openai.plugin_manager.collect_objects(
+            "settings_menu_buttons",
+            SettingsMenuPayload(user_id=user_id, bot_language=bot_language),
+            user_id=user_id,
+        )
+        for plugin_rows in extra_button_groups:
+            if isinstance(plugin_rows, list):
+                for row in plugin_rows:
+                    if isinstance(row, list):
+                        keyboard.append(row)
         keyboard.append([
             InlineKeyboardButton(
                 localized_text('settings_close', self.config['bot_language']),
@@ -1327,7 +1321,7 @@ class ChatGPTTelegramBot:
         await query.answer(localized_text('settings_tts_model_saved', self.config['bot_language']))
         await query.edit_message_text(
             text=self._settings_text(bot_language, user_id),
-            reply_markup=self._build_settings_menu(bot_language, user_id),
+            reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
     async def _show_tts_voice_settings(self, query, page: int, user_id: int | None) -> None:
@@ -1368,7 +1362,7 @@ class ChatGPTTelegramBot:
         await query.answer(localized_text('settings_tts_voice_saved', self.config['bot_language']))
         await query.edit_message_text(
             text=self._settings_text(bot_language, user_id),
-            reply_markup=self._build_settings_menu(bot_language, user_id),
+            reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
     def _available_plugin_names(self) -> list[str]:
@@ -1387,20 +1381,6 @@ class ChatGPTTelegramBot:
         )
         available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
         return sorted(str(name) for name in available_skills.keys())
-
-    def _hindsight_memory_plugin_for_user(self, user_id: int | None):
-        plugin_manager = getattr(self.openai, 'plugin_manager', None)
-        has_plugin = getattr(plugin_manager, 'has_plugin', None)
-        get_plugin = getattr(plugin_manager, 'get_plugin', None)
-        if (
-            not callable(has_plugin)
-            or not callable(get_plugin)
-            or not has_plugin('hindsight_memory')
-            or plugin_manager.is_plugin_disabled_for_user('hindsight_memory', user_id)
-        ):
-            return None
-        plugin = get_plugin('hindsight_memory')
-        return plugin if getattr(plugin, "is_active", False) else None
 
     def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
         settings = self._settings_for_user(user_id)
@@ -1760,7 +1740,7 @@ class ChatGPTTelegramBot:
                     
                     if not active_session:
                         max_sessions = self.config.get('max_sessions', 5)
-                        await self._enqueue_hindsight_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
+                        await self._dispatch_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
                         # Если нет активной сессии, создаем новую
                         session_id = self.db.create_session(
                             user_id=conversation_key,
@@ -4014,7 +3994,7 @@ class ChatGPTTelegramBot:
             # Остальной существующий код остается без изменений
             if action == "new":
                 max_sessions = self.config.get('max_sessions', 5)
-                await self._enqueue_hindsight_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
+                await self._dispatch_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
                 # Создаем новую сессию
                 session_id = self.db.create_session(
                     user_id=conversation_key,
@@ -4055,7 +4035,7 @@ class ChatGPTTelegramBot:
             elif action == "delete":
                 # Удаляем сессию
                 session_id = data[2]
-                await self._enqueue_hindsight_session_finalize_before_delete(conversation_key, session_id)
+                await self._dispatch_session_before_delete(conversation_key, session_id)
                 self.db.delete_session(conversation_key, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
                 session_id = self.db.get_active_session_id(conversation_key)
