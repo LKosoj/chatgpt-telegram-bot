@@ -70,9 +70,18 @@ class FakeCallbackQuery:
         self.edit_message_text = AsyncMock()
 
 
+class FakePluginManager:
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return False
+
+    def disabled_plugins_for_user(self, user_id):
+        return set()
+
+
 def _make_bot():
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {"bot_language": "en"}
+    bot.openai = SimpleNamespace(plugin_manager=FakePluginManager())
     bot.plugin_menu_page_size = 6
     bot.plugin_menu_entries = [
         {

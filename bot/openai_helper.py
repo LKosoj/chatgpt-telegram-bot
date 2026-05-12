@@ -58,11 +58,9 @@ from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
 from .i18n import get_current_language, language_name, localized_text
 from .user_settings import (
-    USER_DISABLED_PLUGINS_SETTING,
     USER_TTS_MODEL_SETTING,
     USER_TTS_VOICE_SETTING,
     get_user_settings,
-    normalize_string_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -716,12 +714,8 @@ class OpenAIHelper:
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
-    def _disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
-        settings = get_user_settings(self.db, user_id)
-        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
-
     def _apply_user_disabled_plugins(self, allowed_plugins, user_id: int | None):
-        disabled_plugins = self._disabled_plugins_for_user(user_id)
+        disabled_plugins = self.plugin_manager.disabled_plugins_for_user(user_id)
         if not disabled_plugins:
             return allowed_plugins
         if allowed_plugins == ['All']:

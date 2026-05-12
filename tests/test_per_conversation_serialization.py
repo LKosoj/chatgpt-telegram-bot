@@ -60,8 +60,19 @@ for _module_name in _INSERTED_MODULES:
 
 
 class FakePluginManager:
+    db = None
+
     def get_plugin(self, name):
         return None
+
+    def set_db(self, db):
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id):
+        return set()
+
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return False
 
 
 class SequencingDB:

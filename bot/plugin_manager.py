@@ -10,6 +10,11 @@ import difflib
 
 from .plugins.plugin import Plugin
 from .model_constants import GOOGLE as GOOGLE_MODELS
+from .user_settings import (
+    USER_DISABLED_PLUGINS_SETTING,
+    get_user_settings,
+    normalize_string_list,
+)
 from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,7 @@ class PluginManager:
         self.plugin_instances = {}
         self.openai = None
         self.bot = None
+        self.db = None
         self.enabled_plugins = [p for p in (config.get('plugins', []) or []) if p]
         self.strict_validation = str(os.getenv("PLUGIN_STRICT_VALIDATION", "false")).lower() == "true"
         self.storage_root = os.getenv("PLUGIN_STORAGE_ROOT")
@@ -39,6 +45,25 @@ class PluginManager:
         self.bot = getattr(openai, "bot", None)
         for instance in self.plugin_instances.values():
             instance.initialize(openai=openai, bot=self.bot, storage_root=self.storage_root)
+
+    def set_db(self, db) -> None:
+        """Устанавливает ссылку на БД для чтения пользовательских настроек.
+
+        Идемпотентен: безопасно вызывать повторно (и с тем же `db`, и с новым).
+        Не имеет побочных эффектов помимо замены ссылки.
+        """
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
+        """Возвращает множество имён плагинов, отключённых пользователем."""
+        if self.db is None or user_id is None:
+            return set()
+        settings = get_user_settings(self.db, user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+
+    def is_plugin_disabled_for_user(self, plugin_name: str | None, user_id: int | None) -> bool:
+        """Отключён ли `plugin_name` для `user_id`. Пустое/None имя плагина → False."""
+        return bool(plugin_name) and plugin_name in self.disabled_plugins_for_user(user_id)
 
     def load_plugins(self):
         """Загружает все плагины из указанной директории."""

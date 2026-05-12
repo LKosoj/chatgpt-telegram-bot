@@ -59,6 +59,9 @@ class FakePluginManager:
     def set_openai(self, openai):
         self.openai = openai
 
+    def set_db(self, db):
+        self.db = db
+
     def get_message_handlers(self):
         return []
 

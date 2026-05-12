@@ -81,6 +81,15 @@ class RacingPluginManager:
     def is_function_allowed(self, function_name, allowed_plugins):
         return True
 
+    def set_db(self, db):
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id):
+        return set()
+
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return False
+
     async def call_function(self, function_name, helper, arguments, request_context=None):
         self.call_count += 1
         if self.call_count == 1:

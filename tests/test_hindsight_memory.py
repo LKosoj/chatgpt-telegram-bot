@@ -48,6 +48,8 @@ class DummyDB:
 
 
 class DummyPluginManager:
+    db = None
+
     def has_plugin(self, plugin_name):
         return True
 
@@ -59,6 +61,15 @@ class DummyPluginManager:
 
     def get_plugin_source_name(self, plugin):
         return plugin
+
+    def set_db(self, db):
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id):
+        return set()
+
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return False
 
 
 class FakeHindsight:

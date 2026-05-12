@@ -182,6 +182,83 @@ async def test_call_function_passes_request_context_to_plugin_execute(tmp_path):
     assert payload["context_message_id"] == 123
 
 
+def test_disabled_plugins_for_user_without_db_returns_empty(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    assert pm.disabled_plugins_for_user(42) == set()
+    assert pm.disabled_plugins_for_user(None) == set()
+
+
+def test_disabled_plugins_for_user_with_db(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def get_user_settings(self, user_id):
+            if user_id == 42:
+                return {"disabled_plugins": ["weather", "time"]}
+            return {}
+
+    pm.set_db(FakeDB())
+    assert pm.disabled_plugins_for_user(42) == {"weather", "time"}
+    assert pm.disabled_plugins_for_user(7) == set()
+    assert pm.disabled_plugins_for_user(None) == set()
+
+
+def test_is_plugin_disabled_for_user_handles_none_inputs(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def get_user_settings(self, user_id):
+            return {"disabled_plugins": ["weather"]}
+
+    pm.set_db(FakeDB())
+    assert pm.is_plugin_disabled_for_user(None, 42) is False
+    assert pm.is_plugin_disabled_for_user("weather", None) is False
+    assert pm.is_plugin_disabled_for_user("weather", 42) is True
+    assert pm.is_plugin_disabled_for_user("", 42) is False
+
+
+def test_disabled_plugins_for_user_normalizes_list(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def get_user_settings(self, user_id):
+            return {
+                "disabled_plugins": [
+                    "  weather  ",
+                    "weather",
+                    "",
+                    "   ",
+                    "time",
+                    "time",
+                ],
+            }
+
+    pm.set_db(FakeDB())
+    assert pm.disabled_plugins_for_user(42) == {"weather", "time"}
+
+
+def test_disabled_plugins_for_user_invalid_settings_shape(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def get_user_settings(self, user_id):
+            return None
+
+    pm.set_db(FakeDB())
+    assert pm.disabled_plugins_for_user(42) == set()
+
+
 @pytest.mark.asyncio
 async def test_call_function_records_tool_telemetry(tmp_path):
     plugin_dir = tmp_path / "plugins"

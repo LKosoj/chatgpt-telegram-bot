@@ -83,10 +83,10 @@ class ChatGPTTelegramBot:
         self.openai = openai
         self.openai.bot = None
         self._user_language_cache = {}
-        # PluginManager wiring: in normal startup (__main__) set_openai is
-        # already called, but legacy call sites and tests construct the bot
-        # directly without that step, so re-wire here too.
+        # Tests construct the bot without going through __main__, so re-wire
+        # PluginManager here too. Both setters are idempotent.
         self.openai.plugin_manager.set_openai(self.openai)
+        self.openai.plugin_manager.set_db(self.db)
         
         # Кешируем chat_modes.yml
         self._chat_modes_cache = None
@@ -679,7 +679,7 @@ class ChatGPTTelegramBot:
         help_sections = []
         for item in get_plugin_help_texts():
             plugin_name = item.get('plugin_name')
-            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
                 continue
             text = str(item.get('text') or '').strip()
             if text:
@@ -1382,13 +1382,6 @@ class ChatGPTTelegramBot:
         plugins = getattr(plugin_manager, 'plugins', {}) or {}
         return sorted(str(name) for name in plugins.keys())
 
-    def _disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
-        settings = self._settings_for_user(user_id)
-        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
-
-    def _is_plugin_disabled_for_user(self, plugin_name: str | None, user_id: int | None) -> bool:
-        return bool(plugin_name and plugin_name in self._disabled_plugins_for_user(user_id))
-
     def _available_skill_names(self) -> list[str]:
         plugin_manager = getattr(self.openai, 'plugin_manager', None)
         has_plugin = getattr(plugin_manager, 'has_plugin', None)
@@ -1409,7 +1402,7 @@ class ChatGPTTelegramBot:
             not callable(has_plugin)
             or not callable(get_plugin)
             or not has_plugin('hindsight_memory')
-            or self._is_plugin_disabled_for_user('hindsight_memory', user_id)
+            or self.openai.plugin_manager.is_plugin_disabled_for_user('hindsight_memory', user_id)
             or not getattr(self.openai, "is_hindsight_enabled", lambda: False)()
         ):
             return None
@@ -2883,7 +2876,7 @@ class ChatGPTTelegramBot:
 
         for handler_config in get_prompt_handlers():
             plugin_name = handler_config.get("plugin_name")
-            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
                 continue
             handler = handler_config.get("handler")
             if not callable(handler):
@@ -3377,7 +3370,7 @@ class ChatGPTTelegramBot:
             return
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
         plugin_name = cmd.get('plugin_name')
-        if self._is_plugin_disabled_for_user(plugin_name, user_id):
+        if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
             if query:
                 await query.edit_message_text(
                     text=localized_text('settings_plugin_disabled', self.config['bot_language']).format(
@@ -3399,7 +3392,7 @@ class ChatGPTTelegramBot:
 
             user_id = getattr(getattr(update_for_handler, 'effective_user', None), 'id', None)
             plugin_name = cmd.get('plugin_name')
-            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
                 if message:
                     await message.reply_text(
                         localized_text('settings_plugin_disabled', self.config['bot_language']).format(
@@ -3532,7 +3525,7 @@ class ChatGPTTelegramBot:
 
         bot_language = self.config['bot_language']
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
-        disabled_plugins = self._disabled_plugins_for_user(user_id)
+        disabled_plugins = self.openai.plugin_manager.disabled_plugins_for_user(user_id)
         plugin_commands = self.openai.plugin_manager.build_bot_commands()["plugin_commands"]
         menu_entries = [
             cmd for cmd in plugin_commands
@@ -3608,7 +3601,7 @@ class ChatGPTTelegramBot:
                 )
                 return
             user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
-            if self._is_plugin_disabled_for_user(plugin_name, user_id):
+            if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
                 await query.edit_message_text(
                     localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
                 )
@@ -3638,7 +3631,7 @@ class ChatGPTTelegramBot:
             )
             return
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
-        if self._is_plugin_disabled_for_user(plugin_name, user_id):
+        if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
             await query.edit_message_text(
                 localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
             )

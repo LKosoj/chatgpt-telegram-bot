@@ -55,6 +55,11 @@ _install_module_if_missing("tenacity", _tenacity)
 from bot import telegram_bot  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from bot.user_settings import (  # noqa: E402
+    USER_DISABLED_PLUGINS_SETTING,
+    get_user_settings,
+    normalize_string_list,
+)
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -88,6 +93,19 @@ class FakePluginManager:
         self.agent_tools = agent_tools
         self.text_document_qa = text_document_qa
         self.plugin_help_texts = list(plugin_help_texts or [])
+        self.db = None
+
+    def set_db(self, db):
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id):
+        if self.db is None or user_id is None:
+            return set()
+        settings = get_user_settings(self.db, user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return bool(plugin_name) and plugin_name in self.disabled_plugins_for_user(user_id)
 
     def has_plugin(self, name):
         return self.get_plugin(name) is not None
@@ -268,6 +286,7 @@ def _make_bot(chunks, conversation_context, agent_tools=None, text_document_qa=N
     }
     bot.db = FakeDB(conversation_context)
     bot.openai = FakeOpenAI(chunks, agent_tools, text_document_qa)
+    bot.openai.plugin_manager.set_db(bot.db)
     bot.last_message = {}
     bot.usage = {}
     bot._classify_reply_intent = AsyncMock(return_value=None)

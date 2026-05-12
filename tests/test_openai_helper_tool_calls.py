@@ -49,6 +49,11 @@ from bot.openai_tool_handler import _call_function_bounded  # noqa: E402
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
+from bot.user_settings import (  # noqa: E402
+    USER_DISABLED_PLUGINS_SETTING,
+    get_user_settings,
+    normalize_string_list,
+)
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -91,6 +96,19 @@ class DummyPluginManager:
         self.call_contexts = []
         self.spec_calls = []
         self.filtered = []
+        self.db = None
+
+    def set_db(self, db):
+        self.db = db
+
+    def disabled_plugins_for_user(self, user_id):
+        if self.db is None or user_id is None:
+            return set()
+        settings = get_user_settings(self.db, user_id)
+        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return bool(plugin_name) and plugin_name in self.disabled_plugins_for_user(user_id)
 
     def filter_allowed_plugins(self, allowed_plugins):
         self.filtered.append(list(allowed_plugins or []))
@@ -265,7 +283,9 @@ def _make_helper(plugin_manager, db=None, client=None):
         "big_model_to_use": "llmgateway/big_context",
         "light_model": "llmgateway/light_model",
     }
-    helper = OpenAIHelper(config=config, plugin_manager=plugin_manager, db=db or DummyDB())
+    helper_db = db or DummyDB()
+    helper = OpenAIHelper(config=config, plugin_manager=plugin_manager, db=helper_db)
+    plugin_manager.set_db(helper_db)
     helper.client = client or DummyClient()
     helper.conversations[1] = []
     return helper
