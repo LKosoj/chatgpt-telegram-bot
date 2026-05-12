@@ -232,42 +232,6 @@ def test_chat_settings_are_persisted_by_chat_id(db):
     }
 
 
-def test_agent_plan_persists_tasks_contract_and_dependencies(db):
-    db.save_agent_plan(
-        "chat:10",
-        [
-            {
-                "id": "T1",
-                "content": "Inspect",
-                "status": "completed",
-                "depends_on": [],
-                "created_at": 100,
-                "updated_at": 101,
-            },
-            {
-                "id": "T2",
-                "content": "Verify",
-                "status": "pending",
-                "depends_on": ["T1"],
-                "created_at": 102,
-                "updated_at": 103,
-            },
-        ],
-        {
-            "goal": "Ship the change",
-            "success_criteria": ["Tests pass"],
-            "verification": ["Run pytest"],
-            "constraints": ["Keep scope small"],
-        },
-    )
-
-    plan = db.get_agent_plan("chat:10")
-
-    assert [task["id"] for task in plan["tasks"]] == ["T1", "T2"]
-    assert plan["tasks"][1]["depends_on"] == ["T1"]
-    assert plan["contract"]["goal"] == "Ship the change"
-
-
 def test_tool_call_events_are_recorded(db):
     db.record_tool_call_event(
         request_id="r1",

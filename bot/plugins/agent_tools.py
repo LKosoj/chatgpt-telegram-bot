@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
@@ -106,6 +106,7 @@ class AgentToolsPlugin(Plugin):
 
     def __init__(self):
         self.db = None
+        self.db_handle = None
         self.pending_file = os.path.join(os.path.dirname(__file__), "agent_pending_questions.json")
         self.background_jobs_file = os.path.join(os.path.dirname(__file__), "agent_background_jobs.json")
         self.pending_questions: Dict[str, Dict[str, Any]] = {}
@@ -118,9 +119,11 @@ class AgentToolsPlugin(Plugin):
         self._load_orphaned_pending()
         self._load_background_jobs()
 
-    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None,
+                   db=None, plugin_config=None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
         runtime_db = getattr(openai, "db", None) or getattr(bot, "db", None)
+        self.db_handle = db  # async DbHandle facade from Stage 0 shim (may be None)
         self.db = None
         if storage_root:
             self.pending_file = os.path.join(storage_root, "agent_pending_questions.json")
@@ -712,11 +715,195 @@ class AgentToolsPlugin(Plugin):
             return await self._deliver_to_user(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
+    def register_schema(self) -> List[str]:
+        return [
+            '''
+                CREATE TABLE IF NOT EXISTS agent_plan_contracts (
+                    scope TEXT PRIMARY KEY,
+                    contract TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''',
+            '''
+                CREATE TABLE IF NOT EXISTS agent_plan_tasks (
+                    scope TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    depends_on TEXT NOT NULL DEFAULT '[]',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (scope, task_id)
+                )
+            ''',
+            '''
+                CREATE INDEX IF NOT EXISTS idx_agent_plan_tasks_scope_position
+                ON agent_plan_tasks(scope, position)
+            ''',
+        ]
+
+    def _db_save_plan(
+        self,
+        scope: str,
+        tasks: List[Dict[str, Any]],
+        contract: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist the full agent plan for a scope."""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM agent_plan_tasks WHERE scope = ?', (scope,))
+                for position, task in enumerate(tasks):
+                    cursor.execute('''
+                        INSERT INTO agent_plan_tasks
+                        (scope, task_id, position, content, status, depends_on, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        scope,
+                        str(task.get('id') or ''),
+                        position,
+                        str(task.get('content') or ''),
+                        str(task.get('status') or 'pending'),
+                        json.dumps(task.get('depends_on') or [], ensure_ascii=False),
+                        int(task.get('created_at') or 0),
+                        int(task.get('updated_at') or 0),
+                    ))
+                if contract is not None:
+                    cursor.execute('''
+                        INSERT INTO agent_plan_contracts (scope, contract)
+                        VALUES (?, ?)
+                        ON CONFLICT(scope) DO UPDATE SET
+                        contract = excluded.contract,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''', (scope, json.dumps(contract, ensure_ascii=False)))
+        except Exception as e:
+            logging.error(f'Error saving agent plan: {e}', exc_info=True)
+            raise
+
+    def _db_get_plan(self, scope: str) -> Dict[str, Any]:
+        """Return persisted agent plan tasks and optional DoD contract."""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT task_id, content, status, depends_on, created_at, updated_at
+                    FROM agent_plan_tasks
+                    WHERE scope = ?
+                    ORDER BY position ASC
+                ''', (scope,))
+                tasks = []
+                for row in cursor.fetchall():
+                    try:
+                        depends_on = json.loads(row['depends_on'] or '[]')
+                    except json.JSONDecodeError:
+                        depends_on = []
+                    tasks.append({
+                        'id': row['task_id'],
+                        'content': row['content'],
+                        'status': row['status'],
+                        'depends_on': depends_on if isinstance(depends_on, list) else [],
+                        'created_at': int(row['created_at']),
+                        'updated_at': int(row['updated_at']),
+                    })
+
+                cursor.execute(
+                    'SELECT contract FROM agent_plan_contracts WHERE scope = ?',
+                    (scope,),
+                )
+                result = cursor.fetchone()
+                contract = None
+                if result:
+                    try:
+                        loaded = json.loads(result['contract'])
+                    except json.JSONDecodeError:
+                        loaded = None
+                    contract = loaded if isinstance(loaded, dict) else None
+                return {'tasks': tasks, 'contract': contract}
+        except Exception as e:
+            logging.error(f'Error getting agent plan: {e}', exc_info=True)
+            raise
+
+    def _db_clear_plan(self, scope: str, *, clear_contract: bool = False) -> None:
+        """Remove persisted agent plan tasks and optionally the DoD contract."""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM agent_plan_tasks WHERE scope = ?', (scope,))
+                if clear_contract:
+                    cursor.execute('DELETE FROM agent_plan_contracts WHERE scope = ?', (scope,))
+        except Exception as e:
+            logging.error(f'Error clearing agent plan: {e}', exc_info=True)
+            raise
+
+    def _db_prune_plans(self, cutoff_timestamp: int) -> int:
+        """Delete stale agent plan tasks and empty contracts older than cutoff."""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM agent_plan_tasks WHERE updated_at < ?',
+                    (int(cutoff_timestamp),),
+                )
+                deleted = cursor.rowcount
+                cursor.execute('''
+                    DELETE FROM agent_plan_contracts
+                    WHERE scope NOT IN (SELECT DISTINCT scope FROM agent_plan_tasks)
+                    AND strftime('%s', updated_at) < ?
+                ''', (int(cutoff_timestamp),))
+                return deleted
+        except Exception as e:
+            logging.error(f'Error pruning agent plans: {e}', exc_info=True)
+            raise
+
+    async def _db_clear_terminal_tasks_async(self, scope: str) -> bool:
+        """Remove all tasks under scope IFF every task is in a closed status. Returns True if cleared."""
+        rows = await self.db_handle.fetch_all(
+            "SELECT status FROM agent_plan_tasks WHERE scope = ?", (scope,)
+        )
+        if not rows:
+            return False
+        if any(r["status"] not in CLOSED_STATUSES for r in rows):
+            return False
+        await self.db_handle.execute(
+            "DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,)
+        )
+        return True
+
+    async def _db_clear_all_tasks_async(self, scope: str) -> bool:
+        rows = await self.db_handle.fetch_all(
+            "SELECT 1 AS one FROM agent_plan_tasks WHERE scope = ? LIMIT 1", (scope,)
+        )
+        if not rows:
+            return False
+        await self.db_handle.execute(
+            "DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,)
+        )
+        return True
+
+    async def on_session_reset(self, payload) -> None:
+        if self.db_handle is None:
+            return
+        scope = compute_scope_key(payload.chat_id, payload.user_id)
+        try:
+            if payload.terminal_only:
+                cleared = await self._db_clear_terminal_tasks_async(scope)
+            else:
+                cleared = await self._db_clear_all_tasks_async(scope)
+            if cleared:
+                logging.info(
+                    "Cleared agent plan scope=%s reason=%s terminal_only=%s",
+                    scope, payload.reason, payload.terminal_only,
+                )
+        except Exception:
+            logging.exception("agent_tools.on_session_reset failed scope=%s", scope)
+
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
         if self.db is not None:
             try:
-                return bool(self.db.prune_agent_plans(cutoff))
+                return bool(self._db_prune_plans(cutoff))
             except Exception:
                 logging.exception("Failed to prune stale agent plans from database")
                 return False
@@ -725,7 +912,7 @@ class AgentToolsPlugin(Plugin):
 
     def _get_scope_plan(self, scope: str) -> Dict[str, Any]:
         if self.db is not None:
-            plan = self.db.get_agent_plan(scope)
+            plan = self._db_get_plan(scope)
             return {
                 "tasks": [
                     self._normalize_existing_task(task)
@@ -744,15 +931,15 @@ class AgentToolsPlugin(Plugin):
     ) -> None:
         normalized_tasks = [self._normalize_existing_task(task) for task in tasks]
         if self.db is not None:
-            current_contract = self.db.get_agent_plan(scope).get("contract")
+            current_contract = self._db_get_plan(scope).get("contract")
             contract_to_save = current_contract if contract is _CONTRACT_UNSET else contract
-            self.db.save_agent_plan(scope, normalized_tasks, contract_to_save)
+            self._db_save_plan(scope, normalized_tasks, contract_to_save)
             return
         raise RuntimeError("agent_tools plan storage requires database")
 
     def _clear_scope_tasks(self, scope: str) -> None:
         if self.db is not None:
-            self.db.clear_agent_plan(scope, clear_contract=False)
+            self._db_clear_plan(scope, clear_contract=False)
             return
 
     @staticmethod

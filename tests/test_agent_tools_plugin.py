@@ -204,13 +204,19 @@ class FakeMessage:
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
     Database._instance = None
-    return Database()
+    db = Database()
+    # Stage 3: agent_plan_* DDLs live in the plugin now.
+    with db.get_connection() as conn:
+        for stmt in AgentToolsPlugin().register_schema():
+            conn.execute(stmt)
+    return db
 
 
 def _db_backed_agent_plugin(tmp_path, db):
+    from bot.plugins.db_handle import DbHandle
     helper = SimpleNamespace(user_id=42, db=db)
     plugin = AgentToolsPlugin()
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    plugin.initialize(openai=helper, storage_root=str(tmp_path), db=DbHandle(db))
     return plugin, helper
 
 

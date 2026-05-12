@@ -127,6 +127,15 @@ class FakePluginManager:
         return list(self.plugin_help_texts)
 
     async def dispatch_observe(self, event_name, payload, *, user_id=None):
+        if event_name == "on_session_reset" and self.agent_tools is not None:
+            if getattr(payload, "terminal_only", False):
+                self.agent_tools.clear_terminal_plan_tasks(
+                    chat_id=payload.chat_id, user_id=payload.user_id
+                )
+            else:
+                self.agent_tools.clear_plan_tasks(
+                    chat_id=payload.chat_id, user_id=payload.user_id
+                )
         return None
 
 

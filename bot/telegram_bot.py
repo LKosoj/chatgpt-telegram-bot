@@ -31,7 +31,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
     should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
-from .plugins.hooks import AssistantResponsePayload, UserMessagePayload
+from .plugins.hooks import AssistantResponsePayload, SessionResetPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
@@ -341,29 +341,6 @@ class ChatGPTTelegramBot:
             except Exception:
                 logger.warning("Failed to store sent image file_id for user %s chat %s", user.id, chat.id, exc_info=True)
 
-    def _get_agent_tools_plugin(self):
-        plugin_manager = getattr(self.openai, "plugin_manager", None)
-        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
-        if not callable(get_plugin):
-            return None
-        try:
-            return get_plugin("agent_tools")
-        except Exception:
-            logger.debug("Failed to get agent_tools plugin", exc_info=True)
-            return None
-
-    def _clear_agent_plan(self, chat_id, user_id, *, reason: str, terminal_only: bool = False) -> None:
-        agent_tools_plugin = self._get_agent_tools_plugin()
-        method_name = "clear_terminal_plan_tasks" if terminal_only else "clear_plan_tasks"
-        clear_plan_tasks = getattr(agent_tools_plugin, method_name, None) if agent_tools_plugin else None
-        if not callable(clear_plan_tasks):
-            return
-        try:
-            if clear_plan_tasks(chat_id=chat_id, user_id=user_id):
-                logger.info("Cleared agent plan for chat_id=%s user_id=%s reason=%s", chat_id, user_id, reason)
-        except Exception:
-            logger.exception("Failed to clear agent plan for chat_id=%s user_id=%s", chat_id, user_id)
-
     def _build_plan_status_provider(self, chat_id, user_id):
         """
         Return (plan_provider, interval) for BusyStatusMessage. The provider yields
@@ -371,7 +348,15 @@ class ChatGPTTelegramBot:
         can render step progress; falls back to (None, default_interval) when the
         agent_tools plugin is unavailable.
         """
-        agent_tools_plugin = self._get_agent_tools_plugin()
+        agent_tools_plugin = None
+        plugin_manager = getattr(self.openai, "plugin_manager", None)
+        get_plugin = getattr(plugin_manager, "get_plugin", None) if plugin_manager else None
+        if callable(get_plugin):
+            try:
+                agent_tools_plugin = get_plugin("agent_tools")
+            except Exception:
+                logger.debug("Failed to get agent_tools plugin", exc_info=True)
+                agent_tools_plugin = None
         get_plan_tasks = getattr(agent_tools_plugin, "get_plan_tasks", None) if agent_tools_plugin else None
         if not callable(get_plan_tasks):
             return None, 30.0
@@ -416,10 +401,15 @@ class ChatGPTTelegramBot:
             return
         chat = getattr(update, "effective_chat", None)
         user = getattr(update, "effective_user", None)
-        self._clear_agent_plan(
-            getattr(chat, "id", None),
-            getattr(user, "id", None),
-            reason="final_delivery",
+        await self.openai.plugin_manager.dispatch_observe(
+            "on_session_reset",
+            SessionResetPayload(
+                chat_id=getattr(chat, "id", None),
+                user_id=getattr(user, "id", None),
+                reason="final_delivery",
+                terminal_only=False,
+            ),
+            user_id=getattr(user, "id", None),
         )
 
     async def _run_post_delivery_cleanup(self, response):
@@ -2117,7 +2107,16 @@ class ChatGPTTelegramBot:
                         }
                     else:
                         kwargs = {}
-                    self._clear_agent_plan(chat_id, user_id, reason="request_start")
+                    await self.openai.plugin_manager.dispatch_observe(
+                        "on_session_reset",
+                        SessionResetPayload(
+                            chat_id=chat_id,
+                            user_id=user_id,
+                            reason="request_start",
+                            terminal_only=False,
+                        ),
+                        user_id=user_id,
+                    )
                     response, total_tokens = await self.openai.get_chat_response(
                         chat_id=chat_id,
                         query=transcript,
@@ -2650,7 +2649,16 @@ class ChatGPTTelegramBot:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
             model_to_use = self.openai.get_current_model(user_id)
-            self._clear_agent_plan(chat_id, user_id, reason="request_start")
+            await self.openai.plugin_manager.dispatch_observe(
+                "on_session_reset",
+                SessionResetPayload(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    reason="request_start",
+                    terminal_only=False,
+                ),
+                user_id=user_id,
+            )
                 
             if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
 
@@ -3032,7 +3040,16 @@ class ChatGPTTelegramBot:
 
                 model_to_use = self.openai.get_current_model(user_id)
                 request_context = RequestContext(chat_id=user_id, user_id=user_id)
-                self._clear_agent_plan(user_id, user_id, reason="request_start")
+                await self.openai.plugin_manager.dispatch_observe(
+                    "on_session_reset",
+                    SessionResetPayload(
+                        chat_id=user_id,
+                        user_id=user_id,
+                        reason="request_start",
+                        terminal_only=False,
+                    ),
+                    user_id=user_id,
+                )
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):

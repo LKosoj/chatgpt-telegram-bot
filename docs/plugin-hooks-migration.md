@@ -232,45 +232,57 @@ Code-review: **APPROVE** после применения 6 should-fix:
 
 ---
 
-## Этап 3 — `agent_tools`: observer + первое применение schema-registry
+## Этап 3 — `agent_tools`: observer + первое применение schema-registry ✅
 
 ~400-600 строк, средняя сложность, средний риск.
 
 ### Часть A — событие `on_session_reset`
 
-- [ ] Вызов `_clear_agent_plan` в ядре заменён на `await dispatch_observe('on_session_reset', payload)` с полем `terminal_only`.
-- [ ] `AgentToolsPlugin.on_session_reset` решает, что чистить (`terminal_only` или полный план).
-- [ ] Удалены из `telegram_bot.py`:
-  - [ ] `_get_agent_tools_plugin` (`:343`)
-  - [ ] `_clear_agent_plan` (`:357`)
-  - [ ] Все обращения к `clear_plan_tasks` / `clear_terminal_plan_tasks` через `agent_tools` плагин.
+- [x] Вызов `_clear_agent_plan` в ядре заменён на `await self.openai.plugin_manager.dispatch_observe("on_session_reset", SessionResetPayload(..., terminal_only=False), user_id=...)` в 4 местах: `_handle_direct_result` (`telegram_bot.py:419`), voice/transcribe (`:2120`), text prompt (`:2653`), inline-query (`:3035`).
+- [x] `AgentToolsPlugin.on_session_reset(payload)` — async; вычисляет scope через `compute_scope_key`; диспатчит на `_db_clear_terminal_tasks_async` или `_db_clear_all_tasks_async` в зависимости от `payload.terminal_only`. Defense-in-depth `try/except` + structured `logger.info`.
+- [x] Удалены из `bot/telegram_bot.py`:
+  - [x] `_get_agent_tools_plugin` — inline в `_build_plan_status_provider` (legitimate UI-чтение через generic `get_plugin("agent_tools")`).
+  - [x] `_clear_agent_plan` — полностью удалён.
+  - [x] Все обращения к `clear_plan_tasks` / `clear_terminal_plan_tasks` из ядра — `grep` → 0.
 
-`cleanup_after_delivery` (`telegram_bot.py:449`) **оставляем как есть** — уже generic-механизм через `plugin_id` в директиве tool-результата.
+`cleanup_after_delivery` оставлен как есть — уже generic-механизм через `plugin_id` в директиве tool-результата.
+
+**Поведенческое изменение**: после миграции пользователь с `agent_tools` в `disabled_plugins` не получит cleanup на session_reset (политика `_active_plugin_instances` фильтрует disabled). Старый код вызывал `_clear_agent_plan` безусловно. Считаем корректным новым поведением: disabled = inert.
 
 ### Часть B — миграция схемы
 
-Из `bot/database.py` переезжает в плагин:
+Из `bot/database.py` переехало в плагин (`bot/plugins/agent_tools.py`):
 
-- [ ] `CREATE TABLE agent_plan_contracts` (`:134`) → `register_schema()`.
-- [ ] `CREATE TABLE agent_plan_tasks` (`:143`) → `register_schema()`.
-- [ ] `CREATE INDEX idx_agent_plan_tasks_scope_position` (`:157`) → `register_schema()`.
-- [ ] `save_agent_plan` (`:332`) → метод плагина через `self.db_handle.*`.
-- [ ] `get_agent_plan` (`:370`) → метод плагина.
-- [ ] `clear_agent_plan` (`:413`) → метод плагина.
-- [ ] `cleanup_old_agent_plans` (`:425`) → метод плагина.
+- [x] `CREATE TABLE agent_plan_contracts` → `register_schema()` (DDL byte-parity с оригиналом).
+- [x] `CREATE TABLE agent_plan_tasks` → `register_schema()`.
+- [x] `CREATE INDEX idx_agent_plan_tasks_scope_position` → `register_schema()`.
+- [x] `save_agent_plan` (`database.py:332`) → `_db_save_plan` (sync, через `self.db.get_connection()`).
+- [x] `get_agent_plan` (`:370`) → `_db_get_plan` (sync).
+- [x] `clear_agent_plan` (`:413`) → `_db_clear_plan` (sync).
+- [x] `prune_agent_plans` (`:425`) → `_db_prune_plans` (sync). **Doc drift**: метод реально называется `prune_agent_plans`, не `cleanup_old_agent_plans`.
+- [x] Новые async-helper'ы для observer-хука: `_db_clear_terminal_tasks_async`, `_db_clear_all_tasks_async` (через `self.db_handle`).
+
+**Dual surface**: sync DAO остаётся для существующих sync call-сайтов (`_build_plan_status_provider` через `BusyStatusMessage` — sync-контракт). Async DAO через `DbHandle` — только для нового `on_session_reset` хука. Перевод всего на async — out of scope (потребовал бы рефакторинг `BusyStatusMessage`).
+
+**`transaction()` НЕ используется** — каждая операция либо single-statement, либо read-then-write (buffered txn не поддерживает чтения). Race window async-helper'ов идентичен sync-параметрам (тот же `_op_lock`, тот же raw two-call паттерн).
 
 ### Часть C — обновление тестов
 
-- [ ] `tests/test_database.py` — удалены тесты `save_agent_plan`/`get_agent_plan`/`clear_agent_plan` (если есть).
-- [ ] `tests/test_agent_tools_plugin.py:207` — переключён: взаимодействие идёт через плагин-методы.
-- [ ] `tests/test_agent_tools_schema_registry.py` (новый): при `initialize` плагина таблицы появляются в БД.
+- [x] `tests/test_database.py` — удалён obsolete `test_agent_plan_persists_tasks_contract_and_dependencies` (-36 строк).
+- [x] `tests/test_agent_tools_plugin.py` — `agent_db` фикстура расширена: после создания `Database` прогоняет `AgentToolsPlugin().register_schema()` DDL'и. `_db_backed_agent_plugin` теперь передаёт `db=DbHandle(db)` в `initialize`.
+- [x] `tests/test_agent_tools_schema_registry.py` (новый, 2 теста): `register_plugin_schemas()` создаёт таблицы и индекс на drop'нутой схеме; `register_schema()` идемпотентен на bare-инстансе без `initialize` (нет state mutation).
+- [x] `tests/test_agent_tools_session_reset.py` (новый, 4 теста): full clear, terminal_only сохраняет open tasks, terminal_only чистит когда все closed, end-to-end через `pm.dispatch_observe`.
+- [x] `tests/test_telegram_streaming.py` — `FakePluginManager.dispatch_observe` расширен: маршрутизирует `on_session_reset` к `agent_tools.clear_plan_tasks`/`clear_terminal_plan_tasks`. Существующие 3 streaming-теста асёртят `clear_calls`/`terminal_clear_calls` — работают без правок тел тестов.
 
 ### Acceptance
 
-- [ ] В `bot/database.py` нет упоминаний `agent_plan_*`.
-- [ ] В `bot/telegram_bot.py` нет `_get_agent_tools_plugin`, `_clear_agent_plan`.
-- [ ] Плановые операции работают (manual smoke + тесты).
-- [ ] Сессия удалена → план плагина почищен.
+- [x] `rg "agent_plan_" bot/database.py` → 0 совпадений.
+- [x] `rg "_get_agent_tools_plugin|_clear_agent_plan" bot/telegram_bot.py` → 0 совпадений.
+- [x] `rg "self.db.(save|get|clear|prune)_agent_plan" bot/` → 0 совпадений.
+- [x] Плановые операции работают: 38 тестов в `test_agent_tools_plugin.py` зелёные после миграции на новые DAO.
+- [x] Сессия удалена → план плагина почищен: 4 теста в `test_agent_tools_session_reset.py` покрывают full clear, terminal_only, end-to-end routing.
+- [x] **Полный прогон: 413 passed, 0 failed** (`PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_text_document_qa_anythingllm.py`).
+- [x] Code-review: APPROVE без must-fix. Применены 2 nice-to-have полировки: `_db_save_plan(contract: Optional[Dict[str, Any]])` (точный тип вместо `Any`), импорт `Optional` в typing.
 
 ---
 
