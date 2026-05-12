@@ -21,24 +21,28 @@ class WebResearchPlugin(Plugin):
         return [
             {
                 'name': 'research_articles',
-                'description': 'Research a web topic through LLMGateway. The plugin automatically chooses regular or deep research.',
+                'description': (
+                    'In-depth research on a topic: pulls and synthesizes multiple web sources, '
+                    'returns a long-form summary with citations. Use when the user asks to explain, '
+                    'compare, summarize, or write an overview. Slower and more expensive than web_search.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
                             'type': 'string',
-                            'description': 'the research topic or query'
+                            'description': 'Research topic or query.'
                         },
                         'max_results_per_lang': {
                             'type': 'integer',
-                            'description': 'maximum number of results per language for regular research',
+                            'description': 'Maximum number of results per language (regular-research mode only).',
                             'minimum': 1,
                             'maximum': 20,
                             'default': 10
                         },
                         'max_words': {
                             'type': 'integer',
-                            'description': 'target word count for deep research reports',
+                            'description': 'Target word count for the final report. Only used when the plugin selects deep-research mode (auto-chosen for broad multi-source topics).',
                             'minimum': 200,
                             'maximum': 8000,
                             'default': 2500

@@ -15,19 +15,23 @@ class DDGImageSearchPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "search_images",
-            "description": "Search images through LLMGateway web search",
+            "description": (
+                "Search for existing images on the web (photos, gifs). Use to find real photos of "
+                "a person/place/thing, or to find a meme/gif. To generate a NEW image from a text "
+                "prompt use stable_diffusion."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The query to search for"},
+                    "query": {"type": "string", "description": "Search query."},
                     "type": {
                         "type": "string",
                         "enum": ["photo", "gif"],
-                        "description": "The type of image to return. Default to photo",
+                        "description": "Type of image to return.",
                     },
                     "region": {
                         "type": "string",
-                        "description": "Search region/language hint. Default to ru if not specified",
+                        "description": "Optional region/language hint, e.g. 'en' for English-language sources, 'ru' for Russian.",
                     }
                 },
                 "required": ["query"],

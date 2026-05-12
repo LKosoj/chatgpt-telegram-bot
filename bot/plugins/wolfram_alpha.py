@@ -22,11 +22,17 @@ class WolframAlphaPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "answer_with_wolfram_alpha",
-            "description": "Get an answer to a question using Wolfram Alpha. Input should the the query in English.",
+            "description": (
+                "Wolfram Alpha computational engine. Use for: math (derivatives, integrals, "
+                "equation solving, symbolic algebra), unit conversions, physics/chemistry/engineering "
+                "computations, and authoritative scientific facts (constants, properties, well-known "
+                "dates). Query MUST be in English. Do NOT use for current news, opinion, or local "
+                "info — use web_search for that."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The search query, in english (translate if necessary)"}
+                    "query": {"type": "string", "description": "Search query, in English (translate if necessary)."}
                 },
                 "required": ["query"]
             }

@@ -22,25 +22,25 @@ class RemindersPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "set_reminder",
-            "description": f'Установить напоминание на определенное время, сейчас {datetime.now().strftime("%Y%m%d%H%M%S")}',
+            "description": f'Set a reminder for a specific time. Current server time is {datetime.now().strftime("%Y%m%d%H%M%S")}.',
             "parameters": {
                 "type": "object",
                 "properties": {
                     "time": {
                         "type": "string",
-                        "description": "Время напоминания в формате YYYY-MM-DD HH:MM"
+                        "description": "Reminder time in YYYY-MM-DD HH:MM format."
                     },
                     "message": {
                         "type": "string",
-                        "description": "Текст напоминания"
+                        "description": "Reminder text."
                     },
                     "current_time": {
                         "type": "string",
-                        "description": f'Текущее время {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+                        "description": f'Current server time: {datetime.now().strftime("%Y-%m-%d %H:%M")}.'
                     },
                     "integration": {
-                        "type": "string", 
-                        "description": "Интеграция для отправки (telegram)",
+                        "type": "string",
+                        "description": "Delivery integration.",
                         "enum": ["telegram",]
                     }
                 },
@@ -49,26 +49,26 @@ class RemindersPlugin(Plugin):
         },
         {
             "name": "list_reminders",
-            "description": "Показать список активных напоминаний",
+            "description": "List active reminders.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "current_time": {
                         "type": "string",
-                        "description": f'Текущее время {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+                        "description": f'Current server time: {datetime.now().strftime("%Y-%m-%d %H:%M")}.'
                     }
                 },
             }
         },
         {
-            "name": "delete_reminder", 
-            "description": "Удалить напоминание по ID",
+            "name": "delete_reminder",
+            "description": "Delete a reminder by id.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reminder_id": {
                         "type": "string",
-                        "description": "ID напоминания для удаления"
+                        "description": "Reminder id to delete."
                     }
                 },
                 "required": ["reminder_id"]

@@ -131,24 +131,24 @@ class TextDocumentQAPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "upload_document",
-            "description": "Загрузить документ в AnythingLLM workspace текущего чата",
+            "description": "Upload a text document into this chat's document workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_content": {
                         "type": "string",
-                        "description": "Содержимое текстового файла",
+                        "description": "Text content of the file.",
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "Имя файла",
+                        "description": "File name.",
                     },
                 },
                 "required": ["file_content", "file_name"],
             },
         }, {
             "name": "list_documents",
-            "description": "Показать документы AnythingLLM workspace текущего чата",
+            "description": "List documents stored in this chat's workspace. Call this before ask_question or delete_document to obtain document_id values.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -156,50 +156,57 @@ class TextDocumentQAPlugin(Plugin):
             },
         }, {
             "name": "ask_question",
-            "description": "Задать вопрос по документам AnythingLLM workspace текущего чата",
+            "description": (
+                "Ask a question about ONE specific document. Requires document_id — call "
+                "list_documents first to obtain it. Use when the user names a specific file or "
+                "asks about the contents of a particular document."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "ID документа из списка документов",
+                        "description": "Document ID, obtained from list_documents.",
                     },
                     "query": {
                         "type": "string",
-                        "description": "Вопрос к документам",
+                        "description": "Question to ask about the document.",
                     },
                 },
                 "required": ["document_id", "query"],
             },
         }, {
             "name": "ask_workspace",
-            "description": "Задать вопрос по всем документам AnythingLLM workspace текущего чата",
+            "description": (
+                "Ask a free-form question across ALL documents in the workspace. Use when the "
+                "user wants a cross-document answer or does not reference a specific file."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Вопрос к документам workspace",
+                        "description": "Question to ask across the workspace.",
                     },
                 },
                 "required": ["query"],
             },
         }, {
             "name": "set_rag_mode",
-            "description": "Включить или выключить RAG-режим для текущего Telegram-чата",
+            "description": "Enable or disable RAG mode for this Telegram chat.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "enabled": {
                         "type": "boolean",
-                        "description": "true включает RAG-режим, false выключает",
+                        "description": "true to enable RAG mode, false to disable.",
                     },
                 },
                 "required": ["enabled"],
             },
         }, {
             "name": "get_rag_status",
-            "description": "Показать статус RAG-режима и количество документов текущего Telegram-чата",
+            "description": "Show RAG mode status and the number of documents in this chat's workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -207,13 +214,13 @@ class TextDocumentQAPlugin(Plugin):
             },
         }, {
             "name": "delete_document",
-            "description": "Удалить документ из AnythingLLM workspace текущего чата",
+            "description": "Delete a document from this chat's workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "ID документа для удаления",
+                        "description": "Document ID to delete, obtained from list_documents.",
                     },
                 },
                 "required": ["document_id"],

@@ -115,17 +115,25 @@ class CodeInterpreterPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "deep_analysis",
-            "description": "Выполняет анализ данных и возвращает результат. Поддерживает работу с данными, визуализацию и вычисления.",
+            "description": (
+                "Run Python data analysis in a sandboxed Jupyter-style environment "
+                "(pandas, numpy, matplotlib, sympy). Use for numeric calculations, plots/charts, "
+                "statistics, data transformations, ML inference. Do NOT use to run shell commands "
+                "or pre-existing scripts — use terminal for that."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code_prompt": {
                         "type": "string",
-                        "description": "Текстовое описание задачи или Python код для выполнения"
+                        "description": (
+                            "Either a Python code block to execute as-is, or a natural-language "
+                            "description of the task that the interpreter will turn into Python."
+                        )
                     },
                     "data_path": {
                         "type": "string",
-                        "description": "Путь к файлу с данными (опционально)"
+                        "description": "Optional path or URL to a data file the code should operate on."
                     }
                 },
                 "required": ["code_prompt"]

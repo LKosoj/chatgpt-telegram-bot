@@ -33,20 +33,22 @@ class MovieInfoPlugin(Plugin):
         return 'Movie Information'
 
     def get_spec(self) -> List[Dict]:
+        genre_values = list(self.GENRES.values())
         return [
             {
                 'name': 'get_new_movies',
-                'description': 'Получает список новых фильмов, выходящих в прокат',
+                'description': 'Get a list of newly released movies from TMDb.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'genre': {
-                            'type': 'string', 
-                            'description': f'Жанр фильма. Доступные жанры: {", ".join(self.GENRES.values())}'
+                            'type': 'string',
+                            'description': 'Optional movie genre.',
+                            'enum': genre_values,
                         },
                         'count': {
-                            'type': 'integer', 
-                            'description': 'Количество фильмов для возврата (по умолчанию 20)'
+                            'type': 'integer',
+                            'description': 'Number of movies to return.'
                         }
                     },
                     'required': [],
@@ -54,17 +56,18 @@ class MovieInfoPlugin(Plugin):
             },
             {
                 'name': 'get_movie_recommendations',
-                'description': 'Получает рекомендации по фильмам с использованием ИИ',
+                'description': 'Get AI-driven movie recommendations from TMDb data.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'genre': {
-                            'type': 'string', 
-                            'description': f'Жанр фильма. Доступные жанры: {", ".join(self.GENRES.values())}'
+                            'type': 'string',
+                            'description': 'Optional movie genre.',
+                            'enum': genre_values,
                         },
                         'count': {
-                            'type': 'integer', 
-                            'description': 'Количество фильмов для анализа (по умолчанию 20)'
+                            'type': 'integer',
+                            'description': 'Number of movies to analyze.'
                         }
                     },
                     'required': [],

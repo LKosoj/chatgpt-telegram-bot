@@ -34,17 +34,18 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "shops",
                 "description": (
-                    "Поиск магазинов ВкусВилл. Возвращает адрес, координаты, контакты, "
-                    "режим работы и особенности. Для списка доступных фильтров вызови page=1."
+                    "Search VkusVill (Russian grocery chain) stores. Returns address, coordinates, "
+                    "contacts, opening hours, and features. Call with page=1 to get the list of "
+                    "available filters."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "page": {"type": "integer", "description": "Номер страницы", "default": 1, "minimum": 1},
-                        "id_region_filter": {"type": "integer", "description": "ID региона для фильтра", "default": 0, "minimum": 0},
-                        "id_city_filter": {"type": "integer", "description": "ID города для фильтра", "default": 0, "minimum": 0},
-                        "id_subway_filter": {"type": "integer", "description": "ID метро для фильтра", "default": 0, "minimum": 0},
-                        "id_feature_filter": {"type": "integer", "description": "ID особенности для фильтра", "default": 0, "minimum": 0},
+                        "page": {"type": "integer", "description": "Page number.", "default": 1, "minimum": 1},
+                        "id_region_filter": {"type": "integer", "description": "Region filter ID.", "default": 0, "minimum": 0},
+                        "id_city_filter": {"type": "integer", "description": "City filter ID.", "default": 0, "minimum": 0},
+                        "id_subway_filter": {"type": "integer", "description": "Metro station filter ID.", "default": 0, "minimum": 0},
+                        "id_feature_filter": {"type": "integer", "description": "Store feature filter ID.", "default": 0, "minimum": 0},
                     },
                 },
             },
@@ -55,23 +56,23 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "products_search",
                 "description": (
-                    "Поиск товаров ВкусВилл по текстовому запросу. Возвращает id, xml_id, "
-                    "описание, цену, рейтинг, состав, КБЖУ и фото товаров."
+                    "Search VkusVill products by text query. Returns id, xml_id, description, "
+                    "price, rating, ingredients, nutrition (calories, protein, fat, carbs), and photos."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "q": {"type": "string", "description": "Поисковый запрос", "minLength": 1, "maxLength": 255},
-                        "page": {"type": "integer", "description": "Номер страницы", "default": 1, "minimum": 1},
+                        "q": {"type": "string", "description": "Search query.", "minLength": 1, "maxLength": 255},
+                        "page": {"type": "integer", "description": "Page number.", "default": 1, "minimum": 1},
                         "sort": {
                             "type": "string",
-                            "description": "Сортировка товаров",
+                            "description": "Sort order.",
                             "default": "popularity",
                             "enum": ["price_asc", "price_desc", "rating", "popularity", "new"],
                         },
                         "vvonly": {
                             "type": "integer",
-                            "description": "Искать только товары бренда ВкусВилл",
+                            "description": "Restrict to VkusVill own-brand products (1) or include all (0).",
                             "default": 1,
                             "minimum": 0,
                             "maximum": 1,
@@ -87,13 +88,13 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "product_details",
                 "description": (
-                    "Детальная информация о товаре ВкусВилл по id из products_search: "
-                    "состав, КБЖУ, фото, рейтинг и цена."
+                    "Detailed info about a VkusVill product by id from products_search: "
+                    "ingredients, nutrition (calories, protein, fat, carbs), photos, rating, and price."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "integer", "description": "ID товара ВкусВилл", "minimum": 1},
+                        "id": {"type": "integer", "description": "VkusVill product id (from products_search).", "minimum": 1},
                     },
                     "required": ["id"],
                 },
@@ -104,11 +105,11 @@ class VkusVillPlugin(Plugin):
             "defaults": {},
             "spec": {
                 "name": "product_analogs",
-                "description": "Возвращает аналоги товара ВкусВилл по id из products_search.",
+                "description": "Return analog products for a VkusVill product by id from products_search.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "integer", "description": "ID товара ВкусВилл", "minimum": 1},
+                        "id": {"type": "integer", "description": "VkusVill product id (from products_search).", "minimum": 1},
                     },
                     "required": ["id"],
                 },
@@ -120,28 +121,28 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "products_discount",
                 "description": (
-                    "Список акционных товаров ВкусВилл: скидка по карте или скидка за количество. "
-                    "Возвращает id, xml_id, описание, цену, рейтинг, состав, КБЖУ и фото."
+                    "List VkusVill products on promotion: loyalty-card discount or quantity discount. "
+                    "Returns id, xml_id, description, price, rating, ingredients, nutrition, and photos."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "type": {
                             "type": "string",
-                            "description": "Тип скидки",
+                            "description": "Discount type: loyalty card or quantity-based.",
                             "default": "card",
                             "enum": ["card", "quantity"],
                         },
-                        "page": {"type": "integer", "description": "Номер страницы", "default": 1, "minimum": 1},
+                        "page": {"type": "integer", "description": "Page number.", "default": 1, "minimum": 1},
                         "sort": {
                             "type": "string",
-                            "description": "Сортировка товаров",
+                            "description": "Sort order.",
                             "default": "popularity",
                             "enum": ["price_asc", "price_desc", "rating", "popularity", "new", "name_asc", "name_desc"],
                         },
                         "vvonly": {
                             "type": "integer",
-                            "description": "Возвращать только товары бренда ВкусВилл",
+                            "description": "Restrict to VkusVill own-brand products (1) or include all (0).",
                             "default": 1,
                             "minimum": 0,
                             "maximum": 1,
@@ -156,22 +157,22 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "cart_link_create",
                 "description": (
-                    "Создает ссылку на корзину ВкусВилл. Используй xml_id из products_search "
-                    "или product_details и количество q для каждого товара."
+                    "Create a VkusVill shopping-cart link. Use xml_id from products_search or "
+                    "product_details, and quantity q for each product."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "products": {
                             "type": "array",
-                            "description": "Массив товаров для добавления в корзину",
+                            "description": "Array of products to add to the cart.",
                             "minItems": 1,
                             "maxItems": 30,
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "xml_id": {"type": "integer", "description": "xml_id товара", "minimum": 1},
-                                    "q": {"type": "number", "description": "Количество товара", "minimum": 0.01, "maximum": 40},
+                                    "xml_id": {"type": "integer", "description": "Product xml_id.", "minimum": 1},
+                                    "q": {"type": "number", "description": "Quantity of the product.", "minimum": 0.01, "maximum": 40},
                                 },
                                 "required": ["xml_id", "q"],
                             },
@@ -197,28 +198,32 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "recipes",
                 "description": (
-                    "Поиск рецептов ВкусВилл по запросу и фильтрам. Возвращает ингредиенты, "
-                    "пищевую ценность, пошаговое приготовление и фото. Для списка фильтров вызови page=1."
+                    "Search the VkusVill recipe catalog by query and filters. Returns ingredients, "
+                    "nutrition, step-by-step instructions, and photos. Real recipes with ingredients "
+                    "linkable to a shopping cart via cart_link_create. Use when the user wants to "
+                    "cook from VkusVill products, build a shopping list, or asks for popular/seasonal "
+                    "recipes from the catalog. For AI-generated custom recipes by ingredients use "
+                    "get_recipe instead. Call with page=1 to get the list of available filters."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "q": {"type": "string", "description": "Поисковый запрос", "default": "", "maxLength": 255},
-                        "page": {"type": "integer", "description": "Номер страницы", "default": 1, "minimum": 1},
+                        "q": {"type": "string", "description": "Search query.", "default": "", "maxLength": 255},
+                        "page": {"type": "integer", "description": "Page number.", "default": 1, "minimum": 1},
                         "sort": {
                             "type": "string",
-                            "description": "Сортировка рецептов",
+                            "description": "Sort order.",
                             "default": "popularity",
                             "enum": ["popularity", "new"],
                         },
-                        "id_feature_filter": {"type": "integer", "description": "ID особенности для фильтра", "default": 0, "minimum": 0},
-                        "id_cooking_time_filter": {"type": "integer", "description": "ID времени готовки", "default": 0, "minimum": 0},
-                        "id_cooking_method_filter": {"type": "integer", "description": "ID способа приготовления", "default": 0, "minimum": 0},
-                        "id_complexity_filter": {"type": "integer", "description": "ID сложности", "default": 0, "minimum": 0},
-                        "id_category_filter": {"type": "integer", "description": "ID категории", "default": 0, "minimum": 0},
+                        "id_feature_filter": {"type": "integer", "description": "Feature filter ID.", "default": 0, "minimum": 0},
+                        "id_cooking_time_filter": {"type": "integer", "description": "Cooking time filter ID.", "default": 0, "minimum": 0},
+                        "id_cooking_method_filter": {"type": "integer", "description": "Cooking method filter ID.", "default": 0, "minimum": 0},
+                        "id_complexity_filter": {"type": "integer", "description": "Complexity filter ID.", "default": 0, "minimum": 0},
+                        "id_category_filter": {"type": "integer", "description": "Category filter ID.", "default": 0, "minimum": 0},
                         "id_exclude_allergens_filter": {
                             "type": "array",
-                            "description": "ID аллергенов, которые нужно исключить",
+                            "description": "Allergen IDs to exclude.",
                             "default": [],
                             "items": {"type": "integer", "minimum": 1},
                         },

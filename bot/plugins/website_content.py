@@ -15,10 +15,14 @@ class WebsiteContentPlugin(Plugin):
         return [
             {
                 'name': 'website_content',
-                'description': 'Get and clean up the main body text and title for an URL',
+                'description': (
+                    'Fetch and clean the body text and title of a regular web page (article, blog, docs). '
+                    'Use only when you already have a specific URL. For YouTube URLs use '
+                    'youtube_video_transcript instead; for topic research without a URL use research_articles.'
+                ),
                 'parameters': {
                     'type': 'object',
-                    'properties': {'url': {'type': 'string', 'description': 'URL address'}},
+                    'properties': {'url': {'type': 'string', 'description': 'Page URL.'}},
                     'required': ['url'],
                 },
             }

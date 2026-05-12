@@ -245,12 +245,28 @@ class HaiperImageToVideoPlugin(Plugin):
         return [
             {
                 "name": "convert_image_to_video",
-                "description": "Конвертирует изображение в видео с анимацией",
+                "description": (
+                    "Animate a still image into a short video. Use when the user has an image "
+                    "and wants it animated. For editing an image into another still image use "
+                    "edit_image; for generating an image from text use stable_diffusion."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "image_path": {"type": "string"},
-                        "prompt": {"type": "string"}
+                        "image_path": {
+                            "type": "string",
+                            "description": (
+                                "Absolute local file path to the source image (e.g. /tmp/img.png). "
+                                "To use an HTTP URL, download it first."
+                            ),
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": (
+                                "Optional animation/motion description (e.g. 'gentle camera zoom', "
+                                "'wind blowing leaves'). Leave empty for default motion."
+                            ),
+                        }
                     },
                     "required": ["image_path"]
                 }

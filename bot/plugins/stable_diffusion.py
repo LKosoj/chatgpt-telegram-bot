@@ -20,23 +20,31 @@ class StableDiffusionPlugin(Plugin):
         return [
             {
                 "name": "stable_diffusion",
-                "description": "Generate an image from a textual prompt through LLMGateway",
+                "description": (
+                    "Generate a NEW image from a text prompt (AI image generation). Use when the "
+                    "user wants an original/custom image. Do NOT use to find existing photos — "
+                    "use search_images for that."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "prompt": {"type": "string", "description": "Text prompt for generating the image"}
+                        "prompt": {"type": "string", "description": "Text prompt describing the image to generate."}
                     },
                     "required": ["prompt"],
                 },
             },
             {
                 "name": "edit_image",
-                "description": "Edit an image by URL through LLMGateway",
+                "description": (
+                    "Edit an existing image with text instructions (AI image-to-image). Use when "
+                    "the user has an image (URL) and wants to modify it. For converting an image "
+                    "into a short video use convert_image_to_video."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "prompt": {"type": "string", "description": "Instructions for editing the image"},
-                        "image_url": {"type": "string", "description": "HTTP(S), data URL, or image reference to edit"}
+                        "prompt": {"type": "string", "description": "Editing instructions."},
+                        "image_url": {"type": "string", "description": "HTTP(S) URL, data URL, or image reference to edit."}
                     },
                     "required": ["prompt", "image_url"],
                 },

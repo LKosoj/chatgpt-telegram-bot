@@ -33,13 +33,18 @@ class ChiefPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "get_recipe",
-            "description": "Получить рецепт и кулинарные рекомендации на основе ингредиентов и предпочтений",
+            "description": (
+                "AI-generated cooking recipe by ingredients and preferences. Use when the user "
+                "lists ingredients they have, asks for a custom recipe by description, or wants "
+                "creative suggestions. For real recipes from the VkusVill grocery catalog with a "
+                "shopping-cart link use vkusvill.recipes instead."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Запрос пользователя с описанием желаемого блюда и ограничений"
+                        "description": "User request describing the desired dish, ingredients, and constraints."
                     }
                 },
                 "required": ["query"]
@@ -47,17 +52,17 @@ class ChiefPlugin(Plugin):
         },
         {
             "name": "plan_menu",
-            "description": "Создание плана питания на несколько дней с учетом предпочтений",
+            "description": "Create a multi-day meal plan based on dietary preferences.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "days": {
                         "type": "integer",
-                        "description": "Количество дней для планирования"
+                        "description": "Number of days to plan."
                     },
                     "preferences": {
                         "type": "string",
-                        "description": "Диетические предпочтения и ограничения"
+                        "description": "Dietary preferences and restrictions."
                     }
                 },
                 "required": ["days", "preferences"]

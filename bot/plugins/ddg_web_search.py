@@ -26,17 +26,21 @@ class DDGWebSearchPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "web_search",
-            "description": "Execute a web search through LLMGateway and return a list of results",
+            "description": (
+                "Quick web search for one concrete fact, current news, or local/regional info. "
+                "Returns short result snippets. For broad topic synthesis use research_articles; "
+                "for math, unit conversions, or precise scientific facts use answer_with_wolfram_alpha."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "the user query"
+                        "description": "User query."
                     },
                     "region": {
                         "type": "string",
-                        "description": "Search region/language hint. Default to ru if not specified",
+                        "description": "Optional region/language hint, e.g. 'en' for English-language sources, 'ru' for Russian.",
                     },
                     "max_results": {
                         "type": "integer",

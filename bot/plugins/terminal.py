@@ -28,10 +28,13 @@ class TerminalPlugin(Plugin):
         return [{
             "name": "terminal",
             "description": (
-                "Execute a command and return stdout, stderr, and the return code. "
+                "Execute a shell command and return stdout, stderr, and the return code. "
                 "By default runs via /bin/sh -c (shell=true), so pipes, redirects and chained "
                 "commands like 'node /tmp/x.js && ls /tmp/' work as written. "
-                "Pass shell=false to bypass the shell and exec a single program directly."
+                "Pass shell=false to bypass the shell and exec a single program directly. "
+                "Use for shell workflows: pipes, redirects, file-system operations, invoking "
+                "installed CLI tools, running existing scripts. Do NOT use for general Python "
+                "data analysis — use deep_analysis instead."
             ),
             "parameters": {
                 "type": "object",
@@ -39,21 +42,21 @@ class TerminalPlugin(Plugin):
                     "command": {
                         "type": "string",
                         "description": (
-                            "Command to run. With shell=true (default) it is passed to /bin/sh -c "
+                            "Command to run. With shell=true it is passed to /bin/sh -c "
                             "verbatim; with shell=false it is split via shlex and exec'd directly."
                         ),
                     },
                     "shell": {
                         "type": "boolean",
-                        "description": "If true (default), run via /bin/sh -c. Set false to exec directly without a shell.",
+                        "description": "If true, run via /bin/sh -c. Set false to exec directly without a shell.",
                     },
                     "cwd": {
                         "type": "string",
-                        "description": f"Working directory. Defaults to {DEFAULT_CWD}.",
+                        "description": "Working directory for the command.",
                     },
                     "timeout": {
                         "type": "number",
-                        "description": f"Timeout in seconds. Defaults to {DEFAULT_TIMEOUT_SECONDS}.",
+                        "description": "Timeout in seconds for the command.",
                     },
                 },
                 "required": ["command"],
