@@ -62,6 +62,9 @@ class FakePluginManager:
     def set_db(self, db):
         self.db = db
 
+    def register_plugin_schemas(self):
+        return None
+
     def get_message_handlers(self):
         return []
 

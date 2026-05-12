@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import inspect
 import json
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 import difflib
 
+from .plugins.background import BackgroundTask
+from .plugins.db_handle import DbHandle
 from .plugins.plugin import Plugin
 from .model_constants import GOOGLE as GOOGLE_MODELS
 from .user_settings import (
@@ -22,11 +25,14 @@ logger = logging.getLogger(__name__)
 class PluginManager:
 
     def __init__(self, config, plugins_directory="plugins"):
+        self.config = dict(config or {})
         self.plugins = {}
         self.plugin_instances = {}
         self.openai = None
         self.bot = None
         self.db = None
+        self.db_handle: DbHandle | None = None
+        self._background_tasks: dict[str, asyncio.Task] = {}
         self.enabled_plugins = [p for p in (config.get('plugins', []) or []) if p]
         self.strict_validation = str(os.getenv("PLUGIN_STRICT_VALIDATION", "false")).lower() == "true"
         self.storage_root = os.getenv("PLUGIN_STORAGE_ROOT")
@@ -43,16 +49,88 @@ class PluginManager:
         """Устанавливает ссылку на openai и обновляет все существующие инстансы плагинов"""
         self.openai = openai
         self.bot = getattr(openai, "bot", None)
-        for instance in self.plugin_instances.values():
-            instance.initialize(openai=openai, bot=self.bot, storage_root=self.storage_root)
+        for plugin_name, instance in self.plugin_instances.items():
+            self._call_initialize(
+                instance,
+                openai=openai,
+                bot=self.bot,
+                storage_root=self.storage_root,
+                db=getattr(self, "db_handle", None),
+                plugin_config=self._plugin_config_segment(instance),
+            )
 
     def set_db(self, db) -> None:
         """Устанавливает ссылку на БД для чтения пользовательских настроек.
 
         Идемпотентен: безопасно вызывать повторно (и с тем же `db`, и с новым).
-        Не имеет побочных эффектов помимо замены ссылки.
+        Также пересоздаёт ``self.db_handle`` (async-фасад) при каждом вызове.
         """
         self.db = db
+        self.db_handle = DbHandle(db) if db is not None else None
+
+    def _call_initialize(self, plugin: Plugin, **kwargs: Any) -> None:
+        """Call ``plugin.initialize`` with only the kwargs its signature accepts.
+
+        This is the compatibility shim that lets the framework pass new
+        parameters (``db``, ``plugin_config``) without breaking plugins that
+        still use the legacy ``(openai, bot, storage_root)`` signature.
+        """
+        method = getattr(plugin, "initialize", None)
+        if method is None:
+            return
+        try:
+            sig = inspect.signature(method)
+        except (TypeError, ValueError):
+            # Builtin / C-implemented — fall back to passing everything and
+            # tolerating TypeError at the call boundary.
+            try:
+                method(**kwargs)
+            except TypeError:
+                logger.debug(
+                    "plugin %s initialize did not accept new kwargs; calling empty",
+                    getattr(plugin, "plugin_id", None) or type(plugin).__name__,
+                )
+                method()
+            return
+
+        params = sig.parameters
+        accepts_var_keyword = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        if accepts_var_keyword:
+            filtered = kwargs
+        else:
+            filtered = {k: v for k, v in kwargs.items() if k in params}
+
+        try:
+            method(**filtered)
+        except TypeError:
+            # Last-resort safety net: call with no extra args.
+            # Rarely triggered in practice — inspect.signature succeeds for
+            # Python-defined initialize methods, so the kwargs are already
+            # filtered above. This path only fires for exotic descriptors or
+            # C-defined initialize bound methods that pass through signature
+            # introspection but still reject the filtered kwargs.
+            logger.warning(
+                "plugin %s initialize raised TypeError with filtered kwargs; "
+                "calling with no args",
+                getattr(plugin, "plugin_id", None) or type(plugin).__name__,
+            )
+            method()
+
+    def _plugin_config_segment(self, plugin: Plugin) -> Dict[str, Any]:
+        """Return the config slice for ``plugin``: keys whose name starts with its prefix.
+
+        Keys are kept with their original prefix (plugin slices its own).
+        """
+        try:
+            prefix = plugin.get_config_prefix()
+        except Exception:  # noqa: BLE001 — never let plugin code break init
+            prefix = None
+        if not prefix:
+            return {}
+        config = getattr(self, "config", None) or {}
+        return {k: v for k, v in config.items() if k.startswith(prefix)}
 
     def disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
         """Возвращает множество имён плагинов, отключённых пользователем."""
@@ -409,7 +487,14 @@ class PluginManager:
         if plugin_name in self.plugin_instances:
             instance = self.plugin_instances[plugin_name]
             if not hasattr(instance, 'openai') or not instance.openai:
-                instance.initialize(openai=self.openai, bot=self.bot, storage_root=self.storage_root)
+                self._call_initialize(
+                    instance,
+                    openai=self.openai,
+                    bot=self.bot,
+                    storage_root=self.storage_root,
+                    db=getattr(self, "db_handle", None),
+                    plugin_config=self._plugin_config_segment(instance),
+                )
             if not getattr(instance, "plugin_id", None):
                 instance.plugin_id = plugin_name
             if not getattr(instance, "function_prefix", None):
@@ -425,7 +510,14 @@ class PluginManager:
             if not getattr(instance, "function_prefix", None):
                 instance.function_prefix = instance.plugin_id
             if self.openai or self.storage_root:
-                instance.initialize(openai=self.openai, bot=self.bot, storage_root=self.storage_root)
+                self._call_initialize(
+                    instance,
+                    openai=self.openai,
+                    bot=self.bot,
+                    storage_root=self.storage_root,
+                    db=getattr(self, "db_handle", None),
+                    plugin_config=self._plugin_config_segment(instance),
+                )
             self.plugin_instances[plugin_name] = instance
             return instance
         return None
@@ -676,3 +768,247 @@ class PluginManager:
             except Exception as e:
                 logger.error(f"Ошибка при получении help-текста плагина {plugin_name}: {e}")
         return help_texts
+
+    # ------------------------------------------------------------------ #
+    # Hook framework (Stage 0)                                           #
+    # ------------------------------------------------------------------ #
+
+    def _active_plugin_instances(self, user_id: int | None) -> List[Plugin]:
+        """Return live plugin instances respecting per-user disabled set.
+
+        Order is **sorted by plugin_name** for deterministic sequential hooks.
+        """
+        disabled = self.disabled_plugins_for_user(user_id)
+        result: List[Plugin] = []
+        for plugin_name in sorted(self.plugins.keys()):
+            if plugin_name in disabled:
+                continue
+            instance = self.get_plugin(plugin_name)
+            if instance is not None:
+                result.append(instance)
+        return result
+
+    def _log_hook_error(
+        self, plugin: Plugin, event_name: str, hook_kind: str, exc: BaseException
+    ) -> None:
+        plugin_id = getattr(plugin, "plugin_id", None) or type(plugin).__name__
+        logger.error(
+            "plugin_hook_error",
+            extra={
+                "plugin_id": plugin_id,
+                "hook": hook_kind,
+                "event": event_name,
+                "exc_class": type(exc).__name__,
+            },
+            exc_info=exc,
+        )
+
+    async def dispatch_observe(
+        self, event_name: str, payload: Any, *, user_id: int | None = None
+    ) -> None:
+        """Fan out an observer event to every subscribed plugin concurrently.
+
+        Plugin exceptions are logged and swallowed; they never propagate.
+        """
+        plugins = self._active_plugin_instances(user_id)
+        coros = []
+        targets: List[Plugin] = []
+        for plugin in plugins:
+            method = getattr(plugin, event_name, None)
+            if method is None:
+                continue
+            coros.append(method(payload))
+            targets.append(plugin)
+        if not coros:
+            return
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for plugin, result in zip(targets, results):
+            if isinstance(result, BaseException):
+                self._log_hook_error(plugin, event_name, "observe", result)
+
+    async def dispatch_blocking(
+        self, event_name: str, payload: Any, *, user_id: int | None = None
+    ) -> None:
+        """Run a blocking event sequentially; one plugin's failure does NOT stop others.
+
+        Policy A: every subscriber gets a chance to handle the event; the
+        dispatcher returns normally only after all of them have tried.
+        """
+        plugins = self._active_plugin_instances(user_id)
+        for plugin in plugins:
+            method = getattr(plugin, event_name, None)
+            if method is None:
+                continue
+            try:
+                await method(payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, event_name, "blocking", exc)
+
+    async def collect_fragments(
+        self, slot: str, payload: Any, *, user_id: int | None = None
+    ) -> List[str]:
+        """Collect non-empty string fragments from every subscribed plugin.
+
+        Order matches the deterministic plugin order (sorted by plugin_name).
+        Plugins that raise are skipped; plugins returning ``None`` or empty
+        strings are skipped.
+        """
+        plugins = self._active_plugin_instances(user_id)
+        fragments: List[str] = []
+        for plugin in plugins:
+            method = getattr(plugin, "contribute_prompt_fragment", None)
+            if method is None:
+                continue
+            try:
+                fragment = await method(slot, payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, slot, "fragment", exc)
+                continue
+            if fragment:
+                fragments.append(fragment)
+        return fragments
+
+    async def apply_mutators(
+        self,
+        event_name: str,
+        payload: Any,
+        value: Any,
+        *,
+        user_id: int | None = None,
+    ) -> Any:
+        """Run a mutator chain (currently used for ``on_before_chat_request``).
+
+        Each plugin receives the latest ``value`` (plus ``payload``) and may
+        return a replacement. ``None`` means "no change". On exception the
+        previous good value is retained and the chain continues.
+        """
+        plugins = self._active_plugin_instances(user_id)
+        for plugin in plugins:
+            method = getattr(plugin, event_name, None)
+            if method is None:
+                continue
+            try:
+                new_value = await method(value, payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, event_name, "mutator", exc)
+                continue
+            if new_value is not None:
+                value = new_value
+        return value
+
+    async def start_background_tasks(self, application: Any) -> None:
+        """Start every plugin-declared background task as a supervised asyncio task.
+
+        On exception inside the coroutine factory we log and sleep
+        ``interval_seconds`` before retrying — the task is never permanently
+        killed by a transient error.
+        """
+        for plugin_name in sorted(self.plugins.keys()):
+            plugin = self.get_plugin(plugin_name)
+            if plugin is None:
+                continue
+            try:
+                tasks = plugin.get_background_tasks() or []
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, "get_background_tasks", "background_init", exc)
+                continue
+            for task in tasks:
+                if not isinstance(task, BackgroundTask):
+                    logger.warning(
+                        "plugin %s returned non-BackgroundTask entry; skipping",
+                        plugin_name,
+                    )
+                    continue
+                key = f"{plugin_name}.{task.name}"
+                if key in self._background_tasks:
+                    logger.warning("background task %s already running; skipping", key)
+                    continue
+                self._background_tasks[key] = asyncio.create_task(
+                    self._background_task_loop(plugin_name, task, application),
+                    name=key,
+                )
+
+    async def _background_task_loop(
+        self,
+        plugin_name: str,
+        task: BackgroundTask,
+        application: Any,
+    ) -> None:
+        while True:
+            try:
+                await task.coroutine_factory(application=application)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "background_task_error",
+                    extra={
+                        "plugin_id": plugin_name,
+                        "task": task.name,
+                        "exc_class": type(exc).__name__,
+                    },
+                    exc_info=exc,
+                )
+            try:
+                await asyncio.sleep(task.interval_seconds)
+            except asyncio.CancelledError:
+                raise
+
+    async def stop_background_tasks(self, timeout: float = 10.0) -> None:
+        """Cancel all background tasks and wait up to ``timeout`` seconds."""
+        if not self._background_tasks:
+            return
+        tasks = list(self._background_tasks.values())
+        for task in tasks:
+            task.cancel()
+        try:
+            await asyncio.wait(tasks, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("error while stopping background tasks: %s", exc)
+        self._background_tasks.clear()
+
+    def register_plugin_schemas(self) -> None:
+        """Execute DDL declared by every plugin via ``register_schema()``.
+
+        Called from ``bot/__main__.py`` AFTER ``set_db`` and BEFORE
+        ``set_openai`` so plugin-owned tables exist before ``initialize`` runs.
+
+        Plugin instances are created here without invoking ``initialize`` —
+        ``set_openai`` will run ``initialize`` exactly once per instance later.
+        """
+        if self.db is None:
+            logger.debug("register_plugin_schemas called before set_db; skipping")
+            return
+        for plugin_name in sorted(self.plugins.keys()):
+            plugin = self._get_or_create_bare_instance(plugin_name)
+            if plugin is None:
+                continue
+            try:
+                statements = plugin.register_schema() or []
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, "register_schema", "schema", exc)
+                continue
+            if not statements:
+                continue
+            try:
+                with self.db.get_connection() as conn:
+                    for ddl in statements:
+                        conn.execute(ddl)
+            except Exception as exc:  # noqa: BLE001
+                self._log_hook_error(plugin, "register_schema", "schema", exc)
+
+    def _get_or_create_bare_instance(self, plugin_name: str) -> Plugin | None:
+        """Return cached instance or create a new one WITHOUT calling ``initialize``."""
+        instance = self.plugin_instances.get(plugin_name)
+        if instance is not None:
+            return instance
+        plugin_class = self.plugins.get(plugin_name)
+        if plugin_class is None:
+            return None
+        instance = plugin_class()
+        if not getattr(instance, "plugin_id", None):
+            instance.plugin_id = plugin_name
+        if not getattr(instance, "function_prefix", None):
+            instance.function_prefix = instance.plugin_id
+        self.plugin_instances[plugin_name] = instance
+        return instance

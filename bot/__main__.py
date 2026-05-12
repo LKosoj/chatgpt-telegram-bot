@@ -192,6 +192,11 @@ def main():
     plugin_manager = PluginManager(config=plugin_config)
     db = Database()
     plugin_manager.set_db(db)
+    # Stage 0 hook wiring: plugins may declare DDL via Plugin.register_schema().
+    # On stage 0 the registry is effectively empty (no plugin overrides it).
+    # Must run BEFORE set_openai(): set_openai triggers initialize() for every
+    # plugin, and plugins may read their tables from inside initialize.
+    plugin_manager.register_plugin_schemas()
     openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager, db=db)
     # Make the helper available to plugins explicitly, before the bot is built.
     plugin_manager.set_openai(openai_helper)

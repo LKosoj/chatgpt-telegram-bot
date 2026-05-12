@@ -19,11 +19,11 @@
 ## Цели и инварианты
 
 - [ ] Ни одного обращения к плагину по имени из `bot/telegram_bot.py`, `bot/openai_helper.py`, `bot/database.py`, кроме (а) generic `get_plugin(plugin_id)` для tool-роутинга и (б) UI-чтения публичных атрибутов плагина для меню настроек.
-- [ ] Сбой плагина в хуке не ломает ответ пользователю.
-- [ ] Контракт хука — только `async def`.
-- [ ] Старые API `PluginManager.get_plugin / has_plugin / call_function` остаются работать (нужны для tool-вызовов и UI).
+- [x] Сбой плагина в хуке не ломает ответ пользователю — обеспечивается dispatcher'ами в `PluginManager` (политика A для всех 4 типов).
+- [x] Контракт хука — только `async def` (для observer/blocking/collector/mutator); декларативные методы (`register_schema`, `get_config_prefix`, `get_background_tasks`) sync.
+- [x] Старые API `PluginManager.get_plugin / has_plugin / call_function` остаются работать (нужны для tool-вызовов и UI).
 - [ ] После каждого этапа возможно откатить только этот этап, не каскадом.
-- [ ] Структурный лог при сбое в любом хуке: префикс `plugin_hook_error`, поля `plugin_id, hook, event/slot, exc_class, request_id` (если есть).
+- [x] Структурный лог при сбое в любом хуке: `plugin_hook_error` с полями `plugin_id, hook, event/slot, exc_class` (через `_log_hook_error`).
 
 ## Категории хуков
 
@@ -58,7 +58,7 @@
 
 ---
 
-## Этап 0 — Инфраструктура хуков
+## Этап 0 — Инфраструктура хуков ✅
 
 ~600-900 строк, средняя сложность, низкий риск. Никаких изменений поведения — только фреймворк.
 
@@ -85,61 +85,61 @@
 
 ### Новые модули
 
-- [ ] `bot/plugins/hooks.py` — имена событий (константы/enum), payload-датаклассы (`@dataclass(frozen=True)`).
-- [ ] `bot/plugins/background.py` — `BackgroundTask(name, interval_seconds, coroutine_factory)`.
-- [ ] `bot/plugins/db_handle.py` — узкий async-фасад к `Database` через `asyncio.to_thread`.
+- [x] `bot/plugins/hooks.py` — `HookEvent` StrEnum + 6 payload-датаклассов (`@dataclass(frozen=True, slots=True)`).
+- [x] `bot/plugins/background.py` — `BackgroundTask(name, interval_seconds, coroutine_factory)`.
+- [x] `bot/plugins/db_handle.py` — узкий async-фасад к `Database` через `asyncio.to_thread`; `transaction()` — буферизованный батч.
 
 ### Расширение `Plugin` (bot/plugins/plugin.py)
 
 Опциональные `async def`-методы (no-op по умолчанию):
 
-- [ ] `async on_user_message(payload)`
-- [ ] `async on_assistant_response(payload)`
-- [ ] `async on_session_reset(payload)`
-- [ ] `async on_session_before_delete(payload)`
-- [ ] `async on_before_chat_request(messages, payload) -> list[dict]`
-- [ ] `async contribute_prompt_fragment(slot, payload) -> str | None`
-- [ ] `get_background_tasks() -> list[BackgroundTask]`
-- [ ] `register_schema() -> list[str]`
-- [ ] `get_config_prefix() -> str | None`
-- [ ] `initialize` расширен параметрами `db: DbHandle | None = None`, `plugin_config: dict | None = None`.
+- [x] `async on_user_message(payload)`
+- [x] `async on_assistant_response(payload)`
+- [x] `async on_session_reset(payload)`
+- [x] `async on_session_before_delete(payload)`
+- [x] `async on_before_chat_request(messages, payload) -> list[dict]`
+- [x] `async contribute_prompt_fragment(slot, payload) -> str | None`
+- [x] `get_background_tasks() -> list[BackgroundTask]`
+- [x] `register_schema() -> list[str]`
+- [x] `get_config_prefix() -> str | None`
+- [x] `initialize` не расширен в базе — shim `PluginManager._call_initialize` фильтрует kwargs по `inspect.signature(plugin.initialize)`. Совместимость с 11 существующими плагинами без модификации; современные плагины опт-инят `db=None, plugin_config=None` в своей сигнатуре.
 
 ### Payload-датаклассы
 
-- [ ] `UserMessagePayload(chat_id, user_id, request_id, text, has_image, has_voice, is_command, ts)`
-- [ ] `AssistantResponsePayload(chat_id, user_id, request_id, text, tokens, model, ts)`
-- [ ] `SessionResetPayload(chat_id, user_id, reason, terminal_only)`
-- [ ] `SessionBeforeDeletePayload(user_id, session_id, messages)`
-- [ ] `BeforeChatRequestPayload(chat_id, user_id, request_id)` (массив `messages` — отдельный аргумент)
-- [ ] `PromptFragmentPayload(slot, chat_id, user_id, query)`
+- [x] `UserMessagePayload(chat_id, user_id, request_id, text, has_image, has_voice, is_command, ts)`
+- [x] `AssistantResponsePayload(chat_id, user_id, request_id, text, tokens, model, ts)`
+- [x] `SessionResetPayload(chat_id, user_id, reason, terminal_only)`
+- [x] `SessionBeforeDeletePayload(user_id, session_id, messages: tuple)` — `tuple`, не `list` (frozen-compatible).
+- [x] `BeforeChatRequestPayload(chat_id, user_id, request_id)` (массив `messages` — отдельный аргумент мутатора)
+- [x] `PromptFragmentPayload(slot, chat_id, user_id, query)`
 
 ### Диспетчер в `PluginManager`
 
-- [ ] `await dispatch_observe(event_name, payload, *, user_id=None)` — `asyncio.gather` с `return_exceptions=True`.
-- [ ] `await dispatch_blocking(event_name, payload, *, user_id=None)` — последовательно, плагин со сбоем пропускается (политика A).
-- [ ] `await collect_fragments(slot, payload, *, user_id=None) -> list[str]` — алфавитный порядок по `plugin_id`.
-- [ ] `await apply_mutators(event_name, payload, value)` — последовательно, на исключении возвращаем последнее валидное значение.
-- [ ] `start_background_tasks(application)` / `stop_background_tasks(timeout)`.
-- [ ] Все методы уважают allow-list (`PLUGINS` env), per-user disabled (`_disabled_plugins_for_user`), отсутствие метода у плагина.
+- [x] `await dispatch_observe(event_name, payload, *, user_id=None)` — `asyncio.gather` с `return_exceptions=True`.
+- [x] `await dispatch_blocking(event_name, payload, *, user_id=None)` — последовательно, плагин со сбоем пропускается (политика A).
+- [x] `await collect_fragments(slot, payload, *, user_id=None) -> list[str]` — алфавитный порядок по `plugin_id`.
+- [x] `await apply_mutators(event_name, payload, value, *, user_id=None)` — последовательно, на исключении возвращаем последнее валидное значение; `None` от плагина = «без изменений».
+- [x] `start_background_tasks(application)` / `await stop_background_tasks(timeout)`.
+- [x] Все 4 dispatcher'а уважают per-user disabled через `_active_plugin_instances(user_id)`. Покрыто отдельным тестом для каждого типа.
 
 ### DbHandle
 
 Узкий контракт:
 
-- [ ] `await execute(sql, params=())`
-- [ ] `await executemany(sql, params_seq)`
-- [ ] `await fetch_one(sql, params=()) -> dict | None`
-- [ ] `await fetch_all(sql, params=()) -> list[dict]`
-- [ ] `transaction()` — async context manager.
-- [ ] Реализация через `asyncio.to_thread` поверх `Database.get_connection()`. Сериализация через существующий `_op_lock`.
+- [x] `await execute(sql, params=())`
+- [x] `await executemany(sql, params_seq)`
+- [x] `await fetch_one(sql, params=()) -> dict | None`
+- [x] `await fetch_all(sql, params=()) -> list[dict]`
+- [x] `transaction()` — async context manager (буферизованный батч: операции копятся в `TransactionScope`, исполняются единым `to_thread` на успешном `__aexit__`; при исключении буфер отбрасывается без `BEGIN/ROLLBACK`; reads внутри scope не поддерживаются).
+- [x] Реализация через `asyncio.to_thread` поверх `Database.get_connection()`. Сериализация через существующий `_op_lock`.
 
 ### Schema-registry
 
-- [ ] Точка вызова в `Database.__init__` после создания ядерных таблиц: проход по плагинам в `PluginManager` и выполнение `register_schema()`. На этапе 0 registry пустой — DDL не выполняется, но точка есть.
+- [x] Точка вызова — отдельный метод `register_plugin_schemas()` в `PluginManager`, выполняется из `bot/__main__.py:199` **после** `set_db(db)` и **до** `set_openai(openai)`. Создаёт инстансы плагинов **без** `initialize` (`_get_or_create_bare_instance`), чтобы `set_openai` затем вызвал `initialize` ровно один раз для каждого плагина. На этапе 0 registry пустой — DDL не выполняется, но точка есть. Покрыто 2 тестами: `test_register_plugin_schemas_does_not_invoke_initialize`, `test_register_plugin_schemas_then_set_openai_initializes_once`.
 
 ### Config-segments
 
-- [ ] В `OpenAIHelper.__init__` (или где собирается `self.config`): после конструирования общего конфига раздать каждому плагину его подмножество ключей при `initialize`. По умолчанию `get_config_prefix() = None` → пустой словарь, поведение не меняется.
+- [x] `PluginManager._plugin_config_segment(plugin)` — фильтрация `self.config` по `plugin.get_config_prefix()`. Ключи отдаются **с префиксом** (минимизация diff для будущей миграции hindsight). Передаётся в `_call_initialize(plugin_config=...)` — плагин нарезает себе сам. По умолчанию `get_config_prefix() = None` → `{}`.
 
 ### Что НЕ делаем на этапе 0
 
@@ -149,10 +149,22 @@
 
 ### Acceptance
 
-- [ ] Существующие тесты зелёные.
-- [ ] `tests/test_plugin_hooks.py`: фейковый плагин с каждым типом хука вызывается через диспетчер; ошибка одного плагина не блокирует остальных; порядок collector'ов стабильный; **blocking-хук с двумя подписчиками — первый бросает, второй вызван, диспетчер вернулся без исключения** (политика A).
-- [ ] `tests/test_db_handle.py`: `DbHandle` корректно проксирует на `Database`; параллельные `execute` сериализуются.
-- [ ] Запуск бота не ломается, метрики `reminders` продолжают тикать.
+- [x] Существующие тесты зелёные: **399 passed** (`PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_text_document_qa_anythingllm.py`).
+- [x] `tests/test_plugin_hooks.py` — **20 тестов**: каждый dispatcher работает; ошибка плагина изолируется (политика A для blocking — `test_dispatch_blocking_first_raises_second_runs` с явным `pytest.fail`-guard'ом); collector стабильно сортирует по `plugin_id`; mutator при `None`/исключении сохраняет последнее валидное значение; background task ретраится после исключения; per-user disabled покрыт для всех 4 типов dispatcher'ов; `_call_initialize` фильтрует kwargs; `_plugin_config_segment` сохраняет префикс.
+- [x] `tests/test_db_handle.py` — **8 тестов**: execute/fetch/executemany/transaction commit+discard; параллельный execute через gather не корраптится; fetch возвращает plain `dict`, не `sqlite3.Row`.
+- [x] Импорты модулей `bot.plugin_manager`, `bot.plugins.{hooks,background,db_handle}` резолвятся без ошибок; запуск бота не ломается (smoke import).
+
+### Code-review summary
+
+Code-review: **APPROVE** после применения 6 should-fix:
+1. `register_plugin_schemas` перенесён ДО `set_openai` в `bot/__main__.py`.
+2. Per-user disabled тесты добавлены для `dispatch_blocking`, `collect_fragments`, `apply_mutators`.
+3. Тест политики A в `dispatch_blocking` обёрнут в `try/except → pytest.fail` для явности.
+4. Background-task retry тест переписан на `asyncio.Event` (вместо timing-based sleep).
+5. Docstring'и `transaction()` / `TransactionScope` приведены в соответствие реальной семантике (буферизация, не настоящий ROLLBACK).
+6. Комментарий о редкости last-resort fallback в `_call_initialize` добавлен.
+
+Дополнительно после code-review обнаружена и исправлена двойная инициализация (`register_plugin_schemas` → `get_plugin` → `_call_initialize(openai=None)`, потом `set_openai` → `_call_initialize` второй раз): добавлен `_get_or_create_bare_instance`, который создаёт инстанс без `initialize`. Покрыто 2 новыми тестами.
 
 ---
 

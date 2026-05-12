@@ -33,6 +33,54 @@ class Plugin(ABC):
         """Optional async hook called once after the Telegram application is ready."""
         return None
 
+    # --- Hook framework (Stage 0): no-op defaults. Plugins override what they need. ---
+
+    async def on_user_message(self, payload: Any) -> None:
+        """Observer hook: fired after a user message is accepted by the bot."""
+        return None
+
+    async def on_assistant_response(self, payload: Any) -> None:
+        """Observer hook: fired after the assistant produces a response."""
+        return None
+
+    async def on_session_reset(self, payload: Any) -> None:
+        """Observer hook: fired when a chat session is reset."""
+        return None
+
+    async def on_session_before_delete(self, payload: Any) -> None:
+        """Blocking hook: fired just before a session is deleted."""
+        return None
+
+    async def on_before_chat_request(
+        self, messages: List[Dict], payload: Any
+    ) -> List[Dict]:
+        """Mutator hook: may return a modified ``messages`` list for the chat request.
+
+        Default is identity (no modification). Returning ``None`` means "no change".
+        """
+        return messages
+
+    async def contribute_prompt_fragment(
+        self, slot: str, payload: Any
+    ) -> str | None:
+        """Collector hook: contribute a string fragment for a named prompt slot."""
+        return None
+
+    def get_background_tasks(self) -> list:
+        """Return a list of :class:`BackgroundTask` instances to run periodically."""
+        return []
+
+    def register_schema(self) -> List[str]:
+        """Return DDL statements to execute at startup for plugin-owned tables."""
+        return []
+
+    def get_config_prefix(self) -> str | None:
+        """Return the prefix used to filter ``self.config`` keys for this plugin.
+
+        ``None`` (default) means the plugin does not want a config slice.
+        """
+        return None
+
     def get_bot_language(self) -> str:
         if getattr(self, "openai", None) and getattr(self.openai, "config", None):
             return self.openai.config.get("bot_language", "en")
