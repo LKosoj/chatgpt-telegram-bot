@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any, List
 from .plugin import Plugin
+from .background import BackgroundTask
 from datetime import datetime
 import json
 import os
@@ -191,6 +192,18 @@ class RemindersPlugin(Plugin):
                 json.dump(self.reminders, f, ensure_ascii=False)
         except Exception as e:
             logging.exception(f"Ошибка при сохранении напоминаний: {e}")
+
+    def get_background_tasks(self) -> List[BackgroundTask]:
+        return [
+            BackgroundTask(
+                name="check",
+                interval_seconds=60.0,
+                coroutine_factory=self._check_reminders_tick,
+            )
+        ]
+
+    async def _check_reminders_tick(self, *, application) -> None:
+        await self.check_reminders(application.bot)
 
     async def check_reminders(self, helper: Any) -> None:
         """

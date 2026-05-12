@@ -3312,7 +3312,6 @@ class ChatGPTTelegramBot:
         if not self._background_tasks:
             self._background_tasks = [
                 asyncio.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
-                asyncio.create_task(self.start_reminder_checker(self.openai.plugin_manager), name="reminder_checker"),
             ]
             if (
                 getattr(self.openai, "is_hindsight_enabled", lambda: False)()
@@ -3321,6 +3320,7 @@ class ChatGPTTelegramBot:
                 self._background_tasks.append(
                     asyncio.create_task(self.hindsight_finalize_worker(), name="hindsight_finalize_worker")
                 )
+            await self.openai.plugin_manager.start_background_tasks(application)
 
         # Регистрируем команды от плагинов
         build = self.openai.plugin_manager.build_bot_commands()
@@ -3833,6 +3833,12 @@ class ChatGPTTelegramBot:
             if self._cleanup_called:
                 return
             self._cleanup_called = True
+            # Stop plugin-declared background tasks
+            try:
+                if hasattr(self, 'openai') and hasattr(self.openai, 'plugin_manager'):
+                    await self.openai.plugin_manager.stop_background_tasks(timeout=10.0)
+            except Exception as e:
+                logger.warning(f"Error stopping plugin background tasks: {e}")
             # Stop all background tasks first
             tasks = []
             if hasattr(self, '_background_tasks'):
@@ -3904,18 +3910,6 @@ class ChatGPTTelegramBot:
             
             await asyncio.sleep(1)
 
-    async def start_reminder_checker(self, plugin_manager):
-        reminders_plugin = plugin_manager.get_plugin('reminders')
-        if reminders_plugin:
-            # Continuously check reminders
-            while True:
-                try:
-                    await reminders_plugin.check_reminders(self.application.bot)
-                except Exception as e:
-                    logger.error(f"Error in reminder checker: {e}")
-                
-                # Sleep for a minute between checks to avoid excessive processing
-                await asyncio.sleep(60)
 
     async def handle_session_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """

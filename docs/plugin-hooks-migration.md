@@ -202,22 +202,33 @@ Code-review: **APPROVE** после применения 6 should-fix:
 
 ---
 
-## Этап 2 — `reminders` → `get_background_tasks()`
+## Этап 2 — `reminders` → `get_background_tasks()` ✅
 
 ~150-250 строк, низкий риск.
 
 ### Изменения
 
-- [ ] `RemindersPlugin.get_background_tasks()` возвращает задачу `interval=60`, корутиной — текущая `check_reminders`.
-- [ ] В `ChatGPTTelegramBot.post_init` ручной `asyncio.create_task(start_reminder_checker(...))` заменён на `await plugin_manager.start_background_tasks(application)`.
-- [ ] В `post_shutdown`/`close_all` (`telegram_bot.py:3860`) добавлен `await plugin_manager.stop_background_tasks(timeout=10)`.
-- [ ] Удалён `start_reminder_checker` (`telegram_bot.py:3891`).
+- [x] `RemindersPlugin.get_background_tasks()` возвращает 1 `BackgroundTask(name="check", interval_seconds=60.0, coroutine_factory=self._check_reminders_tick)`. `check_reminders`/`send_reminder`/`execute` — не тронуты.
+- [x] Wrapper `async def _check_reminders_tick(self, *, application)` маппит framework-семантику (`application=` kwarg) на plugin-семантику (`application.bot` как `helper`). `application` НЕ кэшируется на `self`.
+- [x] В `ChatGPTTelegramBot.post_init` ручной `asyncio.create_task(self.start_reminder_checker(...))` заменён на `await self.openai.plugin_manager.start_background_tasks(application)` внутри `if not self._background_tasks:` guard.
+- [x] В `cleanup()` (`bot/telegram_bot.py:3836`) добавлен `await self.openai.plugin_manager.stop_background_tasks(timeout=10.0)` ДО блока ручной отмены задач, обёрнут `try/except Exception` — buggy plugin не аварит shutdown.
+- [x] `start_reminder_checker` удалён (был на `:3907`, не `:3891` — план был устаревший).
+
+### Что НЕ делаем
+
+- `buffer_data_checker` и `hindsight_finalize_worker` остаются ручными — buffer это инфраструктура бота, не плагин-концерн; hindsight worker мигрирует в этапе 4C.
+- `check_reminders` — параметр всё ещё называется `helper: Any`, хотя это `telegram.Bot`. Не переименовываем — это потребует касаний за пределами scope этапа.
 
 ### Acceptance
 
-- [ ] `start_reminder_checker` нет в коде.
-- [ ] Существующие reminder-тесты зелёные.
-- [ ] `tests/test_background_tasks.py` (новый): задача стартует, тикает, корректно отменяется в shutdown за `timeout` секунд.
+- [x] `rg "start_reminder_checker" bot/ tests/` → 0 совпадений.
+- [x] `rg "asyncio.create_task.*reminder" bot/` → 0 совпадений.
+- [x] Существующие reminder-тесты в `tests/test_concurrent_tool_state.py` (5 тестов) зелёные без изменений.
+- [x] `tests/test_background_tasks.py` (новый, 4 теста): `get_background_tasks()` shape; tick с past-due reminder отправляет message; tick с future reminder не отправляет; lifecycle через `PluginManager` (register/stop в timeout 2s).
+- [x] Поведенческая эквивалентность: framework `_background_task_loop` тикает → sleep, как старый `start_reminder_checker`. Первый тик при старте, тик каждые 60s после.
+- [x] Per-user disable не применяется к bot-wide tasks (`start_background_tasks` итерирует `self.plugins` напрямую, не через `_active_plugin_instances`).
+- [x] **Полный прогон: 408 passed, 0 failed** (`PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_text_document_qa_anythingllm.py`).
+- [x] Code-review: APPROVE после применения 3 should-fix (снят stage-tag из комментария, тест #4 переименован в `test_reminders_task_registers_and_stops_within_timeout` + sanity ассерция `get_plugin("reminders") is plugin`).
 
 ---
 
