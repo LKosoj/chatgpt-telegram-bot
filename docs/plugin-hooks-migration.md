@@ -168,32 +168,37 @@ Code-review: **APPROVE** после применения 6 should-fix:
 
 ---
 
-## Этап 1 — `conversation_analytics` → observer
+## Этап 1 — `conversation_analytics` → observer ✅
 
 ~200-300 строк, низкий риск.
 
 ### Изменения
 
-- [ ] Точка диспатча в `telegram_bot.py` после `get_chat_response`: `await dispatch_observe('on_assistant_response', payload, user_id=user_id)`. Заменяет два текущих вызова `:2801, :2846`.
-- [ ] Точка диспатча `on_user_message` на входе обработчика — обогащает payload полями `has_image/has_voice/is_command`.
-- [ ] `ConversationAnalyticsPlugin`: реализованы `async on_user_message` и `async on_assistant_response`, внутри — текущая логика `update_stats`.
-- [ ] Удалены оба обращения `get_plugin('conversation_analytics')` из `telegram_bot.py`.
+- [x] Точка диспатча `on_assistant_response` в `bot/telegram_bot.py` после `get_chat_response`: в обеих ветках (`direct_result` и обычная). Заменяет оба `get_plugin('conversation_analytics')` вызова. `user_id=user_id` — теперь честно уважает per-user disabled (фикс латентного бага старого кода).
+- [x] Точка диспатча `on_user_message` после `_try_handle_plugin_prompt` и до `try:` блока с `get_chat_response`. Поля `has_image/has_voice/is_command` есть в payload; `has_image/has_voice=False` пока (текстовый путь), `is_command` — `update.message.text.startswith("/")` с None-guard'ом.
+- [x] `ConversationAnalyticsPlugin`: `async on_user_message` и `async on_assistant_response` через `asyncio.to_thread(self.update_stats, ...)` (`update_stats` — sync, файловая I/O). Сам `update_stats` не тронут.
+- [x] Удалены оба обращения `get_plugin('conversation_analytics')` из `bot/telegram_bot.py` (`grep` → 0).
 
 ### Bonus
 
-- [ ] Починен баг `chat_id=hash(...)` в `get_personalized_recommendations` (`bot/plugins/conversation_analytics.py:207, 227, 245, 263`) — заменён на изолированный вызов helper'а без сохранения в conversations.
+- [ ] **Отложено.** Баг `chat_id=hash(...)` (`bot/plugins/conversation_analytics.py:229, 249, 267, 285`) требует новой stateless-API на `OpenAIHelper`, что выходит за scope этапа 1. Открыть отдельный тикет после этапа 6.
 
 ### Что НЕ делаем
 
 - БД не трогаем (analytics пишет в JSON-файл).
 - topics/sentiment/cost-аналитика — feature work, отдельно.
+- `text=analytics_prompt` в `AssistantResponsePayload` сохранён 1:1 со старым кодом (старый код хранил prompt пользователя в поле, которое логически должно быть assistant response text). Не фиксим в parity-миграции; follow-up.
+- Voice/vision-пути не диспатчат `on_user_message` — паритет со старым кодом, который тоже не учитывал их в analytics.
 
 ### Acceptance
 
-- [ ] `grep "get_plugin('conversation_analytics')" bot/` пустой.
-- [ ] `tests/test_plugin_chat_id_contract.py:189-200` обновлён на `await plugin.on_assistant_response(payload)`.
-- [ ] `tests/test_conversation_analytics_hooks.py` (новый): fake chat-flow → диспатч → данные в `conversation_stats.json`.
-- [ ] Регресс-тест: искусственное исключение из `update_stats` (через mock) не ломает ответ пользователю.
+- [x] `grep "get_plugin\(['\"]conversation_analytics['\"]\)" bot/` → 0 совпадений.
+- [x] `tests/test_plugin_chat_id_contract.py:189-211` обновлён: `await plugin.on_assistant_response(AssistantResponsePayload(...))` + явная ассерция str-coercion (`"1234" in plugin.conversation_stats`).
+- [x] `tests/test_conversation_analytics_hooks.py` (новый, 107 строк, 5 тестов): user_message persist, assistant_response persist, dispatcher routing, **регресс на изоляцию исключений**, is_command propagation.
+- [x] Регресс-тест: `update_stats` бросает `RuntimeError` → `dispatch_observe` не пробрасывает → `plugin_hook_error` логируется со структурными полями `plugin_id=conversation_analytics, event=on_assistant_response`.
+- [x] **Полный прогон: 404 passed, 0 failed** (`PYTHONPATH=. python3 -m pytest tests/ --ignore=tests/test_text_document_qa_anythingllm.py`).
+- [x] Стабы `dispatch_observe` добавлены в `FakePluginManager` 2 тест-файлов (`test_per_conversation_serialization.py`, `test_telegram_streaming.py`) — без них 8 streaming-тестов падали.
+- [x] Code-review: APPROVE после применения 4 should-fix (унификация `import time`, явная str-coercion ассерция, комментарий про lazy-init в `_make_pm`, структурные поля в caplog-проверке).
 
 ---
 

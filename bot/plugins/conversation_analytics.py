@@ -1,4 +1,5 @@
 #conversation_analytics.py
+import asyncio
 import json
 import os
 import logging
@@ -167,6 +168,27 @@ class ConversationAnalyticsPlugin(Plugin):
         ]
 
         self.save_stats()
+
+    async def on_user_message(self, payload) -> None:
+        message_data = {
+            "text": payload.text,
+            "user_id": payload.user_id,
+            "has_image": payload.has_image,
+            "has_voice": payload.has_voice,
+            "is_command": payload.is_command,
+            "role": "user",
+        }
+        await asyncio.to_thread(self.update_stats, payload.chat_id, message_data)
+
+    async def on_assistant_response(self, payload) -> None:
+        message_data = {
+            "text": payload.text,
+            "tokens": payload.tokens,
+            "user_id": payload.user_id,
+            "model": payload.model,
+            "role": "assistant",
+        }
+        await asyncio.to_thread(self.update_stats, payload.chat_id, message_data)
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """Execute plugin functions"""

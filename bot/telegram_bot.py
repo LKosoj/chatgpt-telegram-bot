@@ -5,6 +5,7 @@ import logging
 import os
 import io
 import tempfile
+import time
 import requests
 import json
 import sys
@@ -30,6 +31,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
     should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
+from .plugins.hooks import AssistantResponsePayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
@@ -174,7 +176,6 @@ class ChatGPTTelegramBot:
         """
         Получает chat_modes с кешированием
         """
-        import time
         current_time = time.time()
         
         # Если кеш устарел (старше 5 минут) или не существует, перезагружаем
@@ -635,7 +636,6 @@ class ChatGPTTelegramBot:
         """
         Очищает устаревшие записи из кеша inline запросов
         """
-        import time
         current_time = time.time()
         
         # Очищаем кеш каждые 10 минут
@@ -2629,6 +2629,20 @@ class ChatGPTTelegramBot:
 
         replied_file_context = None
         analytics_prompt = prompt
+        await self.openai.plugin_manager.dispatch_observe(
+            "on_user_message",
+            UserMessagePayload(
+                chat_id=chat_id,
+                user_id=user_id,
+                request_id=request_id,
+                text=prompt,
+                has_image=False,
+                has_voice=False,
+                is_command=bool(update.message.text and update.message.text.startswith("/")),
+                ts=time.time(),
+            ),
+            user_id=user_id,
+        )
         try:
             total_tokens = 0
             replied_file_context = await self._download_replied_file_for_model(update, context)
@@ -2791,14 +2805,19 @@ class ChatGPTTelegramBot:
                         await busy_status.stop()
 
                         if is_direct_result(response):
-                            analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
-                            if analytics_plugin:
-                                message_data = {
-                                    'text': analytics_prompt,
-                                    'tokens': total_tokens,
-                                    'user_id': user_id
-                                }
-                                analytics_plugin.update_stats(str(chat_id), message_data)
+                            await self.openai.plugin_manager.dispatch_observe(
+                                "on_assistant_response",
+                                AssistantResponsePayload(
+                                    chat_id=chat_id,
+                                    user_id=user_id,
+                                    request_id=request_id,
+                                    text=analytics_prompt,
+                                    tokens=total_tokens,
+                                    model=model_to_use,
+                                    ts=time.time(),
+                                ),
+                                user_id=user_id,
+                            )
                             return await self._handle_direct_result(update, response)
 
                         # Split into chunks of 4096 characters (Telegram's message limit)
@@ -2836,14 +2855,19 @@ class ChatGPTTelegramBot:
                         await busy_status.stop()
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
-            analytics_plugin = self.openai.plugin_manager.get_plugin('conversation_analytics')
-            if analytics_plugin:
-                message_data = {
-                    'text': analytics_prompt,
-                    'tokens': total_tokens,
-                    'user_id': user_id
-                }
-                analytics_plugin.update_stats(str(chat_id), message_data)
+            await self.openai.plugin_manager.dispatch_observe(
+                "on_assistant_response",
+                AssistantResponsePayload(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    text=analytics_prompt,
+                    tokens=total_tokens,
+                    model=model_to_use,
+                    ts=time.time(),
+                ),
+                user_id=user_id,
+            )
 
             result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
             #if not result:

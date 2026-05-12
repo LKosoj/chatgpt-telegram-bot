@@ -23,6 +23,7 @@ _install_module_if_missing("markdown2", _markdown2)
 from bot.openai_tool_handler import handle_function_call  # noqa: E402
 from bot.plugin_manager import PluginManager  # noqa: E402
 from bot.plugins.conversation_analytics import ConversationAnalyticsPlugin  # noqa: E402
+from bot.plugins.hooks import AssistantResponsePayload  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.validation import validate_function_args  # noqa: E402
 
@@ -189,7 +190,19 @@ async def test_legacy_tool_injected_chat_id_is_plugin_string():
 async def test_conversation_analytics_tool_call_uses_string_chat_id(tmp_path):
     plugin = ConversationAnalyticsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    plugin.update_stats(1234, {"text": "hello", "tokens": 3, "user_id": 42})
+    await plugin.on_assistant_response(
+        AssistantResponsePayload(
+            chat_id=1234,
+            user_id=42,
+            request_id=None,
+            text="hello",
+            tokens=3,
+            model="gpt-test",
+            ts=0.0,
+        )
+    )
+    # update_stats coerces chat_id to str internally; locking that contract.
+    assert "1234" in plugin.conversation_stats
     plugin_manager = ValidatingAnalyticsPluginManager(plugin)
     helper = FakeHelper(plugin_manager)
 

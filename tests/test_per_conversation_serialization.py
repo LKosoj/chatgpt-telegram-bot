@@ -74,6 +74,9 @@ class FakePluginManager:
     def is_plugin_disabled_for_user(self, plugin_name, user_id):
         return False
 
+    async def dispatch_observe(self, event_name, payload, *, user_id=None):
+        return None
+
 
 class SequencingDB:
     def __init__(self):

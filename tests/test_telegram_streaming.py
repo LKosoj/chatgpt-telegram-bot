@@ -126,6 +126,9 @@ class FakePluginManager:
     def get_plugin_help_texts(self):
         return list(self.plugin_help_texts)
 
+    async def dispatch_observe(self, event_name, payload, *, user_id=None):
+        return None
+
 
 class FakeOpenAI:
     def __init__(self, chunks, agent_tools=None, text_document_qa=None, plugin_help_texts=None):
