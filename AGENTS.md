@@ -37,6 +37,7 @@ rules from the current session.
     `bot/chat_modes.yml`.
 - `requirements.txt` is the primary dependency list. `environment.yml` is an alternate Conda
   environment and must not be treated as an exact mirror.
+- use .venv
 
 ## Plugin And Tool Rules
 

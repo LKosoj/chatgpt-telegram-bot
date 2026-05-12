@@ -273,6 +273,26 @@ class RemindersPlugin(Plugin):
                 }
             }
 
+        elif function_name == "list_reminders":
+            user_reminders = self.reminders.get(user_id, {})
+            if not user_reminders:
+                value = self.t("reminders_none")
+            else:
+                lines = [self.t("reminders_title")]
+                for reminder_id, reminder in user_reminders.items():
+                    reminder_time = datetime.fromisoformat(reminder['time'])
+                    formatted_time = reminder_time.strftime('%d.%m.%Y %H:%M')
+                    lines.append(f"- {formatted_time} - {reminder['message']} (id: `{reminder_id}`)")
+                value = "\n".join(lines)
+
+            return {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": value
+                }
+            }
+
         elif function_name == "delete_reminder":
             self.load_reminders()
             reminder_id = kwargs.get("reminder_id") or kwargs.get("query")

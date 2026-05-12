@@ -119,7 +119,8 @@ class CodeInterpreterPlugin(Plugin):
                 "Use for tasks that need executing code or working with data files/plots or complex calculations. "
                 "Run Python data analysis in a sandboxed Jupyter-style environment "
                 "(pandas, numpy, matplotlib, plotly, sympy). Use for numeric and symbolic math, "
-                "data manipulation, statistics, matplotlib/plotly plots, and ML inference."
+                "data manipulation, statistics, matplotlib/plotly plots, and ML inference. "
+                "Do not use for simple closed-form math or factual lookup."
             ),
             "parameters": {
                 "type": "object",

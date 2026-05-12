@@ -15,7 +15,7 @@ class AutoTextToSpeech(Plugin):
 
     def get_spec(self) -> [Dict]:
         return [{
-            "name": "translate_text_to_speech",
+            "name": "text_to_speech",
             "description": "Convert text to speech",
             "parameters": {
                 "type": "object",

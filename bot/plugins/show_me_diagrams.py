@@ -120,7 +120,7 @@ class ShowMeDiagramsPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "generate_diagram",
-            "description": "Generate visual diagrams and charts (gantt, flowchart, infographic, mind map, project timeline, process diagram, org chart) from textual descriptions",
+            "description": "Generate structured diagrams with labels (gantt, flowchart, mind map, project timeline, process diagram, org chart) from textual descriptions. Use for structured diagrams, not freeform art, photos, or decorative images.",
             "parameters": {
                 "type": "object",
                 "properties": {

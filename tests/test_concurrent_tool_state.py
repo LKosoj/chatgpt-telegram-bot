@@ -446,3 +446,51 @@ async def test_reminder_uses_explicit_message_id_without_request_context(tmp_pat
 
     reminder = next(iter(plugin.reminders["555"].values()))
     assert reminder["reply_to_message_id"] == 444
+
+
+@pytest.mark.asyncio
+async def test_reminder_list_tool_returns_empty_state(tmp_path):
+    plugin = RemindersPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+
+    result = await plugin.execute(
+        "list_reminders",
+        ForbiddenLegacyHelper(),
+        chat_id="555",
+    )
+
+    assert result == {
+        "direct_result": {
+            "kind": "text",
+            "format": "markdown",
+            "value": "You have no active reminders.",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_reminder_list_tool_returns_saved_reminders(tmp_path):
+    plugin = RemindersPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    plugin.reminders["555"] = {
+        "rem-1": {
+            "time": "2030-01-01T12:30:00",
+            "message": "check state",
+            "integration": "telegram",
+        }
+    }
+    plugin.save_reminders()
+
+    result = await plugin.execute(
+        "list_reminders",
+        ForbiddenLegacyHelper(),
+        chat_id="555",
+    )
+
+    value = result["direct_result"]["value"]
+    assert result["direct_result"]["kind"] == "text"
+    assert result["direct_result"]["format"] == "markdown"
+    assert "Your reminders:" in value
+    assert "01.01.2030 12:30" in value
+    assert "check state" in value
+    assert "rem-1" in value

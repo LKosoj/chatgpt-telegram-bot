@@ -21,6 +21,7 @@ google-api-python-client==2.140.0
 pyswisseph
 plotly
 numpy
+sympy
 aiohttp>=3.8.0
 opencv-python
 matplotlib
