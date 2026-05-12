@@ -18,7 +18,7 @@ class YoutubeTranscriptPlugin(Plugin):
         return [
             {
                 'name': 'youtube_video_transcript',
-                'description': 'Get the transcript of a YouTube video through LLMGateway web_read',
+                'description': 'Get the transcript of a YouTube video',
                 'parameters': {
                     'type': 'object',
                     'properties': {

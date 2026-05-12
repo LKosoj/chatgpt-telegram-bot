@@ -34,6 +34,7 @@ class ChiefPlugin(Plugin):
         return [{
             "name": "get_recipe",
             "description": (
+                "Generates a fresh recipe from scratch via LLM — does not query any product database. "
                 "AI-generated cooking recipe by ingredients and preferences. Use when the user "
                 "lists ingredients they have, asks for a custom recipe by description, or wants "
                 "creative culinary suggestions. Returns a freshly AI-generated recipe with steps "

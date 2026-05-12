@@ -26,7 +26,9 @@ class WolframAlphaPlugin(Plugin):
                 "Wolfram Alpha computational engine. Use for: math (derivatives, integrals, "
                 "equation solving, symbolic algebra), unit conversions, physics/chemistry/engineering "
                 "computations, and authoritative scientific facts (constants, properties, well-known "
-                "dates). Query MUST be in English. Do NOT use for current news, opinion, or local info."
+                "dates). One-shot computational queries that have a single closed-form answer. "
+                "No code execution, no data files. "
+                "Query MUST be in English. Do NOT use for current news, opinion, or local info."
             ),
             "parameters": {
                 "type": "object",
