@@ -18,11 +18,11 @@
 
 ## Цели и инварианты
 
-- [ ] Ни одного обращения к плагину по имени из `bot/telegram_bot.py`, `bot/openai_helper.py`, `bot/database.py`, кроме (а) generic `get_plugin(plugin_id)` для tool-роутинга и (б) UI-чтения публичных атрибутов плагина для меню настроек.
+- [x] Ни одного обращения к плагину по имени из `bot/telegram_bot.py`, `bot/openai_helper.py`, `bot/database.py`, кроме (а) generic `get_plugin(plugin_id)` для tool-роутинга и (б) UI-чтения публичных атрибутов плагина для меню настроек. Текущие исключения зафиксированы в `tests/test_no_hardcoded_plugin_refs.py` allow-list: 1× `agent_tools` (UI busy-status), 3× `skills` (UI callback + меню), 1× `hindsight_memory` (Strategy Z, документированный компромисс 4B). Расширение allow-list возможно только с обоснованием.
 - [x] Сбой плагина в хуке не ломает ответ пользователю — обеспечивается dispatcher'ами в `PluginManager` (политика A для всех 4 типов).
 - [x] Контракт хука — только `async def` (для observer/blocking/collector/mutator); декларативные методы (`register_schema`, `get_config_prefix`, `get_background_tasks`) sync.
 - [x] Старые API `PluginManager.get_plugin / has_plugin / call_function` остаются работать (нужны для tool-вызовов и UI).
-- [ ] После каждого этапа возможно откатить только этот этап, не каскадом.
+- [x] После каждого этапа возможно откатить только этот этап, не каскадом. По факту: 0-3 раскатаны отдельными коммитами (см. `git log`); 4 разбит на A/B/C-подэтапы с независимыми коммитами; 5 и 6 — один коммит каждый.
 - [x] Структурный лог при сбое в любом хуке: `plugin_hook_error` с полями `plugin_id, hook, event/slot, exc_class` (через `_log_hook_error`).
 
 ## Категории хуков
@@ -330,30 +330,30 @@ Code-review: **APPROVE** после применения 6 should-fix:
 - [x] Code-review: APPROVE, must-fix нет. Применён 1 nice-to-have: позиция вставки маркера теперь «после **всех** leading system-сообщений», а не только после первого — устраняет тонкое поведенческое отличие на первом turn'е (раньше outbound был `[language, mode_system, MARKER, user...]`, в первой версии 4B стал `[language, MARKER, mode_system, user...]`, сейчас снова `[language, mode_system, MARKER, user...]`).
 - [x] **Стратегия Z**: helper держит state (`self.conversations`, db.save), плагин stateless по chat_id. Альтернатива X (плагин пишет в `openai.conversations`) — анти-паттерн обратной связи. Альтернатива Y (полный stateless, recall каждый раз) — поведенческая регрессия в `_retry_*` (recall дублируется), потому что persisted маркер не сохранялся бы между запросами. Z — компромисс: чистый stateless-плагин, единый владелец state.
 
-### Подэтап 4C — schema, jobs, worker
+### Подэтап 4C — schema, jobs, worker ✅
 
-- [ ] `HindsightMemoryPlugin.register_schema()` возвращает DDL `hindsight_finalize_jobs` (`database.py:223-241`).
-- [ ] Удалены из `Database`:
-  - [ ] `CREATE TABLE hindsight_finalize_jobs` и индекс (`:223-241`)
-  - [ ] `create_hindsight_finalize_job` (`:849`)
-  - [ ] `create_hindsight_finalize_jobs_for_sessions` (`:863`)
-  - [ ] `claim_hindsight_finalize_jobs` (`:894`)
-  - [ ] `mark_hindsight_finalize_job_done` (`:956`)
-  - [ ] `mark_hindsight_finalize_job_failed` (`:974`)
-  - [ ] Ветка `hindsight_requires_async_finalize` в `delete_*_sessions` (`:1074-1081`).
-  - [ ] Очистка `hindsight_finalize_jobs` в `delete_user_data` (`:672`) — переехала в плагин (нужно решить через какой механизм, см. open question).
-- [ ] Ядро диспатчит `on_session_before_delete` (заменяет `_enqueue_*`):
-  - [ ] `telegram_bot.py:4026` (точечное удаление).
-  - [ ] `telegram_bot.py:1776, :3985` (batch по лимиту).
-- [ ] Удалены из `telegram_bot.py`:
-  - [ ] `_enqueue_hindsight_session_finalize_before_delete` (`:460`)
-  - [ ] `_enqueue_hindsight_and_delete_oldest_sessions_for_limit` (`:491`)
-  - [ ] `_process_pending_hindsight_finalize_jobs` (`:497`)
-  - [ ] `hindsight_finalize_worker` (`:539`)
-  - [ ] Старт воркера (`:3305`).
-- [ ] `HindsightMemoryPlugin.get_background_tasks()` возвращает воркер (логика бывшего `_process_pending_hindsight_finalize_jobs`).
-- [ ] `HindsightMemoryPlugin.on_session_before_delete` создаёт job через `self.db_handle.execute(...)`.
-- [ ] `OpenAIHelper.finalize_hindsight_session_memory` переехал в плагин.
+- [x] `HindsightMemoryPlugin.register_schema()` возвращает DDL `hindsight_finalize_jobs` + индекс (`bot/plugins/hindsight_memory.py:366-386`).
+- [x] Удалены из `Database`:
+  - [x] `CREATE TABLE hindsight_finalize_jobs` и индекс.
+  - [x] `create_hindsight_finalize_job`.
+  - [x] `create_hindsight_finalize_jobs_for_sessions`.
+  - [x] `claim_hindsight_finalize_jobs`.
+  - [x] `mark_hindsight_finalize_job_done`.
+  - [x] `mark_hindsight_finalize_job_failed`.
+  - [x] Ветка `hindsight_requires_async_finalize` в `delete_*_sessions`.
+  - [x] **Очистка `hindsight_finalize_jobs` в `delete_user_data`** — закрыто решением: `Database.delete_user_data` удалён в 4C-6 (коммит `12c26bd`), production-callers удаления пользователя в коде нет, новый hook `ON_USER_DATA_DELETE` не вводим. Перемещено в «Out of scope» с обоснованием — добавим, когда появится реальный UI/admin-flow удаления пользователя.
+- [x] Ядро диспатчит `on_session_before_delete` (заменяет `_enqueue_*`):
+  - [x] точечное удаление сессии.
+  - [x] batch по лимиту `max_sessions`.
+- [x] Удалены из `telegram_bot.py`:
+  - [x] `_enqueue_hindsight_session_finalize_before_delete`.
+  - [x] `_enqueue_hindsight_and_delete_oldest_sessions_for_limit`.
+  - [x] `_process_pending_hindsight_finalize_jobs`.
+  - [x] `hindsight_finalize_worker`.
+  - [x] Старт воркера (теперь через `PluginManager.start_background_tasks()`).
+- [x] `HindsightMemoryPlugin.get_background_tasks()` возвращает `_finalize_tick` (логика бывшего `_process_pending_hindsight_finalize_jobs`).
+- [x] `HindsightMemoryPlugin.on_session_before_delete` создаёт job через `self.db_handle.execute(...)`.
+- [x] `OpenAIHelper.finalize_hindsight_session_memory` удалён; диспатч `on_session_before_delete` идёт через ядро/Telegram-bot.
 
 ### Что НЕ делаем в этапе 4
 
@@ -361,50 +361,58 @@ Code-review: **APPROVE** после применения 6 should-fix:
 - `bank_id`, `namespace`, формат recall-результатов не трогаем.
 - `on_session_before_delete` и `on_session_reset` не объединяем — разная семантика.
 
-### Acceptance этапа 4
+### Acceptance этапа 4 ✅
 
-- [ ] `grep -i hindsight bot/openai_helper.py` пусто.
-- [ ] `grep -i hindsight bot/telegram_bot.py` пусто (кроме UI-чтения статуса плагина, если решено оставить generic `get_plugin('hindsight_memory')`).
-- [ ] `grep -i hindsight bot/database.py` пусто.
-- [ ] `hindsight_*` имена живут только в `bot/plugins/hindsight_memory.py` и `bot/hindsight_client.py`.
-- [ ] `tests/test_hindsight_mutator.py` (новый): mutator работает; сбой → unmodified messages.
-- [ ] `tests/test_hindsight_session_lifecycle.py` (новый): `on_session_before_delete` доходит до плагина, job создан; при сбое плагина сессия всё равно удалена (политика A).
-- [ ] `tests/test_hindsight_jobs.py` (новый): claim/process/mark_done/mark_failed через плагин.
-- [ ] `tests/test_database.py` — ассертации про hindsight-таблицы и hindsight-методы удалены.
-- [ ] Ручная проверка с реальным сервисом включён/выключен: оба сценария работают как раньше.
+- [x] `grep -i hindsight bot/openai_helper.py` — **3 строки** (`:1584, :1588, :1594`), компромисс Стратегии Z: helper держит state через `self.conversations`, поэтому `_apply_before_chat_request_mutators` в persist-ветке должен распознавать инжектнутое плагином memory-сообщение и сохранять его в `self.conversations[chat_id]`/`db.save_conversation_context`. Идентификация делается через публичный метод плагина `plugin.is_hindsight_memory_message(msg)`. Альтернативы X (плагин пишет в `openai.conversations` напрямую) и Y (полный stateless, recall каждый раз) задокументированы в подэтапе 4B как анти-паттерны. Если впоследствии понадобится убрать и это упоминание — нужно переходить на generic «messages, помеченные плагином через метаданные» (анонимный маркер в `msg`), что требует отдельного дизайна и сейчас не оправдано.
+- [x] `grep -i hindsight bot/telegram_bot.py` — **пусто**.
+- [x] `grep -i hindsight bot/database.py` — **пусто**.
+- [x] `hindsight_*` имена живут только в `bot/plugins/hindsight_memory.py`, `bot/hindsight_client.py` и `tests/test_hindsight_*`.
+- [x] `tests/test_hindsight_mutator.py`: mutator работает; сбой → unmodified messages.
+- [x] `tests/test_hindsight_session_before_delete_hook.py` (функциональный эквивалент `test_hindsight_session_lifecycle.py` из плана — переименование): 6 тестов, hook доходит до плагина, job создан, при сбое сессия всё равно удалена.
+- [x] `tests/test_hindsight_finalize_worker.py` (6 mock-тестов claim/process/mark_done/mark_failed через плагин) + `tests/test_hindsight_finalize_worker_integration.py` (3 real-SQL теста — закрыли coverage gap по raw SQL в `asyncio.to_thread`).
+- [x] `tests/test_database.py` — ассертации про hindsight-таблицы и hindsight-методы удалены.
+- [ ] Ручная проверка с реальным Hindsight-сервисом (включён/выключен) — **на стороне пользователя**, smoke-тесты в коде это не покрывают.
 
 ---
 
-## Этап 5 — `skills` → collector
+## Этап 5 — `skills` → collector ✅
 
 ~200-300 строк, низкий риск.
 
 ### Изменения
 
-- [ ] `_get_available_skills_summary` (`openai_helper.py:2441`) удалён.
-- [ ] Блок «ПРИОРИТЕТНОЕ ПРАВИЛО» в `_build_auto_chat_mode_prompt` (`:2455+`) формируется плагином через `SkillsPlugin.contribute_prompt_fragment(slot='auto_mode_priority', payload)`.
-- [ ] `_build_auto_chat_mode_prompt` вызывает `fragments = await plugin_manager.collect_fragments('auto_mode_priority', payload, user_id=user_id)` и склеивает с разделителем.
-- [ ] `telegram_bot.py:1397` (`_available_skill_names`) **оставлен как есть** — UI-чтение через generic `get_plugin('skills')`, легитимное использование.
+- [x] `_get_available_skills_summary` (`openai_helper.py`) удалён.
+- [x] Блок «ПРИОРИТЕТНОЕ ПРАВИЛО» переехал в `SkillsPlugin.contribute_prompt_fragment(slot='auto_mode_priority', payload)` (`bot/plugins/skills.py`).
+- [x] `_build_auto_chat_mode_prompt` стал async, вызывает `fragments = await plugin_manager.collect_fragments('auto_mode_priority', payload, user_id=user_id)` и склеивает фрагменты через `"\n\n"`. Передаёт `PromptFragmentPayload(slot, chat_id, user_id, query)`.
+- [x] Call site в `__common_get_chat_response` обновлён: `await self._build_auto_chat_mode_prompt(query, chat_id=chat_id, user_id=kwargs.get('user_id'))`.
+- [x] `telegram_bot.py:1397` (`_available_skill_names`) **оставлен как есть** — UI-чтение через generic `get_plugin('skills')`, легитимное использование (white-list для Stage 6 линтера).
 
-### Acceptance
+### Acceptance ✅
 
-- [ ] В `openai_helper.py` нет `get_plugin("skills")` и нет упоминания `available_skills`.
-- [ ] Auto-mode prompt корректно рекомендует `skills_agent`, когда соответствующий skill установлен (smoke).
-- [ ] `tests/test_skills_prompt_fragment.py` (новый): плагин возвращает фрагмент → промпт содержит; нет плагина → бот не падает; несколько фрагментов от разных плагинов — детерминированный порядок.
+- [x] В `openai_helper.py` нет `get_plugin("skills")` и нет упоминания `available_skills` — `grep -n` пусто.
+- [x] Auto-mode prompt корректно рекомендует `skills_agent` через фрагмент плагина (smoke-тест `test_build_auto_chat_mode_prompt_includes_fragments_from_collector`).
+- [x] `tests/test_skills_prompt_fragment.py` (новый, 7 тестов): unknown slot → None, empty skills → None, фрагмент с summary и описаниями, truncate длинных описаний, fallback на id при пустом description, end-to-end через `_build_auto_chat_mode_prompt`, отсутствие плагинов → бот не падает.
+- [x] `DummyPluginManager.collect_fragments` добавлен в `tests/test_openai_helper_tool_calls.py` (identity-stub возвращает `[]`).
+- [x] **496 passed, 0 failed** (база 489 + 7 новых).
 
 ---
 
-## Этап 6 — Финальная чистка
+## Этап 6 — Финальная чистка ✅
 
 ~100-200 строк, в основном тесты и документация.
 
-- [ ] Линтер-тест `tests/test_no_hardcoded_plugin_refs.py`: grep по `bot/telegram_bot.py`, `bot/openai_helper.py`, `bot/database.py` на имена плагинов (`conversation_analytics`, `reminders`, `skills`, `hindsight_memory`, `agent_tools`). Падает при возврате хардкода. Исключения — white-list (generic `get_plugin(plugin_id)`, UI-меню настроек).
-- [ ] `AGENTS.md` обновлён:
-  - [ ] Раздел «Hooks: contract and lifecycle» (4 типа хуков, payload'ы, политика сбоев).
-  - [ ] Раздел «Plugin-owned tables» (`register_schema()`).
-  - [ ] Раздел «Plugin config segments».
-  - [ ] Убраны упоминания вшитых вызовов.
-- [ ] Решена судьба `tool_call_events` (отдельный заход, не часть миграции).
+- [x] Линтер-тест `tests/test_no_hardcoded_plugin_refs.py`: считает строки с quoted-occurrence имён плагинов (`conversation_analytics`, `reminders`, `skills`, `hindsight_memory`, `agent_tools`) в `bot/telegram_bot.py`, `bot/openai_helper.py`, `bot/database.py`. Падает при превышении allow-list. Текущий allow-list:
+  - `telegram_bot.py:agent_tools` = 1 (UI busy-status plan reader).
+  - `telegram_bot.py:skills` = 3 (UI callback action `'skills'`/`'skill_page'` + settings menu reader).
+  - `openai_helper.py:hindsight_memory` = 1 (Strategy Z, документированный компромисс 4B).
+  - всё остальное = 0.
+- [x] `AGENTS.md` обновлён:
+  - [x] Раздел «Hooks: contract and lifecycle» (4 типа хуков: observe / blocking / mutator / collector, payload'ы из `bot/plugins/hooks.py`, политика сбоев — log+swallow, Policy A для `on_session_before_delete`).
+  - [x] Раздел «Plugin-owned tables» (`register_schema()` + `DbHandle`).
+  - [x] Раздел «Plugin config segments» (`get_config_prefix()`, mirror через `setdefault`).
+  - [x] Раздел «Background tasks» (`BackgroundTask` + `start_background_tasks` + `close_async`).
+  - [x] В правиле «Plugin And Tool Rules» добавлен пункт про линтер allow-list.
+- [ ] **Судьба `tool_call_events`** — оставлено как есть, отдельный заход вне этого плана (Out of scope, см. ниже).
 
 ---
 
@@ -427,7 +435,7 @@ Code-review: **APPROVE** после применения 6 should-fix:
 - Перевод `Database` на `aiosqlite`. Отдельный план после этапа 6. Плагины не страдают — контракт `DbHandle` остаётся, меняется только реализация.
 - Судьба `tool_call_events`.
 - Реальные topics/sentiment в `conversation_analytics` (feature work).
-- Очистка `hindsight_finalize_jobs` при удалении пользователя в `delete_user_data` — нужно решить через какой механизм плагин узнаёт об удалении пользователя (возможно, `on_user_delete` событие — добавлять только если потребуется по факту).
+- Очистка `hindsight_finalize_jobs` при удалении пользователя. **Решение (2026-05-13):** `Database.delete_user_data` удалён в 4C-6, production-callers удаления пользователя в коде нет, новый hook `ON_USER_DATA_DELETE` не вводим как dead-code инфраструктуру. Таблица создаётся плагином без `ON DELETE CASCADE` (`bot/plugins/hindsight_memory.py:366-386`). Когда появится реальный механизм удаления пользователя (например, команда `/forget_me` или admin-flow GDPR), добавляем тогда — конкретный дизайн зависит от требований (что именно удалять, синхронно/асинхронно, аудит).
 
 ---
 

@@ -63,6 +63,67 @@ rules from the current session.
 - Google model tool specs use `{"function_declarations": specs}` while other models receive
   OpenAI-style `{"type": "function", "function": spec}` entries
   (`bot/plugin_manager.py:159`).
+- Core modules (`bot/openai_helper.py`, `bot/telegram_bot.py`, `bot/database.py`) must not
+  introduce new hardcoded plugin-id references. Generic `get_plugin(plugin_id)` reads for UI
+  menus and the documented Strategy Z compromise are tracked in
+  `tests/test_no_hardcoded_plugin_refs.py` allow-list — bump or lower the entry when changing
+  intentionally.
+
+## Hooks: contract and lifecycle
+
+The plugin hook framework lives in `bot/plugins/hooks.py` (events + payloads) and
+`bot/plugin_manager.py` (dispatcher). Plugins override no-op defaults from
+`bot.plugins.plugin.Plugin`.
+
+There are four kinds of hooks, each with a different dispatch policy:
+
+1. **Observers** (`dispatch_observe`): `on_user_message`, `on_assistant_response`,
+   `on_session_reset`. Fire-and-forget. Plugins return `None`. Exceptions are logged and
+   swallowed; one failing plugin does not block others.
+2. **Blocking hooks** (`dispatch_blocking`): `on_session_before_delete`. Awaited sequentially
+   before the action (e.g. session deletion) proceeds. Exceptions are logged and swallowed —
+   the action still completes (Policy A: PII delete must not be blocked by plugin failure).
+3. **Mutators** (`apply_mutators`): `on_before_chat_request`. Plugins receive the current
+   value (e.g. `messages: List[Dict]`) and a payload; return a possibly-modified value or
+   `None` (= no change). Identity on failure: a raising plugin yields the unchanged value
+   from the previous step. Order is deterministic (sorted by `plugin_name`).
+4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, e.g.
+   `auto_mode_priority`. Each plugin's `contribute_prompt_fragment(slot, payload)` returns a
+   string fragment (for `collect_fragments`) or an arbitrary object (for `collect_objects`)
+   or `None`. Skipped on exception. Caller decides composition (e.g. `"\n\n".join(...)`).
+
+Payload classes are frozen dataclasses defined in `bot/plugins/hooks.py`. New events should
+add a new `HookEvent` member and a frozen payload class; the dispatcher then routes by event
+name.
+
+## Plugin-owned tables
+
+Plugins that need persistent storage declare DDL via `register_schema()` and access the DB
+through `self.db_handle` (async `DbHandle` facade: `execute`/`executemany`/`fetch_one`/
+`fetch_all`/`transaction()`). `PluginManager` runs `register_schema()` statements at startup
+once per plugin; tables created this way live alongside core tables but are owned by the
+plugin and are removed from `bot/database.py`.
+
+Examples in tree: `bot/plugins/hindsight_memory.py:366-386` (`hindsight_finalize_jobs`),
+`bot/plugins/agent_tools.py` (`agent_plan_contracts` / `agent_plan_tasks`). Plugins that own
+a table without `ON DELETE CASCADE` to a core table are responsible for their own GC if/when
+a user-deletion mechanism is introduced.
+
+## Plugin config segments
+
+Plugins declare a config prefix via `get_config_prefix()`. `PluginManager.config` is a single
+dict; the plugin reads only its own slice (keys with that prefix) and may mirror defaults
+into `openai.config` via `setdefault` during `initialize()` for compatibility with helper
+code that hasn't migrated yet. Mirrors are documented (see Stage 4A notes in
+`docs/plugin-hooks-migration.md`).
+
+## Background tasks
+
+Plugins return `BackgroundTask(name, interval_seconds, coroutine_factory)` entries from
+`get_background_tasks()`. `PluginManager.start_background_tasks(application)` spawns them
+with deterministic interval scheduling; `close_async()` cancels them on shutdown. Reminders,
+hindsight finalize worker, and agent_tools cleanup all run this way — core code (telegram
+bot, openai helper) no longer launches plugin-specific workers.
 
 ## Chat Modes
 
@@ -115,6 +176,8 @@ rules from the current session.
   - chat mode validation: `tests/test_chat_modes_registry.py`
   - SQLite sessions/context: `tests/test_database.py`
   - MCP plugin behavior: `bot/tests/test_mcp_server.py`
+  - hook framework: `tests/test_plugin_hooks.py`, `tests/test_db_handle.py`
+  - core/plugin boundary: `tests/test_no_hardcoded_plugin_refs.py`
 - For narrow documentation-only edits, inspect the rendered Markdown or run no tests and state
   that no runtime tests were needed.
 

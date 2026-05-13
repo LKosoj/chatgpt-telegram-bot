@@ -52,7 +52,12 @@ from .model_constants import (
     QWEN,
 )
 from .llm_gateway_client import LLMGatewayClient, extract_image_result
-from .plugins.hooks import BeforeChatRequestPayload, HookEvent, SessionBeforeDeletePayload
+from .plugins.hooks import (
+    BeforeChatRequestPayload,
+    HookEvent,
+    PromptFragmentPayload,
+    SessionBeforeDeletePayload,
+)
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
@@ -218,10 +223,6 @@ class OpenAIHelper:
         self.config.setdefault('tts_voice', 'kseniya')
         self.config.setdefault('tts_response_format', 'wav')
         self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
-        # Hindsight memory config and HTTP client live in HindsightMemoryPlugin
-        # (Stage 4A migration). Plugin's initialize() mirrors defaults back to
-        # self.config for legacy reads in _prepare_hindsight_* / finalize_*
-        # (removed in 4B/4C).
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -746,8 +747,11 @@ class OpenAIHelper:
             user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
             model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
             if len(user_messages) == 0 and self.config['auto_chat_modes']:
+                auto_mode_prompt = await self._build_auto_chat_mode_prompt(
+                    query, chat_id=chat_id, user_id=kwargs.get('user_id')
+                )
                 mode_name, _ = self.ask_sync(
-                        self._build_auto_chat_mode_prompt(query),
+                        auto_mode_prompt,
                         chat_id,
                         "Ты маршрутизатор режимов работы. Возвращай только ключ режима без пояснений.",
                         model=model_to_use
@@ -806,7 +810,7 @@ class OpenAIHelper:
                 try:
                     summary = await self.__summarise(self.conversations[chat_id][:-1], user_id, session_id)
                     logger.debug(f'Summary: {summary}')
-                    # Pre-dispatch: let subscribers (Hindsight) snapshot the
+                    # Pre-dispatch: let session-memory subscribers snapshot the
                     # outgoing window before we wipe it via reset_chat_history.
                     await self._dispatch_before_summarise_reset(
                         chat_id=chat_id,
@@ -1369,7 +1373,7 @@ class OpenAIHelper:
                     last = self.conversations[chat_id][-1]
                     summary = await self.__summarise(self.conversations[chat_id][:-1])
                     logger.debug(f'Summary: {summary}')
-                    # Pre-dispatch: let subscribers (Hindsight) snapshot the
+                    # Pre-dispatch: let session-memory subscribers snapshot the
                     # outgoing vision window before we wipe it.
                     await self._dispatch_before_summarise_reset(
                         chat_id=chat_id,
@@ -1569,7 +1573,7 @@ class OpenAIHelper:
 
         Pipeline: repair tool-call history → snapshot with language instruction
         → on_before_chat_request mutator chain → optional persistence of any
-        Hindsight memory injection so subsequent turns skip recall.
+        session-memory injection so subsequent turns skip recall.
         """
         self._repair_tool_call_history(chat_id)
         base = self._messages_with_language_instruction(self.conversations[chat_id])
@@ -1617,7 +1621,7 @@ class OpenAIHelper:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to persist hindsight memory message for chat_id=%s: %s",
+                "Failed to persist session-memory message for chat_id=%s: %s",
                 chat_id, exc,
             )
         return mutated
@@ -1760,7 +1764,7 @@ class OpenAIHelper:
         """Fire ``on_session_before_delete`` for the in-memory conversation
         about to be cleared by summarise-overflow.
 
-        Subscribers (Hindsight) get a chance to snapshot the outgoing window
+        Subscribers get a chance to snapshot the outgoing window
         before we wipe ``self.conversations[chat_id]`` via ``reset_chat_history``.
         Failures are swallowed — summarisation must continue regardless.
         """
@@ -1856,7 +1860,7 @@ class OpenAIHelper:
             # Получаем или создаем сессию через базу данных
             if not session_id:
                 # Pre-dispatch on_session_before_delete for any sessions that
-                # will be pruned, so plugins (Hindsight) can snapshot them.
+                # will be pruned, so plugin subscribers can snapshot them.
                 if prune_old_sessions:
                     await self._dispatch_before_create_session_prune(chat_id)
                 session_id = self.db.create_session(
@@ -2325,41 +2329,25 @@ class OpenAIHelper:
     def get_all_modes(self):
         return self.chat_modes_registry.get_all_modes_list()
 
-    def _get_available_skills_summary(self) -> list[str]:
-        try:
-            skills_plugin = self.plugin_manager.get_plugin("skills")
-        except Exception:
-            return []
-        available = getattr(skills_plugin, "available_skills", None) or {}
-        summary = []
-        for skill_id, info in available.items():
-            desc = (info.get("description") or "").strip().replace("\n", " ")
-            if len(desc) > 240:
-                desc = desc[:240].rstrip() + "..."
-            summary.append(f"{skill_id}: {desc}" if desc else skill_id)
-        return summary
-
-    def _build_auto_chat_mode_prompt(self, query: str) -> str:
-        skills_lines = self._get_available_skills_summary()
+    async def _build_auto_chat_mode_prompt(
+        self,
+        query: str,
+        *,
+        chat_id: int,
+        user_id: int | None,
+    ) -> str:
+        payload = PromptFragmentPayload(
+            slot="auto_mode_priority",
+            chat_id=chat_id,
+            user_id=user_id,
+            query=query,
+        )
+        fragments = await self.plugin_manager.collect_fragments(
+            "auto_mode_priority", payload, user_id=user_id
+        )
         priority_block = ""
-        if skills_lines:
-            joined = "\n".join(f"- {line}" for line in skills_lines)
-            priority_block = (
-                "ПРИОРИТЕТНОЕ ПРАВИЛО (применяется ПЕРВЫМ, до всех остальных правил):\n"
-                "Если хотя бы один из установленных локальных skills (см. список ниже) по своему "
-                "description покрывает домен задачи пользователя — верни skills_agent. Точка. "
-                "Это правило ПЕРЕБИВАЕТ любые другие режимы, даже если они выглядят ближе по названию: "
-                "content_creator, writing_assistant, code_assistant и подобные НЕ заменяют skills_agent "
-                "при наличии релевантного skill, потому что только skills_agent умеет следовать "
-                "пошаговой инструкции skill (planning → drafting → review) и подгружать его references. "
-                "Сравнение делай по семантике description: skill про fiction/прозу/рассказы → подходит "
-                "для запроса на рассказ, стих, главу, художественный текст; skill про код-ревью → "
-                "подходит для запроса на проверку кода; и т.п. Если хотя бы одно описание skill "
-                "семантически пересекается с задачей — выбирай skills_agent.\n\n"
-                "Установленные локальные skills (id: description):\n"
-                f"{joined}\n\n"
-                "Если ни один skill из списка по семантике не подходит к задаче — переходи к остальным правилам ниже.\n\n"
-            )
+        if fragments:
+            priority_block = "\n\n".join(fragments) + "\n\n"
         return f"""Определи режим работы для сообщения и верни только ключ режима.
 
 {priority_block}Остальные правила выбора:

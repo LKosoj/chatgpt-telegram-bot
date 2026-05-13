@@ -156,6 +156,37 @@ class SkillsPlugin(Plugin):
     def get_source_name(self) -> str:
         return "Skills"
 
+    async def contribute_prompt_fragment(self, slot: str, payload: Any) -> Any | None:
+        if slot != "auto_mode_priority":
+            return None
+        if not self.available_skills:
+            return None
+        summary_lines: List[str] = []
+        for skill_id, info in self.available_skills.items():
+            desc = (info.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 240:
+                desc = desc[:240].rstrip() + "..."
+            summary_lines.append(f"{skill_id}: {desc}" if desc else skill_id)
+        if not summary_lines:
+            return None
+        joined = "\n".join(f"- {line}" for line in summary_lines)
+        return (
+            "ПРИОРИТЕТНОЕ ПРАВИЛО (применяется ПЕРВЫМ, до всех остальных правил):\n"
+            "Если хотя бы один из установленных локальных skills (см. список ниже) по своему "
+            "description покрывает домен задачи пользователя — верни skills_agent. Точка. "
+            "Это правило ПЕРЕБИВАЕТ любые другие режимы, даже если они выглядят ближе по названию: "
+            "content_creator, writing_assistant, code_assistant и подобные НЕ заменяют skills_agent "
+            "при наличии релевантного skill, потому что только skills_agent умеет следовать "
+            "пошаговой инструкции skill (planning → drafting → review) и подгружать его references. "
+            "Сравнение делай по семантике description: skill про fiction/прозу/рассказы → подходит "
+            "для запроса на рассказ, стих, главу, художественный текст; skill про код-ревью → "
+            "подходит для запроса на проверку кода; и т.п. Если хотя бы одно описание skill "
+            "семантически пересекается с задачей — выбирай skills_agent.\n\n"
+            "Установленные локальные skills (id: description):\n"
+            f"{joined}\n\n"
+            "Если ни один skill из списка по семантике не подходит к задаче — переходи к остальным правилам ниже."
+        )
+
     def get_spec(self) -> List[Dict]:
         return [
             {

@@ -730,9 +730,8 @@ class Database:
         """
         try:
             if prune_old_sessions:
-                # Hindsight finalize is enqueued by the bot's
-                # ``_dispatch_and_delete_oldest_sessions_for_limit`` BEFORE
-                # ``create_session`` is invoked; here we just prune.
+                # Plugin subscribers receive ``on_session_before_delete`` from
+                # the bot before ``create_session`` is invoked; here we just prune.
                 self.delete_oldest_session(user_id, max_sessions=max_sessions)
             
             # Получаем данные из активной сессии

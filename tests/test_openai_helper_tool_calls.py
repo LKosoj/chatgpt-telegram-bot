@@ -143,6 +143,9 @@ class DummyPluginManager:
     async def apply_mutators(self, event_name, payload, value, *, user_id=None):
         return value
 
+    async def collect_fragments(self, slot, payload, *, user_id=None):
+        return []
+
 
 class DummyClient:
     def __init__(self, responses=None):
@@ -363,7 +366,8 @@ def test_hindsight_memory_parser_preserves_full_fields():
     }]
 
 
-def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
+@pytest.mark.asyncio
+async def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
     helper = _make_helper(DummyPluginManager({}))
     helper.chat_modes_registry = types.SimpleNamespace(
         get_all_modes_list=lambda: [
@@ -372,7 +376,11 @@ def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
         ],
     )
 
-    prompt = helper._build_auto_chat_mode_prompt("Подготовь план, выполни шаги и проверь результат")
+    prompt = await helper._build_auto_chat_mode_prompt(
+        "Подготовь план, выполни шаги и проверь результат",
+        chat_id=1,
+        user_id=None,
+    )
 
     assert "skills_agent" in prompt
     assert "Если задача простая" in prompt

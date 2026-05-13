@@ -443,7 +443,7 @@ class ChatGPTTelegramBot:
                 logger.exception("Post-delivery cleanup failed for %s", directive)
 
     async def _dispatch_session_before_delete(self, user_id: int, session_id: str | None) -> int:
-        """Fire ``on_session_before_delete`` so subscribers (Hindsight) can react.
+        """Fire ``on_session_before_delete`` so plugin subscribers can react.
 
         Returns 1 if a payload was dispatched, 0 if skipped (no session_id /
         empty context).
