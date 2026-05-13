@@ -106,7 +106,6 @@ def _make_db():
         get_conversation_context=MagicMock(return_value=({"messages": []}, "HTML", 0.1, 80, "session-1")),
         get_active_session_id=MagicMock(return_value="session-1"),
         get_session_details=MagicMock(return_value=None),
-        create_hindsight_finalize_job=MagicMock(return_value=1),
     )
 
 
@@ -268,6 +267,21 @@ async def test_unauthorized_plugin_callback_query_does_not_call_plugin_handler()
     update.callback_query.edit_message_text.assert_awaited_once_with(
         text=localized_text("access_denied_command", "en")
     )
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_plugin_menu_callback_is_denied_before_menu_actions():
+    bot = _make_bot(allowed_user_ids="111")
+    bot._build_plugins_menu = MagicMock()
+    update = FakeCallbackUpdate("pluginmenu:page:root:0", user_id=999)
+
+    await bot.handle_plugin_menu_callback(update, _make_context())
+
+    update.callback_query.answer.assert_awaited_once()
+    update.callback_query.edit_message_text.assert_awaited_once_with(
+        text=localized_text("access_denied_command", "en")
+    )
+    bot._build_plugins_menu.assert_not_called()
 
 
 def test_auto_language_detects_persists_and_caches_first_contact():

@@ -1576,6 +1576,45 @@ class OpenAIHelper:
         session-memory injection so subsequent turns skip recall.
         """
         self._repair_tool_call_history(chat_id)
+        plugin = (
+            self.plugin_manager.get_plugin("hindsight_memory")
+            if getattr(self, "plugin_manager", None)
+            else None
+        )
+        if plugin is not None:
+            is_memory_message = getattr(plugin, "is_hindsight_memory_message", None)
+            is_disabled_for_user = getattr(self.plugin_manager, "is_plugin_disabled_for_user", None)
+            disabled_for_user = (
+                callable(is_disabled_for_user)
+                and is_disabled_for_user(plugin.get_plugin_id(), user_id)
+            )
+            can_send_memory = (
+                user_id is not None
+                and bool(getattr(plugin, "is_active", False))
+                and bool(getattr(plugin, "auto_recall_enabled", True))
+                and not disabled_for_user
+            )
+            if callable(is_memory_message) and not can_send_memory:
+                original = self.conversations[chat_id]
+                cleaned = [msg for msg in original if not is_memory_message(msg)]
+                if len(cleaned) != len(original):
+                    self.conversations[chat_id] = cleaned
+                    if persist:
+                        try:
+                            self.db.save_conversation_context(
+                                chat_id,
+                                {'messages': cleaned},
+                                parse_mode,
+                                temperature,
+                                max_tokens_percent,
+                                session_id,
+                                self,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Failed to persist removal of session-memory message for chat_id=%s: %s",
+                                chat_id, exc,
+                            )
         base = self._messages_with_language_instruction(self.conversations[chat_id])
         payload = BeforeChatRequestPayload(
             chat_id=chat_id, user_id=user_id, request_id=request_id,
@@ -1589,7 +1628,6 @@ class OpenAIHelper:
         if not persist:
             return mutated
 
-        plugin = self.plugin_manager.get_plugin("hindsight_memory") if getattr(self, "plugin_manager", None) else None
         if plugin is None:
             return mutated
         already_in_conv = any(

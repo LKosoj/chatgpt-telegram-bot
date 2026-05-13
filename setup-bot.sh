@@ -18,9 +18,10 @@ copy_env_example() {
     fi
 
     if [ ! -f "$ENV_FILE" ]; then
-        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        install -m 600 "$ENV_EXAMPLE" "$ENV_FILE"
         printf 'Created %s from %s\n' "$ENV_FILE" "$ENV_EXAMPLE"
     else
+        chmod 600 "$ENV_FILE"
         printf 'Using existing %s\n' "$ENV_FILE"
     fi
 }
@@ -99,6 +100,7 @@ set_env_value() {
         }
     ' "$ENV_FILE" > "$tmp_file"
 
+    chmod 600 "$tmp_file"
     mv "$tmp_file" "$ENV_FILE"
 }
 

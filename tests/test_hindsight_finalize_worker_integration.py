@@ -122,5 +122,3 @@ async def test_worker_status_becomes_failed_after_max_attempts(db, monkeypatch):
     rows = _job_rows(db)
     assert rows[0]["attempts"] == 2
     assert rows[0]["status"] == "failed"
-
-

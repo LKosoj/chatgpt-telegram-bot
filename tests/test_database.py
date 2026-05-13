@@ -204,5 +204,3 @@ def test_save_image_creates_missing_user_settings(db):
     assert db.get_user_settings(42) == {}
     images = db.get_user_images(42, 42, limit=1)
     assert images[0]["file_id"] == "telegram-file-id"
-
-

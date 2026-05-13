@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_FILES = (
     REPO_ROOT / "bot" / "telegram_bot.py",
     REPO_ROOT / "bot" / "openai_helper.py",
+    REPO_ROOT / "bot" / "openai_tool_handler.py",
     REPO_ROOT / "bot" / "database.py",
 )
 PLUGIN_IDS = (
@@ -45,7 +46,7 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
     ),
     ("bot/telegram_bot.py", "skills"): (
         3,
-        "UI: callback action 'skills'/'skill_page' + settings menu reader via get_plugin('skills').",
+        "UI: callback action literal 'skills' in the {'skills','skill_page'} set + settings menu reader (has_plugin + get_plugin).",
     ),
     ("bot/openai_helper.py", "hindsight_memory"): (
         1,
@@ -56,8 +57,7 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
 
 def _count_quoted_occurrences(text: str, plugin_id: str) -> int:
     pattern = re.compile(rf"""(?:["']){re.escape(plugin_id)}(?:["'])""")
-    lines = text.splitlines()
-    return sum(1 for line in lines if pattern.search(line))
+    return len(pattern.findall(text))
 
 
 @pytest.mark.parametrize("plugin_id", PLUGIN_IDS)

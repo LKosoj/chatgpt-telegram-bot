@@ -862,24 +862,33 @@ class AgentToolsPlugin(Plugin):
         rows = await self.db_handle.fetch_all(
             "SELECT status FROM agent_plan_tasks WHERE scope = ?", (scope,)
         )
-        if not rows:
+        contract_rows = await self.db_handle.fetch_all(
+            "SELECT 1 AS one FROM agent_plan_contracts WHERE scope = ? LIMIT 1", (scope,)
+        )
+        if not rows and not contract_rows:
             return False
         if any(r["status"] not in CLOSED_STATUSES for r in rows):
             return False
-        await self.db_handle.execute(
-            "DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,)
-        )
+        async with self.db_handle.transaction() as tx:
+            await tx.execute("DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,))
+            await tx.execute("DELETE FROM agent_plan_contracts WHERE scope = ?", (scope,))
         return True
 
     async def _db_clear_all_tasks_async(self, scope: str) -> bool:
         rows = await self.db_handle.fetch_all(
-            "SELECT 1 AS one FROM agent_plan_tasks WHERE scope = ? LIMIT 1", (scope,)
+            """
+            SELECT 1 AS one FROM agent_plan_tasks WHERE scope = ?
+            UNION ALL
+            SELECT 1 AS one FROM agent_plan_contracts WHERE scope = ?
+            LIMIT 1
+            """,
+            (scope, scope),
         )
         if not rows:
             return False
-        await self.db_handle.execute(
-            "DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,)
-        )
+        async with self.db_handle.transaction() as tx:
+            await tx.execute("DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,))
+            await tx.execute("DELETE FROM agent_plan_contracts WHERE scope = ?", (scope,))
         return True
 
     async def on_session_reset(self, payload) -> None:
@@ -2167,7 +2176,10 @@ class AgentToolsPlugin(Plugin):
 
     @staticmethod
     def _normalize_timeout(value: Any) -> int:
-        default = int(os.getenv("AGENT_ASK_USER_TIMEOUT_SECONDS", "1800"))
+        try:
+            default = int(os.getenv("AGENT_ASK_USER_TIMEOUT_SECONDS", "1800"))
+        except (TypeError, ValueError):
+            default = 1800
         try:
             timeout = int(value) if value is not None else default
         except (TypeError, ValueError):

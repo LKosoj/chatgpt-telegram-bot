@@ -94,7 +94,6 @@ nav:
     - chat_modes_registry.py: modules/bot/chat_modes_registry__py.md
     - conversation_key.py: modules/bot/conversation_key__py.md
     - database.py: modules/bot/database__py.md
-    - hindsight_client.py: modules/bot/hindsight_client__py.md
     - html_utils.py: modules/bot/html_utils__py.md
     - i18n.py: modules/bot/i18n__py.md
     - model_constants.py: modules/bot/model_constants__py.md

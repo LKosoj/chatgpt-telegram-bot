@@ -99,6 +99,30 @@ async def test_dispatch_observe_isolates_exceptions(pm, caplog):
     assert any("plugin_hook_error" in r.message for r in caplog.records)
 
 
+async def test_dispatch_observe_skips_plugins_that_fail_to_construct(pm, caplog):
+    called = []
+
+    class Broken(FakePlugin):
+        def __init__(self):
+            raise RuntimeError("cannot construct")
+
+    class Ok(FakePlugin):
+        def __init__(self):
+            super().__init__("bbb")
+
+        async def on_user_message(self, payload):
+            called.append(payload)
+
+    pm.plugins["aaa"] = Broken
+    pm.plugins["bbb"] = Ok
+
+    with caplog.at_level(logging.ERROR, logger="bot.plugin_manager"):
+        await pm.dispatch_observe("on_user_message", "payload")
+
+    assert called == ["payload"]
+    assert any("plugin_hook_error" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------- dispatch_blocking
 
 
@@ -474,6 +498,65 @@ def test_call_initialize_passes_db_and_config_when_accepted(pm):
     }
 
 
+def test_call_initialize_does_not_mask_internal_typeerror(pm):
+    calls = []
+
+    class Broken(FakePlugin):
+        def initialize(self, openai=None):
+            calls.append(openai)
+            raise TypeError("internal init bug")
+
+    with pytest.raises(TypeError, match="internal init bug"):
+        pm._call_initialize(Broken("broken"), openai="OAI")
+
+    assert calls == ["OAI"]
+
+
+def test_set_openai_is_idempotent_for_same_helper_and_db(pm):
+    calls = []
+
+    class Modern(FakePlugin):
+        def __init__(self):
+            super().__init__("modern")
+
+        def initialize(self, openai=None, bot=None, storage_root=None, db=None, plugin_config=None):
+            self.openai = openai
+            self.db_handle = db
+            calls.append(db)
+
+    plugin = Modern()
+    _register(pm, plugin)
+    pm.db_handle = object()
+    helper = object()
+
+    pm.set_openai(helper)
+    pm.set_openai(helper)
+
+    assert calls == [pm.db_handle]
+
+
+def test_set_db_reinitializes_existing_plugins_with_db_handle(pm):
+    calls = []
+
+    class Modern(FakePlugin):
+        def __init__(self):
+            super().__init__("modern")
+
+        def initialize(self, openai=None, bot=None, storage_root=None, db=None, plugin_config=None):
+            self.openai = openai
+            self.db_handle = db
+            calls.append(db)
+
+    plugin = Modern()
+    _register(pm, plugin)
+    helper = object()
+
+    pm.set_openai(helper)
+    pm.set_db(_FakeDb())
+
+    assert calls == [None, pm.db_handle]
+
+
 class _FakeConn:
     def __init__(self, executed):
         self._executed = executed
@@ -546,6 +629,36 @@ def test_register_plugin_schemas_then_set_openai_initializes_once(pm):
     pm.set_openai(object())  # fake openai
     assert len(init_calls) == 1
     assert init_calls[0] is not None
+
+
+def test_register_plugin_schemas_raises_when_ddl_fails(pm):
+    class BadSchemaPlugin(FakePlugin):
+        def __init__(self):
+            super().__init__("bad_schema")
+
+        def register_schema(self):
+            return ["CREATE TABLE bad (id INTEGER)"]
+
+    class FailingConn:
+        def execute(self, sql, *args):
+            raise RuntimeError("ddl failed")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FailingDb:
+        def get_connection(self):
+            return FailingConn()
+
+    pm.plugins["bad_schema"] = BadSchemaPlugin
+    pm.plugin_instances.clear()
+    pm.db = FailingDb()
+
+    with pytest.raises(RuntimeError, match="bad_schema: RuntimeError: ddl failed"):
+        pm.register_plugin_schemas()
 
 
 def test_plugin_config_segment_preserves_prefix(pm):

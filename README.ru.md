@@ -172,7 +172,7 @@ LLMGateway-маршрутизации, управляемых tool calls, име
 | `bot/chat_modes.yml` | Чат-режимы для пользователя, allow-list плагинов на режим |
 | `bot/database.py` | Singleton SQLite, сессии, контекст разговора, image-references, учёт использования |
 | `bot/usage_tracker.py` | Учёт стоимости токенов / изображений / TTS / транскрипции и окна бюджетов |
-| `bot/hindsight_client.py` | HTTP-клиент Hindsight (recall, retain, list, stats, clear) |
+| `bot/plugins/hindsight_memory.py` | Hindsight-плагин и встроенный HTTP-клиент (recall, retain, list, stats, clear) |
 | `bot/request_context.py` | Frozen-dataclass `RequestContext`, передаётся в инструменты при выполнении |
 | `bot/skill_script_routing.py` | Роутер, нацеливающий запуск скилов на `terminal` или `codeinterpreter` |
 | `bot/utils.py` | `BusyStatusMessage`, `compute_scope_key`, разбиение сообщений, отдача файлов, утилиты |

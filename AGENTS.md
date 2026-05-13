@@ -78,19 +78,26 @@ The plugin hook framework lives in `bot/plugins/hooks.py` (events + payloads) an
 There are four kinds of hooks, each with a different dispatch policy:
 
 1. **Observers** (`dispatch_observe`): `on_user_message`, `on_assistant_response`,
-   `on_session_reset`. Fire-and-forget. Plugins return `None`. Exceptions are logged and
-   swallowed; one failing plugin does not block others.
-2. **Blocking hooks** (`dispatch_blocking`): `on_session_before_delete`. Awaited sequentially
-   before the action (e.g. session deletion) proceeds. Exceptions are logged and swallowed —
-   the action still completes (Policy A: PII delete must not be blocked by plugin failure).
-3. **Mutators** (`apply_mutators`): `on_before_chat_request`. Plugins receive the current
-   value (e.g. `messages: List[Dict]`) and a payload; return a possibly-modified value or
-   `None` (= no change). Identity on failure: a raising plugin yields the unchanged value
-   from the previous step. Order is deterministic (sorted by `plugin_name`).
-4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, e.g.
-   `auto_mode_priority`. Each plugin's `contribute_prompt_fragment(slot, payload)` returns a
-   string fragment (for `collect_fragments`) or an arbitrary object (for `collect_objects`)
-   or `None`. Skipped on exception. Caller decides composition (e.g. `"\n\n".join(...)`).
+   `on_session_reset`. Fire-and-forget; all subscribers run **concurrently** via
+   `asyncio.gather(..., return_exceptions=True)`. Plugins return `None`. Exceptions are
+   logged and swallowed; one failing plugin does not block others.
+2. **Blocking hooks** (`dispatch_blocking`): `on_session_before_delete`. Awaited
+   **sequentially** before the action (e.g. session deletion) proceeds. Exceptions are
+   logged and swallowed — the action still completes (Policy A: PII delete must not be
+   blocked by plugin failure).
+3. **Mutators** (`apply_mutators`): `on_before_chat_request`. Plugins are awaited
+   **sequentially**; each receives the current value (e.g. `messages: List[Dict]`) and a
+   payload; returns a possibly-modified value or `None` (= no change). Identity on failure:
+   a raising plugin yields the unchanged value from the previous step. Order is
+   deterministic — `sorted(self.plugins.keys())`, i.e. by plugin module name.
+4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, called
+   **sequentially**. Active slots in tree: `auto_mode_priority` (auto-mode prompt prefix,
+   `bot/openai_helper.py:2379`), `stats_block` (`/stats` extra blocks,
+   `bot/telegram_bot.py:842`), `settings_menu_buttons` (extra settings-menu button rows,
+   `bot/telegram_bot.py:1125` — only consumer of `collect_objects`). Each plugin's
+   `contribute_prompt_fragment(slot, payload)` returns a string fragment (for
+   `collect_fragments`) or an arbitrary object (for `collect_objects`) or `None`. Skipped
+   on exception. Caller decides composition (e.g. `"\n\n".join(...)`).
 
 Payload classes are frozen dataclasses defined in `bot/plugins/hooks.py`. New events should
 add a new `HookEvent` member and a frozen payload class; the dispatcher then routes by event

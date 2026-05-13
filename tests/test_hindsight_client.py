@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from bot.hindsight_client import HindsightClient, HindsightError
+from bot.plugins.hindsight_memory import HindsightClient, HindsightError
 
 
 @pytest.mark.asyncio

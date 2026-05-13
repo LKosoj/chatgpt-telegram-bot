@@ -47,18 +47,31 @@ async def test_on_session_reset_clears_all_tasks(tmp_path, agent_db):
         chat_id=10,
         user_id=42,
         action="add",
+        definition_of_done={
+            "goal": "Finish review",
+            "success_criteria": ["No stale plan contract remains"],
+        },
         tasks=[
             {"id": "T1", "content": "Inspect", "status": "in_progress"},
         ],
     )
     assert seeded["success"] is True
     assert plugin.get_plan_tasks(chat_id=10, user_id=42)
+    assert seeded["plan_tasks"]["definition_of_done"]["goal"] == "Finish review"
 
     await plugin.on_session_reset(SessionResetPayload(
         chat_id=10, user_id=42, reason="request_start", terminal_only=False,
     ))
 
-    assert plugin.get_plan_tasks(chat_id=10, user_id=42) == []
+    listed = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    assert listed["plan_tasks"]["tasks"] == []
+    assert listed["plan_tasks"]["definition_of_done"] is None
 
 
 @pytest.mark.asyncio
@@ -94,6 +107,10 @@ async def test_on_session_reset_terminal_only_clears_when_all_closed(tmp_path, a
         chat_id=10,
         user_id=42,
         action="add",
+        definition_of_done={
+            "goal": "Finish delivery",
+            "success_criteria": ["Closed plan is fully cleared"],
+        },
         tasks=[
             {"id": "T1", "content": "Done work", "status": "completed"},
         ],
@@ -104,7 +121,15 @@ async def test_on_session_reset_terminal_only_clears_when_all_closed(tmp_path, a
         chat_id=10, user_id=42, reason="final_delivery", terminal_only=True,
     ))
 
-    assert plugin.get_plan_tasks(chat_id=10, user_id=42) == []
+    listed = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    assert listed["plan_tasks"]["tasks"] == []
+    assert listed["plan_tasks"]["definition_of_done"] is None
 
 
 @pytest.mark.asyncio

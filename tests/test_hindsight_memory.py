@@ -9,9 +9,14 @@ import pytest
 
 pytest.importorskip("tiktoken")
 
-from bot.hindsight_client import HindsightClient, format_recall_results
 from bot.openai_helper import OpenAIHelper
-from bot.plugins.hindsight_memory import HINDSIGHT_EXTRACTOR_PROMPT, HindsightMemoryPlugin
+from bot.plugins.hindsight_memory import (
+    HINDSIGHT_EXTRACTOR_PROMPT,
+    HindsightClient,
+    HINDSIGHT_MEMORY_MARKER,
+    HindsightMemoryPlugin,
+    format_recall_results,
+)
 from bot.telegram_bot import ChatGPTTelegramBot
 
 
@@ -43,8 +48,10 @@ class DummyDB:
 
 
 class DummyPluginManager:
-    db = None
-    _hm_plugin = None
+    def __init__(self):
+        self.db = None
+        self._hm_plugin = None
+        self.disabled = set()
 
     def has_plugin(self, plugin_name):
         return True
@@ -73,12 +80,14 @@ class DummyPluginManager:
         self.db = db
 
     def disabled_plugins_for_user(self, user_id):
-        return set()
+        return set(self.disabled)
 
     def is_plugin_disabled_for_user(self, plugin_name, user_id):
-        return False
+        return plugin_name in self.disabled
 
     async def apply_mutators(self, event_name, payload, value, *, user_id=None):
+        if "hindsight_memory" in self.disabled:
+            return value
         plugin = self.get_plugin("hindsight_memory")
         method = getattr(plugin, event_name, None)
         if method is None:
@@ -255,6 +264,36 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
     await helper.get_chat_response(chat_id=1, query="And now?", user_id=123)
 
     assert len(fake.recall_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_hindsight_memory_removes_persisted_marker_before_request():
+    helper = make_helper()
+    plugin = helper.plugin_manager.get_plugin("hindsight_memory")
+    fake = FakeHindsight()
+    plugin.client = fake
+    helper.plugin_manager.disabled = {"hindsight_memory"}
+    helper.conversations[1] = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nold memory"},
+        {"role": "user", "content": "current query"},
+    ]
+
+    messages = await helper._apply_before_chat_request_mutators(
+        chat_id=1,
+        user_id=123,
+        session_id="session-1",
+        request_id=None,
+        parse_mode="Markdown",
+        temperature=0.1,
+        max_tokens_percent=50,
+        persist=True,
+    )
+
+    assert fake.recall_calls == []
+    assert all(not plugin.is_hindsight_memory_message(message) for message in messages)
+    assert all(not plugin.is_hindsight_memory_message(message) for message in helper.conversations[1])
+    assert all(not plugin.is_hindsight_memory_message(message) for message in helper.db.saved[-1]["messages"])
 
 
 def test_hindsight_memory_parser_skips_sensitive_content():

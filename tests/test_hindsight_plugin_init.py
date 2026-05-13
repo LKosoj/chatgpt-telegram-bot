@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bot.hindsight_client import HindsightClient
-from bot.plugins.hindsight_memory import HindsightMemoryPlugin
+from bot.plugins.hindsight_memory import HindsightClient, HindsightMemoryPlugin
 
 
 def test_initialize_sets_defaults_for_all_13_keys():

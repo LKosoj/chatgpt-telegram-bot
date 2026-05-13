@@ -280,16 +280,19 @@ async def test_group_session_delete_enqueues_hindsight_before_db_delete():
 
 
 @pytest.mark.asyncio
-async def test_group_session_delete_keeps_session_when_hindsight_enqueue_fails():
+async def test_group_session_delete_continues_when_hook_dispatch_fails():
     bot = _make_bot()
-    bot._dispatch_session_before_delete = AsyncMock(side_effect=RuntimeError("enqueue failed"))
+    bot._dispatch_session_before_delete = lambda *args, **kwargs: ChatGPTTelegramBot._dispatch_session_before_delete(bot, *args, **kwargs)
+    bot.openai.plugin_manager.dispatch_blocking.side_effect = RuntimeError("dispatch failed")
     update = _group_update("session:delete:session-2")
 
     await bot.handle_session_callback(update, _make_context())
 
-    bot.db.delete_session.assert_not_called()
-    update.callback_query.edit_message_text.assert_awaited_once()
-    assert "enqueue failed" in update.callback_query.edit_message_text.await_args.kwargs["text"]
+    bot.db.delete_session.assert_called_once_with(
+        -100123,
+        "session-2",
+        openai_helper=bot.openai,
+    )
 
 
 @pytest.mark.asyncio
@@ -346,16 +349,15 @@ async def test_enqueue_and_delete_oldest_sessions_dispatches_before_delete():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_and_delete_oldest_sessions_propagates_dispatch_failure():
+async def test_enqueue_and_delete_oldest_sessions_continues_after_dispatch_failure():
     bot = _make_bot()
     bot._dispatch_session_before_delete = lambda *args, **kwargs: ChatGPTTelegramBot._dispatch_session_before_delete(bot, *args, **kwargs)
     bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1"]
     bot.openai.plugin_manager.dispatch_blocking.side_effect = RuntimeError("dispatch failed")
 
-    with pytest.raises(RuntimeError, match="dispatch failed"):
-        await ChatGPTTelegramBot._dispatch_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
+    await ChatGPTTelegramBot._dispatch_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
 
-    bot.db.delete_sessions_by_ids.assert_not_called()
+    bot.db.delete_sessions_by_ids.assert_called_once_with(-100123, ["old-1"])
 
 
 @pytest.mark.asyncio

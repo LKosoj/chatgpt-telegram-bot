@@ -253,6 +253,12 @@ def test_agent_tools_preserves_full_option_text():
     assert plugin._normalize_options([long_option]) == [long_option]
 
 
+def test_agent_tools_timeout_ignores_invalid_env_default(monkeypatch):
+    monkeypatch.setenv("AGENT_ASK_USER_TIMEOUT_SECONDS", "1800 # seconds")
+
+    assert AgentToolsPlugin._normalize_timeout(None) == 1800
+
+
 @pytest.mark.asyncio
 async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
     plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)

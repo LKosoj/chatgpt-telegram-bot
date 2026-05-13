@@ -80,7 +80,7 @@ class FakePluginManager:
 
 def _make_bot():
     bot = object.__new__(ChatGPTTelegramBot)
-    bot.config = {"bot_language": "en"}
+    bot.config = {"allowed_user_ids": "*", "bot_language": "en"}
     bot.openai = SimpleNamespace(plugin_manager=FakePluginManager())
     bot.plugin_menu_page_size = 6
     bot.plugin_menu_entries = [

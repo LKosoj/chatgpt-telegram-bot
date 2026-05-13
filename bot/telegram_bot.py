@@ -81,8 +81,8 @@ class ChatGPTTelegramBot:
         self._user_language_cache = {}
         # Tests construct the bot without going through __main__, so re-wire
         # PluginManager here too. Both setters are idempotent.
-        self.openai.plugin_manager.set_openai(self.openai)
         self.openai.plugin_manager.set_db(self.db)
+        self.openai.plugin_manager.set_openai(self.openai)
         
         # Кешируем chat_modes.yml
         self._chat_modes_cache = None
@@ -406,6 +406,54 @@ class ChatGPTTelegramBot:
             user_id=getattr(user, "id", None),
         )
 
+    @staticmethod
+    def _direct_result_observer_text(response) -> str:
+        try:
+            payload = response if isinstance(response, dict) else json.loads(response)
+        except Exception:
+            return ""
+        direct_result = payload.get("direct_result") if isinstance(payload, dict) else None
+        if not isinstance(direct_result, dict):
+            return ""
+        for key in ("text", "caption", "add_value"):
+            value = direct_result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        kind = str(direct_result.get("kind") or "").strip()
+        value = direct_result.get("value")
+        if kind in {"text", "final"} and isinstance(value, str) and value.strip():
+            return value.strip()
+        artifacts = direct_result.get("artifacts")
+        if isinstance(artifacts, list) and artifacts:
+            return f"{kind or 'direct_result'} ({len(artifacts)} artifacts)"
+        return kind
+
+    async def _dispatch_assistant_response_observer(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        request_id: str,
+        text: str | None,
+        tokens: int,
+        model: str,
+    ) -> None:
+        if not text:
+            return
+        await self.openai.plugin_manager.dispatch_observe(
+            "on_assistant_response",
+            AssistantResponsePayload(
+                chat_id=chat_id,
+                user_id=user_id,
+                request_id=request_id,
+                text=text,
+                tokens=tokens,
+                model=model,
+                ts=time.time(),
+            ),
+            user_id=user_id,
+        )
+
     async def _run_post_delivery_cleanup(self, response):
         try:
             payload = response if isinstance(response, dict) else json.loads(response)
@@ -470,11 +518,19 @@ class ChatGPTTelegramBot:
             session_id=session_id,
             messages=tuple(messages),
         )
-        await pm.dispatch_blocking(
-            HookEvent.ON_SESSION_BEFORE_DELETE,
-            payload,
-            user_id=user_id,
-        )
+        try:
+            await pm.dispatch_blocking(
+                HookEvent.ON_SESSION_BEFORE_DELETE,
+                payload,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.exception(
+                "on_session_before_delete dispatch failed for user_id=%s session_id=%s",
+                user_id,
+                session_id,
+            )
+            return 0
         return 1
 
     async def _dispatch_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -> None:
@@ -2540,7 +2596,7 @@ class ChatGPTTelegramBot:
             return
 
         replied_file_context = None
-        analytics_prompt = prompt
+        assistant_response_text = None
         await self.openai.plugin_manager.dispatch_observe(
             "on_user_message",
             UserMessagePayload(
@@ -2594,13 +2650,25 @@ class ChatGPTTelegramBot:
                 # Индекс последнего «закрытого» чанка, опубликованного как
                 # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
                 last_published_chunk = 0
+                last_stream_content = ''
 
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
-                        return await self._handle_direct_result(update, content)
+                        assistant_response_text = self._direct_result_observer_text(content)
+                        await self._handle_direct_result(update, content)
+                        await self._dispatch_assistant_response_observer(
+                            chat_id=chat_id,
+                            user_id=user_id,
+                            request_id=request_id,
+                            text=assistant_response_text,
+                            tokens=total_tokens,
+                            model=model_to_use,
+                        )
+                        return
 
                     if len(content.strip()) == 0:
                         continue
+                    last_stream_content = content
 
                     stream_chunks = split_into_chunks(content)
                     if len(stream_chunks) > 1:
@@ -2701,10 +2769,11 @@ class ChatGPTTelegramBot:
                     i += 1
                     if tokens != 'not_finished':
                         total_tokens = int(tokens)
+                assistant_response_text = last_stream_content
 
             else:
                 async def _reply():
-                    nonlocal total_tokens
+                    nonlocal total_tokens, assistant_response_text
                     plan_provider, plan_interval = self._build_plan_status_provider(chat_id, user_id)
                     busy_status = BusyStatusMessage(
                         update,
@@ -2726,21 +2795,10 @@ class ChatGPTTelegramBot:
                         await busy_status.stop()
 
                         if is_direct_result(response):
-                            await self.openai.plugin_manager.dispatch_observe(
-                                "on_assistant_response",
-                                AssistantResponsePayload(
-                                    chat_id=chat_id,
-                                    user_id=user_id,
-                                    request_id=request_id,
-                                    text=analytics_prompt,
-                                    tokens=total_tokens,
-                                    model=model_to_use,
-                                    ts=time.time(),
-                                ),
-                                user_id=user_id,
-                            )
+                            assistant_response_text = self._direct_result_observer_text(response)
                             return await self._handle_direct_result(update, response)
 
+                        assistant_response_text = response
                         # Split into chunks of 4096 characters (Telegram's message limit)
                         chunks = split_into_chunks(response)
 
@@ -2776,18 +2834,13 @@ class ChatGPTTelegramBot:
                         await busy_status.stop()
 
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
-            await self.openai.plugin_manager.dispatch_observe(
-                "on_assistant_response",
-                AssistantResponsePayload(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    request_id=request_id,
-                    text=analytics_prompt,
-                    tokens=total_tokens,
-                    model=model_to_use,
-                    ts=time.time(),
-                ),
+            await self._dispatch_assistant_response_observer(
+                chat_id=chat_id,
                 user_id=user_id,
+                request_id=request_id,
+                text=assistant_response_text,
+                tokens=total_tokens,
+                model=model_to_use,
             )
 
             result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
@@ -3494,6 +3547,11 @@ class ChatGPTTelegramBot:
         """Обработчик выбора команды из меню плагинов."""
         query = update.callback_query
         await query.answer()
+        if not await is_allowed(self.config, update, context):
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return
 
         data = query.data.split(":")
         if len(data) < 2:

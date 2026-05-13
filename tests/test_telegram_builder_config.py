@@ -58,11 +58,14 @@ for _module_name in _INSERTED_MODULES:
 class FakePluginManager:
     def __init__(self):
         self.config = {}
+        self.calls = []
 
     def set_openai(self, openai):
+        self.calls.append("set_openai")
         self.openai = openai
 
     def set_db(self, db):
+        self.calls.append("set_db")
         self.db = db
 
     def register_plugin_schemas(self):
@@ -224,6 +227,24 @@ def test_default_telegram_builder_uses_local_bot_api(monkeypatch):
     assert builder.local_mode_calls == [True]
     assert builder.base_url_calls == ["http://localhost:8081/bot"]
     assert application.run_polling_calls == 1
+
+
+def test_constructor_wires_plugin_db_before_openai():
+    openai = FakeOpenAI()
+    db = object()
+
+    ChatGPTTelegramBot(
+        config={
+            "bot_language": "en",
+            "enable_image_generation": False,
+            "enable_tts_generation": False,
+        },
+        openai=openai,
+        db=db,
+    )
+
+    assert openai.plugin_manager.calls == ["set_db", "set_openai"]
+    assert openai.plugin_manager.db is db
 
 
 def test_main_defaults_telegram_local_bot_api_config(monkeypatch):

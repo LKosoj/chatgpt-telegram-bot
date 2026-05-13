@@ -50,6 +50,11 @@ class PluginManager:
         self.openai = openai
         self.bot = getattr(openai, "bot", None)
         for plugin_name, instance in self.plugin_instances.items():
+            if (
+                getattr(instance, "openai", None) is openai
+                and getattr(instance, "db_handle", self.db_handle) is self.db_handle
+            ):
+                continue
             self._call_initialize(
                 instance,
                 openai=openai,
@@ -67,6 +72,8 @@ class PluginManager:
         """
         self.db = db
         self.db_handle = DbHandle(db) if db is not None else None
+        if self.openai is not None:
+            self.set_openai(self.openai)
 
     def _call_initialize(self, plugin: Plugin, **kwargs: Any) -> None:
         """Call ``plugin.initialize`` with only the kwargs its signature accepts.
@@ -102,21 +109,7 @@ class PluginManager:
         else:
             filtered = {k: v for k, v in kwargs.items() if k in params}
 
-        try:
-            method(**filtered)
-        except TypeError:
-            # Last-resort safety net: call with no extra args.
-            # Rarely triggered in practice — inspect.signature succeeds for
-            # Python-defined initialize methods, so the kwargs are already
-            # filtered above. This path only fires for exotic descriptors or
-            # C-defined initialize bound methods that pass through signature
-            # introspection but still reject the filtered kwargs.
-            logger.warning(
-                "plugin %s initialize raised TypeError with filtered kwargs; "
-                "calling with no args",
-                getattr(plugin, "plugin_id", None) or type(plugin).__name__,
-            )
-            method()
+        method(**filtered)
 
     def _plugin_config_segment(self, plugin: Plugin) -> Dict[str, Any]:
         """Return the config slice for ``plugin``: keys whose name starts with its prefix.
@@ -800,7 +793,20 @@ class PluginManager:
         for plugin_name in sorted(self.plugins.keys()):
             if plugin_name in disabled:
                 continue
-            instance = self.get_plugin(plugin_name)
+            try:
+                instance = self.get_plugin(plugin_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "plugin_hook_error",
+                    extra={
+                        "plugin_id": plugin_name,
+                        "hook": "instance",
+                        "event": "get_plugin",
+                        "exc_class": type(exc).__name__,
+                    },
+                    exc_info=exc,
+                )
+                continue
             if instance is not None:
                 result.append(instance)
         return result
@@ -1020,6 +1026,7 @@ class PluginManager:
         if self.db is None:
             logger.debug("register_plugin_schemas called before set_db; skipping")
             return
+        errors: list[tuple[str, BaseException]] = []
         for plugin_name in sorted(self.plugins.keys()):
             plugin = self._get_or_create_bare_instance(plugin_name)
             if plugin is None:
@@ -1028,6 +1035,7 @@ class PluginManager:
                 statements = plugin.register_schema() or []
             except Exception as exc:  # noqa: BLE001
                 self._log_hook_error(plugin, "register_schema", "schema", exc)
+                errors.append((plugin_name, exc))
                 continue
             if not statements:
                 continue
@@ -1037,6 +1045,13 @@ class PluginManager:
                         conn.execute(ddl)
             except Exception as exc:  # noqa: BLE001
                 self._log_hook_error(plugin, "register_schema", "schema", exc)
+                errors.append((plugin_name, exc))
+        if errors:
+            details = "; ".join(
+                f"{plugin_name}: {type(exc).__name__}: {exc}"
+                for plugin_name, exc in errors
+            )
+            raise RuntimeError(f"Plugin schema registration failed: {details}")
 
     def _get_or_create_bare_instance(self, plugin_name: str) -> Plugin | None:
         """Return cached instance or create a new one WITHOUT calling ``initialize``."""

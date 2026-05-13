@@ -94,6 +94,7 @@ class FakePluginManager:
         self.text_document_qa = text_document_qa
         self.plugin_help_texts = list(plugin_help_texts or [])
         self.db = None
+        self.observer_events = []
 
     def set_db(self, db):
         self.db = db
@@ -127,6 +128,7 @@ class FakePluginManager:
         return list(self.plugin_help_texts)
 
     async def dispatch_observe(self, event_name, payload, *, user_id=None):
+        self.observer_events.append((event_name, payload, user_id))
         if event_name == "on_session_reset" and self.agent_tools is not None:
             if getattr(payload, "terminal_only", False):
                 self.agent_tools.clear_terminal_plan_tasks(
@@ -498,6 +500,78 @@ async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
     )
 
     assert agent_tools.clear_calls == [(1234, 42)]
+
+
+def test_direct_result_observer_text_does_not_use_non_text_value():
+    response = {
+        "direct_result": {
+            "kind": "image",
+            "format": "png",
+            "value": "base64-image-payload",
+        }
+    }
+
+    assert ChatGPTTelegramBot._direct_result_observer_text(response) == "image"
+
+
+@pytest.mark.asyncio
+async def test_assistant_response_observer_gets_streaming_answer(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+    bot = _make_bot(
+        chunks=[
+            ("Partial answer", "not_finished"),
+            ("Final assistant answer", "7"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+
+    await bot.process_message("user prompt", FakeUpdate(FakeMessage()), _make_context())
+
+    assistant_events = [
+        payload
+        for event_name, payload, _user_id in bot.openai.plugin_manager.observer_events
+        if event_name == "on_assistant_response"
+    ]
+    assert len(assistant_events) == 1
+    assert assistant_events[0].text == "Final assistant answer"
+    assert assistant_events[0].tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_assistant_response_observer_gets_nonstream_direct_result_once(monkeypatch):
+    async def direct_wrap(_update, _context, coroutine, _chat_action, is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", direct_wrap)
+    monkeypatch.setattr(
+        telegram_bot,
+        "handle_direct_result",
+        AsyncMock(return_value=[SimpleNamespace(message_id=200)]),
+    )
+    direct_response = {
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "text": "Delivered final answer",
+        }
+    }
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["stream"] = False
+    bot.openai = FakeOpenAINonStream(direct_response)
+
+    await bot.process_message("user prompt", FakeUpdate(FakeMessage()), _make_context())
+
+    assistant_events = [
+        payload
+        for event_name, payload, _user_id in bot.openai.plugin_manager.observer_events
+        if event_name == "on_assistant_response"
+    ]
+    assert len(assistant_events) == 1
+    assert assistant_events[0].text == "Delivered final answer"
 
 
 @pytest.mark.asyncio
