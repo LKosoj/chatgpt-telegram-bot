@@ -7,6 +7,7 @@ import os
 
 import openai
 
+from .i18n import localized_text
 from .skill_script_routing import (
     SCRIPT_FILE_CREATION_RE,
     SKILL_SCRIPT_PATH_RE,
@@ -70,11 +71,14 @@ async def _list_user_sessions(db, user_id, *, is_active: int = 0):
 
 
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
+DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 DELIVERY_REPAIR_PROMPT = (
-    "Protocol violation: this chat mode requires the final user-facing response "
-    "to be sent through agent_tools.deliver_to_user. Do not answer with plain text. "
-    "Call agent_tools.deliver_to_user now. If previous tool results created local files, "
-    "use their paths as artifacts. If there are no files to send, pass the final text only."
+    "Protocol violation: this chat mode does not allow plain assistant text after tool work. "
+    "Do not narrate the next step. If more work is needed, call the next required tool now. "
+    "If user input is needed, call agent_tools.ask_telegram_user. If the task is complete or "
+    "blocked, call agent_tools.deliver_to_user with status, final text, artifacts if any, "
+    "and a concise verification_summary or blocked_reason. If previous tool results created "
+    "local files, use their paths as artifacts."
 )
 
 
@@ -253,26 +257,13 @@ def _delivery_tool_is_allowed(helper, allowed_plugins) -> bool:
     return bool(is_allowed(DELIVERY_TOOL_NAME, allowed_plugins))
 
 
-def _delivery_tool_choice(tools):
-    for tool in tools or []:
-        if (
-            isinstance(tool, dict)
-            and tool.get("type") == "function"
-            and (tool.get("function") or {}).get("name") == DELIVERY_TOOL_NAME
-        ):
-            return {"type": "function", "function": {"name": DELIVERY_TOOL_NAME}}
-    return "auto"
-
-
-def _delivery_contract_error() -> dict:
+def _delivery_contract_error(helper) -> dict:
+    bot_language = (getattr(helper, "config", None) or {}).get("bot_language", "en")
     return {
         "direct_result": {
             "kind": "text",
-            "format": "markdown",
-            "value": (
-                "Не удалось отправить финальный результат: модель не вызвала "
-                "agent_tools.deliver_to_user после выполнения tools."
-            ),
+            "format": "text",
+            "value": localized_text("delivery_contract_error", bot_language),
         }
     }
 
@@ -287,14 +278,21 @@ async def _retry_missing_delivery_tool(
     user_id,
     request_context,
     model_to_use=None,
+    delivery_repair_attempts=0,
+    plain_text=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
-        return _delivery_contract_error(), tools_used
+        return _delivery_contract_error(helper), tools_used
 
+    plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
     helper.conversations.setdefault(chat_id, []).append({
         "role": "user",
-        "content": DELIVERY_REPAIR_PROMPT,
+        "content": (
+            DELIVERY_REPAIR_PROMPT
+            if not plain_text_preview
+            else f"{DELIVERY_REPAIR_PROMPT}\n\nPrevious plain assistant text: {plain_text_preview}"
+        ),
     })
     logger.warning(
         "Retrying final response because skills_agent returned plain text instead of %s",
@@ -319,7 +317,7 @@ async def _retry_missing_delivery_tool(
         model=model_to_use,
         messages=messages,
         tools=tools,
-        tool_choice=_delivery_tool_choice(tools),
+        tool_choice="auto",
         max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
         stream=stream,
     )
@@ -333,9 +331,9 @@ async def _retry_missing_delivery_tool(
         allowed_plugins,
         user_id,
         request_context,
-        delivery_retry_attempted=True,
         final_delivery_required=True,
         model_to_use=model_to_use,
+        delivery_repair_attempts=delivery_repair_attempts + 1,
     )
 
 
@@ -349,9 +347,9 @@ async def handle_function_call(
     allowed_plugins=None,
     user_id=None,
     request_context=None,
-    delivery_retry_attempted=False,
     final_delivery_required=False,
     model_to_use=None,
+    delivery_repair_attempts=0,
 ):
     tool_calls = []
     try:
@@ -363,7 +361,7 @@ async def handle_function_call(
             allowed_plugins = ['All']
         allowed_plugins = helper.plugin_manager.filter_allowed_plugins(allowed_plugins)
 
-        async def enforce_delivery_contract_if_needed():
+        async def enforce_delivery_contract_if_needed(plain_text=None):
             if not _delivery_contract_required(
                 helper,
                 chat_id,
@@ -371,9 +369,9 @@ async def handle_function_call(
                 initial_plain_response=times == 0 and not tools_used,
             ):
                 return None
-            if delivery_retry_attempted:
+            if delivery_repair_attempts >= DELIVERY_REPAIR_MAX_ATTEMPTS:
                 logger.error("Delivery contract retry failed for chat_id=%s", chat_id)
-                return _delivery_contract_error(), tools_used
+                return _delivery_contract_error(helper), tools_used
             return await _retry_missing_delivery_tool(
                 helper,
                 chat_id,
@@ -384,6 +382,8 @@ async def handle_function_call(
                 user_id,
                 request_context,
                 model_to_use,
+                delivery_repair_attempts,
+                plain_text,
             )
 
         if stream:
@@ -436,7 +436,8 @@ async def handle_function_call(
                             "arguments": tc.function.arguments or "",
                         })
                 else:
-                    enforced = await enforce_delivery_contract_if_needed()
+                    plain_text = getattr(first_choice.message, "content", None)
+                    enforced = await enforce_delivery_contract_if_needed(plain_text)
                     if enforced is not None:
                         return enforced
                     return response, tools_used
@@ -604,9 +605,9 @@ async def handle_function_call(
             allowed_plugins,
             user_id,
             request_context,
-            delivery_retry_attempted,
             final_delivery_required,
             model_to_use,
+            delivery_repair_attempts,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

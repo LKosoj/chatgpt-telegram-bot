@@ -417,6 +417,7 @@ async def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
     assert "skills_agent" in prompt
     assert "Если задача простая" in prompt
     assert "Сложная задача" in prompt
+    assert "больше двух шагов" in prompt
     assert "Не выбирай skills_agent по отдельным словам" in prompt
     assert "Верни assistant" in prompt or "верни assistant" in prompt
 
@@ -472,6 +473,39 @@ async def test_resolve_allowed_plugins_removes_user_disabled_plugins():
 
     assert await helper.resolve_allowed_plugins(chat_id=1, session_id="session-1", user_id=42) == ["time"]
     assert pm.filtered[-1] == ["time"]
+
+
+@pytest.mark.asyncio
+async def test_chat_request_tool_specs_use_request_user_for_disabled_plugins():
+    saved_context = {
+        "messages": [
+            {"role": "system", "content": "tools"},
+        ],
+    }
+    db = DummyDB(saved_context)
+    db.user_settings[42] = {"disabled_plugins": ["weather"]}
+    pm = DummyPluginManager(
+        {},
+        specs=[{
+            "name": "time.now",
+            "description": "x",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }],
+    )
+    client = DummyClient([FakeResponse(content="done")])
+    helper = _make_helper(pm, db=db, client=client)
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_system_prompt=lambda _content: {"tools": ["weather", "time"]},
+    )
+
+    await helper._OpenAIHelper__common_get_chat_response(
+        chat_id=1,
+        query="hello",
+        session_id="session-1",
+        user_id=42,
+    )
+
+    assert pm.spec_calls[-1] == ["time"]
 
 
 @pytest.mark.asyncio
@@ -994,10 +1028,7 @@ async def test_skills_agent_retries_plain_text_final_response_through_delivery_t
     )
 
     assert helper.client.calls == 2
-    assert helper.client.create_kwargs[1]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "agent_tools.deliver_to_user"},
-    }
+    assert helper.client.create_kwargs[1]["tool_choice"] == "auto"
     assert set(tools_used) == {"terminal.terminal", "agent_tools.deliver_to_user"}
     assert out["direct_result"]["kind"] == "final"
     assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/deck.pptx"
@@ -1006,6 +1037,80 @@ async def test_skills_agent_retries_plain_text_final_response_through_delivery_t
         and "agent_tools.deliver_to_user" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_skills_agent_plain_status_after_tools_can_resume_tool_work():
+    responses = {
+        "terminal.terminal": {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/deck.pptx"}],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "terminal.terminal"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(content="PPTX создан. Проверяю содержимое через officecli."),
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "terminal.terminal",
+                    json.dumps({"command": "officecli view /tmp/deck.pptx text"}),
+                    id="call-officecli",
+                ),
+            ]),
+            FakeResponse(content="Проверил содержимое, готово."),
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({
+                        "text": "Готово",
+                        "artifacts": [{"file_path": "/tmp/deck.pptx"}],
+                    }),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("terminal.terminal", json.dumps({"command": "node /tmp/create_pptx.js"}), id="call-build"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 4
+    assert [name for name, _args in helper.plugin_manager.calls] == [
+        "terminal.terminal",
+        "terminal.terminal",
+        "agent_tools.deliver_to_user",
+    ]
+    officecli_args = json.loads(helper.plugin_manager.calls[1][1])
+    assert "officecli view /tmp/deck.pptx text" in officecli_args["command"]
+    assert set(tools_used) == {"terminal.terminal", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["kind"] == "final"
+    assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/deck.pptx"
+    assert helper.client.create_kwargs[1]["tool_choice"] == "auto"
+    assert helper.client.create_kwargs[3]["tool_choice"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -1051,10 +1156,7 @@ async def test_skills_agent_retries_initial_plain_text_response_through_delivery
     )
 
     assert helper.client.calls == 1
-    assert helper.client.create_kwargs[0]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "agent_tools.deliver_to_user"},
-    }
+    assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
     assert set(tools_used) == {"agent_tools.deliver_to_user"}
     assert out["direct_result"]["text"] == "Готово"
 

@@ -2512,6 +2512,12 @@ class ChatGPTTelegramBot:
         conversation_key = get_conversation_key(update)
         conversation_lock = await self._get_conversation_lock(conversation_key)
         async with conversation_lock:
+            user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+            plugin_manager = getattr(self.openai, 'plugin_manager', None)
+            user_settings_scope = getattr(plugin_manager, 'user_settings_scope', None)
+            if callable(user_settings_scope):
+                with user_settings_scope(user_id):
+                    return await self._process_message_locked(prompt, update, context)
             return await self._process_message_locked(prompt, update, context)
 
     async def _get_conversation_lock(self, conversation_key: int) -> asyncio.Lock:

@@ -161,8 +161,14 @@ class SkillsPlugin(Plugin):
             return None
         if not self.available_skills:
             return None
+        disabled_skills = self._disabled_skills_for_user(
+            getattr(self, "openai", None),
+            getattr(payload, "user_id", None),
+        )
         summary_lines: List[str] = []
         for skill_id, info in self.available_skills.items():
+            if skill_id in disabled_skills:
+                continue
             desc = (info.get("description") or "").strip().replace("\n", " ")
             if len(desc) > 240:
                 desc = desc[:240].rstrip() + "..."
@@ -696,7 +702,13 @@ class SkillsPlugin(Plugin):
             )
 
     def _disabled_skills_for_user(self, helper, user_id: int | None) -> set[str]:
-        if user_id is None or helper is None or not getattr(helper, "db", None):
+        if user_id is None or helper is None:
+            return set()
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        disabled_skills_for_user = getattr(plugin_manager, "disabled_skills_for_user", None)
+        if callable(disabled_skills_for_user):
+            return set(disabled_skills_for_user(user_id) or set())
+        if not getattr(helper, "db", None):
             return set()
         settings = get_user_settings(helper.db, user_id)
         return set(normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)))

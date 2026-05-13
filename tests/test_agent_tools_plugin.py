@@ -239,9 +239,15 @@ def test_agent_tools_registers_specs_and_handlers():
     assert ask_spec["parameters"]["required"] == ["question", "options"]
     assert ask_spec["parameters"]["properties"]["options"]["minItems"] == 1
     plan_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.manage_plan_tasks")
+    assert "more than two steps" in plan_spec["description"]
     task_props = plan_spec["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "depends_on" in task_props
     assert "definition_of_done" in plan_spec["parameters"]["properties"]
+    deliver_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.deliver_to_user")
+    deliver_props = deliver_spec["parameters"]["properties"]
+    assert deliver_props["status"]["enum"] == ["completed", "blocked"]
+    assert "verification_summary" in deliver_props
+    assert "blocked_reason" in deliver_props
 
     commands = pm.get_plugin_commands()
     assert any(command.get("command") == "background" for command in commands)
@@ -1174,6 +1180,8 @@ async def test_deliver_to_user_returns_final_direct_result(tmp_path):
         chat_id=10,
         user_id=42,
         text="Готово",
+        status="completed",
+        verification_summary="Validated report contents.",
         artifacts=[{"file_path": str(artifact_path), "caption": "summary"}],
     )
 
@@ -1182,7 +1190,9 @@ async def test_deliver_to_user_returns_final_direct_result(tmp_path):
     assert direct_result["kind"] == "final"
     assert direct_result["format"] == "mixed"
     assert direct_result["defer"] is False
+    assert direct_result["status"] == "completed"
     assert direct_result["text"] == "Готово"
+    assert direct_result["verification_summary"] == "Validated report contents."
     assert direct_result["artifacts"] == [
         {
             "kind": "file",
@@ -1192,6 +1202,47 @@ async def test_deliver_to_user_returns_final_direct_result(tmp_path):
             "caption": "summary",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_records_blocked_status(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        status="blocked",
+        blocked_reason="officecli is unavailable",
+    )
+
+    assert result["success"] is True
+    direct_result = result["direct_result"]
+    assert direct_result["status"] == "blocked"
+    assert direct_result["text"] == "officecli is unavailable"
+    assert direct_result["blocked_reason"] == "officecli is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_rejects_blocked_without_reason(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        text="Не могу продолжить",
+        status="blocked",
+    )
+
+    assert result["success"] is False
+    assert "blocked_reason" in result["error"]
 
 
 @pytest.mark.asyncio

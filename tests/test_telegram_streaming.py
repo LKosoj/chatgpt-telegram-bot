@@ -3,6 +3,7 @@ import importlib.util
 import logging
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -95,9 +96,15 @@ class FakePluginManager:
         self.plugin_help_texts = list(plugin_help_texts or [])
         self.db = None
         self.observer_events = []
+        self.user_settings_scope_calls = []
 
     def set_db(self, db):
         self.db = db
+
+    @contextmanager
+    def user_settings_scope(self, user_id):
+        self.user_settings_scope_calls.append(user_id)
+        yield
 
     def disabled_plugins_for_user(self, user_id):
         if self.db is None or user_id is None:
@@ -356,6 +363,7 @@ async def test_process_message_skips_disabled_plugin_prompt_handler():
     assert rag_plugin.calls == []
     assert bot.openai.stream_requests[0]["query"] == "hello"
     assert message.reply_text_calls[0]["text"] == "Normal answer"
+    assert bot.openai.plugin_manager.user_settings_scope_calls == [42]
 
 
 @pytest.mark.asyncio

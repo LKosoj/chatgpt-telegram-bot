@@ -290,6 +290,86 @@ def test_disabled_plugins_for_user_invalid_settings_shape(tmp_path):
     assert pm.disabled_plugins_for_user(42) == set()
 
 
+def test_user_settings_scope_reuses_disabled_plugin_and_skill_settings(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def get_user_settings(self, user_id):
+            self.calls.append(user_id)
+            return {
+                "disabled_plugins": ["weather"],
+                "disabled_skills": ["demo"],
+            }
+
+    db = FakeDB()
+    pm.set_db(db)
+
+    with pm.user_settings_scope(42):
+        assert pm.disabled_plugins_for_user(42) == {"weather"}
+        assert pm.is_plugin_disabled_for_user("weather", 42) is True
+        assert pm.disabled_skills_for_user(42) == {"demo"}
+        assert db.calls == [42]
+
+    assert pm.disabled_plugins_for_user(42) == {"weather"}
+    assert db.calls == [42, 42]
+
+
+@pytest.mark.asyncio
+async def test_user_settings_scope_reuses_settings_across_plugin_phases(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def get_user_settings(self, user_id):
+            self.calls.append(user_id)
+            return {
+                "disabled_plugins": ["blocked"],
+                "disabled_skills": ["demo"],
+            }
+
+    class AllowedPlugin:
+        plugin_id = "allowed"
+
+        def get_plugin_id(self):
+            return self.plugin_id
+
+        async def on_user_message(self, payload):
+            return None
+
+        async def contribute_prompt_fragment(self, slot, payload):
+            return "allowed"
+
+        async def on_before_chat_request(self, messages, payload):
+            return messages
+
+    class BlockedPlugin(AllowedPlugin):
+        plugin_id = "blocked"
+
+    pm.set_db(FakeDB())
+    pm.plugins.update({"allowed": AllowedPlugin, "blocked": BlockedPlugin})
+    pm.plugin_instances.update({
+        "allowed": AllowedPlugin(),
+        "blocked": BlockedPlugin(),
+    })
+
+    with pm.user_settings_scope(42):
+        await pm.dispatch_observe("on_user_message", "payload", user_id=42)
+        assert await pm.collect_fragments("slot", "payload", user_id=42) == ["allowed"]
+        assert await pm.apply_mutators("on_before_chat_request", "payload", [], user_id=42) == []
+        assert pm.disabled_skills_for_user(42) == {"demo"}
+
+    assert pm.db.calls == [42]
+
+
 @pytest.mark.asyncio
 async def test_call_function_records_tool_telemetry(tmp_path):
     plugin_dir = tmp_path / "plugins"

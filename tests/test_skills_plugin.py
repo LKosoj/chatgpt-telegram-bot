@@ -540,6 +540,35 @@ async def test_user_disabled_skills_are_hidden_and_rejected(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_auto_mode_fragment_skips_user_disabled_skills(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    plugin.available_skills = {
+        "demo": {"description": "Disabled demo skill"},
+        "other": {"description": "Available skill"},
+    }
+
+    class FakePluginManager:
+        def __init__(self):
+            self.calls = []
+
+        def disabled_skills_for_user(self, user_id):
+            self.calls.append(user_id)
+            return {"demo"}
+
+    plugin_manager = FakePluginManager()
+    plugin.openai = SimpleNamespace(plugin_manager=plugin_manager)
+
+    fragment = await plugin.contribute_prompt_fragment(
+        "auto_mode_priority",
+        SimpleNamespace(user_id=42),
+    )
+
+    assert plugin_manager.calls == [42]
+    assert "other: Available skill" in fragment
+    assert "demo: Disabled demo skill" not in fragment
+
+
+@pytest.mark.asyncio
 async def test_list_skills_marks_allow_scripts_per_skill(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
     _write_skill(tmp_path / "skills", name="no_scripts", allow_scripts=False)

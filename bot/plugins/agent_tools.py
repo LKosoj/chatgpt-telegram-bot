@@ -185,8 +185,10 @@ class AgentToolsPlugin(Plugin):
                 "name": "manage_plan_tasks",
                 "description": (
                     "Manage the current Telegram chat's durable task plan and Definition of Done. "
-                    "Use this before complex work to set the goal, success criteria, constraints, "
-                    "and verification checks; then add/update tasks. Keep task ids stable: update "
+                    "Use this before work expected to take more than two steps to set the goal, "
+                    "success criteria, constraints, and verification checks; then add/update tasks. "
+                    "Do not create a durable plan for one- or two-step work unless the user or an "
+                    "active skill explicitly requires it. Keep task ids stable: update "
                     "existing tasks instead of adding semantic duplicates. Use depends_on to model "
                     "a task DAG; a task may start only after its dependencies are closed. Without "
                     "depends_on, preserve list order and do not start later tasks while earlier "
@@ -317,6 +319,25 @@ class AgentToolsPlugin(Plugin):
                         "text": {
                             "type": "string",
                             "description": "Optional final text shown to the user.",
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["completed", "blocked"],
+                            "description": (
+                                "Machine-readable final state. Use completed when the task is done; "
+                                "use blocked when work cannot continue or finish."
+                            ),
+                        },
+                        "verification_summary": {
+                            "type": "string",
+                            "description": (
+                                "Concise summary of checks performed before delivery, for example "
+                                "validated generated files or reviewed tool outputs."
+                            ),
+                        },
+                        "blocked_reason": {
+                            "type": "string",
+                            "description": "Required when status is blocked; explain the concrete blocker.",
                         },
                         "artifacts": {
                             "type": "array",
@@ -1394,6 +1415,15 @@ class AgentToolsPlugin(Plugin):
     async def _deliver_to_user(self, helper, *, request_context=None, **kwargs) -> Dict:
         text_raw = kwargs.get("text")
         final_text = "" if text_raw is None else str(text_raw).strip()
+        status = str(kwargs.get("status") or "completed").strip().lower()
+        if status not in {"completed", "blocked"}:
+            return {"success": False, "error": "deliver_to_user status must be completed or blocked"}
+        verification_summary = str(kwargs.get("verification_summary") or "").strip()
+        blocked_reason = str(kwargs.get("blocked_reason") or "").strip()
+        if status == "blocked" and not blocked_reason:
+            return {"success": False, "error": "deliver_to_user blocked status requires blocked_reason"}
+        if status == "blocked" and not final_text and blocked_reason:
+            final_text = blocked_reason
         allowed_roots = self._allowed_artifact_roots(helper)
         artifact_items, error = self._normalize_delivery_artifacts(
             kwargs.get("artifacts"), allowed_roots=allowed_roots,
@@ -1434,9 +1464,14 @@ class AgentToolsPlugin(Plugin):
             "kind": "final",
             "format": "mixed",
             "defer": False,
+            "status": status,
             "text": final_text,
             "artifacts": artifact_items,
         }
+        if verification_summary:
+            direct_result["verification_summary"] = verification_summary
+        if blocked_reason:
+            direct_result["blocked_reason"] = blocked_reason
         if cleanup_skills:
             direct_result["cleanup_skills"] = cleanup_skills
         if dedup_key:

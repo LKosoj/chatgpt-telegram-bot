@@ -1,4 +1,7 @@
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 import importlib
 import inspect
 import json
@@ -14,6 +17,7 @@ from .plugins.db_handle import DbHandle
 from .plugins.plugin import Plugin
 from .model_constants import GOOGLE as GOOGLE_MODELS
 from .user_settings import (
+    USER_DISABLED_SKILLS_SETTING,
     USER_DISABLED_PLUGINS_SETTING,
     get_user_settings,
     normalize_string_list,
@@ -22,6 +26,22 @@ from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
 FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id"}
+
+
+@dataclass
+class _RequestUserSettingsCache:
+    manager_id: int
+    user_id: int | None
+    loaded: bool = False
+    disabled_plugins: frozenset[str] = field(default_factory=frozenset)
+    disabled_skills: frozenset[str] = field(default_factory=frozenset)
+
+
+_request_user_settings_cache: ContextVar[_RequestUserSettingsCache | None] = ContextVar(
+    "request_user_settings_cache",
+    default=None,
+)
+
 
 class PluginManager:
 
@@ -126,12 +146,64 @@ class PluginManager:
         config = getattr(self, "config", None) or {}
         return {k: v for k, v in config.items() if k.startswith(prefix)}
 
+    @contextmanager
+    def user_settings_scope(self, user_id: int | None):
+        """Cache user settings-derived values for one request/task context."""
+        current = _request_user_settings_cache.get()
+        if current is not None and current.manager_id == id(self) and current.user_id == user_id:
+            yield
+            return
+        token = _request_user_settings_cache.set(
+            _RequestUserSettingsCache(manager_id=id(self), user_id=user_id)
+        )
+        try:
+            yield
+        finally:
+            _request_user_settings_cache.reset(token)
+
+    def _request_user_settings(self, user_id: int | None) -> _RequestUserSettingsCache | None:
+        if self.db is None or user_id is None:
+            return None
+
+        cache = _request_user_settings_cache.get()
+        if cache is not None and cache.manager_id == id(self) and cache.user_id == user_id:
+            if not cache.loaded:
+                settings = get_user_settings(self.db, user_id)
+                cache.disabled_plugins = frozenset(
+                    normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING))
+                )
+                cache.disabled_skills = frozenset(
+                    normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING))
+                )
+                cache.loaded = True
+            return cache
+
+        settings = get_user_settings(self.db, user_id)
+        return _RequestUserSettingsCache(
+            manager_id=id(self),
+            user_id=user_id,
+            loaded=True,
+            disabled_plugins=frozenset(
+                normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING))
+            ),
+            disabled_skills=frozenset(
+                normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING))
+            ),
+        )
+
     def disabled_plugins_for_user(self, user_id: int | None) -> set[str]:
         """Возвращает множество имён плагинов, отключённых пользователем."""
-        if self.db is None or user_id is None:
+        settings = self._request_user_settings(user_id)
+        if settings is None:
             return set()
-        settings = get_user_settings(self.db, user_id)
-        return set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
+        return set(settings.disabled_plugins)
+
+    def disabled_skills_for_user(self, user_id: int | None) -> set[str]:
+        """Возвращает множество skills, отключённых пользователем."""
+        settings = self._request_user_settings(user_id)
+        if settings is None:
+            return set()
+        return set(settings.disabled_skills)
 
     def is_plugin_disabled_for_user(self, plugin_name: str | None, user_id: int | None) -> bool:
         """Отключён ли `plugin_name` для `user_id`. Пустое/None имя плагина → False."""
