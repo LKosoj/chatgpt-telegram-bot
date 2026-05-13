@@ -31,7 +31,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
     should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
-from .plugins.hooks import AssistantResponsePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
+from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .usage_tracker import UsageTracker
@@ -54,12 +54,6 @@ logger = logging.getLogger(__name__)
 
 WAITING_PROMPT = 1
 DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
-HINDSIGHT_FINALIZE_JOB_LIMIT = 5
-HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS = 5
-HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS = 60
-HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS = 900
-HINDSIGHT_FINALIZE_WORKER_ACTIVE_SECONDS = 2
-HINDSIGHT_FINALIZE_WORKER_IDLE_SECONDS = 30
 LANGUAGE_MENU_PAGE_SIZE = 10
 SETTINGS_MENU_PAGE_SIZE = 10
 
@@ -449,113 +443,48 @@ class ChatGPTTelegramBot:
                 logger.exception("Post-delivery cleanup failed for %s", directive)
 
     async def _dispatch_session_before_delete(self, user_id: int, session_id: str | None) -> int:
+        """Fire ``on_session_before_delete`` so subscribers (Hindsight) can react.
+
+        Returns 1 if a payload was dispatched, 0 if skipped (no session_id /
+        empty context).
+        """
         if not session_id:
             return 0
         pm = getattr(self.openai, "plugin_manager", None)
-        if (
-            pm is None
-            or not getattr(pm, "has_plugin", lambda _name: False)("hindsight_memory")
-            or pm.is_plugin_disabled_for_user("hindsight_memory", user_id)
-        ):
+        if pm is None:
             return 0
-        plugin = pm.get_plugin("hindsight_memory")
-        if (
-            plugin is None
-            or not getattr(plugin, "is_active", False)
-            or not getattr(plugin, "auto_save_enabled", False)
-        ):
-            return 0
-
         try:
             context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id)
             messages = context.get('messages', []) if isinstance(context, dict) else []
             messages = [dict(message) for message in messages if isinstance(message, dict)]
         except Exception:
             logger.exception(
-                "Failed to snapshot session before Hindsight finalize enqueue for user_id=%s session_id=%s",
+                "Failed to snapshot session before delete dispatch for user_id=%s session_id=%s",
                 user_id,
                 session_id,
             )
             raise
 
-        job_id = self.db.create_hindsight_finalize_job(
-            user_id,
-            session_id,
-            messages=messages,
+        payload = SessionBeforeDeletePayload(
+            user_id=user_id,
+            session_id=session_id,
+            messages=tuple(messages),
         )
-        logger.info(
-            "Queued Hindsight session finalize before deletion for user_id=%s session_id=%s job_id=%s",
-            user_id,
-            session_id,
-            job_id,
+        await pm.dispatch_blocking(
+            HookEvent.ON_SESSION_BEFORE_DELETE,
+            payload,
+            user_id=user_id,
         )
-        return job_id
+        return 1
 
     async def _dispatch_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -> None:
         session_ids = self.db.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
-        self.db.create_hindsight_finalize_jobs_for_sessions(user_id, session_ids)
-        if session_ids and not self.db.delete_sessions_by_ids(user_id, session_ids):
+        if not session_ids:
+            return
+        for session_id in session_ids:
+            await self._dispatch_session_before_delete(user_id, session_id)
+        if not self.db.delete_sessions_by_ids(user_id, session_ids):
             raise RuntimeError(f"Failed to delete old sessions for user {user_id}: {session_ids}")
-
-    async def _process_pending_hindsight_finalize_jobs(self, limit: int = HINDSIGHT_FINALIZE_JOB_LIMIT) -> int:
-        # Bot-wide worker: per-user disable enforced inside the plugin in 4C.
-        pm = getattr(self.openai, "plugin_manager", None)
-        plugin = pm.get_plugin("hindsight_memory") if pm and pm.has_plugin("hindsight_memory") else None
-        if plugin is None or not getattr(plugin, "is_active", False) or not getattr(plugin, "auto_save_enabled", False):
-            return 0
-
-        jobs = self.db.claim_hindsight_finalize_jobs(
-            limit=limit,
-            lease_seconds=HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS,
-            max_attempts=HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS,
-        )
-        for job in jobs:
-            try:
-                saved_count = await self.openai.finalize_hindsight_session_memory(
-                    job["user_id"],
-                    job["session_id"],
-                    messages=job["messages"],
-                    raise_on_error=True,
-                    async_store=False,
-                )
-                self.db.mark_hindsight_finalize_job_done(job["id"], saved_count)
-                logger.info(
-                    "Processed Hindsight finalize job id=%s user_id=%s session_id=%s saved_count=%s",
-                    job["id"],
-                    job["user_id"],
-                    job["session_id"],
-                    saved_count,
-                )
-            except Exception as e:
-                self.db.mark_hindsight_finalize_job_failed(
-                    job["id"],
-                    str(e),
-                    retry_delay_seconds=HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS,
-                    max_attempts=HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS,
-                )
-                logger.warning(
-                    "Hindsight finalize job failed id=%s user_id=%s session_id=%s: %s",
-                    job["id"],
-                    job["user_id"],
-                    job["session_id"],
-                    e,
-                )
-        return len(jobs)
-
-    async def hindsight_finalize_worker(self):
-        while True:
-            try:
-                processed = await self._process_pending_hindsight_finalize_jobs()
-                await asyncio.sleep(
-                    HINDSIGHT_FINALIZE_WORKER_ACTIVE_SECONDS
-                    if processed
-                    else HINDSIGHT_FINALIZE_WORKER_IDLE_SECONDS
-                )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in Hindsight finalize worker: {e}", exc_info=True)
-                await asyncio.sleep(HINDSIGHT_FINALIZE_WORKER_IDLE_SECONDS)
 
     def _image_edit_source_file_id(
         self,
@@ -776,7 +705,7 @@ class ChatGPTTelegramBot:
         current_cost = self.usage[user_id].get_current_cost()
 
         chat_id = update.effective_chat.id
-        chat_messages, chat_token_length = self.openai.get_conversation_stats(chat_id)
+        chat_messages, chat_token_length = await self.openai.get_conversation_stats(chat_id)
         remaining_budget = get_remaining_budget(self.config, self.usage, update)
 
         text_current_conversation = (
@@ -3314,13 +3243,6 @@ class ChatGPTTelegramBot:
             self._background_tasks = [
                 asyncio.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
             ]
-            pm = self.openai.plugin_manager
-            plugin = pm.get_plugin("hindsight_memory") if pm.has_plugin("hindsight_memory") else None
-            if plugin is not None and getattr(plugin, "is_active", False) \
-                    and getattr(plugin, "auto_save_enabled", False):
-                self._background_tasks.append(
-                    asyncio.create_task(self.hindsight_finalize_worker(), name="hindsight_finalize_worker")
-                )
             await self.openai.plugin_manager.start_background_tasks(application)
 
         # Регистрируем команды от плагинов
@@ -3881,6 +3803,10 @@ class ChatGPTTelegramBot:
             if hasattr(self, 'openai'):
                 await self.openai.close()
             if hasattr(self.openai, 'plugin_manager'):
+                try:
+                    await self.openai.plugin_manager.close_all_async()
+                except Exception as e:
+                    logger.warning(f"Error in plugin close_all_async: {e}")
                 self.openai.plugin_manager.close_all()
 
         except Exception as e:
@@ -4010,7 +3936,7 @@ class ChatGPTTelegramBot:
                     return
                 
                 # Сбрасываем историю чата для новой сессии
-                self.openai.reset_chat_history(
+                await self.openai.reset_chat_history(
                     chat_id=conversation_key,
                     content='',
                     session_id=session_id

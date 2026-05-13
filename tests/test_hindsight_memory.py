@@ -19,7 +19,6 @@ class DummyDB:
     def __init__(self):
         self.saved = []
         self.context = {"messages": [{"role": "system", "content": "system prompt"}]}
-        self.jobs = []
 
     def list_user_sessions(self, user_id, is_active=1):
         return [{
@@ -41,10 +40,6 @@ class DummyDB:
     def save_conversation_context(self, user_id, context, parse_mode, temperature, max_tokens_percent, session_id=None, openai_helper=None):
         self.context = context
         self.saved.append(context)
-
-    def create_hindsight_finalize_job(self, user_id, session_id, messages):
-        self.jobs.append((user_id, session_id, messages))
-        return len(self.jobs)
 
 
 class DummyPluginManager:
@@ -128,16 +123,6 @@ class SlowFinalizeOpenAI:
         self.plugin_manager = DummyPluginManager()
         # Force an active hindsight plugin so the bot enqueues the job.
         self.plugin_manager.get_plugin("hindsight_memory")
-
-    def is_hindsight_enabled(self):
-        return True
-
-    async def finalize_hindsight_session_memory(self, user_id, session_id, messages=None, **kwargs):
-        self.calls.append((user_id, session_id, messages, kwargs))
-        self.started.set()
-        await self.finish.wait()
-        self.finished.set()
-        return 1
 
 
 class FakeCompletions:
@@ -247,13 +232,15 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
     helper = make_helper()
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
-    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
+    plugin = helper.plugin_manager.get_plugin("hindsight_memory")
+    fake = FakeHindsight()
+    plugin.client = fake
 
     answer, tokens = await helper.get_chat_response(chat_id=1, query="How should you answer me?", user_id=123)
 
     assert answer == "Answer"
     assert tokens == 10
-    assert helper.hindsight_client.recall_calls[0][0] == "telegram-123"
+    assert fake.recall_calls[0][0] == "telegram-123"
     sent_messages = helper.fake_completions.calls[0]["messages"]
     assert any("User prefers concise answers." in message["content"] for message in sent_messages)
     assert any(
@@ -267,7 +254,7 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
 
     await helper.get_chat_response(chat_id=1, query="And now?", user_id=123)
 
-    assert len(helper.hindsight_client.recall_calls) == 1
+    assert len(fake.recall_calls) == 1
 
 
 def test_hindsight_memory_parser_skips_sensitive_content():
@@ -293,7 +280,7 @@ def test_hindsight_is_disabled_without_token():
     helper.plugin_manager._hm_plugin = HindsightMemoryPlugin()
     helper.plugin_manager._hm_plugin.initialize(plugin_config={})
 
-    assert helper.is_hindsight_enabled() is False
+    assert helper.plugin_manager.get_plugin("hindsight_memory").is_active is False
 
 
 def test_hindsight_extractor_prompt_rejects_transient_tasks():
@@ -308,7 +295,9 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
     helper.config["hindsight_auto_save"] = True
-    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
+    plugin = helper.plugin_manager.get_plugin("hindsight_memory")
+    fake = FakeHindsight()
+    plugin.client = fake
     helper.fake_completions.content = json.dumps({
         "items": [{
             "content": "User prefers concise Python examples.",
@@ -324,13 +313,13 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
         ]
     }
 
-    saved_count = await helper.finalize_hindsight_session_memory(123, "session-1")
+    saved_count = await plugin.finalize_session_memory(123, "session-1", helper.db.context["messages"])
 
     assert saved_count == 1
     assert helper.fake_completions.calls[0]["response_format"] == {"type": "json_object"}
     assert helper.fake_completions.calls[0]["max_tokens"] == 4000
-    assert helper.hindsight_client.retained[0][0] == "telegram-123"
-    item = helper.hindsight_client.retained[0][1][0]
+    assert fake.retained[0][0] == "telegram-123"
+    item = fake.retained[0][1][0]
     assert item["content"] == "User prefers concise Python examples."
     assert item["document_id"] == "telegram-123-session-1-final"
     assert item["metadata"]["mode"] == "session_close"
@@ -342,7 +331,9 @@ async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
     helper.config["hindsight_api_token"] = "secret"
     helper.config["hindsight_enabled"] = True
     helper.config["hindsight_auto_save"] = True
-    helper.plugin_manager.get_plugin("hindsight_memory").client = FakeHindsight()
+    plugin = helper.plugin_manager.get_plugin("hindsight_memory")
+    fake = FakeHindsight()
+    plugin.client = fake
     helper.fake_completions.content = json.dumps({
         "items": [{
             "content": "User prefers short answers.",
@@ -356,22 +347,37 @@ async def test_finalize_hindsight_session_memory_uses_provided_snapshot():
         {"role": "assistant", "content": "Understood."},
     ]
 
-    saved_count = await helper.finalize_hindsight_session_memory(123, "session-1", messages=messages)
+    saved_count = await plugin.finalize_session_memory(123, "session-1", messages)
 
     assert saved_count == 1
-    assert helper.hindsight_client.retained[0][1][0]["content"] == "User prefers short answers."
+    assert fake.retained[0][1][0]["content"] == "User prefers short answers."
 
 
 @pytest.mark.asyncio
 async def test_hindsight_session_finalize_is_enqueued_before_delete():
+    from bot.plugins.hooks import HookEvent
+
     bot = object.__new__(ChatGPTTelegramBot)
     bot.db = DummyDB()
     bot.openai = SlowFinalizeOpenAI()
+    dispatched = []
 
-    job_id = await bot._dispatch_session_before_delete(123, "session-1")
+    async def _dispatch_blocking(event_name, payload, *, user_id=None):
+        dispatched.append((event_name, payload, user_id))
 
-    assert job_id == 1
-    assert bot.db.jobs == [(123, "session-1", bot.db.context["messages"])]
+    bot.openai.plugin_manager.dispatch_blocking = _dispatch_blocking
+
+    result = await bot._dispatch_session_before_delete(123, "session-1")
+
+    assert result == 1
+    assert len(dispatched) == 1
+    event_name, payload, user_id_kw = dispatched[0]
+    assert event_name == HookEvent.ON_SESSION_BEFORE_DELETE
+    assert payload.user_id == 123
+    assert payload.session_id == "session-1"
+    assert list(payload.messages) == bot.db.context["messages"]
+    assert user_id_kw == 123
+    # The synchronous finalize entry point must not be called by the dispatcher.
     assert bot.openai.calls == []
 
 

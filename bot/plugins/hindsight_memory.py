@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import io
 import json
@@ -10,6 +11,8 @@ from typing import Any, Dict, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from .background import BackgroundTask
+from .hooks import SessionBeforeDeletePayload
 from .plugin import Plugin
 from ..hindsight_client import HindsightClient, format_recall_results
 from ..utils import message_text
@@ -18,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
+
+# Background-worker tunables (Stage 4C-3+5: moved from telegram_bot.py).
+HINDSIGHT_FINALIZE_JOB_LIMIT = 5
+HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS = 5
+HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS = 60
+HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS = 900
+HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS = 30
 
 HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
 Long-term memory recalled for this Telegram user:
@@ -62,6 +72,8 @@ class HindsightMemoryPlugin(Plugin):
     def initialize(self, openai=None, bot=None, storage_root: str | None = None,
                    db=None, plugin_config=None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        # Async DbHandle facade (Stage 4C-3): used by hooks and the finalize worker.
+        self.db_handle = db
         # Plugin-owned config slice (prefix "hindsight_"). Defaults set HERE.
         self.config: Dict[str, Any] = dict(plugin_config or {})
         self.config.setdefault('hindsight_base_url', '')
@@ -144,9 +156,209 @@ class HindsightMemoryPlugin(Plugin):
         return isinstance(content, str) and content.startswith(HINDSIGHT_MEMORY_MARKER)
 
     def close(self) -> None:
-        """No-op: client teardown handled by OpenAIHelper.close() via property
-        delegation in Stage 4A; moves to plugin lifecycle in Stage 4C."""
+        """Sync no-op: see ``close_async`` for actual teardown."""
         return None
+
+    async def close_async(self) -> None:
+        """Close the underlying httpx client owned by ``HindsightClient``."""
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        close = getattr(client, "close", None)
+        if not callable(close):
+            return
+        try:
+            await close()
+        except Exception:
+            logger.exception("Failed to close Hindsight HTTP client")
+
+    def get_background_tasks(self) -> List[BackgroundTask]:
+        return [
+            BackgroundTask(
+                name="finalize_worker",
+                interval_seconds=HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS,
+                coroutine_factory=self._finalize_tick,
+            ),
+        ]
+
+    async def on_session_before_delete(self, payload: SessionBeforeDeletePayload) -> None:
+        """Blocking hook: enqueue a finalize job for the session being deleted."""
+        if not self.is_active or not self.auto_save_enabled:
+            return
+        if not payload.session_id or not payload.messages:
+            return
+        if self.db_handle is None:
+            logger.warning("on_session_before_delete fired but db_handle is None")
+            return
+        # Persisted shape mirrors the legacy ``Database.create_hindsight_finalize_job``
+        # writer: ``{"messages": [...]}`` so the worker's reader stays compatible.
+        messages = [dict(message) for message in payload.messages if isinstance(message, dict)]
+        messages_json = json.dumps({"messages": messages}, ensure_ascii=False)
+        await self.db_handle.execute(
+            'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
+            (payload.user_id, payload.session_id, messages_json),
+        )
+        logger.info(
+            "Queued Hindsight finalize job for user_id=%s session_id=%s",
+            payload.user_id,
+            payload.session_id,
+        )
+
+    # ---- Finalize worker (Stage 4C-3+5) ------------------------------------
+    # SQL is owned by the plugin: claim/done/failed run via ``asyncio.to_thread``
+    # so the BEGIN IMMEDIATE in claim stays atomic without blocking the loop.
+
+    def _claim_finalize_jobs_sync(self, db) -> List[Dict[str, Any]]:
+        limit = max(1, int(HINDSIGHT_FINALIZE_JOB_LIMIT))
+        lease_seconds = max(1, int(HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS))
+        max_attempts = max(1, int(HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS))
+
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                '''
+                SELECT id
+                FROM hindsight_finalize_jobs
+                WHERE attempts < ?
+                  AND (
+                    (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP))
+                    OR (status = 'processing' AND locked_at <= datetime(CURRENT_TIMESTAMP, ?))
+                  )
+                ORDER BY created_at ASC
+                LIMIT ?
+                ''',
+                (max_attempts, f"-{lease_seconds} seconds", limit),
+            )
+            job_ids = [row[0] for row in cursor.fetchall()]
+            if not job_ids:
+                return []
+
+            placeholders = ",".join("?" for _ in job_ids)
+            cursor.execute(
+                f'''
+                UPDATE hindsight_finalize_jobs
+                SET status = 'processing',
+                    locked_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                ''',
+                job_ids,
+            )
+            cursor.execute(
+                f'''
+                SELECT id, user_id, session_id, messages, attempts
+                FROM hindsight_finalize_jobs
+                WHERE id IN ({placeholders})
+                ''',
+                job_ids,
+            )
+            rows = cursor.fetchall()
+
+        order = {job_id: index for index, job_id in enumerate(job_ids)}
+        jobs = []
+        for row in rows:
+            payload = json.loads(row["messages"])
+            messages = payload.get("messages", []) if isinstance(payload, dict) else payload
+            jobs.append({
+                "id": row["id"],
+                "user_id": row["user_id"],
+                "session_id": row["session_id"],
+                "messages": messages if isinstance(messages, list) else [],
+                "attempts": row["attempts"],
+            })
+        jobs.sort(key=lambda job: order.get(job["id"], 0))
+        return jobs
+
+    def _mark_finalize_job_done_sync(self, db, job_id: int, saved_count: int) -> None:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE hindsight_finalize_jobs
+                SET status = 'done',
+                    saved_count = ?,
+                    last_error = NULL,
+                    locked_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (saved_count, job_id),
+            )
+
+    def _mark_finalize_job_failed_sync(self, db, job_id: int, error: str) -> None:
+        retry_delay_seconds = max(0, int(HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS))
+        max_attempts = max(1, int(HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS))
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT attempts FROM hindsight_finalize_jobs WHERE id = ?',
+                (job_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return
+            attempts = int(row["attempts"]) + 1
+            status = 'failed' if attempts >= max_attempts else 'pending'
+            cursor.execute(
+                '''
+                UPDATE hindsight_finalize_jobs
+                SET status = ?,
+                    attempts = ?,
+                    last_error = ?,
+                    locked_at = NULL,
+                    next_attempt_at = datetime(CURRENT_TIMESTAMP, ?),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (status, attempts, error, f"+{retry_delay_seconds} seconds", job_id),
+            )
+
+    async def _finalize_tick(self, *, application=None) -> None:
+        """Single iteration of the finalize worker; called by ``BackgroundTask``."""
+        if not self.is_active or not self.auto_save_enabled:
+            return
+        if self.db_handle is None:
+            return
+        db = getattr(self.db_handle, "database", None)
+        if db is None:
+            return
+
+        try:
+            jobs = await asyncio.to_thread(self._claim_finalize_jobs_sync, db)
+        except Exception:
+            logger.exception("Failed to claim Hindsight finalize jobs")
+            return
+
+        for job in jobs:
+            try:
+                saved_count = await self.finalize_session_memory(
+                    job["user_id"],
+                    job["session_id"],
+                    job["messages"],
+                    raise_on_error=True,
+                    async_store=False,
+                )
+                await asyncio.to_thread(
+                    self._mark_finalize_job_done_sync, db, job["id"], saved_count,
+                )
+                logger.info(
+                    "Processed Hindsight finalize job id=%s user_id=%s session_id=%s saved_count=%s",
+                    job["id"], job["user_id"], job["session_id"], saved_count,
+                )
+            except Exception as exc:
+                try:
+                    await asyncio.to_thread(
+                        self._mark_finalize_job_failed_sync, db, job["id"], str(exc),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to mark Hindsight finalize job %s as failed", job["id"],
+                    )
+                logger.warning(
+                    "Hindsight finalize job failed id=%s user_id=%s session_id=%s: %s",
+                    job["id"], job["user_id"], job["session_id"], exc,
+                )
 
     def register_schema(self) -> List[str]:
         return [

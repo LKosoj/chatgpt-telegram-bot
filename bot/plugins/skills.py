@@ -2534,7 +2534,7 @@ class SkillsPlugin(Plugin):
                 chat_id = getattr(request_context, "chat_id", None) if request_context is not None else kwargs.get("chat_id")
                 session_id = getattr(request_context, "session_id", None) if request_context is not None else None
                 user_id = getattr(request_context, "user_id", None) if request_context is not None else kwargs.get("user_id")
-                allowed_plugins = resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
+                allowed_plugins = await resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
                 if not is_function_allowed("agent_tools.run_subagents", allowed_plugins):
                     return {
                         "success": False,

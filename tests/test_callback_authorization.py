@@ -114,13 +114,12 @@ def _make_openai():
     return SimpleNamespace(
         config={"temperature": 0.1, "tts_model": "tts-a", "tts_voice": "alice"},
         conversations={},
-        is_hindsight_enabled=MagicMock(return_value=False),
         get_current_model=MagicMock(return_value="gpt-test"),
         get_user_tts_model=MagicMock(return_value="tts-a"),
         get_user_tts_voice=MagicMock(return_value="alice"),
         get_available_tts_models=AsyncMock(return_value=["tts-a", "tts-b"]),
         get_available_tts_voices=AsyncMock(return_value=["alice", "bob"]),
-        reset_chat_history=MagicMock(),
+        reset_chat_history=AsyncMock(),
         plugin_manager=FakeSettingsPluginManager(),
     )
 

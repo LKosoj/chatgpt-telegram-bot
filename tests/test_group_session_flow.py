@@ -50,6 +50,7 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
+from bot.plugins.hooks import HookEvent  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
@@ -94,11 +95,6 @@ def _make_db(active_sessions=None):
         delete_session=MagicMock(),
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
         delete_sessions_by_ids=MagicMock(return_value=True),
-        create_hindsight_finalize_job=MagicMock(return_value=10),
-        create_hindsight_finalize_jobs_for_sessions=MagicMock(return_value=[]),
-        claim_hindsight_finalize_jobs=MagicMock(return_value=[]),
-        mark_hindsight_finalize_job_done=MagicMock(return_value=True),
-        mark_hindsight_finalize_job_failed=MagicMock(return_value=True),
         save_conversation_context=MagicMock(),
         get_active_session_id=MagicMock(return_value="session-active"),
         get_conversation_context=MagicMock(return_value=(
@@ -114,8 +110,7 @@ def _make_db(active_sessions=None):
 class _FakeHindsightPlugin:
     """Stand-in for HindsightMemoryPlugin in group-flow tests.
 
-    Stage 4A: bot code checks plugin.is_active and plugin.auto_save_enabled
-    instead of helper.is_hindsight_enabled / helper.config[hindsight_auto_save].
+    Bot code checks plugin.is_active and plugin.auto_save_enabled.
     """
 
     def __init__(self):
@@ -129,6 +124,7 @@ class _FakeHindsightPlugin:
 class _FakeGroupPluginManager:
     def __init__(self):
         self.hindsight = _FakeHindsightPlugin()
+        self.dispatch_blocking = AsyncMock()
 
     def has_plugin(self, name):
         return name == "hindsight_memory"
@@ -146,9 +142,7 @@ def _make_openai():
         config={"temperature": 0.1, "hindsight_auto_save": True},
         conversations={},
         loaded_conversation_sessions={},
-        is_hindsight_enabled=MagicMock(return_value=False),
-        finalize_hindsight_session_memory=AsyncMock(return_value=0),
-        reset_chat_history=MagicMock(),
+        reset_chat_history=AsyncMock(),
         plugin_manager=plugin_manager,
     )
 
@@ -299,7 +293,7 @@ async def test_group_session_delete_keeps_session_when_hindsight_enqueue_fails()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_session_before_delete_persists_snapshot():
+async def test_dispatch_session_before_delete_fires_hook_with_snapshot():
     bot = _make_bot()
     messages = [
         {"role": "system", "content": "system prompt"},
@@ -312,100 +306,56 @@ async def test_dispatch_session_before_delete_persists_snapshot():
         50,
         "session-2",
     )
-    bot.openai.is_hindsight_enabled.return_value = True
-    bot.openai.config["hindsight_auto_save"] = True
-    bot.openai.plugin_manager.hindsight.is_active = True
-    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
 
-    job_id = await ChatGPTTelegramBot._dispatch_session_before_delete(
+    result = await ChatGPTTelegramBot._dispatch_session_before_delete(
         bot,
         -100123,
         "session-2",
     )
 
-    assert job_id == 10
-    bot.db.create_hindsight_finalize_job.assert_called_once_with(-100123, "session-2", messages=messages)
-    bot.openai.finalize_hindsight_session_memory.assert_not_awaited()
+    assert result == 1
+    bot.openai.plugin_manager.dispatch_blocking.assert_awaited_once()
+    args, kwargs = bot.openai.plugin_manager.dispatch_blocking.await_args
+    # event name, payload, user_id kw
+    assert args[0] == HookEvent.ON_SESSION_BEFORE_DELETE
+    payload = args[1]
+    assert payload.user_id == -100123
+    assert payload.session_id == "session-2"
+    assert list(payload.messages) == messages
+    assert kwargs == {"user_id": -100123}
 
 
 @pytest.mark.asyncio
-async def test_enqueue_and_delete_oldest_sessions_waits_for_snapshot_before_delete():
+async def test_enqueue_and_delete_oldest_sessions_dispatches_before_delete():
     order = []
     bot = _make_bot()
+    # Use real _dispatch_session_before_delete so dispatch_blocking is invoked.
+    bot._dispatch_session_before_delete = lambda *args, **kwargs: ChatGPTTelegramBot._dispatch_session_before_delete(bot, *args, **kwargs)
     bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1", "old-2"]
-    bot.db.create_hindsight_finalize_jobs_for_sessions.side_effect = lambda *_args: order.append("enqueue") or [10, 11]
+
+    async def _dispatch(*_args, **_kwargs):
+        order.append("dispatch")
+    bot.openai.plugin_manager.dispatch_blocking.side_effect = _dispatch
     bot.db.delete_sessions_by_ids.side_effect = lambda *_args: order.append("delete") or True
 
     await ChatGPTTelegramBot._dispatch_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
 
-    assert order == ["enqueue", "delete"]
-    bot.db.create_hindsight_finalize_jobs_for_sessions.assert_called_once_with(-100123, ["old-1", "old-2"])
+    # Each session triggers one dispatch; delete is a single call after all dispatches.
+    assert order == ["dispatch", "dispatch", "delete"]
     bot.db.delete_sessions_by_ids.assert_called_once_with(-100123, ["old-1", "old-2"])
 
 
 @pytest.mark.asyncio
-async def test_enqueue_and_delete_oldest_sessions_keeps_sessions_when_enqueue_fails():
+async def test_enqueue_and_delete_oldest_sessions_propagates_dispatch_failure():
     bot = _make_bot()
+    bot._dispatch_session_before_delete = lambda *args, **kwargs: ChatGPTTelegramBot._dispatch_session_before_delete(bot, *args, **kwargs)
     bot.db.get_oldest_session_ids_for_limit.return_value = ["old-1"]
-    bot.db.create_hindsight_finalize_jobs_for_sessions.side_effect = RuntimeError("enqueue failed")
+    bot.openai.plugin_manager.dispatch_blocking.side_effect = RuntimeError("dispatch failed")
 
-    with pytest.raises(RuntimeError, match="enqueue failed"):
+    with pytest.raises(RuntimeError, match="dispatch failed"):
         await ChatGPTTelegramBot._dispatch_and_delete_oldest_sessions_for_limit(bot, -100123, 3)
 
     bot.db.delete_sessions_by_ids.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_process_pending_hindsight_finalize_jobs_marks_done_after_save():
-    bot = _make_bot()
-    messages = [{"role": "user", "content": "remember this"}]
-    bot.openai.is_hindsight_enabled.return_value = True
-    bot.openai.config["hindsight_auto_save"] = True
-    bot.openai.plugin_manager.hindsight.is_active = True
-    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
-    bot.openai.finalize_hindsight_session_memory = AsyncMock(return_value=2)
-    bot.db.claim_hindsight_finalize_jobs.return_value = [{
-        "id": 11,
-        "user_id": -100123,
-        "session_id": "old-1",
-        "messages": messages,
-    }]
-
-    processed = await ChatGPTTelegramBot._process_pending_hindsight_finalize_jobs(bot, limit=5)
-
-    assert processed == 1
-    bot.openai.finalize_hindsight_session_memory.assert_awaited_once_with(
-        -100123,
-        "old-1",
-        messages=messages,
-        raise_on_error=True,
-        async_store=False,
-    )
-    bot.db.mark_hindsight_finalize_job_done.assert_called_once_with(11, 2)
-    bot.db.mark_hindsight_finalize_job_failed.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_process_pending_hindsight_finalize_jobs_marks_failed_for_retry():
-    bot = _make_bot()
-    bot.openai.is_hindsight_enabled.return_value = True
-    bot.openai.config["hindsight_auto_save"] = True
-    bot.openai.plugin_manager.hindsight.is_active = True
-    bot.openai.plugin_manager.hindsight.auto_save_enabled = True
-    bot.openai.finalize_hindsight_session_memory = AsyncMock(side_effect=RuntimeError("retain failed"))
-    bot.db.claim_hindsight_finalize_jobs.return_value = [{
-        "id": 11,
-        "user_id": -100123,
-        "session_id": "old-1",
-        "messages": [{"role": "user", "content": "remember this"}],
-    }]
-
-    processed = await ChatGPTTelegramBot._process_pending_hindsight_finalize_jobs(bot, limit=5)
-
-    assert processed == 1
-    bot.db.mark_hindsight_finalize_job_done.assert_not_called()
-    bot.db.mark_hindsight_finalize_job_failed.assert_called_once()
-    assert bot.db.mark_hindsight_finalize_job_failed.call_args.args[:2] == (11, "retain failed")
 
 
 @pytest.mark.asyncio

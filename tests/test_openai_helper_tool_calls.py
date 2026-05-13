@@ -381,7 +381,8 @@ def test_auto_chat_mode_prompt_routes_by_complexity_not_keywords():
     assert "Верни assistant" in prompt or "верни assistant" in prompt
 
 
-def test_resolve_allowed_plugins_returns_mode_tools():
+@pytest.mark.asyncio
+async def test_resolve_allowed_plugins_returns_mode_tools():
     saved_context = {
         "messages": [
             {"role": "system", "content": "weather-only"},
@@ -393,11 +394,12 @@ def test_resolve_allowed_plugins_returns_mode_tools():
         get_mode_by_system_prompt=lambda _content: {"tools": ["weather"]},
     )
 
-    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["weather"]
+    assert await helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["weather"]
     assert pm.filtered[-1] == ["weather"]
 
 
-def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
+@pytest.mark.asyncio
+async def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
     saved_context = {
         "messages": [
             {"role": "system", "content": "plain"},
@@ -409,11 +411,12 @@ def test_resolve_allowed_plugins_defaults_to_all_without_mode_tools():
         get_mode_by_system_prompt=lambda _content: None,
     )
 
-    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["All"]
+    assert await helper.resolve_allowed_plugins(chat_id=1, session_id="session-1") == ["All"]
     assert pm.filtered[-1] == ["All"]
 
 
-def test_resolve_allowed_plugins_removes_user_disabled_plugins():
+@pytest.mark.asyncio
+async def test_resolve_allowed_plugins_removes_user_disabled_plugins():
     saved_context = {
         "messages": [
             {"role": "system", "content": "tools"},
@@ -427,14 +430,15 @@ def test_resolve_allowed_plugins_removes_user_disabled_plugins():
         get_mode_by_system_prompt=lambda _content: {"tools": ["weather", "time"]},
     )
 
-    assert helper.resolve_allowed_plugins(chat_id=1, session_id="session-1", user_id=42) == ["time"]
+    assert await helper.resolve_allowed_plugins(chat_id=1, session_id="session-1", user_id=42) == ["time"]
     assert pm.filtered[-1] == ["time"]
 
 
-def test_subagent_parent_allowed_plugins_are_resolved_with_user_id():
+@pytest.mark.asyncio
+async def test_subagent_parent_allowed_plugins_are_resolved_with_user_id():
     calls = []
 
-    def resolve_allowed_plugins(chat_id, session_id=None, user_id=None):
+    async def resolve_allowed_plugins(chat_id, session_id=None, user_id=None):
         calls.append((chat_id, session_id, user_id))
         return ["terminal"]
 
@@ -445,7 +449,7 @@ def test_subagent_parent_allowed_plugins_are_resolved_with_user_id():
         session_id="session-1",
     )
 
-    allowed = AgentToolsPlugin._resolve_parent_allowed_plugins(
+    allowed = await AgentToolsPlugin._resolve_parent_allowed_plugins(
         helper,
         request_context,
         {"chat_id": 99, "user_id": 99},
@@ -507,11 +511,11 @@ async def test_stream_without_tool_calls_preserves_first_chunk():
 async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     pm = DummyPluginManager({})
     helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
-    monkeypatch.setattr(
-        helper,
-        "resolve_allowed_plugins",
-        lambda chat_id, session_id=None, user_id=None: ["weather"],
-    )
+
+    async def _resolver(chat_id, session_id=None, user_id=None):
+        return ["weather"]
+
+    monkeypatch.setattr(helper, "resolve_allowed_plugins", _resolver)
 
     answer, total_tokens = await helper.get_chat_response(
         chat_id=1,

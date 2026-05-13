@@ -1586,7 +1586,7 @@ class AgentToolsPlugin(Plugin):
 
         shared_context = str(kwargs.get("shared_context") or "").strip()
         parent_max_rounds = self._normalize_max_rounds(kwargs.get("max_rounds"))
-        parent_allowed_plugins = self._resolve_parent_allowed_plugins(helper, request_context, kwargs)
+        parent_allowed_plugins = await self._resolve_parent_allowed_plugins(helper, request_context, kwargs)
         tasks = [
             self._run_one_subagent(
                 helper, item, shared_context, kwargs, parent_max_rounds,
@@ -1648,7 +1648,7 @@ class AgentToolsPlugin(Plugin):
         )
 
     @staticmethod
-    def _resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -> List[str]:
+    async def _resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -> List[str]:
         resolver = getattr(helper, "resolve_allowed_plugins", None)
         if not callable(resolver):
             return ["All"]
@@ -1662,7 +1662,7 @@ class AgentToolsPlugin(Plugin):
         if user_id is None:
             user_id = kwargs.get("user_id")
         try:
-            allowed = resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
+            allowed = await resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
         except Exception:
             logging.exception("Failed to resolve parent allowed_plugins for subagents")
             return ["All"]

@@ -52,8 +52,7 @@ from .model_constants import (
     QWEN,
 )
 from .llm_gateway_client import LLMGatewayClient, extract_image_result
-from .hindsight_client import format_recall_results
-from .plugins.hooks import BeforeChatRequestPayload
+from .plugins.hooks import BeforeChatRequestPayload, HookEvent, SessionBeforeDeletePayload
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
@@ -289,14 +288,14 @@ class OpenAIHelper:
         logger.info("Reply intent classifier returned unrecognized content: %r", content[:200])
         return "unknown"
 
-    def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
+    async def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
         Gets the number of messages and tokens used in the conversation.
         :param chat_id: The chat ID
         :return: A tuple containing the number of messages and tokens used
         """
         if chat_id not in self.conversations:
-            self.reset_chat_history(chat_id)
+            await self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
     async def ask(self, prompt, user_id, assistant_prompt=None, model=None):
@@ -316,7 +315,7 @@ class OpenAIHelper:
                     self.conversations[user_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
-                    self.reset_chat_history(user_id, session_id=None)
+                    await self.reset_chat_history(user_id, session_id=None)
             
             # Инициализируем conversations_vision для пользователя, если его нет
             if user_id not in self.conversations_vision:
@@ -337,7 +336,7 @@ class OpenAIHelper:
                 {"role": "user", "content": prompt}
             ]
 
-            self.__add_to_history(user_id, role="user", content=prompt)
+            await self.__add_to_history(user_id, role="user", content=prompt)
             response = await self.client.chat.completions.create(
                 model=model_to_use,
                 messages=messages,
@@ -347,7 +346,7 @@ class OpenAIHelper:
                 extra_headers={ "X-Title": "tgBot" }
             )
             content = _required_choice_message_text(_first_choice_or_raise(response))
-            self.__add_to_history(user_id, role="assistant", content=content)
+            await self.__add_to_history(user_id, role="assistant", content=content)
             return content, response.usage.total_tokens
         except Exception as e:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
@@ -424,7 +423,7 @@ class OpenAIHelper:
             )
             
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
-                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
+                allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 response, plugins_used = await self.__handle_function_call(
                     chat_id,
                     response,
@@ -484,13 +483,13 @@ class OpenAIHelper:
                 for index, choice in enumerate(response.choices):
                     content = _required_choice_message_text(choice)
                     if index == 0:
-                        self.__add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
+                        await self.__add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
                     answer += f'{index + 1}\u20e3\n'
                     answer += content
                     answer += '\n\n'
             else:
                 answer = _required_choice_message_text(_first_choice_or_raise(response))
-                self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
+                await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
 
             bot_language = self.config['bot_language']
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -583,9 +582,9 @@ class OpenAIHelper:
                     self.conversations[chat_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
-                    self.reset_chat_history(chat_id, session_id=session_id)
+                    await self.reset_chat_history(chat_id, session_id=session_id)
                 self.loaded_conversation_sessions[chat_id] = session_id
-            
+
             # Инициализируем conversations_vision для чата, если его нет
             if chat_id not in self.conversations_vision:
                 self.conversations_vision[chat_id] = False
@@ -607,7 +606,7 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
                 try:
-                    allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
+                    allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                     response, plugins_used = await self.__handle_function_call(
                         chat_id,
                         response,
@@ -643,7 +642,7 @@ class OpenAIHelper:
                 return
 
             answer = answer.strip()
-            self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
+            await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
             tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -674,7 +673,7 @@ class OpenAIHelper:
             ]
         return [plugin_name for plugin_name in allowed_plugins if plugin_name not in disabled_plugins]
 
-    def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None, user_id: int | None = None):
+    async def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None, user_id: int | None = None):
         saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
         allowed_plugins = ['All']
 
@@ -689,7 +688,7 @@ class OpenAIHelper:
                     f'System message not found in context for chat_id {chat_id}, '
                     f'session {session_id}. Resetting session.'
                 )
-                self.reset_chat_history(chat_id, '', session_id)
+                await self.reset_chat_history(chat_id, '', session_id)
                 saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
                 if saved_context and 'messages' in saved_context:
                     system_message = next(
@@ -736,7 +735,7 @@ class OpenAIHelper:
                     self.conversations[chat_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
-                    self.reset_chat_history(chat_id, session_id=session_id)
+                    await self.reset_chat_history(chat_id, session_id=session_id)
                 self.loaded_conversation_sessions[chat_id] = session_id
 
             # Инициализируем conversations_vision для чата, если его нет
@@ -788,7 +787,7 @@ class OpenAIHelper:
 
             self.last_updated[chat_id] = datetime.datetime.now()
 
-            self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
+            await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
             model_to_use = self.get_current_model(memory_user_id or user_id)
@@ -807,9 +806,21 @@ class OpenAIHelper:
                 try:
                     summary = await self.__summarise(self.conversations[chat_id][:-1], user_id, session_id)
                     logger.debug(f'Summary: {summary}')
-                    self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'], session_id)
-                    self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
-                    self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
+                    # Pre-dispatch: let subscribers (Hindsight) snapshot the
+                    # outgoing window before we wipe it via reset_chat_history.
+                    await self._dispatch_before_summarise_reset(
+                        chat_id=chat_id,
+                        user_id=memory_user_id,
+                        session_id=session_id,
+                    )
+                    await self.reset_chat_history(
+                        chat_id,
+                        self.conversations[chat_id][0]['content'],
+                        session_id,
+                        prune_old_sessions=False,
+                    )
+                    await self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
+                    await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
                     token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
                 except Exception as e:
                     logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
@@ -866,7 +877,7 @@ class OpenAIHelper:
                 })
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
-                allowed_plugins = self.resolve_allowed_plugins(chat_id, session_id, user_id)
+                allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
                 if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):
@@ -1329,7 +1340,7 @@ class OpenAIHelper:
         temperature = self.config['temperature']
         try:
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
-                self.reset_chat_history(chat_id)
+                await self.reset_chat_history(chat_id)
             else:
                 # Загружаем сохраненный контекст из базы данных
                 saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
@@ -1341,9 +1352,9 @@ class OpenAIHelper:
 
             if self.config['enable_vision_follow_up_questions']:
                 self.conversations_vision[chat_id] = True
-                self.__add_to_history(chat_id, role="user", content=history_content)
+                await self.__add_to_history(chat_id, role="user", content=history_content)
             else:
-                self.__add_to_history(chat_id, role="user", content=history_content)
+                await self.__add_to_history(chat_id, role="user", content=history_content)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             vision_model = self.config['vision_model']
@@ -1354,12 +1365,23 @@ class OpenAIHelper:
             if exceeded_max_tokens or exceeded_max_history_size:
                 logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
-                    
+
                     last = self.conversations[chat_id][-1]
                     summary = await self.__summarise(self.conversations[chat_id][:-1])
                     logger.debug(f'Summary: {summary}')
-                    self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'])
-                    self.__add_to_history(chat_id, role="assistant", content=summary)
+                    # Pre-dispatch: let subscribers (Hindsight) snapshot the
+                    # outgoing vision window before we wipe it.
+                    await self._dispatch_before_summarise_reset(
+                        chat_id=chat_id,
+                        user_id=chat_id,
+                        session_id=None,
+                    )
+                    await self.reset_chat_history(
+                        chat_id,
+                        self.conversations[chat_id][0]['content'],
+                        prune_old_sessions=False,
+                    )
+                    await self.__add_to_history(chat_id, role="assistant", content=summary)
                     self.conversations[chat_id] += [last]
                 except Exception as e:
                     logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
@@ -1445,13 +1467,13 @@ class OpenAIHelper:
             for index, choice in enumerate(response.choices):
                 content = _required_choice_message_text(choice)
                 if index == 0:
-                    self.__add_to_history(chat_id, role="assistant", content=content)
+                    await self.__add_to_history(chat_id, role="assistant", content=content)
                 answer += f'{index + 1}\u20e3\n'
                 answer += content
                 answer += '\n\n'
         else:
             answer = _required_choice_message_text(_first_choice_or_raise(response))
-            self.__add_to_history(chat_id, role="assistant", content=answer)
+            await self.__add_to_history(chat_id, role="assistant", content=answer)
 
         bot_language = self.config['bot_language']
         # Plugins are not enabled either
@@ -1504,7 +1526,7 @@ class OpenAIHelper:
                 answer += delta.content
                 yield answer, 'not_finished'
         answer = answer.strip()
-        self.__add_to_history(chat_id, role="assistant", content=answer)
+        await self.__add_to_history(chat_id, role="assistant", content=answer)
         tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
         #show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -1517,40 +1539,6 @@ class OpenAIHelper:
         #     answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
         yield answer, tokens_used
-
-    # Stage 4A: thin delegators to HindsightMemoryPlugin. Removed in 4C
-    # when finalize_hindsight_session_memory moves into the plugin.
-
-    def _hindsight_plugin(self):
-        pm = getattr(self, "plugin_manager", None)
-        get_plugin = getattr(pm, "get_plugin", None)
-        if not callable(get_plugin):
-            return None
-        try:
-            return get_plugin("hindsight_memory")
-        except Exception:
-            return None
-
-    @property
-    def hindsight_client(self):
-        plugin = self._hindsight_plugin()
-        return getattr(plugin, "client", None) if plugin else None
-
-    def is_hindsight_enabled(self) -> bool:
-        plugin = self._hindsight_plugin()
-        return bool(plugin and getattr(plugin, "is_active", False))
-
-    def get_hindsight_bank_id(self, user_id: int | str) -> str:
-        plugin = self._hindsight_plugin()
-        if plugin and hasattr(plugin, "bank_id_for"):
-            return plugin.bank_id_for(user_id)
-        return f"{self.config.get('hindsight_bank_prefix', 'telegram-')}{user_id}"
-
-    def _hindsight_memory_types(self) -> list[str]:
-        plugin = self._hindsight_plugin()
-        if plugin and hasattr(plugin, "memory_types"):
-            return list(plugin.memory_types)
-        return ['world', 'experience']
 
     @staticmethod
     def _messages_with_language_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1597,7 +1585,7 @@ class OpenAIHelper:
         if not persist:
             return mutated
 
-        plugin = self._hindsight_plugin()
+        plugin = self.plugin_manager.get_plugin("hindsight_memory") if getattr(self, "plugin_manager", None) else None
         if plugin is None:
             return mutated
         already_in_conv = any(
@@ -1711,41 +1699,6 @@ class OpenAIHelper:
         if changed:
             self.conversations[chat_id] = repaired
 
-    async def finalize_hindsight_session_memory(
-        self,
-        user_id: int,
-        session_id: str | None,
-        messages: list[dict[str, Any]] | None = None,
-        *,
-        raise_on_error: bool = False,
-        async_store: bool | None = None,
-    ) -> int:
-        """Stage 4C-2 shim: read messages from DB if missing, delegate to plugin."""
-        plugin = self._hindsight_plugin()
-        if plugin is None:
-            return 0
-        if not session_id:
-            return 0
-        if messages is None:
-            try:
-                context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id, openai_helper=self)
-                messages = context.get('messages', []) if isinstance(context, dict) else []
-            except Exception as e:
-                logger.warning(
-                    "Hindsight finalize: failed to load session %s for user_id=%s: %s",
-                    session_id, user_id, e,
-                )
-                if raise_on_error:
-                    raise
-                return 0
-        return await plugin.finalize_session_memory(
-            user_id,
-            session_id,
-            messages,
-            raise_on_error=raise_on_error,
-            async_store=async_store,
-        )
-
     async def _chat_lock(self, chat_id) -> asyncio.Lock:
         """Per-chat asyncio.Lock guarding mutations of self.conversations.
 
@@ -1797,16 +1750,121 @@ class OpenAIHelper:
         self.loaded_conversation_sessions.pop(chat_id, None)
         self.last_image_file_ids.pop(chat_id, None)
 
-    def reset_chat_history(self, chat_id, content='', session_id=None):
+    async def _dispatch_before_summarise_reset(
+        self,
+        *,
+        chat_id: int,
+        user_id: int | None,
+        session_id: str | None,
+    ) -> None:
+        """Fire ``on_session_before_delete`` for the in-memory conversation
+        about to be cleared by summarise-overflow.
+
+        Subscribers (Hindsight) get a chance to snapshot the outgoing window
+        before we wipe ``self.conversations[chat_id]`` via ``reset_chat_history``.
+        Failures are swallowed — summarisation must continue regardless.
+        """
+        pm = getattr(self, "plugin_manager", None)
+        if pm is None:
+            return
+        conv = self.conversations.get(chat_id) or ()
+        messages = tuple(dict(m) for m in conv if isinstance(m, dict))
+        if not messages:
+            return
+        effective_user_id = user_id if user_id is not None else chat_id
+        effective_session_id = session_id or ""
+        payload = SessionBeforeDeletePayload(
+            user_id=effective_user_id,
+            session_id=effective_session_id,
+            messages=messages,
+        )
+        try:
+            await pm.dispatch_blocking(
+                HookEvent.ON_SESSION_BEFORE_DELETE,
+                payload,
+                user_id=effective_user_id,
+            )
+        except Exception:
+            logger.exception("on_session_before_delete pre-dispatch failed")
+
+    async def _dispatch_before_create_session_prune(self, user_id: int) -> None:
+        """Fire ``on_session_before_delete`` for sessions that
+        ``Database.create_session`` is about to prune.
+
+        Walks the same selection ``delete_oldest_session`` uses so the hook
+        sees exactly the sessions that will be deleted. Failures here must not
+        block session creation — caller continues regardless.
+        """
+        pm = getattr(self, "plugin_manager", None)
+        if pm is None:
+            return
+        try:
+            max_sessions = int(self.config.get('max_sessions', 5))
+            session_ids = self.db.get_oldest_session_ids_for_limit(
+                user_id, max_sessions=max_sessions,
+            )
+        except Exception:
+            logger.exception("Failed to enumerate sessions for pre-prune dispatch")
+            return
+        for session_id in session_ids:
+            try:
+                context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id)
+                messages = context.get('messages', []) if isinstance(context, dict) else []
+                messages = tuple(
+                    dict(m) for m in messages if isinstance(m, dict)
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load session %s/%s for pre-prune dispatch",
+                    user_id, session_id,
+                )
+                continue
+            payload = SessionBeforeDeletePayload(
+                user_id=user_id,
+                session_id=session_id,
+                messages=messages,
+            )
+            try:
+                await pm.dispatch_blocking(
+                    HookEvent.ON_SESSION_BEFORE_DELETE,
+                    payload,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "on_session_before_delete pre-prune dispatch failed for %s/%s",
+                    user_id, session_id,
+                )
+
+    async def reset_chat_history(
+        self,
+        chat_id,
+        content='',
+        session_id=None,
+        prune_old_sessions: bool = True,
+    ):
         """
         Resets the conversation history.
         :param chat_id: Chat identifier
         :param content: Initial system message content
         :param session_id: Optional session identifier
+        :param prune_old_sessions: When True (default) and a new session is
+            created, prune the oldest sessions for the user; pass False from
+            summarise-overflow paths so we don't cascade old-session deletes.
         """
         try:
             # Получаем или создаем сессию через базу данных
-            session_id = self.db.create_session(chat_id, max_sessions=self.config.get('max_sessions', 5), openai_helper=self) if not session_id else session_id
+            if not session_id:
+                # Pre-dispatch on_session_before_delete for any sessions that
+                # will be pruned, so plugins (Hindsight) can snapshot them.
+                if prune_old_sessions:
+                    await self._dispatch_before_create_session_prune(chat_id)
+                session_id = self.db.create_session(
+                    chat_id,
+                    max_sessions=self.config.get('max_sessions', 5),
+                    openai_helper=self,
+                    prune_old_sessions=prune_old_sessions,
+                )
             
             if not session_id:
                 raise ValueError(f"Не удалось создать/получить сессию для пользователя {chat_id}")
@@ -1883,7 +1941,7 @@ class OpenAIHelper:
             # For OpenAI-style models, use the function role
             self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
 
-    def __add_to_history(self, chat_id, role, content, session_id=None):
+    async def __add_to_history(self, chat_id, role, content, session_id=None):
         """
         Adds a message to the conversation history.
         :param chat_id: The chat ID
@@ -1894,8 +1952,8 @@ class OpenAIHelper:
         # Дополнительная проверка инициализации conversation
         if chat_id not in self.conversations:
             logger.warning(f'Conversation not initialized for chat_id={chat_id}, initializing now')
-            self.reset_chat_history(chat_id, session_id=session_id)
-            
+            await self.reset_chat_history(chat_id, session_id=session_id)
+
         self.conversations[chat_id].append({"role": role, "content": content})
         
         # Получаем текущий контекст для сохранения с учетом session_id
@@ -2332,9 +2390,5 @@ class OpenAIHelper:
             if hasattr(self, 'gateway_client') and self.gateway_client:
                 await self.gateway_client.close()
                 logger.info("LLMGateway client closed successfully")
-            client = self.hindsight_client  # property -> plugin.client (Stage 4A)
-            if client is not None:
-                await client.close()
-                logger.info("Hindsight client closed successfully")
         except Exception as e:
             logger.error(f"Error closing OpenAI client: {e}")

@@ -16,15 +16,6 @@ class DummyOpenAI:
         return ("ShortName", None)
 
 
-class DummyHindsightOpenAI(DummyOpenAI):
-    def __init__(self):
-        super().__init__()
-        self.config["hindsight_auto_save"] = True
-
-    def is_hindsight_enabled(self):
-        return True
-
-
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
@@ -154,54 +145,6 @@ def test_legacy_conversation_context_migrates_before_session_index(tmp_path, mon
     assert any(row[1] == "idx_conversation_context_session" for row in indexes)
 
 
-def test_create_session_prunes_hindsight_sessions_through_finalize_jobs(db):
-    helper = DummyHindsightOpenAI()
-    for _ in range(4):
-        db.create_session(1, max_sessions=3, openai_helper=helper)
-    sessions = db.list_user_sessions(1)
-    assert len(sessions) <= 3
-    with db.get_connection() as conn:
-        job_count = conn.execute("SELECT COUNT(*) FROM hindsight_finalize_jobs").fetchone()[0]
-    assert job_count == 1
-
-
-def test_hindsight_finalize_job_claim_and_done(db):
-    messages = [{"role": "user", "content": "remember this"}]
-    job_id = db.create_hindsight_finalize_job(1, "session-1", messages)
-
-    jobs = db.claim_hindsight_finalize_jobs(limit=5)
-
-    assert len(jobs) == 1
-    assert jobs[0]["id"] == job_id
-    assert jobs[0]["user_id"] == 1
-    assert jobs[0]["session_id"] == "session-1"
-    assert jobs[0]["messages"] == messages
-
-    assert db.mark_hindsight_finalize_job_done(job_id, saved_count=2) is True
-    assert db.claim_hindsight_finalize_jobs(limit=5) == []
-
-
-def test_hindsight_finalize_job_retries_then_fails(db):
-    job_id = db.create_hindsight_finalize_job(1, "session-1", [{"role": "user", "content": "remember this"}])
-    assert db.claim_hindsight_finalize_jobs(limit=5)[0]["id"] == job_id
-
-    assert db.mark_hindsight_finalize_job_failed(
-        job_id,
-        "temporary error",
-        retry_delay_seconds=0,
-        max_attempts=2,
-    ) is True
-    assert db.claim_hindsight_finalize_jobs(limit=5)[0]["id"] == job_id
-
-    assert db.mark_hindsight_finalize_job_failed(
-        job_id,
-        "final error",
-        retry_delay_seconds=0,
-        max_attempts=2,
-    ) is True
-    assert db.claim_hindsight_finalize_jobs(limit=5) == []
-
-
 def test_pragmas_enabled(db):
     with db.get_connection() as conn:
         fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -263,10 +206,3 @@ def test_save_image_creates_missing_user_settings(db):
     assert images[0]["file_id"] == "telegram-file-id"
 
 
-def test_delete_user_data_removes_images_before_settings(db):
-    db.save_image(42, 42, "telegram-file-id")
-
-    db.delete_user_data(42)
-
-    assert db.get_user_settings(42) is None
-    assert db.get_user_images(42, 42, limit=1) == []
