@@ -21,6 +21,7 @@ from .user_settings import (
 from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
+FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id"}
 
 class PluginManager:
 
@@ -298,7 +299,14 @@ class PluginManager:
 
             spec = self.get_spec_by_function_name(function_name)
             if spec:
-                errors = validate_function_args(spec, parsed_args)
+                params = spec.get("parameters") or {}
+                properties = params.get("properties") or {}
+                validation_args = {
+                    key: value
+                    for key, value in parsed_args.items()
+                    if key not in FRAMEWORK_TOOL_ARGS or key in properties
+                }
+                errors = validate_function_args(spec, validation_args)
                 if errors:
                     error_msg = f'Invalid args for {function_name}: {errors}'
                     return json.dumps({'error': error_msg}, ensure_ascii=False)
@@ -405,13 +413,22 @@ class PluginManager:
 
     def get_plugin_name_by_function_name(self, function_name):
         for plugin_name in self.plugins.keys():
-            plugin_instance = self.get_plugin(plugin_name)
-            if not plugin_instance:
-                continue
+            try:
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
 
-            specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-            if any(spec.get('name') == function_name for spec in specs):
-                return plugin_name
+                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
+                if any(spec.get('name') == function_name for spec in specs):
+                    return plugin_name
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Error resolving function %s against plugin %s: %s",
+                    function_name,
+                    plugin_name,
+                    exc,
+                    exc_info=True,
+                )
 
         return None
 
@@ -951,7 +968,16 @@ class PluginManager:
         killed by a transient error.
         """
         for plugin_name in sorted(self.plugins.keys()):
-            plugin = self.get_plugin(plugin_name)
+            try:
+                plugin = self.get_plugin(plugin_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Error initializing plugin %s background tasks: %s",
+                    plugin_name,
+                    exc,
+                    exc_info=True,
+                )
+                continue
             if plugin is None:
                 continue
             try:

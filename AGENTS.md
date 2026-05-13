@@ -47,8 +47,8 @@ rules from the current session.
 - Stable plugin identity is `plugin_id`; tool namespace is `function_prefix`, defaulting to
   `plugin_id` (`bot/plugins/plugin.py:11`, `bot/plugins/plugin.py:18`).
 - `PluginManager` loads plugin modules from `bot/plugins/*.py`, excluding `__init__.py` and
-  `plugin.py`, and honors the comma-separated `PLUGINS` allow-list from startup config
-  (`bot/plugin_manager.py:48`, `bot/plugin_manager.py:54`).
+  `plugin.py`; empty/unset `PLUGINS` loads all plugins, and non-empty `PLUGINS` acts as a
+  comma-separated allow-list (`bot/plugin_manager.py:140`, `bot/plugin_manager.py:152`).
 - Function specs must be unique after namespacing. Unqualified spec names are normalized to
   `<function_prefix>.<name>` (`bot/plugin_manager.py:279`).
 - Duplicate function names are invalid. With `PLUGIN_STRICT_VALIDATION=true`, duplicates raise;
@@ -168,9 +168,9 @@ bot, openai helper) no longer launches plugin-specific workers.
   (`bot/database.py:198`, `bot/database.py:211`).
 - Session creation enforces `max_sessions` through `delete_oldest_session()`
   (`bot/database.py:528`, `bot/database.py:547`).
-- Keep long-running OpenAI calls outside active DB transactions. Existing session-name
-  generation intentionally leaves the DB context before calling `openai_helper.ask_sync`
-  (`bot/database.py:244`).
+- Keep long-running OpenAI calls outside active DB transactions. Async session-name
+  generation saves DB state first, then calls `openai_helper.generate_session_name()`
+  outside the DB write (`bot/database.py:494`, `bot/database.py:549`).
 
 ## Testing And Verification
 

@@ -15,6 +15,9 @@ allowed count and add a reason. If a hardcode can be removed, lower the count.
 from __future__ import annotations
 
 import re
+import ast
+import io
+import tokenize
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -41,12 +44,16 @@ PLUGIN_IDS = (
 # plugin id ("name" or 'name'). Bump or lower deliberately.
 ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
     ("bot/telegram_bot.py", "agent_tools"): (
-        1,
-        "UI: live busy-status plan reader via generic get_plugin('agent_tools').",
+        3,
+        "UI: live busy-status plan reader via generic get_plugin('agent_tools') and related log/doc text.",
     ),
     ("bot/telegram_bot.py", "skills"): (
-        3,
+        4,
         "UI: callback action literal 'skills' in the {'skills','skill_page'} set + settings menu reader (has_plugin + get_plugin).",
+    ),
+    ("bot/openai_tool_handler.py", "agent_tools"): (
+        4,
+        "Strategy Z delivery contract: skills_agent final delivery is routed through agent_tools.deliver_to_user.",
     ),
     ("bot/openai_helper.py", "hindsight_memory"): (
         1,
@@ -56,8 +63,18 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
 
 
 def _count_quoted_occurrences(text: str, plugin_id: str) -> int:
-    pattern = re.compile(rf"""(?:["']){re.escape(plugin_id)}(?:["'])""")
-    return len(pattern.findall(text))
+    pattern = re.compile(rf"\b{re.escape(plugin_id)}(?:\.|\b)")
+    count = 0
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        if token.type != tokenize.STRING:
+            continue
+        try:
+            value = ast.literal_eval(token.string)
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(value, str):
+            count += len(pattern.findall(value))
+    return count
 
 
 @pytest.mark.parametrize("plugin_id", PLUGIN_IDS)

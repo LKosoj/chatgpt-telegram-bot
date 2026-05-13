@@ -43,6 +43,9 @@ class FakeHelper:
         self.client = FakeChatClient(decision)
         self.gateway_client = FakeGateway()
 
+    async def chat_completion(self, **kwargs):
+        return await self.client.chat.completions.create(**kwargs)
+
 
 def test_llmgateway_models_are_the_only_chat_models():
     assert GPT_ALL_MODELS == (

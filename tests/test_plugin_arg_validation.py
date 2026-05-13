@@ -111,6 +111,34 @@ class DemoPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_strict_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class StrictPlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Strict"
+
+    def get_spec(self):
+        return [{
+            "name": "do",
+            "description": "demo",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"}
+                },
+                "required": ["text"],
+                "additionalProperties": False
+            }
+        }]
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"text": kwargs["text"], "chat_id": kwargs["chat_id"], "user_id": kwargs["user_id"]}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def test_plugin_arg_validation(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
@@ -123,3 +151,21 @@ def test_plugin_arg_validation(tmp_path):
     bad_args = json.dumps({"count": 1})
     result = asyncio.run(pm.call_function("demo.do", None, bad_args))
     assert "Missing required arg" in result
+
+
+def test_plugin_arg_validation_ignores_framework_args_for_strict_schema(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_strict_plugin(plugin_dir / "strict.py")
+
+    pm = PluginManager(
+        config={"plugins": []},
+        plugins_directory=str(plugin_dir),
+    )
+    result = asyncio.run(pm.call_function(
+        "strict.do",
+        None,
+        json.dumps({"text": "ok", "chat_id": 10, "user_id": 42}),
+    ))
+
+    assert json.loads(result) == {"text": "ok", "chat_id": 10, "user_id": 42}

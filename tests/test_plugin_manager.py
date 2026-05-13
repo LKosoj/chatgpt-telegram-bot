@@ -74,6 +74,23 @@ class PromptPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_bad_spec_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class BadSpecPlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Bad"
+
+    def get_spec(self):
+        raise RuntimeError("broken spec")
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"result": "bad"}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def test_namespacing_and_collision(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
@@ -86,6 +103,20 @@ def test_namespacing_and_collision(tmp_path):
     names = [s["function"]["name"] for s in specs]
     assert "deepl.translate" in names
     assert "ddg_translate.translate" in names
+
+
+@pytest.mark.asyncio
+async def test_call_function_lookup_skips_unrelated_broken_plugin(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_bad_spec_plugin(plugin_dir / "aaa_bad.py")
+    _write_plugin(plugin_dir / "good.py", "GoodPlugin", "do")
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    result = await pm.call_function("good.do", None, "{}")
+
+    assert json.loads(result) == {"result": "ok"}
 
 
 def test_filter_allowed_plugins(tmp_path):

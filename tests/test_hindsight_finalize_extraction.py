@@ -12,15 +12,21 @@ from bot.plugins.hindsight_memory import HindsightMemoryPlugin, HINDSIGHT_EXTRAC
 def _build_plugin(**config_overrides) -> HindsightMemoryPlugin:
     plugin = HindsightMemoryPlugin()
     # Bring up an "active" plugin: client present + enabled.
-    plugin.initialize(
-        openai=SimpleNamespace(
-            config={'light_model': 'fake-light'},
-            client=SimpleNamespace(
-                chat=SimpleNamespace(
-                    completions=SimpleNamespace(create=AsyncMock())
-                )
-            ),
+    fake_openai = SimpleNamespace(
+        config={'light_model': 'fake-light'},
+        client=SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=AsyncMock())
+            )
         ),
+    )
+
+    async def _chat_completion(**kwargs):
+        return await fake_openai.client.chat.completions.create(**kwargs)
+
+    fake_openai.chat_completion = _chat_completion
+    plugin.initialize(
+        openai=fake_openai,
         plugin_config={
             'hindsight_base_url': 'http://x',
             'hindsight_api_token': 't',

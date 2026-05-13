@@ -1736,50 +1736,8 @@ class HTMLVisualizer:
                                     f"{result.stderr}")
                         print(f"Ошибка при генерации PlantUML (попытка {attempts}/{max_attempts}): {result.stderr}")
                         
-                        # Читаем текущее содержимое файла
-                        with open(file_name, 'r', encoding='utf-8') as f:
-                            current_puml_code = f.read()
-                            
-                        messages = [
-                            {"role": "system", "content": "Ты самый лучший специалист по генерации и исправлению ошибок в коде для PlantUML."},
-                            {"role": "user", "content": f"При генерации диаграммы возникла ошибка:\n{result.stderr}\n\nВот текущий код PlantUML:\n\n{current_puml_code}\n\nИсправь ошибку, так же проверь код на отсутствие других ошибок и верни правильный код для PlantUML. Верни только исправленный код, без комментариев и объяснений."}
-                        ]
-                        
-                        # Инициализируем openai_helper, если это необходимо
-                        if self.openai_helper is None:
-                            from .openai_helper import OpenAIHelper
-                            # Создаем экземпляр с необходимыми параметрами для работы
-                            config = {
-                                'api_key': os.environ.get('OPENAI_API_KEY', ''),
-                                'bot_language': 'ru',
-                                'temperature': 0.6,
-                                'show_usage': False,
-                                'show_plugins_used': False,
-                                'enable_functions': False,
-                                'openai_base': os.environ.get('OPENAI_BASE', '')
-                            }
-                            self.openai_helper = OpenAIHelper(config=config, plugin_manager=None, db=None)
-                            
-                        # Используем ask_sync вместо model_summary с user_id=0
-                        # ask_sync возвращает строку напрямую
-                        generated_text, _ = self.openai_helper.ask_sync(messages[1]["content"], 0, messages[0]["content"])
-                        
-                        # Так как результат уже строка, не нужно извлекать его из объекта response
-                        # Удаляем маркеры кода, если они есть
-                        generated_text = generated_text.replace("```plantuml", "").replace("```", "").strip()
-                        
-                        # Записываем исправленный код обратно в файл
-                        with open(file_name, 'w', encoding='utf-8') as f:
-                            f.write(generated_text)
-                        
-                        # Заново запускаем PlantUML для генерации изображения
-                        result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', file_name], 
-                                                capture_output=True, text=True, check=False)
-                        
-                        if result.returncode == 0:
-                            logging.info(f"Ошибка исправлена с {attempts} попытки для {file_name}")
-                            print(f"Ошибка в PlantUML исправлена с {attempts} попытки")
-                            break
+                        logging.error("Автоисправление PlantUML отключено для синхронного HTMLVisualizer")
+                        break
                     
                     if result.returncode != 0 and attempts >= max_attempts:
                         logging.error(f"Не удалось исправить ошибки в PlantUML после {max_attempts} попыток для {file_name}")

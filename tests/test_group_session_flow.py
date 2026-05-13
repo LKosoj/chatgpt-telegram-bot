@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import sys
 import types
@@ -243,6 +244,23 @@ async def test_group_session_new_uses_group_key_and_lowercase_max_sessions_confi
         content='',
         session_id="session-new",
     )
+
+
+@pytest.mark.asyncio
+async def test_session_callback_waits_for_conversation_lock():
+    bot = _make_bot()
+    update = _group_update("session:new")
+    lock = await bot._get_conversation_lock(-100123)
+    await lock.acquire()
+
+    task = asyncio.create_task(bot.handle_session_callback(update, _make_context()))
+    await asyncio.sleep(0)
+    assert not bot.db.create_session.called
+
+    lock.release()
+    await task
+
+    bot.db.create_session.assert_called_once()
 
 
 @pytest.mark.asyncio

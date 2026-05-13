@@ -32,6 +32,7 @@ dependencies:
       - pyswisseph
       - openai-whisper
       - md2tgmd
+      - mcp>=1.0.0
       - clip
       - annoy
       - PyYAML

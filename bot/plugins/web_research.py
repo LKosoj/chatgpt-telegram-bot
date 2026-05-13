@@ -55,7 +55,7 @@ class WebResearchPlugin(Plugin):
 
     async def _choose_research_depth(self, helper, query: str) -> dict[str, str]:
         model = helper.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
-        response = await helper.client.chat.completions.create(
+        response = await helper.chat_completion(
             model=model,
             messages=[
                 {
@@ -71,7 +71,7 @@ class WebResearchPlugin(Plugin):
             ],
             temperature=0,
             max_tokens=1000,
-            extra_headers={ "X-Title": "tgBot" },
+            json_mode=True,
         )
         content = response.choices[0].message.content or ""
         match = re.search(r"\{.*\}", content, flags=re.S)

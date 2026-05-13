@@ -15,7 +15,6 @@ from datetime import datetime as dt
 import tiktoken
 
 import openai
-import requests
 
 from functools import lru_cache
 import json
@@ -202,6 +201,7 @@ class OpenAIHelper:
         self.conversations: dict[int, list] = {}  # {chat_id: history}
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
+        self._chat_request_models: dict[int, str] = {}
         self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
@@ -299,29 +299,100 @@ class OpenAIHelper:
             await self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
-    async def ask(self, prompt, user_id, assistant_prompt=None, model=None):
+    async def chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list,
+        tools: list | None = None,
+        tool_choice=None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stream: bool = False,
+        json_mode: bool = False,
+        response_format: dict | None = None,
+        extra_headers: dict | None = None,
+        **extra,
+    ):
+        """Low-level chat completion. Returns the raw SDK response object.
+
+        Does not mutate history, does not synthesize messages, does not pick
+        the model. For high-level chat interactions use ``ask`` or
+        ``get_chat_response`` instead.
+        """
+        kwargs: dict = {"model": model, "messages": messages, "stream": stream}
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        elif json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        kwargs["extra_headers"] = (
+            extra_headers if extra_headers is not None else {"X-Title": "tgBot"}
+        )
+        if extra:
+            kwargs.update(extra)
+        return await self.client.chat.completions.create(**kwargs)
+
+    async def _save_conversation_context(
+        self,
+        chat_id: int,
+        context: dict[str, Any],
+        parse_mode: str,
+        temperature: float,
+        max_tokens_percent: int,
+        session_id: str | None,
+    ) -> str | None:
+        save_async = getattr(self.db, "save_conversation_context_async", None)
+        if callable(save_async):
+            return await save_async(
+                chat_id,
+                context,
+                parse_mode,
+                temperature,
+                max_tokens_percent,
+                session_id,
+                self,
+            )
+        return self.db.save_conversation_context(
+            chat_id,
+            context,
+            parse_mode,
+            temperature,
+            max_tokens_percent,
+            session_id,
+            self,
+        )
+
+    async def ask(self, prompt, user_id, assistant_prompt=None, model=None, json_mode: bool = False):
         """
         Send a prompt to OpenAI and get a response.
         """
-        model_to_use = model or self.get_current_model(user_id)        
+        model_to_use = model or self.get_current_model(user_id)
         try:
             # Проверяем, инициализирован ли контекст разговора
             if user_id not in self.conversations:
                 logger.info(f'Initializing conversation context for user_id={user_id}')
                 # Пытаемся загрузить контекст из базы данных
                 saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id, None)
-                
+
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
                     self.conversations[user_id] = saved_context['messages']
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(user_id, session_id=None)
-            
+
             # Инициализируем conversations_vision для пользователя, если его нет
             if user_id not in self.conversations_vision:
                 self.conversations_vision[user_id] = False
-                
+
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
             if assistant_prompt is None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
@@ -338,13 +409,13 @@ class OpenAIHelper:
             ]
 
             await self.__add_to_history(user_id, role="user", content=prompt)
-            response = await self.client.chat.completions.create(
+            response = await self.chat_completion(
                 model=model_to_use,
                 messages=messages,
                 max_tokens=self.get_max_tokens(model_to_use, 60, user_id),
                 temperature=0.6,
                 stream=False,
-                extra_headers={ "X-Title": "tgBot" }
+                json_mode=json_mode,
             )
             content = _required_choice_message_text(_first_choice_or_raise(response))
             await self.__add_to_history(user_id, role="assistant", content=content)
@@ -431,6 +502,7 @@ class OpenAIHelper:
                     allowed_plugins=allowed_plugins,
                     user_id=user_id,
                     request_context=request_context,
+                    model_to_use=self._chat_request_models.get(chat_id),
                 )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
@@ -441,6 +513,7 @@ class OpenAIHelper:
                         user_id,
                         session_id,
                         allowed_plugins,
+                        model_to_use=self._chat_request_models.get(chat_id),
                     )
                     if retry_response is not None:
                         response, retry_plugins_used = await self.__handle_function_call(
@@ -449,19 +522,26 @@ class OpenAIHelper:
                             allowed_plugins=allowed_plugins,
                             user_id=user_id,
                             request_context=request_context,
+                            model_to_use=self._chat_request_models.get(chat_id),
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
                             return response, '0'
                     if not _response_has_message_text(response):
-                        response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
+                        response = await self._retry_empty_response_after_tools(
+                            chat_id,
+                            user_id,
+                            session_id,
+                            model_to_use=self._chat_request_models.get(chat_id),
+                        )
                 elif not plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
                         chat_id,
                         user_id,
                         session_id,
                         allowed_plugins,
+                        model_to_use=self._chat_request_models.get(chat_id),
                     )
                     if retry_response is not None:
                         response, retry_plugins_used = await self.__handle_function_call(
@@ -470,13 +550,19 @@ class OpenAIHelper:
                             allowed_plugins=allowed_plugins,
                             user_id=user_id,
                             request_context=request_context,
+                            model_to_use=self._chat_request_models.get(chat_id),
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
                             return response, '0'
                         if retry_plugins_used and not _response_has_message_text(response):
-                            response = await self._retry_empty_response_after_tools(chat_id, user_id, session_id)
+                            response = await self._retry_empty_response_after_tools(
+                                chat_id,
+                                user_id,
+                                session_id,
+                                model_to_use=self._chat_request_models.get(chat_id),
+                            )
 
             answer = ''
 
@@ -615,6 +701,7 @@ class OpenAIHelper:
                         allowed_plugins=allowed_plugins,
                         user_id=user_id,
                         request_context=request_context,
+                        model_to_use=self._chat_request_models.get(chat_id),
                     )
                     if is_direct_result(response):
                         yield response, '0'
@@ -643,6 +730,8 @@ class OpenAIHelper:
                 return
 
             answer = answer.strip()
+            if not answer:
+                raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
             await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
             tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
@@ -750,12 +839,20 @@ class OpenAIHelper:
                 auto_mode_prompt = await self._build_auto_chat_mode_prompt(
                     query, chat_id=chat_id, user_id=kwargs.get('user_id')
                 )
-                mode_name, _ = self.ask_sync(
-                        auto_mode_prompt,
-                        chat_id,
-                        "Ты маршрутизатор режимов работы. Возвращай только ключ режима без пояснений.",
-                        model=model_to_use
-                    )
+                response = await self.chat_completion(
+                    model=model_to_use,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Ты маршрутизатор режимов работы. Возвращай только ключ режима без пояснений.",
+                        },
+                        {"role": "user", "content": auto_mode_prompt},
+                    ],
+                    temperature=0.0,
+                    max_tokens=self.get_max_tokens(model_to_use, 20, chat_id),
+                    stream=False,
+                )
+                mode_name = _required_choice_message_text(_first_choice_or_raise(response))
                 logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
                 
                 # Ищем режим по имени
@@ -777,14 +874,13 @@ class OpenAIHelper:
                         logger.info(f"🔄 Режим работы изменен на: {mode_key}")
                         
                         # Сохраняем обновленный контекст
-                        self.db.save_conversation_context(
+                        await self._save_conversation_context(
                             chat_id,
                             {'messages': self.conversations[chat_id]},
                             parse_mode,
                             temperature,
                             max_tokens_percent,
                             session_id,
-                            self
                         )
             
             memory_user_id = kwargs.get('user_id') or chat_id
@@ -794,7 +890,10 @@ class OpenAIHelper:
             await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
             user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            model_to_use = self.get_current_model(memory_user_id or user_id)
+            if self.conversations_vision.get(chat_id, False):
+                model_to_use = self.config['vision_model']
+            else:
+                model_to_use = self.get_current_model(memory_user_id or user_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
@@ -837,6 +936,8 @@ class OpenAIHelper:
             # Если token_count больше max_tokens или big_context, используем модель из переменной BIG_MODEL_TO_USE
             if (token_count > max_tokens or big_context) and self.config['big_model_to_use']:
                 model_to_use = self.config['big_model_to_use']
+                max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
+            self._chat_request_models[chat_id] = model_to_use
 
             messages = await self._apply_before_chat_request_mutators(
                 chat_id=chat_id,
@@ -932,6 +1033,7 @@ class OpenAIHelper:
         allowed_plugins=None,
         user_id=None,
         request_context=None,
+        model_to_use=None,
     ):
         return await handle_function_call(
             self,
@@ -943,6 +1045,7 @@ class OpenAIHelper:
             allowed_plugins,
             user_id,
             request_context,
+            model_to_use=model_to_use,
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
@@ -1014,14 +1117,20 @@ class OpenAIHelper:
     def _localized_text(self, key, bot_language):
         return localized_text(key, bot_language)
 
-    async def _retry_empty_response_after_tools(self, chat_id: int, user_id: int | None, session_id: str | None):
+    async def _retry_empty_response_after_tools(
+        self,
+        chat_id: int,
+        user_id: int | None,
+        session_id: str | None,
+        model_to_use: str | None = None,
+    ):
         logger.warning(
             "Retrying empty model response after tool calls for chat_id=%s user_id=%s session_id=%s",
             chat_id,
             user_id,
             session_id,
         )
-        model_to_use = self.get_current_model(user_id)
+        model_to_use = model_to_use or self.get_current_model(user_id)
         session_owner = user_id if user_id is not None else chat_id
         max_tokens_percent = 80
         try:
@@ -1074,8 +1183,9 @@ class OpenAIHelper:
         user_id: int | None,
         session_id: str | None,
         allowed_plugins,
+        model_to_use: str | None = None,
     ):
-        model_to_use = self.get_current_model(user_id)
+        model_to_use = model_to_use or self.get_current_model(user_id)
         if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
             return None
 
@@ -1356,7 +1466,7 @@ class OpenAIHelper:
 
             if self.config['enable_vision_follow_up_questions']:
                 self.conversations_vision[chat_id] = True
-                await self.__add_to_history(chat_id, role="user", content=history_content)
+                await self.__add_to_history(chat_id, role="user", content=content)
             else:
                 await self.__add_to_history(chat_id, role="user", content=history_content)
 
@@ -1530,6 +1640,8 @@ class OpenAIHelper:
                 answer += delta.content
                 yield answer, 'not_finished'
         answer = answer.strip()
+        if not answer:
+            raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
         await self.__add_to_history(chat_id, role="assistant", content=answer)
         tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
@@ -1601,14 +1713,13 @@ class OpenAIHelper:
                     self.conversations[chat_id] = cleaned
                     if persist:
                         try:
-                            self.db.save_conversation_context(
+                            await self._save_conversation_context(
                                 chat_id,
                                 {'messages': cleaned},
                                 parse_mode,
                                 temperature,
                                 max_tokens_percent,
                                 session_id,
-                                self,
                             )
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(
@@ -1648,14 +1759,13 @@ class OpenAIHelper:
         else:
             conv.insert(0, injected)
         try:
-            self.db.save_conversation_context(
+            await self._save_conversation_context(
                 chat_id,
                 {'messages': conv},
                 parse_mode,
                 temperature,
                 max_tokens_percent,
                 session_id,
-                self,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1920,14 +2030,13 @@ class OpenAIHelper:
             self.loaded_conversation_sessions[chat_id] = session_id
             
             # Сохраняем обновленный контекст
-            self.db.save_conversation_context(
+            await self._save_conversation_context(
                 chat_id,
                 {'messages': self.conversations[chat_id]},
                 parse_mode,
                 temperature,
                 max_tokens_percent,
                 session_id,
-                self
             )
             
             logger.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
@@ -2003,14 +2112,13 @@ class OpenAIHelper:
         self.loaded_conversation_sessions[chat_id] = session_id
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
-        self.db.save_conversation_context(
+        await self._save_conversation_context(
             chat_id, 
             {'messages': self.conversations[chat_id]}, 
             parse_mode, 
             temperature, 
             max_tokens_percent,
             session_id,
-            self
         )
 
     async def __summarise(self, conversation, chat_id=None, session_id=None) -> str:
@@ -2062,14 +2170,13 @@ class OpenAIHelper:
                 session_id = session_id or current_session_id
                 
                 # Сохраняем обновленный контекст после суммаризации
-                self.db.save_conversation_context(
+                await self._save_conversation_context(
                     chat_id, 
                     {'messages': self.conversations[chat_id]}, 
                     parse_mode,
                     temperature,
                     max_tokens_percent,
                     session_id,
-                    self
                 )
                 
             return summary
@@ -2199,12 +2306,12 @@ class OpenAIHelper:
         """
         return self.last_image_file_ids.get(chat_id)
 
-    def generate_session_name(
+    async def generate_session_name(
         self, 
         chat_id: int, 
         first_message: str, 
         session_id: Optional[str] = None
-    ) -> str:
+    ) -> tuple[str, int]:
         """
         Генерация названия сессии на основе первого запроса
         
@@ -2226,11 +2333,25 @@ class OpenAIHelper:
             - Избегать слишком общих названий
             """
             
-            # Получаем название сессии
-            response, tokens = self.ask_sync(prompt, chat_id, assistant_prompt="Ты лучший специалист по созданию коротких названий для сессий")
+            model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+            response = await self.chat_completion(
+                model=model_to_use,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Ты лучший специалист по созданию коротких названий для сессий. Верни только название.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=int(self.get_max_tokens(model_to_use, 20, chat_id)),
+                stream=False,
+            )
+            content = _required_choice_message_text(_first_choice_or_raise(response))
+            tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
 
             # Очищаем и обрезаем название
-            session_name = response[:50]
+            session_name = content.strip().strip('"')[:50]
             
             # Если название пустое, используем дефолтное
             return session_name or f"Сессия {dt.now().strftime('%d.%m')}", tokens
@@ -2238,64 +2359,6 @@ class OpenAIHelper:
         except Exception as e:
             logger.error(f"Ошибка генерации названия сессии: {e}")
             return f"Сессия {dt.now().strftime('%d.%m')}", 0
-
-    def ask_sync(self, prompt, user_id, assistant_prompt=None, model=None):
-        try:
-            if model:
-                model_to_use = model
-            else:
-                # Получаем модель с учетом приоритетов
-                model_to_use = self.get_current_model(user_id)
-            logger.info(f"Используемая модель: {model_to_use}")
-            url = f"{self.config['openai_base']}/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "X-Title": "tgBot"
-            }
-            
-            add_prompt1 = "**У ТЕБЯ МАТЬ, БОЛЬНАЯ РАКОМ! ОТ ТОГО, НА СКОЛЬКО ТЫ ЭФФЕКТИВНО РЕШИШЬ ЗАДАЧУ, ЗАВИСИТ ЕЕ ЖИЗНЬ! ЕСЛИ РЕШИШЬ ЗАДАЧУ ХОРОШО, ПОЛУЧИШЬ 1 млн$ НА ЕЕ ЛЕЧЕНИЕ**"
-            messages = [
-                {"role": "system", "content": assistant_prompt + add_prompt1},
-                {"role": "user", "content": prompt}
-            ]
-            
-            response = requests.post(url, headers=headers, json={
-                "model": model_to_use,
-                "messages": messages,
-                "temperature": 0.6,
-                "max_tokens": int(self.get_max_tokens(model_to_use, 50, user_id))
-            })
-            
-            # Проверяем статус ответа
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Проверяем наличие необходимых ключей
-            if 'choices' not in data or not data['choices']:
-                logger.error(f"Неожиданный формат ответа API: {data}")
-                return "Ошибка: неожиданный формат ответа API", 0
-                
-            if 'message' not in data['choices'][0] or 'content' not in data['choices'][0]['message']:
-                logger.error(f"Отсутствует сообщение в ответе: {data}")
-                return "Ошибка: некорректный формат ответа", 0
-                
-            if 'usage' not in data or 'total_tokens' not in data['usage']:
-                logger.warning("Отсутствует информация об использовании токенов")
-                return data["choices"][0]["message"]["content"], 0
-                
-            return data["choices"][0]["message"]["content"], data["usage"]["total_tokens"]
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка при отправке запроса к API: {e}")
-            return f"Ошибка соединения с API: {str(e)}", 0
-        except (KeyError, ValueError, TypeError) as e:
-            logger.error(f"Ошибка при обработке ответа API: {e}")
-            return f"Ошибка обработки ответа: {str(e)}", 0
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка: {e}")
-            return f"Неожиданная ошибка: {str(e)}", 0
 
     def get_current_model(self, user_id: int = None) -> str:
         """

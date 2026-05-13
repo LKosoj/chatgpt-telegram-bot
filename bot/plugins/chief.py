@@ -154,7 +154,8 @@ class ChiefPlugin(Plugin):
         response, tokens_used = await helper.ask(
             prompt,
             user_id,
-            "Перевод ингредиентов"
+            "Перевод ингредиентов",
+            json_mode=True,
         )
         
         try:
@@ -192,7 +193,8 @@ class ChiefPlugin(Plugin):
                 response, tokens_used = await helper.ask(
                     prompt,
                     user_id,
-                    "Анализ кулинарного запроса"
+                    "Анализ кулинарного запроса",
+                    json_mode=True,
                 )
 
                 # Пытаемся найти JSON в ответе
@@ -465,7 +467,8 @@ class ChiefPlugin(Plugin):
         response, tokens_used = await helper.ask(
             prompt,
             user_id,
-            "Анализ предпочтений для меню"
+            "Анализ предпочтений для меню",
+            json_mode=True,
         )
         
         try:

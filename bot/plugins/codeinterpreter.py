@@ -4,9 +4,7 @@ import datetime
 from functools import wraps
 import os
 from typing import Any, Dict, Optional, List
-import httpx
 import numpy as np
-import openai
 import pandas as pd
 import subprocess
 import sys
@@ -83,21 +81,6 @@ class CodeInterpreterPlugin(Plugin):
         Инициализация интерпретатора кода
         """
         super().__init__()
-        self.api_key = os.getenv('OPENAI_API_KEY')
-        http_client = httpx.AsyncClient()
-        openai_base = os.getenv('OPENAI_BASE_URL', '')
-        if openai_base:
-            openai.api_base = openai_base
-        client_kwargs = {
-            "api_key": self.api_key,
-            "http_client": http_client,
-            "timeout": 300.0,
-            "max_retries": 3,
-        }
-        if openai_base:
-            client_kwargs["base_url"] = openai_base
-        self.client = openai.AsyncOpenAI(**client_kwargs)
-
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 120
         self.python_alias_dir = "/tmp/chatgpt_telegram_bot_codeinterpreter_bin"
@@ -244,7 +227,7 @@ class CodeInterpreterPlugin(Plugin):
         """
         #print(f"enhanced_prompt: {enhanced_prompt}")
         try:
-            response = await self.client.chat.completions.create(
+            response = await self.openai.chat_completion(
                 model=LLMGATEWAY_HIGH_MODEL,
                 messages=[
                     {"role": "system", "content": "Ты - самый опытный Python разработчик, который может написать код для решения любых задач. Ты можешь использовать необходимые библиотеки для решения задач. Все комментарии должны быть на русском языке, это важно! Все графики должны быть в формате png. Все текстовые сообщения должны быть на русском языке, это важно! Включай traceback в код, это важно! Используй logging.error(f'Error message: {str(e)}', exc_info=True) для вывода ошибок в код, это важно!"},
@@ -252,7 +235,6 @@ class CodeInterpreterPlugin(Plugin):
                 ],
                 temperature=0.1,
                 max_tokens=70000,
-                extra_headers={ "X-Title": "tgBot" },
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -616,11 +598,10 @@ class CodeInterpreterPlugin(Plugin):
     async def explain_code(self, code):
         """Генерирует объяснение для заданного кода."""
         try:
-            response = await self.client.chat.completions.create(
+            response = await self.openai.chat_completion(
                 model=LLMGATEWAY_HIGH_MODEL,
                 messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}],
                 max_tokens=55000,
-                extra_headers={ "X-Title": "tgBot" },
             )
             explanation_text = response.choices[0].message.content
             logging.info("Объяснение сгенерировано.")

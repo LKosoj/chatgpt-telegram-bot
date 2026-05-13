@@ -58,3 +58,4 @@ trafilatura
 beautifulsoup4
 markdown2
 pdfminer.six
+mcp>=1.0.0

@@ -3,7 +3,6 @@ import os
 import logging
 import aiohttp
 import json
-from openai import OpenAI
 from typing import Dict
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
@@ -17,12 +16,7 @@ lexer = None
 class GitHubCodeAnalysisPlugin(Plugin):
 
     def __init__(self):
-        openai_base = os.environ.get('OPENAI_BASE_URL', '')
-        openai_api_key = os.environ['OPENAI_API_KEY']
-        client_kwargs = {"api_key": openai_api_key}
-        if openai_base:
-            client_kwargs["base_url"] = openai_base
-        self.client = OpenAI(**client_kwargs)
+        super().__init__()
         self.model = LLMGATEWAY_HIGH_MODEL
         self.max_tokens = int(os.environ.get('MAX_TOKENS', 1000))
         self.temperature = float(os.environ.get('TEMPERATURE', 1.0))
@@ -149,12 +143,11 @@ class GitHubCodeAnalysisPlugin(Plugin):
         logging.info(f"prompt = {prompt}")
         prompt = f"We have some code written in {language}. {prompt}:\n{code}\n"
 
-        completion = self.client.chat.completions.create(
+        completion = await self.openai.chat_completion(
             model=self.model,
             messages=[{"role": "system", "content": prompt}],
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            extra_headers={ "X-Title": "tgBot" },
         )
 
         return completion.choices[0].message.content.strip()

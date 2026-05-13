@@ -6,13 +6,13 @@ import os
 import io
 import tempfile
 import time
-import requests
 import json
 import sys
 import yaml
 import re
 from typing import Dict
 from functools import lru_cache 
+import httpx
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -836,7 +836,7 @@ class ChatGPTTelegramBot:
         if is_admin(self.config, user_id) and 'vsegpt' in self.config['openai_base']:
              text_budget += (
                  " VSEGPT "
-                 f"{self.get_credits()}"
+                 f"{await self.get_credits()}"
              )
 
         stats_fragments = await self.openai.plugin_manager.collect_fragments(
@@ -850,15 +850,16 @@ class ChatGPTTelegramBot:
         )
         await update.message.reply_text(usage_text, parse_mode=constants.ParseMode.MARKDOWN)
 
-    def get_credits(self):
+    async def get_credits(self):
         api_key = self.config['api_key']
-        response = requests.get(
-            url="https://api.vsegpt.ru/v1/balance",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url="https://api.vsegpt.ru/v1/balance",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+            )
         if response.status_code == 200:
             response_big = json.loads(response.text)
             if response_big.get("status") == "ok":
@@ -866,7 +867,7 @@ class ChatGPTTelegramBot:
             else:
                 return response_big.get("reason") # reason of error
         else:
-            return ValueError(str(response.status_code) + ": " + response.text)        
+            return f"{response.status_code}: {response.text}"
 
     async def resend(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1755,14 +1756,25 @@ class ChatGPTTelegramBot:
                     self.openai.loaded_conversation_sessions[conversation_key] = session_id
                     
                     # Сохраняем настройки режима в базу данных
-                    self.db.save_conversation_context(
-                        conversation_key,
-                        {'messages': current_context}, 
-                        mode_data.get('parse_mode', 'HTML'),
-                        mode_data.get('temperature', self.openai.config['temperature']),
-                        mode_data.get('max_tokens_percent', 80),
-                        session_id
-                    )
+                    save_context = getattr(self.openai, "_save_conversation_context", None)
+                    if callable(save_context):
+                        await save_context(
+                            conversation_key,
+                            {'messages': current_context},
+                            mode_data.get('parse_mode', 'HTML'),
+                            mode_data.get('temperature', self.openai.config['temperature']),
+                            mode_data.get('max_tokens_percent', 80),
+                            session_id,
+                        )
+                    else:
+                        self.db.save_conversation_context(
+                            conversation_key,
+                            {'messages': current_context},
+                            mode_data.get('parse_mode', 'HTML'),
+                            mode_data.get('temperature', self.openai.config['temperature']),
+                            mode_data.get('max_tokens_percent', 80),
+                            session_id
+                        )
                     
                     # Возвращаемся в главное меню сессий
                     await self.reset(update, context)
@@ -2159,13 +2171,16 @@ class ChatGPTTelegramBot:
         # Cleanup old images first
         self.db.cleanup_old_images()
 
+        image = None
         # Store the image in database
         if len(update.message.photo) > 0:
-            file_id = update.message.photo[-1].file_id
+            image = update.message.photo[-1]
+            file_id = image.file_id
             logger.info(f"Storing photo file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
         elif update.message.document and update.message.document.mime_type.startswith('image/'):
-            file_id = update.message.document.file_id
+            image = update.message.document
+            file_id = image.file_id
             logger.info(f"Storing document file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
 
@@ -2185,7 +2200,9 @@ class ChatGPTTelegramBot:
                         logger.info('Vision coming from group chat with wrong keyword, ignoring...')
                         return
 
-            image = update.message.effective_attachment[-1]
+            if image is None:
+                logger.warning("Vision handler received no supported image attachment")
+                return
 
             async def _execute():
                 bot_language = self.config['bot_language']
@@ -3910,6 +3927,22 @@ class ChatGPTTelegramBot:
             return
 
         conversation_key = get_conversation_key(update)
+        conversation_lock = await self._get_conversation_lock(conversation_key)
+        async with conversation_lock:
+            return await self._handle_session_callback_locked(
+                update,
+                context,
+                query,
+                conversation_key,
+            )
+
+    async def _handle_session_callback_locked(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        query,
+        conversation_key,
+    ):
         data = query.data.split(':')
         action = data[1]
 

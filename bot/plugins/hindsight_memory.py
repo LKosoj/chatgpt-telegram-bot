@@ -663,14 +663,13 @@ class HindsightMemoryPlugin(Plugin):
                 ),
             },
         ]
-        response = await self.openai.client.chat.completions.create(
+        response = await self.openai.chat_completion(
             model=self.openai.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
             messages=messages,
             temperature=0.0,
             max_tokens=4000,
-            response_format={"type": "json_object"},
+            json_mode=True,
             stream=False,
-            extra_headers={"X-Title": "tgBot"},
         )
         content = _first_choice_or_raise(response).message.content or ""
         items = self._parse_hindsight_memory_items(content)

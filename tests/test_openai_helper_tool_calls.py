@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import io
 import importlib.util
 import json
 import sys
@@ -44,7 +46,7 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
-from bot.openai_helper import OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.openai_helper import EMPTY_MODEL_RESPONSE_ERROR, OpenAIHelper, default_max_tokens  # noqa: E402
 from bot.openai_tool_handler import _call_function_bounded  # noqa: E402
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
@@ -308,6 +310,36 @@ def test_vision_history_content_keeps_only_text():
     ]
 
     assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
+
+
+@pytest.mark.asyncio
+async def test_vision_follow_up_keeps_image_content_and_uses_vision_model():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    client = DummyClient([
+        FakeResponse(content="image answer"),
+        FakeResponse(content="follow up"),
+    ])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+
+    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="what is shown?")
+    assert answer == "image answer"
+    assert helper.conversations_vision[1] is True
+    assert isinstance(helper.conversations[1][0]["content"], list)
+    assert any(
+        item.get("type") == "image_url"
+        for item in helper.conversations[1][0]["content"]
+    )
+
+    follow_up, _tokens = await helper.get_chat_response(1, "what color?", user_id=1)
+
+    assert follow_up == "follow up"
+    assert client.create_kwargs[-1]["model"] == "llmgateway/big_context"
+    assert any(
+        isinstance(message.get("content"), list)
+        for message in client.create_kwargs[-1]["messages"]
+    )
 
 
 @pytest.mark.asyncio
@@ -577,6 +609,28 @@ async def test_get_chat_response_rejects_empty_model_content():
 
 
 @pytest.mark.asyncio
+async def test_streaming_empty_response_is_not_saved_as_assistant_turn():
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([_fake_stream([])]),
+    )
+
+    chunks = []
+    async for content, _tokens in helper.get_chat_response_stream(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    ):
+        chunks.append(content)
+
+    assert chunks == [f"Error generating response: {EMPTY_MODEL_RESPONSE_ERROR}"]
+    assert not any(
+        message.get("role") == "assistant" and message.get("content") == ""
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
 async def test_llmgateway_tool_results_use_structured_tool_history():
     pm = DummyPluginManager({
         "skills.get_skill_status": {"success": True, "skill": {"active": True}},
@@ -789,6 +843,27 @@ async def test_parallel_tool_calls_no_direct_result():
     assert helper.client.calls == 1
     assert set(tools_used) == {"p1.do", "p2.do"}
     assert out.choices[0].message.tool_calls is None
+
+
+@pytest.mark.asyncio
+async def test_non_object_tool_arguments_are_recoverable_tool_error():
+    pm = DummyPluginManager({"p1.do": {"result": "should not run"}})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("p1.do", "[]"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert pm.calls == []
+    assert set(tools_used) == {"p1.do"}
+    assert out.choices[0].message.content == "done"
+    assert any(
+        "Invalid arguments for p1.do" in (message.get("content") or "")
+        for message in helper.conversations[1]
+    )
 
 
 @pytest.mark.asyncio
@@ -1120,6 +1195,29 @@ async def test_allowed_tool_reentry_uses_original_allowlist():
     assert set(tools_used) == {"weather.get_weather"}
     assert out.choices[0].message.tool_calls is None
     assert pm.spec_calls == [["weather"]]
+
+
+@pytest.mark.asyncio
+async def test_big_context_model_survives_tool_reentry():
+    pm = DummyPluginManager({
+        "weather.get_weather": {"result": "sunny"},
+    })
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("weather.get_weather", "{}")]),
+        FakeResponse(tool_calls=None, content="done"),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, _tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="weather",
+        user_id=1,
+        big_context=True,
+    )
+
+    assert answer == "done"
+    assert client.create_kwargs[0]["model"] == "llmgateway/big_context"
+    assert client.create_kwargs[1]["model"] == "llmgateway/big_context"
 
 
 @pytest.mark.asyncio

@@ -286,6 +286,7 @@ async def _retry_missing_delivery_tool(
     allowed_plugins,
     user_id,
     request_context,
+    model_to_use=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -300,7 +301,7 @@ async def _retry_missing_delivery_tool(
         DELIVERY_TOOL_NAME,
     )
 
-    model_to_use = helper.get_current_model(user_id)
+    model_to_use = model_to_use or helper.get_current_model(user_id)
     sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
     active_session = next((s for s in sessions if s['is_active']), None)
     session_id = active_session['session_id'] if active_session else None
@@ -314,14 +315,13 @@ async def _retry_missing_delivery_tool(
         request_id=None,
         persist=False,
     )
-    response = await helper.client.chat.completions.create(
+    response = await helper.chat_completion(
         model=model_to_use,
         messages=messages,
         tools=tools,
         tool_choice=_delivery_tool_choice(tools),
         max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
         stream=stream,
-        extra_headers={ "X-Title": "tgBot" },
     )
     return await handle_function_call(
         helper,
@@ -335,6 +335,7 @@ async def _retry_missing_delivery_tool(
         request_context,
         delivery_retry_attempted=True,
         final_delivery_required=True,
+        model_to_use=model_to_use,
     )
 
 
@@ -350,6 +351,7 @@ async def handle_function_call(
     request_context=None,
     delivery_retry_attempted=False,
     final_delivery_required=False,
+    model_to_use=None,
 ):
     tool_calls = []
     try:
@@ -381,6 +383,7 @@ async def handle_function_call(
                 allowed_plugins,
                 user_id,
                 request_context,
+                model_to_use,
             )
 
         if stream:
@@ -449,7 +452,7 @@ async def handle_function_call(
                 return enforced
             return response, tools_used
 
-        model_to_use = helper.get_current_model(user_id)
+        model_to_use = model_to_use or helper.get_current_model(user_id)
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
         add_assistant_tool_calls_to_history = getattr(helper, "_add_assistant_tool_calls_to_history", None)
         structured_tool_history = (
@@ -494,6 +497,8 @@ async def handle_function_call(
                 continue
             try:
                 args = json.loads(arguments)
+                if not isinstance(args, dict):
+                    raise TypeError("tool arguments must be a JSON object")
                 if request_context is not None:
                     args['chat_id'] = request_context.plugin_chat_id
                     args['user_id'] = request_context.user_id
@@ -515,6 +520,9 @@ async def handle_function_call(
                 prepared.append((tool_name, arguments, tool_call_id))
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
+                errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
+            except TypeError as exc:
+                logger.error(f"Invalid arguments for {tool_name}: {exc}")
                 errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
         semaphore = _tool_call_semaphore(helper)
@@ -578,14 +586,13 @@ async def handle_function_call(
             request_id=None,
             persist=False,
         )
-        response = await helper.client.chat.completions.create(
+        response = await helper.chat_completion(
             model=model_to_use,
             messages=messages,
             tools=tools,
             tool_choice='auto' if times < helper.config['functions_max_consecutive_calls'] else 'none',
             max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
             stream=stream,
-            extra_headers={ "X-Title": "tgBot" },
         )
         return await handle_function_call(
             helper,
@@ -599,6 +606,7 @@ async def handle_function_call(
             request_context,
             delivery_retry_attempted,
             final_delivery_required,
+            model_to_use,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

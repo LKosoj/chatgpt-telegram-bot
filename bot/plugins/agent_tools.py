@@ -1827,13 +1827,12 @@ class AgentToolsPlugin(Plugin):
                 "messages": messages,
                 "temperature": temperature,
                 "stream": False,
-                "extra_headers": {"X-Title": "tgBot"},
             }
             if tools:
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = "none" if is_final_round else "auto"
 
-            response = await helper.client.chat.completions.create(**request_kwargs)
+            response = await helper.chat_completion(**request_kwargs)
             choice = response.choices[0]
             tool_calls = self._extract_tool_calls(choice)
             if tool_calls and not is_final_round:

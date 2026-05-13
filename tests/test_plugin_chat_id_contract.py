@@ -131,6 +131,9 @@ class FakeHelper:
     def get_current_model(self, user_id):
         return "gpt-test"
 
+    async def chat_completion(self, **kwargs):
+        return await self.client.chat.completions.create(**kwargs)
+
     def _add_function_call_to_history(self, chat_id, function_name, content):
         self.history.append((chat_id, function_name, content))
 

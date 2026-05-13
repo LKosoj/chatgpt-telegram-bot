@@ -154,6 +154,9 @@ class FakeLLMHelper:
     def get_current_model(self, user_id):
         return self.model_name
 
+    async def chat_completion(self, **kwargs):
+        return await self.client.chat.completions.create(**kwargs)
+
 
 class FakeBackgroundHelper(FakeLLMHelper):
     def __init__(self):
@@ -858,6 +861,9 @@ class _DeepAnalysisHelper:
 
     def get_current_model(self, user_id):
         return "llmgateway/high"
+
+    async def chat_completion(self, **kwargs):
+        return await self.client.chat.completions.create(**kwargs)
 
 
 @pytest.mark.asyncio

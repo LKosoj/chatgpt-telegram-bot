@@ -141,8 +141,9 @@ Startup order:
 2. Validate `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY` (exits if either is
    missing).
 3. Build configuration dictionaries (OpenAI, Telegram, plugins).
-4. Instantiate `PluginManager` (discovers `bot/plugins/*.py` and loads anything
-   in the comma-separated `PLUGINS` allow-list).
+4. Instantiate `PluginManager` (discovers `bot/plugins/*.py`; when `PLUGINS` is
+   unset or empty it loads all plugins, otherwise it applies the comma-separated
+   allow-list).
 5. Instantiate `Database` (singleton SQLite, WAL by default, thread-local
    connections, foreign keys).
 6. Instantiate `OpenAIHelper` (LLMGateway/OpenAI-compatible client, vision and
@@ -329,7 +330,7 @@ by the runtime. **Bold** rows are required.
 
 | Variable | Default | Type | Purpose |
 |---|---|---|---|
-| `PLUGINS` | `` | csv | Allow-list of plugin module names (filenames without `.py`). Empty means no plugins are loaded. |
+| `PLUGINS` | `` | csv | Optional allow-list of plugin module names (filenames without `.py`). Empty/unset means every plugin in `bot/plugins` is loaded. |
 | `PLUGIN_STRICT_VALIDATION` | `false` | bool | When `true`, duplicate function names across plugins raise at registration; when `false`, duplicates are logged and the second registration is dropped. |
 | `PLUGIN_STORAGE_ROOT` | `<repo>/data` | path | Root directory for plugin state (skills workdir, pending agent questions, MCP config, conversation analytics, etc.). Created on startup if missing. |
 | `PLUGIN_MENU_PAGE_SIZE` | `8` | int | Page size for the `/plugins` menu. |
@@ -380,7 +381,8 @@ configurable through env vars unless noted. See
 | `DEFAULT_MCP_SERVERS` | `` | csv | Comma-separated `name:url` pairs auto-registered at startup. |
 | `MCP_REQUEST_TIMEOUT` | `30` | int | Per-request timeout in seconds. |
 
-> The plugin is gated by `PLUGINS=mcp_server`, not by a separate enable flag.
+> The plugin is loaded by default when `PLUGINS` is unset. If `PLUGINS` is used
+> as an allow-list, include `mcp_server`.
 
 ### Hindsight Long-Term Memory
 
@@ -405,7 +407,8 @@ Hindsight is auto-enabled when both `HINDSIGHT_BASE_URL` and
 ### Plugin-Specific Keys
 
 These are read by individual plugins and are only required if the corresponding
-plugin is enabled in `PLUGINS`.
+plugin is loaded. With an empty `PLUGINS`, all plugins are loaded; with a
+non-empty `PLUGINS`, only listed plugins are loaded.
 
 | Variable | Plugin | Purpose |
 |---|---|---|
@@ -574,7 +577,8 @@ Plugins live in `bot/plugins/` and subclass
 `<function_prefix>.<name>`. Tool calls are validated against their JSON schema
 before execution; chat modes can further restrict the allowed tool set.
 
-Enable plugins with the `PLUGINS` allow-list:
+By default every plugin in `bot/plugins` is loaded. Set `PLUGINS` only to
+restrict loading to an allow-list:
 
 ```env
 PLUGINS=ddg_web_search,ddg_image_search,deepl,gtts_text_to_speech,auto_tts,\
