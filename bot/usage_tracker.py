@@ -41,16 +41,41 @@ class UsageTracker:
     }
     """
 
-    def __init__(self, user_id, user_name, logs_dir="usage_logs"):
+    def __init__(
+        self,
+        user_id,
+        user_name,
+        logs_dir="usage_logs",
+        *,
+        token_price=None,
+        image_prices=None,
+        vision_token_price=None,
+        tts_prices=None,
+        transcription_price=None,
+    ):
         """
         Initializes UsageTracker for a user with current date.
         Loads usage data from usage log file.
         :param user_id: Telegram ID of the user
         :param user_name: Telegram user name
         :param logs_dir: path to directory of usage logs, defaults to "usage_logs"
+        :param token_price: chat tokens price per 1k tokens (falls back to historical default)
+        :param image_prices: image prices, one per size ["256x256", "512x512", "1024x1024"]
+        :param vision_token_price: vision tokens price per 1k tokens
+        :param tts_prices: TTS prices per 1k characters, one per [standard, hd]
+        :param transcription_price: transcription price per minute
         """
         self.user_id = user_id
         self.logs_dir = logs_dir
+        # Defaults match production config shape (see bot/__main__.py): lists for
+        # image_prices/tts_prices, floats for scalar prices.
+        self.prices = {
+            'token_price': 0.002 if token_price is None else token_price,
+            'image_prices': [0.016, 0.018, 0.02] if image_prices is None else image_prices,
+            'vision_token_price': 0.01 if vision_token_price is None else vision_token_price,
+            'tts_prices': [0.015, 0.030] if tts_prices is None else tts_prices,
+            'transcription_price': 0.006 if transcription_price is None else transcription_price,
+        }
         #self.logs_dir = os.path.join("../../",os.path.join(os.path.dirname(os.path.abspath(__file__)), 'usage_logs'))
         # path to usage file of given user
         self.user_file = f"{logs_dir}/{user_id}.json"
@@ -74,11 +99,13 @@ class UsageTracker:
 
     # token usage functions:
 
-    def add_chat_tokens(self, tokens, tokens_price=0.002):
+    def add_chat_tokens(self, tokens, tokens_price=None):
         """Adds used tokens from a request to a users usage history and updates current cost
         :param tokens: total tokens used in last request
-        :param tokens_price: price per 1000 tokens, defaults to 0.002
+        :param tokens_price: price per 1000 tokens; falls back to self.prices['token_price']
         """
+        if tokens_price is None:
+            tokens_price = self.prices['token_price']
         today = date.today()
         token_cost = round(float(tokens) * tokens_price / 1000, 6)
         self.add_current_costs(token_cost)
@@ -114,13 +141,15 @@ class UsageTracker:
 
     # image usage functions:
 
-    def add_image_request(self, image_size, image_prices="0.016,0.018,0.02"):
+    def add_image_request(self, image_size, image_prices=None):
         """Add image request to users usage history and update current costs.
 
         :param image_size: requested image size
-        :param image_prices: prices for images of sizes ["256x256", "512x512", "1024x1024"],
-                             defaults to [0.016, 0.018, 0.02]
+        :param image_prices: prices for images of sizes ["256x256", "512x512", "1024x1024"];
+                             falls back to self.prices['image_prices']
         """
+        if image_prices is None:
+            image_prices = self.prices['image_prices']
         sizes = ["256x256", "512x512", "1024x1024"]
         requested_size = sizes.index(image_size)
         image_cost = image_prices[requested_size]
@@ -159,12 +188,15 @@ class UsageTracker:
 
 
     # vision usage functions
-    def add_vision_tokens(self, tokens, vision_token_price=0.01):
+    def add_vision_tokens(self, tokens, vision_token_price=None):
         """
          Adds requested vision tokens to a users usage history and updates current cost.
         :param tokens: total tokens used in last request
-        :param vision_token_price: price per 1K tokens transcription, defaults to 0.01
+        :param vision_token_price: price per 1K vision tokens;
+                                   falls back to self.prices['vision_token_price']
         """
+        if vision_token_price is None:
+            vision_token_price = self.prices['vision_token_price']
         today = date.today()
         token_price = round(tokens * vision_token_price / 1000, 2)
         self.add_current_costs(token_price)
@@ -209,7 +241,9 @@ class UsageTracker:
             return prices[tts_models.index(tts_model)]
         return prices[0]
 
-    def add_tts_request(self, text_length, tts_model, tts_prices):
+    def add_tts_request(self, text_length, tts_model, tts_prices=None):
+        if tts_prices is None:
+            tts_prices = self.prices['tts_prices']
         price = self._tts_price_for_model(tts_model, tts_prices)
         today = date.today()
         tts_price = round(text_length * price / 1000, 2)
@@ -258,11 +292,14 @@ class UsageTracker:
 
     # transcription usage functions:
 
-    def add_transcription_seconds(self, seconds, minute_price=0.006):
+    def add_transcription_seconds(self, seconds, minute_price=None):
         """Adds requested transcription seconds to a users usage history and updates current cost.
         :param seconds: total seconds used in last request
-        :param minute_price: price per minute transcription, defaults to 0.006
+        :param minute_price: price per minute transcription;
+                             falls back to self.prices['transcription_price']
         """
+        if minute_price is None:
+            minute_price = self.prices['transcription_price']
         today = date.today()
         transcription_price = round(seconds * minute_price / 60, 2)
         self.add_current_costs(transcription_price)

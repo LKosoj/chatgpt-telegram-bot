@@ -27,14 +27,14 @@ from PIL import Image
 
 from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
-    get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
-    cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, direct_result_inline_fallback_text, \
-    should_send_text_as_file
+    get_reply_to_message_id, record_chat_tokens, record_image_request, record_vision_tokens, record_tts_request, \
+    record_transcription_seconds, make_usage_tracker, error_handler, \
+    is_direct_result, handle_direct_result, cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, \
+    direct_result_inline_fallback_text, should_send_text_as_file
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
 from .plugins.haiper_image_to_video import WAITING_PROMPT
-from .usage_tracker import UsageTracker
 from .database import Database
 from .conversation_key import get_conversation_key
 from .request_context import RequestContext
@@ -608,12 +608,8 @@ class ChatGPTTelegramBot:
                 )
 
             if user_id not in self.usage:
-                self.usage[user_id] = UsageTracker(user_id, update.effective_user.name)
-            vision_token_price = self.config['vision_token_price']
-            self.usage[user_id].add_vision_tokens(total_tokens, vision_token_price)
-            allowed_user_ids = self.config['allowed_user_ids'].split(',')
-            if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
-                self.usage["guests"].add_vision_tokens(total_tokens, vision_token_price)
+                self.usage[user_id] = make_usage_tracker(self.config, user_id, update.effective_user.name)
+            record_vision_tokens(self.usage, self.config, user_id, total_tokens)
         except Exception as e:
             logger.exception(e)
             await update.effective_message.reply_text(
@@ -692,7 +688,7 @@ class ChatGPTTelegramBot:
 
         user_id = update.message.from_user.id
         if user_id not in self.usage:
-            self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+            self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
         bot_language = self.config['bot_language']
 
         # Получаем информацию о сессиях пользователя
@@ -1882,12 +1878,8 @@ class ChatGPTTelegramBot:
                     raise Exception(
                         f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
                 self._remember_sent_image_messages(update, sent_message)
-                # add image request to users usage tracker
                 user_id = update.message.from_user.id
-                self.usage[user_id].add_image_request(image_size, self.config['image_prices'])
-                # add guest chat request to guest usage tracker
-                if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
-                    self.usage["guests"].add_image_request(image_size, self.config['image_prices'])
+                record_image_request(self.usage, self.config, user_id, image_size)
 
             except Exception as e:
                 logger.exception(e)
@@ -1941,12 +1933,7 @@ class ChatGPTTelegramBot:
                         filename=f"speech.{audio_format}"
                     )
                 speech_file.close()
-                # add image request to users usage tracker
-                self.usage[user_id].add_tts_request(text_length, tts_model, self.config['tts_prices'])
-                # add guest chat request to guest usage tracker
-                if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
-                    self.usage["guests"].add_tts_request(text_length, tts_model,
-                                                         self.config['tts_prices'])
+                record_tts_request(self.usage, self.config, user_id, text_length, tts_model)
 
             except Exception as e:
                 logger.exception(e)
@@ -2045,7 +2032,7 @@ class ChatGPTTelegramBot:
 
             user_id = update.message.from_user.id
             if user_id not in self.usage:
-                self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+                self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
             request_context = RequestContext(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -2056,12 +2043,7 @@ class ChatGPTTelegramBot:
             try:
                 transcript = await self.openai.transcribe(file_path_mp3)
 
-                transcription_price = self.config['transcription_price']
-                self.usage[user_id].add_transcription_seconds(audio_track.duration_seconds, transcription_price)
-
-                allowed_user_ids = self.config['allowed_user_ids'].split(',')
-                if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
-                    self.usage["guests"].add_transcription_seconds(audio_track.duration_seconds, transcription_price)
+                record_transcription_seconds(self.usage, self.config, user_id, audio_track.duration_seconds)
 
                 # check if transcript starts with any of the prefixes
                 response_to_transcription = any(transcript.lower().startswith(prefix.lower()) if prefix else False
@@ -2106,9 +2088,7 @@ class ChatGPTTelegramBot:
                         **kwargs,
                     )
 
-                    self.usage[user_id].add_chat_tokens(total_tokens, self.config['token_price'])
-                    if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
-                        self.usage["guests"].add_chat_tokens(total_tokens, self.config['token_price'])
+                    record_chat_tokens(self.usage, self.config, user_id, total_tokens)
 
                     if is_direct_result(response):
                         return await self._handle_direct_result(update, response)
@@ -2243,7 +2223,7 @@ class ChatGPTTelegramBot:
 
                 user_id = update.message.from_user.id
                 if user_id not in self.usage:
-                    self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
+                    self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
 
                 if self.config['stream']:
 
@@ -2385,12 +2365,7 @@ class ChatGPTTelegramBot:
                             reply_to_message_id=get_reply_to_message_id(self.config, update),
                             text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
                         )
-                vision_token_price = self.config['vision_token_price']
-                self.usage[user_id].add_vision_tokens(total_tokens, vision_token_price)
-
-                allowed_user_ids = self.config['allowed_user_ids'].split(',')
-                if str(user_id) not in allowed_user_ids and 'guests' in self.usage:
-                    self.usage["guests"].add_vision_tokens(total_tokens, vision_token_price)
+                record_vision_tokens(self.usage, self.config, user_id, total_tokens)
 
             await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
         else:
@@ -2860,7 +2835,7 @@ class ChatGPTTelegramBot:
                 model=model_to_use,
             )
 
-            result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+            result = record_chat_tokens(self.usage, self.config, user_id, total_tokens)
             #if not result:
             #    await self.reset(update, context, True)
 
@@ -3133,7 +3108,7 @@ class ChatGPTTelegramBot:
                     await wrap_with_indicator(update, context, _send_inline_query_response,
                                               constants.ChatAction.TYPING, is_inline=True)
 
-                result = add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+                result = record_chat_tokens(self.usage, self.config, user_id, total_tokens)
                 if not result:
                     await self.reset(update, context, True)
 

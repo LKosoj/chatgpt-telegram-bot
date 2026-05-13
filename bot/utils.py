@@ -524,7 +524,7 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
     if user_id is None:
         return 0.0
     if user_id not in usage:
-        usage[user_id] = UsageTracker(user_id, name)
+        usage[user_id] = make_usage_tracker(config, user_id, name)
 
     # Get budget for users
     user_budget = get_user_budget(config, user_id)
@@ -535,7 +535,7 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
 
     # Get budget for guests
     if 'guests' not in usage:
-        usage['guests'] = UsageTracker('guests', 'all guest users in group chats')
+        usage['guests'] = make_usage_tracker(config, 'guests', 'all guest users in group chats')
     cost = usage['guests'].get_current_cost()[budget_cost_map.get(budget_period, "cost_month")]
     return config['guest_budget'] - cost
 
@@ -553,28 +553,70 @@ def is_within_budget(config, usage, update: Update, is_inline=False) -> bool:
     remaining_budget = get_remaining_budget(config, usage, update, is_inline=is_inline)
     return remaining_budget > 0
 
-def add_chat_request_to_usage_tracker(usage, config, user_id, used_tokens):
+def make_usage_tracker(config, user_id, user_name, logs_dir="usage_logs"):
     """
-    Add chat request to usage tracker
-    :param usage: The usage tracker object
-    :param config: The bot configuration object
-    :param user_id: The user id
-    :param used_tokens: The number of tokens used
+    Construct a UsageTracker pre-loaded with the prices from `config`, so that
+    subsequent add_* calls do not need to re-pass them.
     """
+    return UsageTracker(
+        user_id, user_name, logs_dir,
+        token_price=config.get('token_price'),
+        image_prices=config.get('image_prices'),
+        vision_token_price=config.get('vision_token_price'),
+        tts_prices=config.get('tts_prices'),
+        transcription_price=config.get('transcription_price'),
+    )
+
+def _charge_user_and_guest(usage, config, user_id, charge_fn):
+    if user_id not in usage:
+        logging.warning(f'No UsageTracker for user_id={user_id}; skipping charge.')
+        return False
+    try:
+        charge_fn(usage[user_id])
+        allowed_user_ids = config['allowed_user_ids'].split(',')
+        if str(user_id) not in allowed_user_ids and 'guests' in usage:
+            charge_fn(usage['guests'])
+        return True
+    except Exception as e:
+        logging.warning(f'Failed to record usage: {str(e)}')
+        return False
+
+def record_chat_tokens(usage, config, user_id, used_tokens):
     try:
         if int(used_tokens) == 0:
             logging.warning('No tokens used. Not adding chat request to usage tracker.')
             return False
-        # add chat request to users usage tracker
-        usage[user_id].add_chat_tokens(used_tokens, config['token_price'])
-        # add guest chat request to guest usage tracker
-        allowed_user_ids = config['allowed_user_ids'].split(',')
-        if str(user_id) not in allowed_user_ids and 'guests' in usage:
-            usage["guests"].add_chat_tokens(used_tokens, config['token_price'])
-        return True
-    except Exception as e:
-        logging.warning(f'Failed to add tokens to usage_logs: {str(e)}')
+    except (TypeError, ValueError):
+        logging.warning('Invalid token count; not adding chat request to usage tracker.')
         return False
+    return _charge_user_and_guest(
+        usage, config, user_id,
+        lambda t: t.add_chat_tokens(used_tokens),
+    )
+
+def record_image_request(usage, config, user_id, image_size):
+    return _charge_user_and_guest(
+        usage, config, user_id,
+        lambda t: t.add_image_request(image_size),
+    )
+
+def record_vision_tokens(usage, config, user_id, used_tokens):
+    return _charge_user_and_guest(
+        usage, config, user_id,
+        lambda t: t.add_vision_tokens(used_tokens),
+    )
+
+def record_tts_request(usage, config, user_id, text_length, tts_model):
+    return _charge_user_and_guest(
+        usage, config, user_id,
+        lambda t: t.add_tts_request(text_length, tts_model),
+    )
+
+def record_transcription_seconds(usage, config, user_id, seconds):
+    return _charge_user_and_guest(
+        usage, config, user_id,
+        lambda t: t.add_transcription_seconds(seconds),
+    )
 
 def get_reply_to_message_id(config, update: Update):
     """
