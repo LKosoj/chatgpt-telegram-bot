@@ -71,14 +71,17 @@ async def _list_user_sessions(db, user_id, *, is_active: int = 0):
 
 
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
+DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
+ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 DELIVERY_REPAIR_PROMPT = (
-    "Protocol violation: this chat mode does not allow plain assistant text after tool work. "
-    "Do not narrate the next step. If more work is needed, call the next required tool now. "
-    "If user input is needed, call agent_tools.ask_telegram_user. If the task is complete or "
-    "blocked, call agent_tools.deliver_to_user with status, final text, artifacts if any, "
-    "and a concise verification_summary or blocked_reason. If previous tool results created "
-    "local files, use their paths as artifacts."
+    "The previous assistant text was not delivered to the user; treat it as internal progress. "
+    "Continue solving the original user task from the current conversation state. Do not narrate "
+    "a future action as the final response. Choose the next appropriate action: if the next step "
+    "requires a tool, call that tool; if user input is needed, call agent_tools.ask_telegram_user; "
+    "if the task is complete or blocked, call agent_tools.deliver_to_user with status, final text, "
+    "artifacts if any, and a concise verification_summary or blocked_reason. If previous tool "
+    "results created local files, use their paths as artifacts."
 )
 
 
@@ -98,13 +101,24 @@ def _direct_result_payload(response) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-def _should_defer_direct_result(response, defer_direct_results: bool) -> bool:
+def _should_defer_direct_result(response, defer_direct_results: bool, tool_name: str = "") -> bool:
     if not defer_direct_results:
         return False
     direct_result = _direct_result_payload(response)
-    if direct_result and direct_result.get("defer") is False:
+    if direct_result and direct_result.get("kind") == "final":
+        return False
+    if tool_name == ASK_USER_TOOL_NAME:
         return False
     return True
+
+
+def _agent_delivery_workflow_active(tool_calls: list[dict], tools_used: tuple) -> bool:
+    names = [str(name or "") for name in tools_used]
+    names.extend(str(call.get("name") or "") for call in tool_calls if isinstance(call, dict))
+    return any(
+        name.startswith(DELIVERY_PLUGIN_PREFIX) and name != DELIVERY_TOOL_NAME
+        for name in names
+    )
 
 
 _TEXT_PREVIEW_LIMIT = 600
@@ -291,7 +305,7 @@ async def _retry_missing_delivery_tool(
         "content": (
             DELIVERY_REPAIR_PROMPT
             if not plain_text_preview
-            else f"{DELIVERY_REPAIR_PROMPT}\n\nPrevious plain assistant text: {plain_text_preview}"
+            else f"{DELIVERY_REPAIR_PROMPT}\n\nUndelivered assistant text: {plain_text_preview}"
         ),
     })
     logger.warning(
@@ -463,9 +477,14 @@ async def handle_function_call(
         )
         if structured_tool_history:
             add_assistant_tool_calls_to_history(chat_id, tool_calls)
-        defer_direct_results = bool(
+        mode_defers_direct_results = bool(
             getattr(helper, "_defer_direct_tool_results", lambda _chat_id: False)(chat_id)
         )
+        agent_delivery_workflow = (
+            _agent_delivery_workflow_active(tool_calls, tools_used)
+            and _delivery_tool_is_allowed(helper, allowed_plugins)
+        )
+        defer_direct_results = mode_defers_direct_results or agent_delivery_workflow
         if defer_direct_results:
             logger.info("Direct tool results will be deferred for chat_id=%s", chat_id)
 
@@ -543,7 +562,11 @@ async def handle_function_call(
             if _tool_response_succeeded(tool_response):
                 final_delivery_required = True
             is_dr = is_direct_result(tool_response)
-            if is_dr and not _should_defer_direct_result(tool_response, defer_direct_results):
+            if is_dr and not _should_defer_direct_result(
+                tool_response,
+                defer_direct_results,
+                tool_name,
+            ):
                 direct_results_collected.append(tool_response)
                 add_tool_result(
                     tool_name,

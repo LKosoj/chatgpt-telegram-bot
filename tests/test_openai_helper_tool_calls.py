@@ -981,6 +981,98 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
 
 
 @pytest.mark.asyncio
+async def test_agent_tools_workflow_defers_intermediate_direct_results_without_mode_key():
+    responses = {
+        "agent_tools.manage_plan_tasks": {"success": True, "output": "plan added"},
+        "stable_diffusion.stable_diffusion": {
+            "direct_result": {
+                "kind": "photo",
+                "format": "path",
+                "value": "/tmp/egg.png",
+                "add_value": "generated",
+            },
+        },
+        "codeinterpreter.download": {
+            "direct_result": {
+                "kind": "file",
+                "format": "path",
+                "value": "/tmp/intermediate.csv",
+                "defer": False,
+            },
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "presentation ready",
+                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/eggs.pptx"}],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "stable_diffusion.stable_diffusion"}},
+        {"type": "function", "function": {"name": "codeinterpreter.download"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),
+                FakeToolCall("codeinterpreter.download", "{}", id="call-file"),
+            ]),
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({
+                        "text": "presentation ready",
+                        "artifacts": [{"file_path": "/tmp/eggs.pptx"}],
+                    }),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 5
+    helper.conversations[1] = [{"role": "system", "content": "memory-only system prompt"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda _key: None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "agent_tools.manage_plan_tasks",
+            json.dumps({"action": "add", "tasks": [{"id": "T1", "content": "make deck"}]}),
+            id="call-plan",
+        ),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 2
+    assert [name for name, _args in helper.plugin_manager.calls] == [
+        "agent_tools.manage_plan_tasks",
+        "stable_diffusion.stable_diffusion",
+        "codeinterpreter.download",
+        "agent_tools.deliver_to_user",
+    ]
+    assert set(tools_used) == {
+        "agent_tools.manage_plan_tasks",
+        "stable_diffusion.stable_diffusion",
+        "codeinterpreter.download",
+        "agent_tools.deliver_to_user",
+    }
+    assert out["direct_result"]["kind"] == "final"
+    assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/eggs.pptx"
+    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
+    assert any("/tmp/egg.png" in message.get("content", "") for message in tool_messages)
+    assert any("/tmp/intermediate.csv" in message.get("content", "") for message in tool_messages)
+
+
+@pytest.mark.asyncio
 async def test_skills_agent_retries_plain_text_final_response_through_delivery_tool():
     responses = {
         "terminal.terminal": {
@@ -1033,7 +1125,8 @@ async def test_skills_agent_retries_plain_text_final_response_through_delivery_t
     assert out["direct_result"]["kind"] == "final"
     assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/deck.pptx"
     assert any(
-        "Protocol violation" in (message.get("content") or "")
+        "Continue solving the original user task" in (message.get("content") or "")
+        and "if the next step requires a tool, call that tool" in (message.get("content") or "")
         and "agent_tools.deliver_to_user" in (message.get("content") or "")
         for message in helper.conversations[1]
     )

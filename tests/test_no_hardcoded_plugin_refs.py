@@ -52,7 +52,7 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
         "UI: callback action literal 'skills' in the {'skills','skill_page'} set + settings menu reader (has_plugin + get_plugin).",
     ),
     ("bot/openai_tool_handler.py", "agent_tools"): (
-        4,
+        3,
         "Strategy Z delivery contract: skills_agent final delivery is routed through agent_tools.deliver_to_user.",
     ),
     ("bot/openai_helper.py", "hindsight_memory"): (
