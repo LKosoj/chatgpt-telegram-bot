@@ -1,6 +1,6 @@
 # Список доступных tools:
 # All, None,
-# ddg_web_search,wolfram,web_research,deepl,ddg_image_search,gtts_text_to_speech,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,vkusvill,codeinterpreter,agent_tools,hindsight_memory,skills
+# ddg_web_search,wolfram,web_research,deepl,ddg_image_search,auto_tts,website_content,stable_diffusion,youtube_transcript,prompt_perfect,reminders,haiper_image_to_video,text_document_qa,movie_info,show_me_diagrams,chief,vkusvill,codeinterpreter,agent_tools,hindsight_memory,skills
 
 assistant:
   name: 👩🏼‍🎓 Ассистент по общим вопросам
@@ -106,7 +106,6 @@ text_improver:
     - website_content
 #    - text_summarizer  
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - youtube_transcript
     - text_document_qa
@@ -173,7 +172,6 @@ travel_guide:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - youtube_transcript
     - text_document_qa
@@ -263,7 +261,6 @@ content_creator:
     - show_me_diagrams
     - ddg_image_search
     - stable_diffusion
-    - gtts_text_to_speech
     - auto_tts
     - youtube_transcript
     - text_document_qa
@@ -356,7 +353,6 @@ technical_writer:
 #    - text_summarizer
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - youtube_transcript
     - text_document_qa
@@ -441,7 +437,6 @@ summary_assistant:
 #    - text_summarizer
     - prompt_perfect
     - youtube_transcript
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - show_me_diagrams
@@ -522,7 +517,6 @@ primitives:
     - web_research
     - ddg_web_search
     - website_content
-    - gtts_text_to_speech
     - auto_tts
     - show_me_diagrams
     - reminders
@@ -578,7 +572,6 @@ chief_assistant:
     - web_research
     - website_content
     - ddg_web_search
-    - gtts_text_to_speech
     - auto_tts
     - reminders
     - vkusvill
@@ -641,7 +634,6 @@ medical_assistant:
     - text_document_qa
     - show_me_diagrams
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -713,7 +705,6 @@ legal_assistant_ru:
     - text_document_qa
     - show_me_diagrams
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -802,7 +793,6 @@ code_assistant:
     - website_content
     - github_analysis
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - prompt_perfect
     - reminders
@@ -887,7 +877,6 @@ sql_assistant:
     - show_me_diagrams
     - text_document_qa
     - codeinterpreter
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -986,7 +975,6 @@ english_tutor:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -1069,7 +1057,6 @@ psychologist:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -1152,7 +1139,6 @@ movie_expert:
     - website_content
     - movie_info
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -1204,7 +1190,7 @@ school_tutor:
     - ddg_web_search и website_content для проверки конкретных фактов (даты, формулы, классификации)
     - prompt_perfect ОДИН РАЗ при нечётком запросе. НЕ ПЫТАЙТЕСЬ оптимизировать уже оптимизированный промпт
     - reminders для напоминания об экзамене или сдаче работы
-    - gtts_text_to_speech при подготовке устных ответов
+    - auto_tts при подготовке устных ответов
 
     ВАЖНО! ЕСЛИ НЕОБХОДИМО ИСКАТЬ В ИНТЕРНЕТЕ, ПРАВИЛА ВЫБОРА МЕТОДА ПОИСКА:
     - Если запрос общий (например, "как работает блокчейн"), используй web_research
@@ -1226,7 +1212,6 @@ school_tutor:
     - show_me_diagrams
     - text_document_qa
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
@@ -1259,7 +1244,6 @@ code_interpreter:
     - prompt_perfect
     - show_me_diagrams
     - codeinterpreter
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - reminders
@@ -1343,7 +1327,6 @@ startup_idea_generator:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - codeinterpreter
@@ -1428,7 +1411,6 @@ money_maker:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - codeinterpreter
@@ -1513,7 +1495,6 @@ accountant:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - codeinterpreter
@@ -1598,7 +1579,6 @@ project_manager:
     - website_content
     - prompt_perfect
     - show_me_diagrams
-    - gtts_text_to_speech
     - auto_tts
     - text_document_qa
     - codeinterpreter
@@ -1682,7 +1662,6 @@ meta_writer:
     - ddg_web_search
     - website_content
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - show_me_diagrams
     - codeinterpreter
@@ -1757,7 +1736,6 @@ personal_finance_planner:
     - show_me_diagrams
     - text_document_qa
     - prompt_perfect
-    - gtts_text_to_speech
     - auto_tts
     - reminders
 
