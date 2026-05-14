@@ -21,6 +21,13 @@ from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.request_context import RequestContext
 
 
+PLAN_CONTRACT = {
+    "goal": "Complete the plan",
+    "success_criteria": ["Tasks are closed"],
+    "verification": ["Checked final state"],
+}
+
+
 class FakeBot:
     def __init__(self):
         self.messages = []
@@ -76,8 +83,8 @@ class FakePluginManager:
     def __init__(self):
         self.calls = []
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
-        return [
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins, disclosed_functions=None):
+        specs = [
             {
                 "type": "function",
                 "function": {
@@ -119,6 +126,13 @@ class FakePluginManager:
                 },
             },
         ]
+        if disclosed_functions is None:
+            return specs
+        disclosed = set(disclosed_functions or ())
+        return [
+            tool for tool in specs
+            if (tool.get("function") or {}).get("name") in disclosed
+        ]
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
         self.calls.append((function_name, json.loads(arguments)))
@@ -130,9 +144,15 @@ class FakePluginManager:
         model_to_use,
         parent_allowed_plugins=None,
         blocked_function_names=None,
+        disclosed_functions=None,
     ):
         blocked = set(blocked_function_names or ())
-        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ["All"])
+        specs = self.get_functions_specs(
+            helper,
+            model_to_use,
+            parent_allowed_plugins or ["All"],
+            disclosed_functions=disclosed_functions,
+        )
         filtered = []
         names = set()
         for tool in specs or []:
@@ -230,6 +250,7 @@ def test_agent_tools_registers_specs_and_handlers():
     names = {spec["function"]["name"] for spec in specs}
     assert names == {
         "agent_tools.manage_plan_tasks",
+        "agent_tools.discover_tools",
         "agent_tools.ask_telegram_user",
         "agent_tools.cancel_pending_question",
         "agent_tools.run_subagents",
@@ -242,7 +263,10 @@ def test_agent_tools_registers_specs_and_handlers():
     assert "more than two steps" in plan_spec["description"]
     task_props = plan_spec["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "depends_on" in task_props
-    assert "definition_of_done" in plan_spec["parameters"]["properties"]
+    definition_spec = plan_spec["parameters"]["properties"]["definition_of_done"]
+    assert definition_spec["required"] == ["goal", "success_criteria", "verification"]
+    assert definition_spec["properties"]["success_criteria"]["minItems"] == 1
+    assert definition_spec["properties"]["verification"]["minItems"] == 1
     deliver_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.deliver_to_user")
     deliver_props = deliver_spec["parameters"]["properties"]
     assert deliver_props["status"]["enum"] == ["completed", "blocked"]
@@ -311,6 +335,22 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
 
 
 @pytest.mark.asyncio
+async def test_manage_plan_tasks_requires_complete_definition_of_done(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        tasks=[{"id": "T1", "content": "Do work"}],
+    )
+
+    assert result["success"] is False
+    assert "definition_of_done" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_manage_plan_tasks_persists_dag_and_contract_in_database(tmp_path, agent_db):
     plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
@@ -347,6 +387,61 @@ async def test_manage_plan_tasks_persists_dag_and_contract_in_database(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_deliver_to_user_requires_closed_plan_and_verification(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        definition_of_done={
+            "goal": "Ship result",
+            "success_criteria": ["Task complete"],
+            "verification": ["Checked output"],
+        },
+        tasks=[{"id": "T1", "content": "Do work", "status": "pending"}],
+    )
+
+    open_result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        text="done",
+        status="completed",
+    )
+    assert open_result["success"] is False
+    assert "still open" in open_result["error"]
+
+    await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="update",
+        tasks=[{"id": "T1", "status": "completed"}],
+    )
+    missing_verification = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        text="done",
+        status="completed",
+    )
+    assert missing_verification["success"] is False
+    assert "verification_summary" in missing_verification["error"]
+
+    delivered = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        text="done",
+        status="completed",
+        verification_summary="Checked output",
+    )
+    assert delivered["success"] is True
+    assert delivered["direct_result"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_manage_plan_tasks_requires_database(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
@@ -372,6 +467,7 @@ async def test_manage_plan_tasks_rejects_open_dependency(tmp_path, agent_db):
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "Inspect", "status": "pending"},
             {"id": "T2", "content": "Implement", "status": "in_progress", "depends_on": ["T1"]},
@@ -391,6 +487,7 @@ async def test_manage_plan_tasks_rejects_dependency_cycle(tmp_path, agent_db):
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "One", "status": "pending", "depends_on": ["T2"]},
             {"id": "T2", "content": "Two", "status": "pending", "depends_on": ["T1"]},
@@ -410,6 +507,7 @@ async def test_clear_plan_tasks_removes_open_plan(tmp_path, agent_db):
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[{"id": "T1", "content": "Create presentation", "status": "in_progress"}],
     )
     assert added["success"] is True
@@ -428,6 +526,7 @@ async def test_clear_terminal_plan_tasks_preserves_open_plan(tmp_path, agent_db)
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[{"id": "T1", "content": "Create presentation", "status": "in_progress"}],
     )
     assert added["success"] is True
@@ -447,6 +546,7 @@ async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path, agent_db)
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[{"id": "T1", "content": "Create presentation", "status": "completed"}],
     )
     assert added["success"] is True
@@ -464,6 +564,7 @@ async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path, agent_db
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "Collect recipes", "status": "in_progress"},
             {"id": "T2", "content": "Create presentation", "status": "in_progress"},
@@ -484,6 +585,7 @@ async def test_manage_plan_tasks_rejects_in_progress_when_earlier_tasks_are_open
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "Collect recipes", "status": "completed"},
             {"id": "T2", "content": "Generate images", "status": "pending"},
@@ -514,6 +616,7 @@ async def test_manage_plan_tasks_rejects_duplicate_delivery_task(tmp_path, agent
         helper,
         chat_id=10,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "Collect recipes", "status": "completed"},
             {"id": "T2", "content": "Create presentation", "status": "completed"},
@@ -574,6 +677,32 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
         for message in helper.completions.calls[0]["messages"]
         if message.get("role") == "user"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_honors_progressive_disclosure(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper()
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        disclosed_functions=["agent_tools.run_subagents", "skills.list_skills"],
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["success"] is True
+    first_round_tool_names = {
+        tool["function"]["name"]
+        for tool in helper.completions.calls[0].get("tools", [])
+    }
+    assert "skills.list_skills" in first_round_tool_names
+    assert "skills.get_skill" not in first_round_tool_names
+    assert "agent_tools.run_subagents" not in first_round_tool_names
+    assert "agent_tools.internal_publish" in first_round_tool_names
 
 
 @pytest.mark.asyncio
@@ -822,9 +951,14 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
     def get_plugin(self, name: str):
         return self._skills_plugin if name == "skills" else None
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
-        specs = super().get_functions_specs(helper, model_to_use, allowed_plugins)
-        return specs + [
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins, disclosed_functions=None):
+        specs = super().get_functions_specs(
+            helper,
+            model_to_use,
+            allowed_plugins,
+            disclosed_functions=disclosed_functions,
+        )
+        specs = specs + [
             {
                 "type": "function",
                 "function": {
@@ -833,6 +967,13 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
                     "parameters": {"type": "object", "properties": {}},
                 },
             }
+        ]
+        if disclosed_functions is None:
+            return specs
+        disclosed = set(disclosed_functions or ())
+        return [
+            tool for tool in specs
+            if (tool.get("function") or {}).get("name") in disclosed
         ]
 
 

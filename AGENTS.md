@@ -15,6 +15,8 @@ rules from the current session.
 - Do not make runtime claims from memory. Verify the concrete function or method in code and
   cite `file:line` when explaining behavior.
 - Do not call external services during verification unless the task explicitly requires it.
+- Не борись с ошибками! Каждый раз, когда ты сталкиваешься с одной и той же ошибкой дважды, изучи веб и найди 3–5 возможных способов её исправления.
+  Затем выбери самое эффективное решение и реализуй его.
 
 ## Project Shape
 

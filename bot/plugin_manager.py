@@ -22,10 +22,11 @@ from .user_settings import (
     get_user_settings,
     normalize_string_list,
 )
+from .tool_result import TOOL_METADATA_KEY, normalize_tool_result
 from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
-FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id"}
+FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "allowed_plugins", "disclosed_functions"}
 
 
 @dataclass
@@ -285,7 +286,7 @@ class PluginManager:
         self.load_plugins()  # Перезагружаем плагины из директории
         logger.info("Плагины переинициализированы.")
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins=None):
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins=None, disclosed_functions=None):
         """
         Return the list of function specs that can be called by the model
 
@@ -328,7 +329,76 @@ class PluginManager:
                 logger.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
 
-        return self._format_specs_for_model(all_specs, model_to_use)
+        if disclosed_functions is not None:
+            disclosed = set(disclosed_functions or ())
+            all_specs = [spec for spec in all_specs if spec.get("name") in disclosed]
+
+        provider_specs = [self._strip_internal_spec_metadata(spec) for spec in all_specs]
+        return self._format_specs_for_model(provider_specs, model_to_use)
+
+    @staticmethod
+    def _strip_internal_spec_metadata(spec):
+        return {
+            key: value
+            for key, value in dict(spec or {}).items()
+            if not str(key).startswith("x_")
+        }
+
+    def get_tool_metadata(self, function_name: str) -> Dict[str, Any]:
+        spec = self.get_spec_by_function_name(function_name)
+        metadata = spec.get(TOOL_METADATA_KEY) if isinstance(spec, dict) else None
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
+    def get_tool_catalog(self, helper, model_to_use, allowed_plugins=None) -> List[Dict[str, Any]]:
+        allowed_plugins = self.filter_allowed_plugins(allowed_plugins or ['All'])
+        catalog: List[Dict[str, Any]] = []
+        for plugin_name, plugin_class in self.plugins.items():
+            if allowed_plugins != ['All'] and plugin_name not in allowed_plugins:
+                continue
+            try:
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                for spec in self._normalize_specs(plugin_instance.get_spec(), plugin_instance):
+                    name = spec.get("name")
+                    if not name:
+                        continue
+                    catalog.append({
+                        "name": name,
+                        "plugin": plugin_name,
+                        "description": str(spec.get("description") or ""),
+                        "metadata": dict(spec.get(TOOL_METADATA_KEY) or {}),
+                    })
+            except Exception:
+                if self.strict_validation:
+                    raise
+                logger.exception("Error building tool catalog for plugin %s", plugin_name)
+        return catalog
+
+    def get_progressive_disclosure_bootstrap_functions(self, allowed_plugins=None) -> set[str]:
+        allowed_plugins = self.filter_allowed_plugins(allowed_plugins or ['All'])
+        names: set[str] = set()
+        for plugin_name, plugin_class in self.plugins.items():
+            if allowed_plugins != ['All'] and plugin_name not in allowed_plugins:
+                continue
+            try:
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                getter = getattr(plugin_instance, "get_progressive_disclosure_bootstrap_functions", None)
+                if not callable(getter):
+                    continue
+                prefix = plugin_instance.get_function_prefix()
+                for name in getter() or []:
+                    text = str(name or "").strip()
+                    if not text:
+                        continue
+                    names.add(text if "." in text else f"{prefix}.{text}")
+            except Exception:
+                if self.strict_validation:
+                    raise
+                logger.exception("Error resolving progressive bootstrap functions for %s", plugin_name)
+        return names
 
     @staticmethod
     def _format_specs_for_model(specs, model_to_use):
@@ -366,7 +436,11 @@ class PluginManager:
             return json.dumps({'error': error_msg})
 
         try:
-            logger.debug(f"Пытаемся разобрать аргументы функции {function_name}: {arguments}")
+            logger.debug(
+                "Parsing arguments for function %s args_chars=%s",
+                function_name,
+                len(arguments or ""),
+            )
             parsed_args = json.loads(arguments)
 
             spec = self.get_spec_by_function_name(function_name)
@@ -392,22 +466,35 @@ class PluginManager:
                 error_msg = str(guard_result.get("error") or "Tool call blocked by plugin guard")
                 return json.dumps(guard_result, ensure_ascii=False)
 
-            logger.debug(f"Вызываем функцию {function_name} с аргументами: {parsed_args}")
+            logger.debug(
+                "Calling function %s with argument_keys=%s",
+                function_name,
+                sorted(str(key) for key in parsed_args.keys()),
+            )
             base_name = function_name.split(".", 1)[-1]
             result = await plugin.execute(base_name, helper, **parsed_args)
+            tool_result = normalize_tool_result(
+                result,
+                tool_name=function_name,
+                metadata=self.get_tool_metadata(function_name),
+            )
 
-            logger.debug(f"Результат выполнения функции {function_name}: {result}")
-            status = "success"
-            if isinstance(result, dict):
-                direct_result = isinstance(result.get("direct_result"), dict)
-                if result.get("error") or result.get("success") is False:
-                    status = "error"
-                    error_value = result.get("error")
-                    error_msg = str(error_value) if error_value else None
+            logger.debug(
+                "Function %s completed result_type=%s result_chars=%s",
+                function_name,
+                type(result).__name__,
+                len(tool_result.content),
+            )
+            status = "success" if tool_result.success else "error"
+            direct_result = isinstance(tool_result.direct_result, dict)
+            error_msg = tool_result.error
             return json.dumps(result, default=str, ensure_ascii=False)
 
         except json.JSONDecodeError as e:
-            error_msg = f"Ошибка разбора JSON аргументов функции {function_name}: {e}, Аргументы: {arguments}"
+            error_msg = (
+                f"Ошибка разбора JSON аргументов функции {function_name}: {e}; "
+                f"args_chars={len(arguments or '')}"
+            )
             logger.error(error_msg)
             return json.dumps({'error': error_msg}, ensure_ascii=False)
         except Exception as e:
@@ -549,6 +636,7 @@ class PluginManager:
         model_to_use,
         parent_allowed_plugins=None,
         blocked_function_names=None,
+        disclosed_functions=None,
     ):
         """
         Return tool specs available to a subagent: same allow-list as the parent,
@@ -556,7 +644,12 @@ class PluginManager:
         specs; subagents do not currently support the Google function_declarations form.
         """
         blocked = set(blocked_function_names or ())
-        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ['All'])
+        specs = self.get_functions_specs(
+            helper,
+            model_to_use,
+            parent_allowed_plugins or ['All'],
+            disclosed_functions=disclosed_functions,
+        )
         if isinstance(specs, dict):
             return [], set()
         filtered = []

@@ -225,7 +225,7 @@ class AgentToolsPlugin(Plugin):
                         "definition_of_done": {
                             "type": "object",
                             "description": (
-                                "Optional contract for this work: goal, success criteria, constraints, "
+                                "Required when adding tasks to a durable plan: goal, success criteria, "
                                 "and verification checks. Store it before or with the task plan."
                             ),
                             "properties": {
@@ -233,19 +233,44 @@ class AgentToolsPlugin(Plugin):
                                 "success_criteria": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                    "minItems": 1,
                                 },
                                 "verification": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                    "minItems": 1,
                                 },
                                 "constraints": {
                                     "type": "array",
                                     "items": {"type": "string"},
                                 },
                             },
+                            "required": ["goal", "success_criteria", "verification"],
                         },
                     },
                     "required": ["action"],
+                },
+            },
+            {
+                "name": "discover_tools",
+                "description": (
+                    "Discover additional tools available in this chat mode and disclose selected "
+                    "tool schemas for the next model step. Use this before calling non-bootstrap "
+                    "tools when progressive tool disclosure is active."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tool_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exact tool names to disclose, for example terminal.terminal.",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional case-insensitive search over tool names and descriptions.",
+                        },
+                    },
                 },
             },
             {
@@ -450,6 +475,16 @@ class AgentToolsPlugin(Plugin):
                     "required": ["subagents"],
                 },
             },
+        ]
+
+    def get_progressive_disclosure_bootstrap_functions(self) -> List[str]:
+        return [
+            "manage_plan_tasks",
+            "discover_tools",
+            "ask_telegram_user",
+            "cancel_pending_question",
+            "run_subagents",
+            "deliver_to_user",
         ]
 
     def get_commands(self) -> List[Dict]:
@@ -726,6 +761,8 @@ class AgentToolsPlugin(Plugin):
         request_context = kwargs.pop("request_context", None)
         if function_name == "manage_plan_tasks":
             return self._manage_plan_tasks(helper, **kwargs)
+        if function_name == "discover_tools":
+            return self._discover_tools(helper, **kwargs)
         if function_name == "ask_telegram_user":
             return await self._ask_telegram_user(helper, **kwargs)
         if function_name == "cancel_pending_question":
@@ -735,6 +772,58 @@ class AgentToolsPlugin(Plugin):
         if function_name == "deliver_to_user":
             return await self._deliver_to_user(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
+
+    def _discover_tools(self, helper, **kwargs) -> Dict:
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        get_catalog = getattr(plugin_manager, "get_tool_catalog", None)
+        if not callable(get_catalog):
+            return {"success": False, "error": "Tool catalog is unavailable"}
+        user_id = kwargs.get("user_id")
+        model = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
+        allowed_plugins = kwargs.get("allowed_plugins") or ["All"]
+        catalog = get_catalog(helper, model, allowed_plugins)
+        requested = {
+            str(name).strip()
+            for name in (kwargs.get("tool_names") or [])
+            if str(name or "").strip()
+        }
+        query = str(kwargs.get("query") or "").strip().lower()
+
+        def matches(item: Dict[str, Any]) -> bool:
+            if requested and item.get("name") in requested:
+                return True
+            if query:
+                haystack = f"{item.get('name', '')} {item.get('description', '')}".lower()
+                return query in haystack
+            return not requested
+
+        visible = [item for item in catalog if matches(item)]
+        visible = visible[:40]
+        available_tools = [
+            {
+                "name": item.get("name"),
+                "description": str(item.get("description") or "")[:240],
+                "metadata": {
+                    key: value
+                    for key, value in (item.get("metadata") or {}).items()
+                    if key in {"category", "risk_level", "parallelizable"}
+                },
+            }
+            for item in visible
+        ]
+        allowed_names = {item.get("name") for item in catalog}
+        if requested:
+            disclosed_tools = sorted(name for name in requested if name in allowed_names)
+        elif query:
+            disclosed_tools = sorted(str(item.get("name")) for item in visible if item.get("name"))
+        else:
+            disclosed_tools = []
+        return {
+            "success": True,
+            "available_tools": available_tools,
+            "disclosed_tools": disclosed_tools,
+            "count": len(available_tools),
+        }
 
     def register_schema(self) -> List[str]:
         return [
@@ -1028,7 +1117,22 @@ class AgentToolsPlugin(Plugin):
         contract = self._normalize_existing_contract(kwargs.get("definition_of_done"))
         if contract is None:
             return _CONTRACT_UNSET, "definition_of_done must include goal, success_criteria, verification, or constraints"
+        validation_error = self._contract_validation_error(contract)
+        if validation_error:
+            return _CONTRACT_UNSET, validation_error
         return contract, None
+
+    @staticmethod
+    def _contract_validation_error(contract: Dict[str, Any] | None) -> str | None:
+        if not contract:
+            return "definition_of_done is required for durable agent plans"
+        if not str(contract.get("goal") or "").strip():
+            return "definition_of_done.goal is required"
+        if not contract.get("success_criteria"):
+            return "definition_of_done.success_criteria must include at least one item"
+        if not contract.get("verification"):
+            return "definition_of_done.verification must include at least one item"
+        return None
 
     def _load_orphaned_pending(self) -> None:
         if not self.pending_file or not os.path.exists(self.pending_file):
@@ -1299,6 +1403,10 @@ class AgentToolsPlugin(Plugin):
             validation_error = self._validate_plan_tasks(candidate_tasks)
             if validation_error:
                 return {"success": False, "error": validation_error}
+            if candidate_tasks:
+                contract_validation_error = self._contract_validation_error(effective_contract)
+                if contract_validation_error:
+                    return {"success": False, "error": contract_validation_error}
             changed = bool(items) or contract_changed
             if changed:
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
@@ -1412,6 +1520,20 @@ class AgentToolsPlugin(Plugin):
             },
         }
 
+    def _delivery_plan_error(self, scope: str, status: str, verification_summary: str) -> str | None:
+        if status != "completed":
+            return None
+        plan = self._get_scope_plan(scope)
+        tasks = plan.get("tasks") or []
+        open_tasks = [task for task in tasks if task.get("status") not in CLOSED_STATUSES]
+        if open_tasks:
+            ids = ", ".join(str(task.get("id") or "") for task in open_tasks)
+            return f"Cannot deliver completed status while plan tasks are still open: {ids}"
+        contract = plan.get("contract")
+        if isinstance(contract, dict) and contract.get("verification") and not verification_summary:
+            return "deliver_to_user completed status requires verification_summary for the active plan"
+        return None
+
     async def _deliver_to_user(self, helper, *, request_context=None, **kwargs) -> Dict:
         text_raw = kwargs.get("text")
         final_text = "" if text_raw is None else str(text_raw).strip()
@@ -1424,6 +1546,10 @@ class AgentToolsPlugin(Plugin):
             return {"success": False, "error": "deliver_to_user blocked status requires blocked_reason"}
         if status == "blocked" and not final_text and blocked_reason:
             final_text = blocked_reason
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        plan_error = self._delivery_plan_error(scope, status, verification_summary)
+        if plan_error:
+            return {"success": False, "error": plan_error}
         allowed_roots = self._allowed_artifact_roots(helper)
         artifact_items, error = self._normalize_delivery_artifacts(
             kwargs.get("artifacts"), allowed_roots=allowed_roots,
@@ -1436,7 +1562,6 @@ class AgentToolsPlugin(Plugin):
                 "error": "deliver_to_user requires at least one of text or artifacts",
             }
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
         now = time.monotonic()
         dedup_key = self._delivery_dedup_key(kwargs, request_context)
         last_delivery_at = self._recent_deliveries.get(dedup_key) if dedup_key else None
@@ -1516,6 +1641,12 @@ class AgentToolsPlugin(Plugin):
             {"plugin_id": plugin_id, "scope": scope, "skill_id": skill_id}
             for skill_id in scope_state
         ]
+
+    def cleanup_directives_for_active_skills(self, helper, *, chat_id=None, user_id=None) -> List[Dict[str, Any]]:
+        return self._cleanup_directives_for_active_skills(
+            helper,
+            {"chat_id": chat_id, "user_id": user_id},
+        )
 
     @staticmethod
     def _allowed_artifact_roots(helper) -> List[str]:
@@ -1631,11 +1762,13 @@ class AgentToolsPlugin(Plugin):
         shared_context = str(kwargs.get("shared_context") or "").strip()
         parent_max_rounds = self._normalize_max_rounds(kwargs.get("max_rounds"))
         parent_allowed_plugins = await self._resolve_parent_allowed_plugins(helper, request_context, kwargs)
+        disclosed_functions = kwargs.get("disclosed_functions")
         tasks = [
             self._run_one_subagent(
                 helper, item, shared_context, kwargs, parent_max_rounds,
                 request_context=request_context,
                 parent_allowed_plugins=parent_allowed_plugins,
+                disclosed_functions=disclosed_functions,
             )
             for item in subagents
         ]
@@ -1722,6 +1855,7 @@ class AgentToolsPlugin(Plugin):
         *,
         request_context=None,
         parent_allowed_plugins: List[str] | None = None,
+        disclosed_functions=None,
     ) -> Dict:
         subagent_id = str(item.get("id") or "").strip()
         role = str(item.get("role") or "").strip()
@@ -1791,6 +1925,7 @@ class AgentToolsPlugin(Plugin):
                 published=published,
                 request_context=request_context,
                 parent_allowed_plugins=parent_allowed_plugins,
+                disclosed_functions=disclosed_functions,
             )
             status = "completed"
             return {
@@ -1850,12 +1985,17 @@ class AgentToolsPlugin(Plugin):
         published: List[Dict[str, Any]] | None = None,
         request_context=None,
         parent_allowed_plugins: List[str] | None = None,
+        disclosed_functions=None,
     ) -> str:
-        tools, allowed_function_names = self._subagent_tools(
-            helper, model_to_use, parent_allowed_plugins=parent_allowed_plugins,
-        )
+        disclosed = None if disclosed_functions is None else set(disclosed_functions or ())
 
         for round_index in range(max_rounds + 1):
+            tools, allowed_function_names = self._subagent_tools(
+                helper,
+                model_to_use,
+                parent_allowed_plugins=parent_allowed_plugins,
+                disclosed_functions=disclosed,
+            )
             is_final_round = round_index == max_rounds
             request_kwargs = {
                 "model": model_to_use,
@@ -1880,10 +2020,16 @@ class AgentToolsPlugin(Plugin):
                         kwargs,
                         published=published,
                         request_context=request_context,
+                        parent_allowed_plugins=parent_allowed_plugins,
                     )
                     for call in tool_calls
                 ])
                 for call, tool_response in zip(tool_calls, tool_responses):
+                    if call["name"] == "agent_tools.discover_tools" and disclosed is not None:
+                        payload = self._json_object(tool_response)
+                        names = payload.get("disclosed_tools") if isinstance(payload, dict) else None
+                        if isinstance(names, list):
+                            disclosed.update(str(name) for name in names if isinstance(name, str))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
@@ -1909,6 +2055,7 @@ class AgentToolsPlugin(Plugin):
         model_to_use: str,
         *,
         parent_allowed_plugins: List[str] | None = None,
+        disclosed_functions=None,
     ) -> tuple[Any, set[str]]:
         plugin_manager = getattr(helper, "plugin_manager", None)
         if not plugin_manager:
@@ -1926,6 +2073,7 @@ class AgentToolsPlugin(Plugin):
             model_to_use,
             parent_allowed_plugins=parent_allowed_plugins,
             blocked_function_names=SUBAGENT_BLOCKED_FUNCTIONS,
+            disclosed_functions=disclosed_functions,
         )
         if not filtered_tools and not allowed_function_names:
             logging.warning(
@@ -2027,6 +2175,7 @@ class AgentToolsPlugin(Plugin):
         *,
         published: List[Dict[str, Any]] | None = None,
         request_context=None,
+        parent_allowed_plugins: List[str] | None = None,
     ) -> str:
         tool_name = call["name"]
         if tool_name == "agent_tools.internal_publish":
@@ -2051,6 +2200,8 @@ class AgentToolsPlugin(Plugin):
         args["user_id"] = (
             kwargs.get("user_id") if kwargs.get("user_id") is not None else kwargs.get("chat_id")
         )
+        if tool_name == "agent_tools.discover_tools":
+            args["allowed_plugins"] = parent_allowed_plugins or ["All"]
         routing_error = _skill_script_routing_error(
             helper, kwargs.get("chat_id"), tool_name, args
         )
@@ -2062,6 +2213,18 @@ class AgentToolsPlugin(Plugin):
             json.dumps(args, ensure_ascii=False),
             request_context=request_context,
         )
+
+    @staticmethod
+    def _json_object(value: Any) -> Dict[str, Any] | None:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            return decoded if isinstance(decoded, dict) else None
+        return None
 
     @staticmethod
     def _handle_internal_publish(
