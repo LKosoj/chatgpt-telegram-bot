@@ -150,35 +150,6 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_tool_call_events_chat_created
                     ON tool_call_events(chat_id, created_at)
                 ''')
-
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS tool_run_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        request_id TEXT,
-                        chat_id TEXT,
-                        user_id TEXT,
-                        event_type TEXT NOT NULL,
-                        iteration INTEGER NOT NULL DEFAULT 0,
-                        status TEXT NOT NULL,
-                        tool_count INTEGER NOT NULL DEFAULT 0,
-                        success_count INTEGER NOT NULL DEFAULT 0,
-                        error_count INTEGER NOT NULL DEFAULT 0,
-                        duration_ms INTEGER NOT NULL DEFAULT 0,
-                        stop_reason TEXT,
-                        metadata TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                cursor.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_tool_run_events_request_created
-                    ON tool_run_events(request_id, created_at)
-                ''')
-
-                cursor.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_tool_run_events_chat_created
-                    ON tool_run_events(chat_id, created_at)
-                ''')
                 
                 # Таблица для контекста разговора с поддержкой сессий
                 cursor.execute('''
@@ -406,101 +377,6 @@ class Database:
                 ]
         except Exception as e:
             logger.error(f'Error listing tool call events: {e}', exc_info=True)
-            raise
-
-    def record_tool_run_event(
-        self,
-        *,
-        event_type: str,
-        status: str,
-        request_id: str | None = None,
-        chat_id: int | str | None = None,
-        user_id: int | str | None = None,
-        iteration: int = 0,
-        tool_count: int = 0,
-        success_count: int = 0,
-        error_count: int = 0,
-        duration_ms: int = 0,
-        stop_reason: str | None = None,
-        metadata: Dict[str, Any] | None = None,
-    ) -> None:
-        try:
-            metadata_json = json.dumps(metadata or {}, ensure_ascii=False, default=str)
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO tool_run_events
-                    (request_id, chat_id, user_id, event_type, iteration, status,
-                     tool_count, success_count, error_count, duration_ms, stop_reason, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    request_id,
-                    str(chat_id) if chat_id is not None else None,
-                    str(user_id) if user_id is not None else None,
-                    event_type,
-                    int(iteration),
-                    status,
-                    int(tool_count),
-                    int(success_count),
-                    int(error_count),
-                    int(duration_ms),
-                    stop_reason,
-                    metadata_json,
-                ))
-        except Exception as e:
-            logger.error(f'Error recording tool run event: {e}', exc_info=True)
-            raise
-
-    def list_tool_run_events(self, limit: int = 50) -> List[Dict[str, Any]]:
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT request_id, chat_id, user_id, event_type, iteration, status,
-                           tool_count, success_count, error_count, duration_ms,
-                           stop_reason, metadata, created_at
-                    FROM tool_run_events
-                    ORDER BY id DESC
-                    LIMIT ?
-                ''', (int(limit),))
-                events = []
-                for row in cursor.fetchall():
-                    metadata_raw = row['metadata']
-                    try:
-                        metadata = json.loads(metadata_raw) if metadata_raw else {}
-                    except json.JSONDecodeError:
-                        metadata = {}
-                    events.append({
-                        'request_id': row['request_id'],
-                        'chat_id': row['chat_id'],
-                        'user_id': row['user_id'],
-                        'event_type': row['event_type'],
-                        'iteration': int(row['iteration']),
-                        'status': row['status'],
-                        'tool_count': int(row['tool_count']),
-                        'success_count': int(row['success_count']),
-                        'error_count': int(row['error_count']),
-                        'duration_ms': int(row['duration_ms']),
-                        'stop_reason': row['stop_reason'],
-                        'metadata': metadata,
-                        'created_at': row['created_at'],
-                    })
-                return events
-        except Exception as e:
-            logger.error(f'Error listing tool run events: {e}', exc_info=True)
-            raise
-
-    def prune_tool_observability_events(self, *, older_than: str) -> int:
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM tool_call_events WHERE created_at < ?', (older_than,))
-                deleted_calls = cursor.rowcount
-                cursor.execute('DELETE FROM tool_run_events WHERE created_at < ?', (older_than,))
-                deleted_runs = cursor.rowcount
-                return int(deleted_calls + deleted_runs)
-        except Exception as e:
-            logger.error(f'Error pruning tool observability events: {e}', exc_info=True)
             raise
     
     def get_active_session_id(self, user_id: int) -> Optional[str]:

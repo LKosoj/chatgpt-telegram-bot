@@ -20,6 +20,13 @@ from bot.plugins.db_handle import DbHandle
 from bot.plugins.hooks import SessionResetPayload
 
 
+PLAN_CONTRACT = {
+    "goal": "Finish reset test",
+    "success_criteria": ["Plan state matches reset policy"],
+    "verification": ["Checked persisted plan state"],
+}
+
+
 @pytest.fixture()
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
@@ -50,6 +57,7 @@ async def test_on_session_reset_clears_all_tasks(tmp_path, agent_db):
         definition_of_done={
             "goal": "Finish review",
             "success_criteria": ["No stale plan contract remains"],
+            "verification": ["Listed plan after reset"],
         },
         tasks=[
             {"id": "T1", "content": "Inspect", "status": "in_progress"},
@@ -83,6 +91,7 @@ async def test_on_session_reset_terminal_only_preserves_open_tasks(tmp_path, age
         chat_id=10,
         user_id=42,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[
             {"id": "T1", "content": "Open work", "status": "in_progress"},
         ],
@@ -110,6 +119,7 @@ async def test_on_session_reset_terminal_only_clears_when_all_closed(tmp_path, a
         definition_of_done={
             "goal": "Finish delivery",
             "success_criteria": ["Closed plan is fully cleared"],
+            "verification": ["Listed plan after terminal reset"],
         },
         tasks=[
             {"id": "T1", "content": "Done work", "status": "completed"},
@@ -151,6 +161,7 @@ async def test_dispatch_observe_routes_to_agent_tools(tmp_path, agent_db):
         chat_id=10,
         user_id=42,
         action="add",
+        definition_of_done=PLAN_CONTRACT,
         tasks=[{"id": "T1", "content": "Work", "status": "in_progress"}],
     )
     assert seeded["success"] is True

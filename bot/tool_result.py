@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-TOOL_METADATA_KEY = "x_tool_metadata"
 ARTIFACT_PATH_KEYS = ("value", "file_path", "path", "output_path", "artifact_path")
 
 
@@ -17,7 +16,6 @@ class ToolResult:
     error: str | None = None
     direct_result: dict | None = None
     artifacts: tuple[dict, ...] = ()
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def json_dict(value) -> dict | None:
@@ -119,7 +117,7 @@ def tool_response_error(value) -> str | None:
     return None
 
 
-def normalize_tool_result(value, *, tool_name: str = "", metadata: dict[str, Any] | None = None) -> ToolResult:
+def normalize_tool_result(value, *, tool_name: str = "") -> ToolResult:
     payload = json_dict(value)
     content = tool_result_content(value)
     direct_result = direct_result_payload(value)
@@ -132,5 +130,4 @@ def normalize_tool_result(value, *, tool_name: str = "", metadata: dict[str, Any
         error=None if success else tool_response_error(value),
         direct_result=direct_result,
         artifacts=artifacts,
-        metadata=dict(metadata or {}),
     )

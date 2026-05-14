@@ -117,9 +117,6 @@ class Plugin(ABC):
         """
         Function specs in the form of JSON schema as specified in the OpenAI documentation:
         https://platform.openai.com/docs/api-reference/chat/create#chat/create-functions
-        Specs may include an optional top-level x_tool_metadata dictionary for
-        framework-only execution policy. Internal metadata is stripped before
-        specs are sent to model providers.
         """
         pass
 

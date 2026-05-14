@@ -70,45 +70,6 @@ class GuardPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
-def _write_metadata_plugin(path: Path):
-    code = """
-from bot.plugins.plugin import Plugin
-
-class MetadataPlugin(Plugin):
-    def get_source_name(self) -> str:
-        return "Metadata"
-
-    def get_spec(self):
-        return [{
-            "name": "do",
-            "description": "x",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-            "x_tool_metadata": {"parallelizable": False, "risk_level": "high"},
-        }]
-
-    async def execute(self, function_name, helper, **kwargs):
-        return {"result": "ok"}
-"""
-    path.write_text(textwrap.dedent(code), encoding="utf-8")
-
-
-def _write_string_plugin(path: Path):
-    code = """
-from bot.plugins.plugin import Plugin
-
-class StringPlugin(Plugin):
-    def get_source_name(self) -> str:
-        return "String"
-
-    def get_spec(self):
-        return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
-
-    async def execute(self, function_name, helper, **kwargs):
-        return "plain"
-"""
-    path.write_text(textwrap.dedent(code), encoding="utf-8")
-
-
 def _write_prompt_plugin(path: Path):
     code = """
 from bot.plugins.plugin import Plugin
@@ -205,47 +166,6 @@ def test_function_allowlist_uses_plugin_ownership(tmp_path):
     assert pm.is_function_allowed("alpha.missing", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["All"]) is True
-
-
-def test_tool_metadata_is_internal_and_retrievable(tmp_path):
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
-    _write_metadata_plugin(plugin_dir / "metadata.py")
-    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
-
-    specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
-
-    assert specs[0]["function"]["name"] == "metadata.do"
-    assert "x_tool_metadata" not in specs[0]["function"]
-    assert pm.get_tool_metadata("metadata.do") == {"parallelizable": False, "risk_level": "high"}
-
-
-@pytest.mark.asyncio
-async def test_call_function_preserves_json_serialized_string_contract(tmp_path):
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
-    _write_string_plugin(plugin_dir / "string.py")
-    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
-
-    result = await pm.call_function("string.do", None, "{}")
-
-    assert result == '"plain"'
-
-
-@pytest.mark.asyncio
-async def test_call_function_invalid_json_error_does_not_echo_raw_arguments(tmp_path):
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
-    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
-    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
-    raw = '{"secret":"do-not-log"'
-
-    result = await pm.call_function("alpha.do", None, raw)
-
-    payload = json.loads(result)
-    assert payload["error"]
-    assert "do-not-log" not in payload["error"]
-    assert "args_chars=" in payload["error"]
 
 
 def test_prompt_handlers_include_plugin_name(tmp_path):

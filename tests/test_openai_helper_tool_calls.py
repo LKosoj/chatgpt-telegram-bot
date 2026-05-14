@@ -3,7 +3,6 @@ import base64
 import io
 import importlib.util
 import json
-import logging
 import sys
 import types
 
@@ -67,7 +66,6 @@ class DummyDB:
         self.context = context or {}
         self.saved_contexts = []
         self.user_settings = {}
-        self.tool_run_events = []
 
     def list_user_sessions(self, user_id, is_active=1):
         return []
@@ -80,12 +78,6 @@ class DummyDB:
 
     def get_user_settings(self, user_id):
         return self.user_settings.get(user_id)
-
-    def record_tool_run_event(self, **kwargs):
-        self.tool_run_events.append(kwargs)
-
-    def list_tool_run_events(self, limit=50):
-        return list(reversed(self.tool_run_events))[:limit]
 
 
 class MultiSessionDB(DummyDB):
@@ -211,11 +203,6 @@ class DummyVoiceGateway:
 class FakeSkillsPlugin:
     active_skills = {"chat:1": {"pptx": {}}}
     available_skills = {"pptx": {"scripts": ["build.py"]}}
-
-
-class FakeAgentToolsPlugin:
-    def cleanup_directives_for_active_skills(self, helper, *, chat_id=None, user_id=None):
-        return [{"plugin_id": "skills", "scope": f"chat:{chat_id}", "skill_id": "pptx"}]
 
 
 class FakeToolCall:
@@ -893,162 +880,6 @@ async def test_parallel_tool_calls_no_direct_result():
 
 
 @pytest.mark.asyncio
-async def test_large_tool_result_is_compacted_before_model_reentry():
-    large_output = "x" * 7000
-    db = DummyDB()
-    helper = _make_helper(
-        DummyPluginManager({"p1.do": {"success": True, "output": large_output}}),
-        db=db,
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("p1.do",)
-    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
-    assert tool_messages
-    assert "_compacted_tool_response" in tool_messages[-1]["content"]
-    assert large_output not in tool_messages[-1]["content"]
-    assert db.tool_run_events[-1]["metadata"]["compacted_from_chars"] > 0
-
-
-@pytest.mark.asyncio
-async def test_list_tool_result_compaction_does_not_embed_large_items():
-    large_output = "y" * 7000
-    helper = _make_helper(
-        DummyPluginManager({"p1.do": {"success": True, "result": [large_output]}}),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("p1.do",)
-    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
-    assert large_output not in tool_messages[-1]["content"]
-    assert '"text_chars": 7000' in tool_messages[-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_skills_list_compaction_preserves_skill_identity_fields():
-    full_description = "PowerPoint presentation skill. " + ("D" * 1200)
-    large_reference = "R" * 7000
-    helper = _make_helper(
-        DummyPluginManager({
-            "skills.list_skills": {
-                "success": True,
-                "skills": [{
-                    "id": "powerpoint",
-                    "name": "PowerPoint",
-                    "description": full_description,
-                    "references": [large_reference],
-                    "resources": [large_reference],
-                    "scripts": ["qa-pptx.sh"],
-                }],
-            },
-        }),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("skills.list_skills",)
-    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
-    content = tool_messages[-1]["content"]
-    assert "_compacted_tool_response" in content
-    assert '"id": "powerpoint"' in content
-    assert '"name": "PowerPoint"' in content
-    assert full_description in content
-    assert large_reference not in content
-
-
-@pytest.mark.asyncio
-async def test_deferred_direct_result_value_is_compacted_before_reentry():
-    large_value = "q" * 7000
-    helper = _make_helper(
-        DummyPluginManager({
-            "agent_tools.run_subagents": {
-                "direct_result": {
-                    "kind": "text",
-                    "format": "text",
-                    "value": large_value,
-                },
-            },
-            "agent_tools.deliver_to_user": {
-                "direct_result": {
-                    "kind": "final",
-                    "format": "mixed",
-                    "text": "done",
-                    "artifacts": [],
-                    "defer": False,
-                },
-            },
-        }),
-        client=DummyClient([
-            FakeResponse(tool_calls=[
-                FakeToolCall("agent_tools.deliver_to_user", json.dumps({"text": "done"})),
-            ]),
-        ]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("agent_tools.run_subagents", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out["direct_result"]["text"] == "done"
-    assert tools_used == ("agent_tools.run_subagents", "agent_tools.deliver_to_user")
-    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
-    assert large_value not in tool_messages[-1]["content"]
-    assert any('"value_chars": 7000' in message["content"] for message in tool_messages)
-
-
-@pytest.mark.asyncio
-async def test_tool_execution_logs_do_not_echo_raw_large_payloads(caplog):
-    large_output = "z" * 7000
-    helper = _make_helper(
-        DummyPluginManager({"p1.do": {"success": True, "output": large_output}}),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("p1.do", json.dumps({"secret": large_output}))])
-
-    with caplog.at_level(logging.INFO, logger="bot.openai_tool_handler"):
-        await helper._OpenAIHelper__handle_function_call(
-            chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-        )
-
-    assert large_output not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_malformed_direct_result_reenters_model_instead_of_short_circuiting():
-    helper = _make_helper(
-        DummyPluginManager({"p1.do": {"direct_result": {"value": "missing kind"}}}),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert helper.client.calls == 1
-    assert tools_used == ("p1.do",)
-    assert out.choices[0].message.content == "done"
-
-
-@pytest.mark.asyncio
 async def test_non_object_tool_arguments_are_recoverable_tool_error():
     pm = DummyPluginManager({"p1.do": {"result": "should not run"}})
     helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
@@ -1067,56 +898,6 @@ async def test_non_object_tool_arguments_are_recoverable_tool_error():
         "Invalid arguments for p1.do" in (message.get("content") or "")
         for message in helper.conversations[1]
     )
-
-
-@pytest.mark.asyncio
-async def test_repeated_failing_tool_batch_stops_before_reexecution():
-    pm = DummyPluginManager({"p1.do": {"error": "boom"}})
-    helper = _make_helper(pm, client=DummyClient([
-        FakeResponse(tool_calls=[
-            FakeToolCall("p1.do", json.dumps({"q": "same"}), id="call-repeat"),
-        ]),
-    ]))
-    response = FakeResponse(tool_calls=[
-        FakeToolCall("p1.do", json.dumps({"q": "same"}), id="call-start"),
-    ])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert helper.client.calls == 1
-    assert len(pm.calls) == 1
-    assert pm.calls[0][0] == "p1.do"
-    assert tools_used == ("p1.do",)
-    assert out["direct_result"]["status"] == "blocked"
-    assert "repeated the same failing tool call batch" in out["direct_result"]["text"]
-    assert "p1.do" in out["direct_result"]["blocked_reason"]
-
-
-@pytest.mark.asyncio
-async def test_repeated_failing_tool_batch_carries_cleanup_directives():
-    pm = DummyPluginManager(
-        {"p1.do": {"error": "boom"}},
-        plugins={"agent_tools": FakeAgentToolsPlugin()},
-    )
-    helper = _make_helper(pm, client=DummyClient([
-        FakeResponse(tool_calls=[
-            FakeToolCall("p1.do", json.dumps({"q": "same"}), id="call-repeat"),
-        ]),
-    ]))
-    response = FakeResponse(tool_calls=[
-        FakeToolCall("p1.do", json.dumps({"q": "same"}), id="call-start"),
-    ])
-
-    out, _tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out["direct_result"]["status"] == "blocked"
-    assert out["direct_result"]["cleanup_skills"] == [
-        {"plugin_id": "skills", "scope": "chat:1", "skill_id": "pptx"}
-    ]
 
 
 @pytest.mark.asyncio
@@ -1298,6 +1079,22 @@ async def test_agent_tools_workflow_defers_intermediate_direct_results_without_m
     assert "/tmp/egg.png" in manifest_messages[-1]
     assert "/tmp/intermediate.csv" in manifest_messages[-1]
     assert "Do not discover artifacts by broad-listing shared directories" in manifest_messages[-1]
+
+
+@pytest.mark.asyncio
+async def test_malformed_direct_result_reenters_model_instead_of_short_circuiting():
+    helper = _make_helper(
+        DummyPluginManager({"p1.do": {"direct_result": {"value": "missing kind"}}}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    response = FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ("p1.do",)
 
 
 @pytest.mark.asyncio

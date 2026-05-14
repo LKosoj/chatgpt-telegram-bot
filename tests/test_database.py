@@ -269,30 +269,6 @@ def test_tool_call_events_are_recorded(db):
     assert events[0]["direct_result"] is True
 
 
-def test_tool_run_events_are_recorded_without_raw_payloads(db):
-    db.record_tool_run_event(
-        request_id="req-1",
-        chat_id=10,
-        user_id=42,
-        event_type="tool_batch",
-        iteration=1,
-        status="partial",
-        tool_count=2,
-        success_count=1,
-        error_count=1,
-        duration_ms=123,
-        metadata={"tools": ["p1.do", "p2.do"], "compacted_from_chars": 9000},
-    )
-
-    events = db.list_tool_run_events()
-
-    assert len(events) == 1
-    assert events[0]["request_id"] == "req-1"
-    assert events[0]["event_type"] == "tool_batch"
-    assert events[0]["status"] == "partial"
-    assert events[0]["metadata"] == {"tools": ["p1.do", "p2.do"], "compacted_from_chars": 9000}
-
-
 def test_save_image_creates_missing_user_settings(db):
     image_id = db.save_image(42, 42, "telegram-file-id")
 

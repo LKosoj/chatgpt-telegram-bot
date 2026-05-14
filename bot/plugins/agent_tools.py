@@ -1556,12 +1556,6 @@ class AgentToolsPlugin(Plugin):
             for skill_id in scope_state
         ]
 
-    def cleanup_directives_for_active_skills(self, helper, *, chat_id=None, user_id=None) -> List[Dict[str, Any]]:
-        return self._cleanup_directives_for_active_skills(
-            helper,
-            {"chat_id": chat_id, "user_id": user_id},
-        )
-
     @staticmethod
     def _allowed_artifact_roots(helper) -> List[str]:
         roots = [Path("/tmp")]
@@ -1896,12 +1890,11 @@ class AgentToolsPlugin(Plugin):
         request_context=None,
         parent_allowed_plugins: List[str] | None = None,
     ) -> str:
+        tools, allowed_function_names = self._subagent_tools(
+            helper, model_to_use, parent_allowed_plugins=parent_allowed_plugins,
+        )
+
         for round_index in range(max_rounds + 1):
-            tools, allowed_function_names = self._subagent_tools(
-                helper,
-                model_to_use,
-                parent_allowed_plugins=parent_allowed_plugins,
-            )
             is_final_round = round_index == max_rounds
             request_kwargs = {
                 "model": model_to_use,
@@ -1926,7 +1919,6 @@ class AgentToolsPlugin(Plugin):
                         kwargs,
                         published=published,
                         request_context=request_context,
-                        parent_allowed_plugins=parent_allowed_plugins,
                     )
                     for call in tool_calls
                 ])
@@ -2074,7 +2066,6 @@ class AgentToolsPlugin(Plugin):
         *,
         published: List[Dict[str, Any]] | None = None,
         request_context=None,
-        parent_allowed_plugins: List[str] | None = None,
     ) -> str:
         tool_name = call["name"]
         if tool_name == "agent_tools.internal_publish":

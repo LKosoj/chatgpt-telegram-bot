@@ -75,12 +75,6 @@ class TerminalPlugin(Plugin):
                 },
                 "required": ["command"],
             },
-            "x_tool_metadata": {
-                "category": "system",
-                "risk_level": "high",
-                "parallelizable": False,
-                "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
-            },
         }]
 
     async def execute(self, function_name: str, helper: Any, **kwargs: Any) -> Dict:

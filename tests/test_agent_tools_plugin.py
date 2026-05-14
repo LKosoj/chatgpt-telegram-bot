@@ -139,11 +139,7 @@ class FakePluginManager:
         blocked_function_names=None,
     ):
         blocked = set(blocked_function_names or ())
-        specs = self.get_functions_specs(
-            helper,
-            model_to_use,
-            parent_allowed_plugins or ["All"],
-        )
+        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ["All"])
         filtered = []
         names = set()
         for tool in specs or []:
@@ -267,6 +263,7 @@ def test_agent_tools_registers_specs_and_handlers():
     assert any(command.get("command") == "background" for command in commands)
     assert any(command.get("callback_pattern") == "^agentask:" for command in commands)
     assert pm.get_message_handlers()
+
 
 def test_agent_tools_preserves_full_option_text():
     plugin = AgentToolsPlugin()
@@ -916,7 +913,7 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
 
     def get_functions_specs(self, helper, model_to_use, allowed_plugins):
         specs = super().get_functions_specs(helper, model_to_use, allowed_plugins)
-        specs = specs + [
+        return specs + [
             {
                 "type": "function",
                 "function": {
@@ -926,7 +923,6 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
                 },
             }
         ]
-        return specs
 
 
 class _DeepAnalysisCompletions(FakeCompletions):

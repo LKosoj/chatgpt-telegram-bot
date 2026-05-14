@@ -26,6 +26,7 @@ import yaml
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
+from .tool_result import tool_result_content
 from .utils import is_direct_result, encode_image, decode_image, escape_markdown
 from .plugin_manager import PluginManager
 from .database import Database
@@ -60,7 +61,6 @@ from .plugins.hooks import (
 from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
-from .tool_result import tool_result_content
 from .i18n import get_current_language, language_name, localized_text
 from .user_settings import (
     USER_TTS_MODEL_SETTING,
