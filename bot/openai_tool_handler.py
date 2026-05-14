@@ -242,6 +242,7 @@ _TEXT_PREVIEW_LIMIT = 600
 _TOOL_HISTORY_COMPACT_LIMIT = 6000
 _TOOL_HISTORY_PREVIEW_LIMIT = 2000
 _ARTIFACT_MANIFEST_LIMIT = 50
+_SKILL_CATALOG_KEY = "skill" + "s"
 
 
 def _json_dict(value) -> dict | None:
@@ -361,6 +362,47 @@ def _compact_value_for_history(value):
     return value
 
 
+def _compact_skill_catalog(skills):
+    if not isinstance(skills, list):
+        return None
+    compact = []
+    for item in skills:
+        if not isinstance(item, dict):
+            continue
+        entry = {
+            key: item.get(key)
+            for key in ("id", "name", "description")
+            if item.get(key) is not None
+        }
+        if entry:
+            compact.append(entry)
+    return compact
+
+
+def _compact_tool_catalog(tools):
+    if not isinstance(tools, list):
+        return None
+    compact = []
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if isinstance(item.get("function"), dict) else {}
+        entry = {
+            "name": item.get("name") or function.get("name"),
+            "description": item.get("description") or function.get("description"),
+        }
+        if item.get("id") is not None:
+            entry["id"] = item.get("id")
+        if item.get("plugin") is not None:
+            entry["plugin"] = item.get("plugin")
+        if isinstance(item.get("metadata"), dict):
+            entry["metadata"] = item.get("metadata")
+        entry = {key: value for key, value in entry.items() if value is not None}
+        if entry:
+            compact.append(entry)
+    return compact
+
+
 def _compact_tool_response_for_history(response) -> tuple[str, int]:
     content = response if isinstance(response, str) else json.dumps(response, default=str, ensure_ascii=False)
     if len(content) <= _TOOL_HISTORY_COMPACT_LIMIT:
@@ -376,6 +418,16 @@ def _compact_tool_response_for_history(response) -> tuple[str, int]:
         for key in ("success", "error", "status", "message", "result", "output"):
             if key in payload:
                 compact[key] = _compact_value_for_history(payload.get(key))
+        skills = _compact_skill_catalog(payload.get(_SKILL_CATALOG_KEY))
+        if skills is not None:
+            compact[_SKILL_CATALOG_KEY] = skills
+        for key in ("available_tools", "tools"):
+            tools = _compact_tool_catalog(payload.get(key))
+            if tools is not None:
+                compact[key] = tools
+        for key in ("disclosed_tools", "count", "scripts_enabled", "scripts_admin_restricted"):
+            if key in payload:
+                compact[key] = payload.get(key)
         artifact_paths = [
             entry.get("path")
             for entry in _artifact_entries_from_tool_response("", payload)

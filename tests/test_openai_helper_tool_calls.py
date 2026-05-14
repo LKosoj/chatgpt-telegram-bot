@@ -943,6 +943,80 @@ async def test_list_tool_result_compaction_does_not_embed_large_items():
 
 
 @pytest.mark.asyncio
+async def test_skills_list_compaction_preserves_skill_identity_fields():
+    full_description = "PowerPoint presentation skill. " + ("D" * 1200)
+    large_reference = "R" * 7000
+    helper = _make_helper(
+        DummyPluginManager({
+            "skills.list_skills": {
+                "success": True,
+                "skills": [{
+                    "id": "powerpoint",
+                    "name": "PowerPoint",
+                    "description": full_description,
+                    "references": [large_reference],
+                    "resources": [large_reference],
+                    "scripts": ["qa-pptx.sh"],
+                }],
+            },
+        }),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    response = FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ("skills.list_skills",)
+    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
+    content = tool_messages[-1]["content"]
+    assert "_compacted_tool_response" in content
+    assert '"id": "powerpoint"' in content
+    assert '"name": "PowerPoint"' in content
+    assert full_description in content
+    assert large_reference not in content
+
+
+@pytest.mark.asyncio
+async def test_tool_catalog_compaction_preserves_full_tool_descriptions():
+    full_description = "Create or edit presentation decks. " + ("T" * 1200)
+    large_schema = "S" * 7000
+    helper = _make_helper(
+        DummyPluginManager({
+            "agent_tools.discover_tools": {
+                "success": True,
+                "available_tools": [{
+                    "name": "presentation.create_deck",
+                    "description": full_description,
+                    "metadata": {"category": "documents"},
+                    "schema": large_schema,
+                }],
+                "disclosed_tools": ["presentation.create_deck"],
+                "count": 1,
+            },
+        }),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    response = FakeResponse(tool_calls=[FakeToolCall("agent_tools.discover_tools", "{}")])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ("agent_tools.discover_tools",)
+    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
+    content = tool_messages[-1]["content"]
+    assert "_compacted_tool_response" in content
+    assert '"name": "presentation.create_deck"' in content
+    assert full_description in content
+    assert large_schema not in content
+    assert '"disclosed_tools": ["presentation.create_deck"]' in content
+
+
+@pytest.mark.asyncio
 async def test_deferred_direct_result_value_is_compacted_before_reentry():
     large_value = "q" * 7000
     helper = _make_helper(

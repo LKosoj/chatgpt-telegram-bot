@@ -802,7 +802,7 @@ class AgentToolsPlugin(Plugin):
         available_tools = [
             {
                 "name": item.get("name"),
-                "description": str(item.get("description") or "")[:240],
+                "description": str(item.get("description") or ""),
                 "metadata": {
                     key: value
                     for key, value in (item.get("metadata") or {}).items()

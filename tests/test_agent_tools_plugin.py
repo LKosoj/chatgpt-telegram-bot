@@ -279,6 +279,33 @@ def test_agent_tools_registers_specs_and_handlers():
     assert pm.get_message_handlers()
 
 
+def test_discover_tools_preserves_full_descriptions():
+    full_description = "Presentation deck creation and QA. " + ("D" * 1200)
+
+    class CatalogPluginManager:
+        def get_tool_catalog(self, helper, model_to_use, allowed_plugins=None):
+            return [{
+                "name": "presentation.create_deck",
+                "description": full_description,
+                "metadata": {"category": "documents", "hidden": "drop"},
+            }]
+
+    helper = SimpleNamespace(
+        plugin_manager=CatalogPluginManager(),
+        get_current_model=lambda user_id: "llmgateway/high",
+    )
+
+    result = AgentToolsPlugin()._discover_tools(
+        helper,
+        query="presentation",
+        allowed_plugins=["All"],
+    )
+
+    assert result["success"] is True
+    assert result["available_tools"][0]["description"] == full_description
+    assert result["available_tools"][0]["metadata"] == {"category": "documents"}
+
+
 def test_agent_tools_preserves_full_option_text():
     plugin = AgentToolsPlugin()
     long_option = "A" * 120
