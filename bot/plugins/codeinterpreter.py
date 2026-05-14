@@ -343,7 +343,15 @@ class CodeInterpreterPlugin(Plugin):
     async def debug_code(self, code, error_message, add_prompt, session_id):
         """Автоматическая отладка кода с объяснением ошибок."""
         try:
-            fixed_code = await self.generate_code(f"Исправь в коде ошибки, в ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!:\nОшибка: {error_message}\nКод: {code}\n", session_id)
+            regex_hint = ""
+            if "bad character in group name" in str(error_message):
+                regex_hint = (
+                    "\nПодсказка: ошибка `bad character in group name` часто возникает в "
+                    "replacement-строке `re.sub`. Используй корректные ссылки на группы "
+                    "`\\g<1>`, `\\g<2>` или lambda replacement: "
+                    "`re.sub(pattern, lambda m: ..., text)`. Не используй формы вроде `\\g<<1>`."
+                )
+            fixed_code = await self.generate_code(f"Исправь в коде ошибки, в ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!:\nОшибка: {error_message}{regex_hint}\nКод: {code}\n", session_id)
             return fixed_code
         except Exception as e:
             logging.error(f"Ошибка при отладке: {e}")

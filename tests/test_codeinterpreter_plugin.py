@@ -95,6 +95,31 @@ async def test_direct_python_code_returns_subprocess_errors_without_internal_deb
 
 
 @pytest.mark.asyncio
+async def test_debug_code_adds_re_sub_group_hint(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    prompts = []
+
+    async def fake_generate_code(prompt, session_id):
+        prompts.append((prompt, session_id))
+        return "fixed code"
+
+    monkeypatch.setattr(plugin, "generate_code", fake_generate_code)
+
+    result = await plugin.debug_code(
+        "text = re.sub(pattern, r'\\g<<1>', text)",
+        "bad character in group name '<1' at position 3",
+        "",
+        "debug-session",
+    )
+
+    assert result == "fixed code"
+    assert prompts[0][1] == "debug-session"
+    assert "\\g<1>" in prompts[0][0]
+    assert "lambda replacement" in prompts[0][0]
+    assert "\\g<<1>" in prompts[0][0]
+
+
+@pytest.mark.asyncio
 async def test_execute_code_returns_syntax_error_without_keyerror(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
     monkeypatch.chdir(tmp_path)
