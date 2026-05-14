@@ -51,6 +51,8 @@ MAX_SUBAGENTS = 5
 MIN_SUBAGENT_TOOL_ROUNDS = 10
 MAX_SUBAGENT_TOOL_ROUNDS = 50
 DEFAULT_SUBAGENT_TEMPERATURE = 0.2
+SUBAGENT_CONSECUTIVE_REPEAT_LIMIT = 3
+SUBAGENT_TOTAL_REPEAT_LIMIT = 5
 SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.manage_plan_tasks",
     "agent_tools.ask_telegram_user",
@@ -1985,6 +1987,10 @@ class AgentToolsPlugin(Plugin):
         tools, allowed_function_names = self._subagent_tools(
             helper, model_to_use, parent_allowed_plugins=parent_allowed_plugins,
         )
+        repeated_fingerprints: set[str] = set()
+        fingerprint_counts: Dict[str, int] = {}
+        last_fingerprint = ""
+        consecutive_count = 0
 
         for round_index in range(max_rounds + 1):
             is_final_round = round_index == max_rounds
@@ -2003,22 +2009,59 @@ class AgentToolsPlugin(Plugin):
             tool_calls = self._extract_tool_calls(choice)
             if tool_calls and not is_final_round:
                 messages.append(self._assistant_tool_calls_message(choice, tool_calls))
-                tool_responses = await asyncio.gather(*[
-                    self._call_subagent_tool(
-                        helper,
-                        call,
-                        allowed_function_names,
-                        kwargs,
-                        published=published,
-                        request_context=request_context,
+                tool_responses: List[str | None] = [None] * len(tool_calls)
+                pending_calls: List[tuple[int, Dict[str, str]]] = []
+                for index, call in enumerate(tool_calls):
+                    fingerprint = self._tool_call_fingerprint(call)
+                    fingerprint_counts[fingerprint] = fingerprint_counts.get(fingerprint, 0) + 1
+                    if fingerprint == last_fingerprint:
+                        consecutive_count += 1
+                    else:
+                        last_fingerprint = fingerprint
+                        consecutive_count = 1
+                    repeated = (
+                        consecutive_count >= SUBAGENT_CONSECUTIVE_REPEAT_LIMIT
+                        or fingerprint_counts[fingerprint] >= SUBAGENT_TOTAL_REPEAT_LIMIT
                     )
-                    for call in tool_calls
-                ])
+                    if repeated:
+                        error = self._repeated_tool_call_error(
+                            call,
+                            consecutive_count=consecutive_count,
+                            total_count=fingerprint_counts[fingerprint],
+                        )
+                        if fingerprint in repeated_fingerprints:
+                            raise RuntimeError(error)
+                        repeated_fingerprints.add(fingerprint)
+                        tool_responses[index] = json.dumps(
+                            {
+                                "success": False,
+                                "stuck_loop": True,
+                                "error": error,
+                                "instruction": "Choose a different tool call, change the arguments, or stop and report the blocker.",
+                            },
+                            ensure_ascii=False,
+                        )
+                        continue
+                    pending_calls.append((index, call))
+                if pending_calls:
+                    pending_responses = await asyncio.gather(*[
+                        self._call_subagent_tool(
+                            helper,
+                            call,
+                            allowed_function_names,
+                            kwargs,
+                            published=published,
+                            request_context=request_context,
+                        )
+                        for _index, call in pending_calls
+                    ])
+                    for (index, _call), response in zip(pending_calls, pending_responses):
+                        tool_responses[index] = response
                 for call, tool_response in zip(tool_calls, tool_responses):
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": self._tool_result_content(helper, tool_response),
+                        "content": self._tool_result_content(helper, tool_response or ""),
                     })
                 continue
 
@@ -2033,6 +2076,34 @@ class AgentToolsPlugin(Plugin):
             return ""
 
         return ""
+
+    @staticmethod
+    def _tool_call_fingerprint(call: Dict[str, str]) -> str:
+        raw_arguments = call.get("arguments") or "{}"
+        try:
+            parsed = json.loads(raw_arguments)
+            normalized_arguments = json.dumps(
+                parsed,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except json.JSONDecodeError:
+            normalized_arguments = raw_arguments.strip()
+        return f"{call.get('name') or ''}:{normalized_arguments}"
+
+    @staticmethod
+    def _repeated_tool_call_error(
+        call: Dict[str, str],
+        *,
+        consecutive_count: int,
+        total_count: int,
+    ) -> str:
+        return (
+            f"Repeated identical tool call detected for {call.get('name')}: "
+            f"{consecutive_count} consecutive repeats, {total_count} total repeats. "
+            "Choose different arguments or stop and report the blocker."
+        )
 
     def _subagent_tools(
         self,

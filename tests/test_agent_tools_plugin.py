@@ -274,10 +274,52 @@ class ParallelToolPluginManager(FakePluginManager):
             self.running -= 1
 
 
+class TerminalOnlyPluginManager(FakePluginManager):
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal.terminal",
+                    "description": "execute shell command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    async def call_function(self, function_name, helper, arguments, request_context=None):
+        self.calls.append((function_name, json.loads(arguments)))
+        return json.dumps({"success": True, "output": "/tmp/pptx-work-XXXXXX"}, ensure_ascii=False)
+
+
 class SlowFakeCompletions(FakeCompletions):
     async def create(self, **kwargs):
         await asyncio.sleep(0.01)
         return await super().create(**kwargs)
+
+
+class RepeatingToolCompletions:
+    def __init__(self):
+        self.calls = []
+        self.tool_call = SimpleNamespace(
+            id="repeat_tool",
+            function=SimpleNamespace(
+                name="terminal.terminal",
+                arguments=json.dumps({
+                    "cmd": "mkdir -p /tmp/pptx-work-XXXXXX && ls -d /tmp/pptx-work-* | head -1"
+                }),
+            ),
+        )
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=None, tool_calls=[self.tool_call])
+                )
+            ]
+        )
 
 
 class FakeMessage:
@@ -789,6 +831,40 @@ async def test_run_subagents_inherits_active_skill_context(tmp_path):
     assert "powerpoint (PowerPoint)" in user_messages[0]
     assert "current_step=2" in user_messages[0]
     assert "quarterly review" in user_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_fails_when_identical_tool_call_continues_after_warning(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    plugin_manager = TerminalOnlyPluginManager()
+    helper = FakeLLMHelper(
+        completions=RepeatingToolCompletions(),
+        plugin_manager=plugin_manager,
+    )
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "worker", "task": "make a workdir"}],
+    )
+
+    assert result["success"] is True
+    subagent = result["subagents"][0]
+    assert subagent["status"] == "error"
+    assert "Repeated identical tool call detected" in subagent["error"]
+    assert [name for name, _args in plugin_manager.calls] == [
+        "terminal.terminal",
+        "terminal.terminal",
+    ]
+    tool_messages = [
+        message
+        for message in helper.completions.calls[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert any('"stuck_loop": true' in message["content"] for message in tool_messages)
 
 
 @pytest.mark.asyncio
