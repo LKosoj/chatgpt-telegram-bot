@@ -129,15 +129,9 @@ class DummyPluginManager:
         self.call_contexts.append(request_context)
         return self.responses[name]
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins, disclosed_functions=None):
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
         self.spec_calls.append(list(allowed_plugins or []))
-        if disclosed_functions is None:
-            return self.specs
-        disclosed = set(disclosed_functions or ())
-        return [
-            spec for spec in self.specs
-            if (spec.get("function") or {}).get("name") in disclosed
-        ]
+        return self.specs
 
     def get_plugin_source_name(self, function_name):
         return function_name.split(".", 1)[0]
@@ -980,43 +974,6 @@ async def test_skills_list_compaction_preserves_skill_identity_fields():
 
 
 @pytest.mark.asyncio
-async def test_tool_catalog_compaction_preserves_full_tool_descriptions():
-    full_description = "Create or edit presentation decks. " + ("T" * 1200)
-    large_schema = "S" * 7000
-    helper = _make_helper(
-        DummyPluginManager({
-            "agent_tools.discover_tools": {
-                "success": True,
-                "available_tools": [{
-                    "name": "presentation.create_deck",
-                    "description": full_description,
-                    "metadata": {"category": "documents"},
-                    "schema": large_schema,
-                }],
-                "disclosed_tools": ["presentation.create_deck"],
-                "count": 1,
-            },
-        }),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    response = FakeResponse(tool_calls=[FakeToolCall("agent_tools.discover_tools", "{}")])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("agent_tools.discover_tools",)
-    tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
-    content = tool_messages[-1]["content"]
-    assert "_compacted_tool_response" in content
-    assert '"name": "presentation.create_deck"' in content
-    assert full_description in content
-    assert large_schema not in content
-    assert '"disclosed_tools": ["presentation.create_deck"]' in content
-
-
-@pytest.mark.asyncio
 async def test_deferred_direct_result_value_is_compacted_before_reentry():
     large_value = "q" * 7000
     helper = _make_helper(
@@ -1072,71 +1029,6 @@ async def test_tool_execution_logs_do_not_echo_raw_large_payloads(caplog):
         )
 
     assert large_output not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_discover_tools_discloses_specs_for_next_reentry():
-    specs = [
-        {"type": "function", "function": {"name": "agent_tools.discover_tools"}},
-        {"type": "function", "function": {"name": "weather.get_weather"}},
-    ]
-    helper = _make_helper(
-        DummyPluginManager(
-            {
-                "agent_tools.discover_tools": {
-                    "success": True,
-                    "disclosed_tools": ["weather.get_weather"],
-                }
-            },
-            specs=specs,
-        ),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    helper._tool_disclosure_states[1] = {"disclosed": {"agent_tools.discover_tools"}}
-    response = FakeResponse(tool_calls=[
-        FakeToolCall(
-            "agent_tools.discover_tools",
-            json.dumps({"tool_names": ["weather.get_weather"]}),
-        ),
-    ])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("agent_tools.discover_tools",)
-    reentry_tools = helper.client.create_kwargs[0]["tools"]
-    assert [tool["function"]["name"] for tool in reentry_tools] == [
-        "agent_tools.discover_tools",
-        "weather.get_weather",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_progressive_disclosure_is_passed_to_run_subagents():
-    helper = _make_helper(
-        DummyPluginManager({"agent_tools.run_subagents": {"success": True}}),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    helper._tool_disclosure_states[1] = {
-        "disclosed": {"agent_tools.run_subagents", "skills.list_skills"}
-    }
-    response = FakeResponse(tool_calls=[
-        FakeToolCall(
-            "agent_tools.run_subagents",
-            json.dumps({"subagents": [{"id": "a1", "role": "reviewer", "task": "check"}]}),
-        ),
-    ])
-
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
-    )
-
-    assert out.choices[0].message.content == "done"
-    assert tools_used == ("agent_tools.run_subagents",)
-    called_args = json.loads(helper.plugin_manager.calls[0][1])
-    assert called_args["disclosed_functions"] == ["agent_tools.run_subagents", "skills.list_skills"]
 
 
 @pytest.mark.asyncio

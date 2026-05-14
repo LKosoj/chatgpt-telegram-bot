@@ -117,7 +117,6 @@ async def _list_user_sessions(db, user_id, *, is_active: int = 0):
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
-DISCOVER_TOOLS_NAME = DELIVERY_PLUGIN_PREFIX + "discover_tools"
 RUN_SUBAGENTS_NAME = DELIVERY_PLUGIN_PREFIX + "run_subagents"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 DELIVERY_REPAIR_PROMPT = (
@@ -379,30 +378,6 @@ def _compact_skill_catalog(skills):
     return compact
 
 
-def _compact_tool_catalog(tools):
-    if not isinstance(tools, list):
-        return None
-    compact = []
-    for item in tools:
-        if not isinstance(item, dict):
-            continue
-        function = item.get("function") if isinstance(item.get("function"), dict) else {}
-        entry = {
-            "name": item.get("name") or function.get("name"),
-            "description": item.get("description") or function.get("description"),
-        }
-        if item.get("id") is not None:
-            entry["id"] = item.get("id")
-        if item.get("plugin") is not None:
-            entry["plugin"] = item.get("plugin")
-        if isinstance(item.get("metadata"), dict):
-            entry["metadata"] = item.get("metadata")
-        entry = {key: value for key, value in entry.items() if value is not None}
-        if entry:
-            compact.append(entry)
-    return compact
-
-
 def _compact_tool_response_for_history(response) -> tuple[str, int]:
     content = response if isinstance(response, str) else json.dumps(response, default=str, ensure_ascii=False)
     if len(content) <= _TOOL_HISTORY_COMPACT_LIMIT:
@@ -421,11 +396,7 @@ def _compact_tool_response_for_history(response) -> tuple[str, int]:
         skills = _compact_skill_catalog(payload.get(_SKILL_CATALOG_KEY))
         if skills is not None:
             compact[_SKILL_CATALOG_KEY] = skills
-        for key in ("available_tools", "tools"):
-            tools = _compact_tool_catalog(payload.get(key))
-            if tools is not None:
-                compact[key] = tools
-        for key in ("disclosed_tools", "count", "scripts_enabled", "scripts_admin_restricted"):
+        for key in ("count", "scripts_enabled", "scripts_admin_restricted"):
             if key in payload:
                 compact[key] = payload.get(key)
         artifact_paths = [
@@ -619,7 +590,6 @@ async def _retry_missing_delivery_tool(
     artifact_manifest=None,
     failed_tool_batch_signature=None,
     run_state=None,
-    tool_disclosure_state=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -644,15 +614,7 @@ async def _retry_missing_delivery_tool(
     active_session = next((s for s in sessions if s['is_active']), None)
     session_id = active_session['session_id'] if active_session else None
     max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
-    if tool_disclosure_state is not None:
-        tools = helper.plugin_manager.get_functions_specs(
-            helper,
-            model_to_use,
-            allowed_plugins,
-            disclosed_functions=tool_disclosure_state.get("disclosed"),
-        )
-    else:
-        tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
+    tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
 
     messages = await helper._apply_before_chat_request_mutators(
         chat_id=chat_id,
@@ -685,7 +647,6 @@ async def _retry_missing_delivery_tool(
         artifact_manifest=artifact_manifest,
         failed_tool_batch_signature=failed_tool_batch_signature,
         run_state=run_state,
-        tool_disclosure_state=tool_disclosure_state,
     )
 
 
@@ -705,7 +666,6 @@ async def handle_function_call(
     artifact_manifest=None,
     failed_tool_batch_signature=None,
     run_state=None,
-    tool_disclosure_state=None,
 ):
     tool_calls = []
     try:
@@ -745,7 +705,6 @@ async def handle_function_call(
                 artifact_manifest,
                 failed_tool_batch_signature,
                 run_state,
-                tool_disclosure_state,
             )
 
         if stream:
@@ -904,10 +863,6 @@ async def handle_function_call(
                 else:
                     args['chat_id'] = int(chat_id) if chat_id is not None else chat_id
                     args['user_id'] = user_id if user_id is not None else args['chat_id']
-                if tool_name == DISCOVER_TOOLS_NAME:
-                    args["allowed_plugins"] = allowed_plugins
-                if tool_name == RUN_SUBAGENTS_NAME and tool_disclosure_state is not None:
-                    args["disclosed_functions"] = sorted(tool_disclosure_state.get("disclosed") or [])
                 routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
                 if routing_error:
                     logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)
@@ -982,12 +937,6 @@ async def handle_function_call(
             )
             tool_success = tool_result.success
             tool_successes.append(tool_success)
-            if tool_name == DISCOVER_TOOLS_NAME and tool_disclosure_state is not None:
-                disclosed_tools = tool_result.payload.get("disclosed_tools") if isinstance(tool_result.payload, dict) else None
-                if isinstance(disclosed_tools, list):
-                    tool_disclosure_state.setdefault("disclosed", set()).update(
-                        str(name) for name in disclosed_tools if isinstance(name, str)
-                    )
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             if tool_success:
@@ -1091,15 +1040,7 @@ async def handle_function_call(
             session_id,
         )
 
-        if tool_disclosure_state is not None:
-            tools = helper.plugin_manager.get_functions_specs(
-                helper,
-                model_to_use,
-                allowed_plugins,
-                disclosed_functions=tool_disclosure_state.get("disclosed"),
-            )
-        else:
-            tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
+        tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
 
         messages = await helper._apply_before_chat_request_mutators(
             chat_id=chat_id,
@@ -1132,7 +1073,6 @@ async def handle_function_call(
             artifact_manifest,
             next_failed_tool_batch_signature,
             run_state,
-            tool_disclosure_state,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

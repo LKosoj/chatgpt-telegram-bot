@@ -83,8 +83,8 @@ class FakePluginManager:
     def __init__(self):
         self.calls = []
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins, disclosed_functions=None):
-        specs = [
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
+        return [
             {
                 "type": "function",
                 "function": {
@@ -126,13 +126,6 @@ class FakePluginManager:
                 },
             },
         ]
-        if disclosed_functions is None:
-            return specs
-        disclosed = set(disclosed_functions or ())
-        return [
-            tool for tool in specs
-            if (tool.get("function") or {}).get("name") in disclosed
-        ]
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
         self.calls.append((function_name, json.loads(arguments)))
@@ -144,14 +137,12 @@ class FakePluginManager:
         model_to_use,
         parent_allowed_plugins=None,
         blocked_function_names=None,
-        disclosed_functions=None,
     ):
         blocked = set(blocked_function_names or ())
         specs = self.get_functions_specs(
             helper,
             model_to_use,
             parent_allowed_plugins or ["All"],
-            disclosed_functions=disclosed_functions,
         )
         filtered = []
         names = set()
@@ -250,7 +241,6 @@ def test_agent_tools_registers_specs_and_handlers():
     names = {spec["function"]["name"] for spec in specs}
     assert names == {
         "agent_tools.manage_plan_tasks",
-        "agent_tools.discover_tools",
         "agent_tools.ask_telegram_user",
         "agent_tools.cancel_pending_question",
         "agent_tools.run_subagents",
@@ -277,34 +267,6 @@ def test_agent_tools_registers_specs_and_handlers():
     assert any(command.get("command") == "background" for command in commands)
     assert any(command.get("callback_pattern") == "^agentask:" for command in commands)
     assert pm.get_message_handlers()
-
-
-def test_discover_tools_preserves_full_descriptions():
-    full_description = "Presentation deck creation and QA. " + ("D" * 1200)
-
-    class CatalogPluginManager:
-        def get_tool_catalog(self, helper, model_to_use, allowed_plugins=None):
-            return [{
-                "name": "presentation.create_deck",
-                "description": full_description,
-                "metadata": {"category": "documents", "hidden": "drop"},
-            }]
-
-    helper = SimpleNamespace(
-        plugin_manager=CatalogPluginManager(),
-        get_current_model=lambda user_id: "llmgateway/high",
-    )
-
-    result = AgentToolsPlugin()._discover_tools(
-        helper,
-        query="presentation",
-        allowed_plugins=["All"],
-    )
-
-    assert result["success"] is True
-    assert result["available_tools"][0]["description"] == full_description
-    assert result["available_tools"][0]["metadata"] == {"category": "documents"}
-
 
 def test_agent_tools_preserves_full_option_text():
     plugin = AgentToolsPlugin()
@@ -707,32 +669,6 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_subagents_honors_progressive_disclosure(tmp_path):
-    plugin = AgentToolsPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    helper = FakeLLMHelper()
-
-    result = await plugin.execute(
-        "run_subagents",
-        helper,
-        chat_id=10,
-        user_id=42,
-        disclosed_functions=["agent_tools.run_subagents", "skills.list_skills"],
-        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
-    )
-
-    assert result["success"] is True
-    first_round_tool_names = {
-        tool["function"]["name"]
-        for tool in helper.completions.calls[0].get("tools", [])
-    }
-    assert "skills.list_skills" in first_round_tool_names
-    assert "skills.get_skill" not in first_round_tool_names
-    assert "agent_tools.run_subagents" not in first_round_tool_names
-    assert "agent_tools.internal_publish" in first_round_tool_names
-
-
-@pytest.mark.asyncio
 async def test_run_subagents_applies_per_subagent_overrides(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
@@ -978,13 +914,8 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
     def get_plugin(self, name: str):
         return self._skills_plugin if name == "skills" else None
 
-    def get_functions_specs(self, helper, model_to_use, allowed_plugins, disclosed_functions=None):
-        specs = super().get_functions_specs(
-            helper,
-            model_to_use,
-            allowed_plugins,
-            disclosed_functions=disclosed_functions,
-        )
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
+        specs = super().get_functions_specs(helper, model_to_use, allowed_plugins)
         specs = specs + [
             {
                 "type": "function",
@@ -995,13 +926,7 @@ class FakeSkillsAwarePluginManager(FakePluginManager):
                 },
             }
         ]
-        if disclosed_functions is None:
-            return specs
-        disclosed = set(disclosed_functions or ())
-        return [
-            tool for tool in specs
-            if (tool.get("function") or {}).get("name") in disclosed
-        ]
+        return specs
 
 
 class _DeepAnalysisCompletions(FakeCompletions):

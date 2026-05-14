@@ -203,7 +203,6 @@ class OpenAIHelper:
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
         self._chat_request_models: dict[int, str] = {}
-        self._tool_disclosure_states: dict[int, dict] = {}
         self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
@@ -601,7 +600,6 @@ class OpenAIHelper:
             # Clean up after response is generated
             if hasattr(self, 'last_image_file_id'):
                 delattr(self, 'last_image_file_id')
-            self._tool_disclosure_states.pop(chat_id, None)
 
     async def get_chat_response_stream(
         self,
@@ -986,16 +984,7 @@ class OpenAIHelper:
 
             if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, memory_user_id)
-                tool_disclosure_state = self._new_tool_disclosure_state(chat_id)
-                if tool_disclosure_state is not None:
-                    tools = self.plugin_manager.get_functions_specs(
-                        self,
-                        model_to_use,
-                        allowed_plugins,
-                        disclosed_functions=tool_disclosure_state.get("disclosed"),
-                    )
-                else:
-                    tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
+                tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
                 if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):
                     common_args['tools'] = tools
@@ -1058,7 +1047,6 @@ class OpenAIHelper:
             user_id,
             request_context,
             model_to_use=model_to_use,
-            tool_disclosure_state=self._tool_disclosure_states.get(chat_id),
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
@@ -1107,21 +1095,6 @@ class OpenAIHelper:
         system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
         current_mode = self._mode_from_system_message(system_message)
         return bool(current_mode and current_mode.get("defer_direct_results"))
-
-    def _progressive_tool_disclosure_active(self, chat_id: int) -> bool:
-        messages = self.conversations.get(chat_id, [])
-        system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
-        current_mode = self._mode_from_system_message(system_message)
-        return bool(current_mode and current_mode.get("progressive_tool_disclosure"))
-
-    def _new_tool_disclosure_state(self, chat_id: int) -> dict | None:
-        if not self._progressive_tool_disclosure_active(chat_id):
-            self._tool_disclosure_states.pop(chat_id, None)
-            return None
-        disclosed = self.plugin_manager.get_progressive_disclosure_bootstrap_functions(["All"])
-        state = {"disclosed": disclosed}
-        self._tool_disclosure_states[chat_id] = state
-        return state
 
     def _add_function_call_to_history(
         self,
@@ -1212,16 +1185,7 @@ class OpenAIHelper:
         if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
             return None
 
-        tool_disclosure_state = self._tool_disclosure_states.get(chat_id)
-        if tool_disclosure_state is not None:
-            tools = self.plugin_manager.get_functions_specs(
-                self,
-                model_to_use,
-                allowed_plugins,
-                disclosed_functions=tool_disclosure_state.get("disclosed"),
-            )
-        else:
-            tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
+        tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
         if not tools:
             return None
 
