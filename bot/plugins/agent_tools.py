@@ -52,11 +52,17 @@ MIN_SUBAGENT_TOOL_ROUNDS = 10
 MAX_SUBAGENT_TOOL_ROUNDS = 50
 DEFAULT_SUBAGENT_TEMPERATURE = 0.2
 SUBAGENT_BLOCKED_FUNCTIONS = {
+    "agent_tools.manage_plan_tasks",
     "agent_tools.ask_telegram_user",
     "agent_tools.cancel_pending_question",
     "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
+    "skills.find_installable_skills",
+    "skills.install_skill",
+    "skills.create_skill",
     "skills.run_skill_agent",
+    "skills.update_skill_progress",
+    "skills.deactivate_skill",
 }
 _CONTRACT_UNSET = object()
 
@@ -1278,6 +1284,8 @@ class AgentToolsPlugin(Plugin):
         current_contract = plan.get("contract")
         contract_update, contract_error = self._contract_from_kwargs(kwargs)
         if contract_error:
+            if action == "add":
+                return self._plan_contract_repair_response(contract_error, kwargs.get("tasks") or [])
             return {"success": False, "error": contract_error}
         effective_contract = current_contract if contract_update is _CONTRACT_UNSET else contract_update
         contract_changed = contract_update is not _CONTRACT_UNSET and contract_update != current_contract
@@ -1320,7 +1328,7 @@ class AgentToolsPlugin(Plugin):
             if candidate_tasks:
                 contract_validation_error = self._contract_validation_error(effective_contract)
                 if contract_validation_error:
-                    return {"success": False, "error": contract_validation_error}
+                    return self._plan_contract_repair_response(contract_validation_error, items)
             changed = bool(items) or contract_changed
             if changed:
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
@@ -1393,6 +1401,25 @@ class AgentToolsPlugin(Plugin):
             )
 
         return {"success": False, "error": f"Unknown action: {action}"}
+
+    @staticmethod
+    def _plan_contract_repair_response(error: str, tasks: Any) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "error": error,
+            "retryable": True,
+            "retry_instruction": (
+                "Retry agent_tools.manage_plan_tasks with action='add', the same tasks, "
+                "and definition_of_done containing goal, success_criteria, and verification."
+            ),
+            "required_definition_of_done": {
+                "goal": "Concrete end state for this user request.",
+                "success_criteria": ["Observable condition that means the work is done."],
+                "verification": ["Specific check to run before final delivery."],
+                "constraints": ["Optional constraints from the user or active skill."],
+            },
+            "tasks_to_retry": tasks if isinstance(tasks, list) else [],
+        }
 
     def _tasks_response(
         self,
@@ -1668,6 +1695,11 @@ class AgentToolsPlugin(Plugin):
             return {"success": False, "error": f"At most {MAX_SUBAGENTS} subagents can run at once"}
 
         shared_context = str(kwargs.get("shared_context") or "").strip()
+        inherited_skill_context = self._active_skill_context_for_subagents(helper, kwargs)
+        if inherited_skill_context:
+            shared_context = "\n\n".join(
+                part for part in (shared_context, inherited_skill_context) if part
+            )
         parent_max_rounds = self._normalize_max_rounds(kwargs.get("max_rounds"))
         parent_allowed_plugins = await self._resolve_parent_allowed_plugins(helper, request_context, kwargs)
         tasks = [
@@ -1714,6 +1746,66 @@ class AgentToolsPlugin(Plugin):
             "success": True,
             "subagents": normalized_results,
         }
+
+    @staticmethod
+    def _active_skill_context_for_subagents(helper, kwargs: Dict[str, Any]) -> str:
+        plugin_manager = getattr(helper, "plugin_manager", None) if helper is not None else None
+        if plugin_manager is None:
+            return ""
+        try:
+            skills_plugin = plugin_manager.get_plugin("skills")
+        except Exception:
+            return ""
+        if skills_plugin is None:
+            return ""
+
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        active_skills = getattr(skills_plugin, "active_skills", None) or {}
+        scope_state = active_skills.get(scope) or {}
+        if not scope_state:
+            return ""
+
+        disabled_skills = set()
+        disabled_lookup = getattr(skills_plugin, "_disabled_skills_for_user", None)
+        if callable(disabled_lookup):
+            try:
+                disabled_skills = set(disabled_lookup(helper, kwargs.get("user_id")) or set())
+            except Exception:
+                logging.debug("Failed to resolve disabled skills for subagent context", exc_info=True)
+
+        available_skills = getattr(skills_plugin, "available_skills", None) or {}
+        lines = [
+            "Active skills inherited from the parent agent:",
+            (
+                "If a subtask belongs to one of these skills, use that skill first. "
+                "Call skills.get_skill / skills.get_skill_status for full instructions before scripts or execution."
+            ),
+        ]
+        for skill_id, state in sorted(scope_state.items()):
+            if skill_id in disabled_skills:
+                continue
+            info = available_skills.get(skill_id, {})
+            name = info.get("name") or skill_id
+            description = str(info.get("description") or "").strip().replace("\n", " ")
+            if len(description) > 240:
+                description = description[:240].rstrip() + "..."
+            line = f"- {skill_id} ({name})"
+            if description:
+                line += f": {description}"
+            current_step = state.get("current_step")
+            if current_step is not None:
+                line += f"; current_step={current_step}"
+            context = state.get("context")
+            if context:
+                try:
+                    context_text = json.dumps(context, ensure_ascii=False, sort_keys=True)
+                except TypeError:
+                    context_text = str(context)
+                if len(context_text) > 500:
+                    context_text = context_text[:500].rstrip() + "..."
+                line += f"; active_context={context_text}"
+            lines.append(line)
+        return "\n".join(lines) if len(lines) > 2 else ""
 
     def _background_subagent_done(self, task: asyncio.Task) -> None:
         self._background_subagent_tasks.discard(task)

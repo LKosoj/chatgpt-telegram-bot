@@ -4,6 +4,7 @@ import importlib.machinery
 import json
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,8 +105,56 @@ class FakePluginManager:
             {
                 "type": "function",
                 "function": {
+                    "name": "skills.find_installable_skills",
+                    "description": "find installable skills",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.install_skill",
+                    "description": "install skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.create_skill",
+                    "description": "create skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.update_skill_progress",
+                    "description": "update skill progress",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.deactivate_skill",
+                    "description": "deactivate skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "agent_tools.deliver_to_user",
                     "description": "final delivery",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "agent_tools.manage_plan_tasks",
+                    "description": "manage parent plan",
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
@@ -149,6 +198,38 @@ class FakePluginManager:
             filtered.append(tool)
             names.add(name)
         return filtered, names
+
+
+class FakeSkillsPlugin:
+    def __init__(self):
+        self.available_skills = {
+            "powerpoint": {
+                "name": "PowerPoint",
+                "description": "Create, read, edit, and visually QA PowerPoint presentations.",
+            }
+        }
+        self.active_skills = {
+            "chat:10": {
+                "powerpoint": {
+                    "current_step": 2,
+                    "context": {"stage": "planning", "deck": "quarterly review"},
+                }
+            }
+        }
+
+    def _disabled_skills_for_user(self, helper, user_id):
+        return set()
+
+
+class SkillAwarePluginManager(FakePluginManager):
+    def __init__(self, skills_plugin):
+        super().__init__()
+        self.skills_plugin = skills_plugin
+
+    def get_plugin(self, plugin_name):
+        if plugin_name == "skills":
+            return self.skills_plugin
+        raise KeyError(plugin_name)
 
 
 class FakeLLMHelper:
@@ -278,6 +359,15 @@ def test_agent_tools_timeout_ignores_invalid_env_default(monkeypatch):
     assert AgentToolsPlugin._normalize_timeout(None) == 1800
 
 
+def test_subagent_prompt_declares_local_skill_flow():
+    prompt = Path("bot/prompts/subagent_system.md").read_text(encoding="utf-8")
+
+    assert "skills.list_skills" in prompt
+    assert "skills.get_skill" in prompt
+    assert "skills.activate_skill" in prompt
+    assert "Do not search installable skills" in prompt
+
+
 @pytest.mark.asyncio
 async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
     plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
@@ -334,6 +424,9 @@ async def test_manage_plan_tasks_requires_complete_definition_of_done(tmp_path, 
 
     assert result["success"] is False
     assert "definition_of_done" in result["error"]
+    assert result["retryable"] is True
+    assert result["required_definition_of_done"]["goal"]
+    assert result["tasks_to_retry"] == [{"id": "T1", "content": "Do work"}]
 
 
 @pytest.mark.asyncio
@@ -654,15 +747,48 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
         for tool in call.get("tools", [])
     }
     assert "skills.list_skills" in tool_names
+    assert "agent_tools.manage_plan_tasks" not in tool_names
     assert "agent_tools.deliver_to_user" not in tool_names
     assert "agent_tools.run_subagents" not in tool_names
+    assert "skills.find_installable_skills" not in tool_names
+    assert "skills.install_skill" not in tool_names
+    assert "skills.create_skill" not in tool_names
     assert "skills.run_skill_agent" not in tool_names
+    assert "skills.update_skill_progress" not in tool_names
+    assert "skills.deactivate_skill" not in tool_names
     assert [call[0] for call in helper.plugin_manager.calls] == ["skills.list_skills", "skills.list_skills"]
     assert any(
         "Shared facts" in message["content"]
         for message in helper.completions.calls[0]["messages"]
         if message.get("role") == "user"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_inherits_active_skill_context(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(plugin_manager=SkillAwarePluginManager(FakeSkillsPlugin()))
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "worker", "task": "Review the deck plan"}],
+    )
+
+    assert result["success"] is True
+    user_messages = [
+        message["content"]
+        for message in helper.completions.calls[0]["messages"]
+        if message.get("role") == "user"
+    ]
+    assert user_messages
+    assert "Active skills inherited from the parent agent" in user_messages[0]
+    assert "powerpoint (PowerPoint)" in user_messages[0]
+    assert "current_step=2" in user_messages[0]
+    assert "quarterly review" in user_messages[0]
 
 
 @pytest.mark.asyncio
