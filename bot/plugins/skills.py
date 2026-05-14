@@ -77,7 +77,6 @@ ARCHIVE_SUFFIXES = (
     ".zip",
 )
 
-
 class SkillsPlugin(Plugin):
     """
     Exposes local Codex-style skills as tools for the existing function-calling loop.
@@ -176,6 +175,10 @@ class SkillsPlugin(Plugin):
         if not summary_lines:
             return None
         joined = "\n".join(f"- {line}" for line in summary_lines)
+        direct_match_block = self._auto_mode_direct_match_block(
+            getattr(payload, "query", ""),
+            disabled_skills,
+        )
         return (
             "ПРИОРИТЕТНОЕ ПРАВИЛО (применяется ПЕРВЫМ, до всех остальных правил):\n"
             "Если хотя бы один из установленных локальных skills (см. список ниже) по своему "
@@ -190,8 +193,67 @@ class SkillsPlugin(Plugin):
             "семантически пересекается с задачей — выбирай skills_agent.\n\n"
             "Установленные локальные skills (id: description):\n"
             f"{joined}\n\n"
+            f"{direct_match_block}"
             "Если ни один skill из списка по семантике не подходит к задаче — переходи к остальным правилам ниже."
         )
+
+    def _auto_mode_direct_match_block(self, query: Any, disabled_skills: set[str]) -> str:
+        query_text = str(query or "").lower()
+        query_terms = self._auto_mode_terms(query_text)
+        if not query_terms:
+            return ""
+
+        matches: List[str] = []
+        for skill_id, info in self.available_skills.items():
+            if skill_id in disabled_skills:
+                continue
+            skill_text = " ".join(
+                str(value or "")
+                for value in (
+                    skill_id,
+                    info.get("name"),
+                    info.get("description"),
+                )
+            ).lower()
+            skill_terms = self._auto_mode_terms(skill_text)
+            shared = sorted(query_terms & skill_terms)
+            if not self._auto_mode_has_direct_match(skill_id, info, shared):
+                continue
+            matches.append(f"- {skill_id}: совпали термины {', '.join(shared[:5])}")
+            if len(matches) >= 5:
+                break
+
+        if not matches:
+            return ""
+        return (
+            "Для текущего сообщения уже найдено прямое совпадение с локальными skills. "
+            "Если этот список непустой, верни skills_agent и не применяй остальные правила:\n"
+            f"{chr(10).join(matches)}\n\n"
+        )
+
+    @staticmethod
+    def _auto_mode_has_direct_match(skill_id: str, info: Dict[str, Any], shared_terms: List[str]) -> bool:
+        if len(shared_terms) >= 2:
+            return True
+
+        if not shared_terms:
+            return False
+
+        term = shared_terms[0]
+        skill_name = str(info.get("name") or "").lower()
+        explicit_terms = {str(skill_id or "").lower(), skill_name}
+        file_format_terms = {"pptx", "docx", "xlsx", "csv", "pdf", "mpp", "mp3", "mp4", "json"}
+        return term in explicit_terms or term in file_format_terms
+
+    @staticmethod
+    def _auto_mode_terms(text: str) -> set[str]:
+        terms = set(re.findall(r"[a-zа-яё0-9][a-zа-яё0-9_.-]{2,}", text.lower()))
+        stop_words = {
+            "and", "the", "with", "for", "from", "into", "style", "create", "read", "edit",
+            "use", "using", "any", "all", "или", "для", "как", "что", "мне", "это", "этот",
+            "создай", "сделай", "отправь", "стиль",
+        }
+        return {term for term in terms if term not in stop_words}
 
     def get_spec(self) -> List[Dict]:
         return [

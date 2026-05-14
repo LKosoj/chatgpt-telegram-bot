@@ -156,6 +156,8 @@ async def test_handle_direct_result_final_sends_text_and_multiple_artifacts(tmp_
         message.reply_document.return_value,
         message.reply_document.return_value,
     ]
+    assert first_artifact.exists()
+    assert second_artifact.exists()
 
 
 @pytest.mark.asyncio
@@ -178,6 +180,7 @@ async def test_handle_direct_result_file_path_passes_caption(tmp_path):
     )
 
     message.reply_document.assert_awaited_once()
+    assert not artifact.exists()
     assert message.reply_document.await_args.kwargs["caption"] == "Sales overview"
 
 

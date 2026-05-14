@@ -386,6 +386,12 @@ class PluginManager:
             if request_context is not None:
                 parsed_args['request_context'] = request_context
 
+            guard_result = await self._guard_tool_call(function_name, parsed_args, request_context=request_context)
+            if guard_result:
+                status = "error"
+                error_msg = str(guard_result.get("error") or "Tool call blocked by plugin guard")
+                return json.dumps(guard_result, ensure_ascii=False)
+
             logger.debug(f"Вызываем функцию {function_name} с аргументами: {parsed_args}")
             base_name = function_name.split(".", 1)[-1]
             result = await plugin.execute(base_name, helper, **parsed_args)
@@ -419,6 +425,31 @@ class PluginManager:
                 direct_result=direct_result,
                 request_context=request_context,
             )
+
+    async def _guard_tool_call(self, function_name, parsed_args, *, request_context=None):
+        for plugin_name in sorted(self.plugins.keys()):
+            try:
+                plugin = self.get_plugin(plugin_name)
+            except Exception:
+                logger.debug("Failed to instantiate plugin guard %s", plugin_name, exc_info=True)
+                continue
+            guard = getattr(plugin, "guard_tool_call", None)
+            if not callable(guard):
+                continue
+            try:
+                result = guard(
+                    function_name=function_name,
+                    arguments=parsed_args,
+                    request_context=request_context,
+                )
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:
+                logger.exception("Tool-call guard failed in plugin %s", plugin_name)
+                continue
+            if result:
+                return result
+        return None
 
     @staticmethod
     def _elapsed_ms(started: float) -> int:

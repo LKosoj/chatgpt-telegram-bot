@@ -48,6 +48,28 @@ class ContextPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_guard_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class GuardPlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Guard"
+
+    def get_spec(self):
+        return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    def guard_tool_call(self, *, function_name, arguments, request_context=None):
+        if function_name == "guard.do":
+            return {"success": False, "error": "blocked"}
+        return None
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"result": "should-not-run"}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def _write_prompt_plugin(path: Path):
     code = """
 from bot.plugins.plugin import Plugin
@@ -211,6 +233,19 @@ async def test_call_function_passes_request_context_to_plugin_execute(tmp_path):
     assert payload["chat_id"] == 77
     assert payload["context_user_id"] == 42
     assert payload["context_message_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_call_function_respects_plugin_guard(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_guard_plugin(plugin_dir / "guard.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    result = await pm.call_function("guard.do", helper=None, arguments="{}")
+
+    assert json.loads(result) == {"success": False, "error": "blocked"}
 
 
 def test_disabled_plugins_for_user_without_db_returns_empty(tmp_path):

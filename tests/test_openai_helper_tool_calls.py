@@ -1070,6 +1070,15 @@ async def test_agent_tools_workflow_defers_intermediate_direct_results_without_m
     tool_messages = [message for message in helper.conversations[1] if message.get("role") == "tool"]
     assert any("/tmp/egg.png" in message.get("content", "") for message in tool_messages)
     assert any("/tmp/intermediate.csv" in message.get("content", "") for message in tool_messages)
+    manifest_messages = [
+        message.get("content", "")
+        for message in helper.conversations[1]
+        if message.get("role") == "user" and "Current run artifact manifest" in message.get("content", "")
+    ]
+    assert manifest_messages
+    assert "/tmp/egg.png" in manifest_messages[-1]
+    assert "/tmp/intermediate.csv" in manifest_messages[-1]
+    assert "Do not discover artifacts by broad-listing shared directories" in manifest_messages[-1]
 
 
 @pytest.mark.asyncio

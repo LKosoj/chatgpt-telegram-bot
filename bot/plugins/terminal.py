@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 from pathlib import Path
 from typing import Any, Dict, List
@@ -12,7 +13,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 260
 DEFAULT_CWD = "/tmp"
-OUTPUT_BYTE_LIMIT = 32 * 1024
+BOUNDED_OUTPUT_HINT = (
+    "Output was truncated. Re-run with a bounded command that selects only the needed data "
+    "(for example filters, head/tail, max-depth searches, or exact known artifact paths)."
+)
+
+
+def _output_byte_limit() -> int:
+    try:
+        return max(1024, int(os.getenv("TERMINAL_OUTPUT_BYTE_LIMIT", str(8 * 1024))))
+    except (TypeError, ValueError):
+        return 8 * 1024
+
+
+OUTPUT_BYTE_LIMIT = _output_byte_limit()
 
 
 class TerminalPlugin(Plugin):
@@ -30,10 +44,11 @@ class TerminalPlugin(Plugin):
             "description": (
                 "Execute a shell command and return stdout, stderr, and the return code. "
                 "By default runs via /bin/sh -c (shell=true), so pipes, redirects and chained "
-                "commands like 'node /tmp/x.js && ls /tmp/' work as written. "
+                "commands work as written. "
                 "Pass shell=false to bypass the shell and exec a single program directly. "
                 "Use for shell workflows: pipes, redirects, file-system operations, invoking "
-                "installed CLI tools, running existing scripts."
+                "installed CLI tools, running existing scripts. Keep output bounded; prefer "
+                "commands that filter, limit, or inspect exact known paths instead of broad listings."
             ),
             "parameters": {
                 "type": "object",
@@ -137,8 +152,8 @@ class TerminalPlugin(Plugin):
                 "shell": shell,
             }
 
-        stdout = self._truncate(stdout_bytes.decode("utf-8", errors="replace"))
-        stderr = self._truncate(stderr_bytes.decode("utf-8", errors="replace"))
+        stdout, stdout_truncated = self._truncate_output(stdout_bytes.decode("utf-8", errors="replace"))
+        stderr, stderr_truncated = self._truncate_output(stderr_bytes.decode("utf-8", errors="replace"))
         logger.info(
             "Terminal finished returncode=%s stdout_bytes=%s stderr_bytes=%s",
             process.returncode,
@@ -146,7 +161,7 @@ class TerminalPlugin(Plugin):
             len(stderr_bytes),
         )
 
-        return {
+        result = {
             "success": process.returncode == 0,
             "returncode": process.returncode,
             "stdout": stdout,
@@ -154,10 +169,29 @@ class TerminalPlugin(Plugin):
             "cwd": str(cwd_path),
             "shell": shell,
         }
+        if stdout_truncated or stderr_truncated:
+            result.update({
+                "output_truncated": True,
+                "output_limit_bytes": OUTPUT_BYTE_LIMIT,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "stdout_bytes": len(stdout_bytes),
+                "stderr_bytes": len(stderr_bytes),
+                "output_hint": BOUNDED_OUTPUT_HINT,
+            })
+        return result
+
+    @staticmethod
+    def _truncate_output(text: str) -> tuple[str, bool]:
+        encoded = text.encode("utf-8", errors="replace")
+        if len(encoded) <= OUTPUT_BYTE_LIMIT:
+            return text, False
+        return (
+            encoded[:OUTPUT_BYTE_LIMIT].decode("utf-8", errors="ignore")
+            + "\n... [truncated]",
+            True,
+        )
 
     @staticmethod
     def _truncate(text: str) -> str:
-        encoded = text.encode("utf-8", errors="replace")
-        if len(encoded) <= OUTPUT_BYTE_LIMIT:
-            return text
-        return encoded[:OUTPUT_BYTE_LIMIT].decode("utf-8", errors="ignore") + "\n... [truncated]"
+        return TerminalPlugin._truncate_output(text)[0]

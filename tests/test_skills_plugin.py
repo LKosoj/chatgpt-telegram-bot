@@ -569,6 +569,30 @@ async def test_auto_mode_fragment_skips_user_disabled_skills(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_auto_mode_fragment_marks_direct_skill_matches():
+    plugin = SkillsPlugin()
+    plugin.available_skills = {
+        "powerpoint": {
+            "name": "powerpoint",
+            "description": "Create PPTX presentations, презентации, and слайды.",
+        },
+        "other": {
+            "name": "other",
+            "description": "Available skill",
+        },
+    }
+
+    fragment = await plugin.contribute_prompt_fragment(
+        "auto_mode_priority",
+        SimpleNamespace(user_id=42, query="Создай презентацию pptx по рецепту"),
+    )
+
+    assert "прямое совпадение" in fragment
+    assert "powerpoint" in fragment
+    assert "pptx" in fragment
+
+
+@pytest.mark.asyncio
 async def test_list_skills_marks_allow_scripts_per_skill(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="42")
     _write_skill(tmp_path / "skills", name="no_scripts", allow_scripts=False)

@@ -122,6 +122,97 @@ def _agent_delivery_workflow_active(tool_calls: list[dict], tools_used: tuple) -
 
 
 _TEXT_PREVIEW_LIMIT = 600
+_ARTIFACT_MANIFEST_LIMIT = 50
+_ARTIFACT_PATH_KEYS = ("value", "file_path", "path", "output_path", "artifact_path")
+
+
+def _json_dict(value) -> dict | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except Exception:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
+def _artifact_path(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    path = value.strip()
+    if not path or "\n" in path or "://" in path:
+        return None
+    return path if os.path.isabs(path) else None
+
+
+def _append_artifact_entry(manifest: list[dict], seen_paths: set[str], entry: dict) -> None:
+    path = _artifact_path(entry.get("path"))
+    if not path or path in seen_paths:
+        return
+    seen_paths.add(path)
+    manifest.append({k: v for k, v in entry.items() if v is not None})
+
+
+def _artifact_entries_from_tool_response(tool_name: str, response) -> list[dict]:
+    payload = _json_dict(response)
+    if not payload:
+        return []
+
+    direct_result = payload.get("direct_result")
+    if isinstance(direct_result, dict):
+        source = direct_result
+    else:
+        source = payload
+
+    entries: list[dict] = []
+    kind = source.get("kind")
+    for key in _ARTIFACT_PATH_KEYS:
+        path = _artifact_path(source.get(key))
+        if path:
+            entries.append({
+                "tool": tool_name,
+                "kind": kind,
+                "path": path,
+                "format": source.get("format"),
+                "caption": source.get("caption") or source.get("add_value"),
+            })
+
+    artifacts = source.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            artifact_kind = artifact.get("kind") or kind
+            for key in _ARTIFACT_PATH_KEYS:
+                path = _artifact_path(artifact.get(key))
+                if path:
+                    entries.append({
+                        "tool": tool_name,
+                        "kind": artifact_kind,
+                        "path": path,
+                        "format": artifact.get("format"),
+                        "caption": artifact.get("caption") or artifact.get("add_value"),
+                    })
+
+    return entries
+
+
+def _artifact_manifest_message(manifest: list[dict]) -> str:
+    visible = manifest[-_ARTIFACT_MANIFEST_LIMIT:]
+    omitted = max(0, len(manifest) - len(visible))
+    payload = {
+        "current_run_artifacts": visible,
+        "instruction": (
+            "Use these exact paths for artifacts created in this request. "
+            "Do not discover artifacts by broad-listing shared directories. "
+            "If inspection is needed, run bounded commands against specific paths from this manifest."
+        ),
+    }
+    if omitted:
+        payload["omitted_older_artifacts"] = omitted
+    return "Current run artifact manifest:\n" + json.dumps(payload, ensure_ascii=False)
 
 
 def _compact_deferred_tool_response(response) -> str:
@@ -294,6 +385,7 @@ async def _retry_missing_delivery_tool(
     model_to_use=None,
     delivery_repair_attempts=0,
     plain_text=None,
+    artifact_manifest=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -348,6 +440,7 @@ async def _retry_missing_delivery_tool(
         final_delivery_required=True,
         model_to_use=model_to_use,
         delivery_repair_attempts=delivery_repair_attempts + 1,
+        artifact_manifest=artifact_manifest,
     )
 
 
@@ -364,9 +457,11 @@ async def handle_function_call(
     final_delivery_required=False,
     model_to_use=None,
     delivery_repair_attempts=0,
+    artifact_manifest=None,
 ):
     tool_calls = []
     try:
+        artifact_manifest = list(artifact_manifest or [])
         if request_context is not None:
             chat_id = request_context.chat_id
             user_id = request_context.user_id
@@ -398,6 +493,7 @@ async def handle_function_call(
                 model_to_use,
                 delivery_repair_attempts,
                 plain_text,
+                artifact_manifest,
             )
 
         if stream:
@@ -553,6 +649,11 @@ async def handle_function_call(
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         direct_results_collected: list = []
+        seen_artifact_paths = {
+            entry.get("path") for entry in artifact_manifest if isinstance(entry, dict)
+        }
+        seen_artifact_paths.discard(None)
+        batch_artifact_count = 0
         for (tool_name, _, tool_call_id), tool_response in zip(prepared, results):
             if isinstance(tool_response, Exception):
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
@@ -561,6 +662,11 @@ async def handle_function_call(
                 tools_used += (tool_name,)
             if _tool_response_succeeded(tool_response):
                 final_delivery_required = True
+            for entry in _artifact_entries_from_tool_response(tool_name, tool_response):
+                before = len(artifact_manifest)
+                _append_artifact_entry(artifact_manifest, seen_artifact_paths, entry)
+                if len(artifact_manifest) > before:
+                    batch_artifact_count += 1
             is_dr = is_direct_result(tool_response)
             if is_dr and not _should_defer_direct_result(
                 tool_response,
@@ -593,6 +699,12 @@ async def handle_function_call(
             if len(direct_results_collected) == 1:
                 return direct_results_collected[0], tools_used
             return _merge_direct_results_into_final(direct_results_collected), tools_used
+
+        if batch_artifact_count:
+            helper.conversations.setdefault(chat_id, []).append({
+                "role": "user",
+                "content": _artifact_manifest_message(artifact_manifest),
+            })
 
         sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
         active_session = next((s for s in sessions if s['is_active']), None)
@@ -631,6 +743,7 @@ async def handle_function_call(
             final_delivery_required,
             model_to_use,
             delivery_repair_attempts,
+            artifact_manifest,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

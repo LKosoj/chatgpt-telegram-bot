@@ -844,7 +844,9 @@ async def handle_direct_result(config, update: Update, response: any):
         for artifact in result.get("artifacts") or []:
             if not isinstance(artifact, dict):
                 continue
-            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact})
+            artifact_payload = dict(artifact)
+            artifact_payload["preserve_after_delivery"] = True
+            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload})
             if artifact_messages:
                 sent_messages.extend(artifact_messages)
         return sent_messages
@@ -998,7 +1000,7 @@ def cleanup_intermediate_files(response: any):
     format = result.get('format')
     value = result.get('value') or result.get('file_path')
 
-    if format == 'path' and value:
+    if format == 'path' and value and not result.get("preserve_after_delivery"):
         if os.path.exists(value):
             os.remove(value)
 
