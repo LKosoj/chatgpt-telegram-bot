@@ -289,12 +289,28 @@ class ChatGPTTelegramBot:
         message = update.effective_message
         replied_message = getattr(message, 'reply_to_message', None)
         if not replied_message:
+            user = update.effective_user
+            chat = update.effective_chat
+            if user and chat and self._active_image_file_id(user.id, chat.id):
+                return "image"
             return None
         if self._image_file_id_from_message(replied_message):
             return "image"
         if getattr(replied_message, 'text', None) or getattr(replied_message, 'caption', None):
             return "text"
         return "other"
+
+    def _active_image_file_id(self, user_id: int | None, chat_id: int | None) -> str | None:
+        get_last_image_file_id = getattr(self.openai, "get_last_image_file_id", None)
+        if not callable(get_last_image_file_id):
+            return None
+        for key in (chat_id, user_id):
+            if key is None:
+                continue
+            file_id = get_last_image_file_id(key)
+            if file_id:
+                return file_id
+        return None
 
     async def _classify_reply_intent(self, update: Update, prompt: str | None) -> str | None:
         if not prompt:
@@ -557,7 +573,7 @@ class ChatGPTTelegramBot:
         replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
         if replied_image:
             return replied_image
-        return None
+        return self._active_image_file_id(user_id, chat_id)
 
     def _image_description_source_file_id(self, update: Update, user_id: int, chat_id: int, prompt: str | None = None) -> str | None:
         message = update.effective_message
@@ -567,7 +583,7 @@ class ChatGPTTelegramBot:
         replied_image = self._image_file_id_from_message(getattr(message, 'reply_to_message', None))
         if replied_image:
             return replied_image
-        return None
+        return self._active_image_file_id(user_id, chat_id)
 
     async def _telegram_image_as_png(self, file_id: str) -> io.BytesIO:
         image_bytes = await self.openai.download_file_as_bytes(file_id)
@@ -593,7 +609,18 @@ class ChatGPTTelegramBot:
         user_id = update.effective_user.id
         try:
             image_file = await self._telegram_image_as_png(file_id)
-            interpretation, total_tokens = await self.openai.interpret_image(chat_id, image_file, prompt=prompt)
+            interpretation, total_tokens = await self.openai.interpret_image(
+                chat_id,
+                image_file,
+                prompt=prompt,
+                user_id=user_id,
+            )
+            if is_direct_result(interpretation):
+                await self._handle_direct_result(update, interpretation)
+                if user_id not in self.usage:
+                    self.usage[user_id] = make_usage_tracker(self.config, user_id, update.effective_user.name)
+                record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+                return
             try:
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
@@ -2225,11 +2252,12 @@ class ChatGPTTelegramBot:
                 user_id = update.message.from_user.id
                 if user_id not in self.usage:
                     self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
+                total_tokens = 0
 
                 if self.config['stream']:
 
                     stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png,
-                                                                        prompt=prompt)
+                                                                        prompt=prompt, user_id=user_id)
                     i = 0
                     prev = ''
                     sent_message = None
@@ -2336,7 +2364,12 @@ class ChatGPTTelegramBot:
 
                     try:
                         interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png,
-                                                                                        prompt=prompt)
+                                                                                        prompt=prompt, user_id=user_id)
+
+                        if is_direct_result(interpretation):
+                            await self._handle_direct_result(update, interpretation)
+                            record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+                            return
 
                         try:
                             await update.effective_message.reply_text(

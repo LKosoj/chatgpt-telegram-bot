@@ -356,6 +356,123 @@ async def test_vision_follow_up_keeps_image_content_and_uses_vision_model():
 
 
 @pytest.mark.asyncio
+async def test_interpret_image_retries_empty_vision_response_without_duplicate_history():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    client = DummyClient([
+        FakeResponse(content=""),
+        FakeResponse(content=""),
+        FakeResponse(content="image answer"),
+    ])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+
+    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="what is shown?", user_id=1)
+
+    assert answer == "image answer"
+    assert client.calls == 3
+    assert sum(1 for message in helper.conversations[1] if message["role"] == "user") == 1
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_handles_vision_tool_calls():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"skills": ["design"]}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")]),
+        FakeResponse(content="Use the design skill."),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="what is shown?", user_id=1)
+
+    assert answer == "Use the design skill."
+    assert pm.calls == [("skills.list_skills", json.dumps({"chat_id": 1, "user_id": 1}))]
+    assert client.create_kwargs[0]["tools"] == [tool_spec]
+    assert client.create_kwargs[0]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_retries_plain_text_tool_intent():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    stuck_text = (
+        "Я вижу, вы хотите создать дизайн в светлых тонах.\n\n"
+        "Давайте посмотрим, какие навыки у меня есть для работы с изображениями."
+    )
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    client = DummyClient([
+        FakeResponse(content=stuck_text),
+        FakeResponse(content="Сформирую дизайн напрямую."),
+    ])
+    helper = _make_helper(DummyPluginManager({}, specs=[tool_spec]), client=client)
+
+    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="create design", user_id=1)
+
+    assert answer == "Сформирую дизайн напрямую."
+    assert client.calls == 2
+    assert client.create_kwargs[0]["tools"] == [tool_spec]
+    assert client.create_kwargs[1]["tools"] == [tool_spec]
+    assert "Undelivered assistant text" in helper.conversations[1][-2]["content"]
+    assert stuck_text in helper.conversations[1][-2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_vision_follow_up_can_use_tools():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"skills": ["design"]}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(content="image answer"),
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")]),
+        FakeResponse(content="Use the design skill."),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="what is shown?", user_id=1)
+    follow_up, _tokens = await helper.get_chat_response(1, "what skills can help?", user_id=1)
+
+    assert follow_up == "Use the design skill."
+    assert pm.calls == [("skills.list_skills", json.dumps({"chat_id": 1, "user_id": 1}))]
+    assert client.create_kwargs[1]["model"] == "llmgateway/big_context"
+    assert client.create_kwargs[1]["tools"] == [tool_spec]
+    assert client.create_kwargs[1]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
 async def test_edit_telegram_image_uses_configured_image_model():
     class FakeGateway:
         def __init__(self):
@@ -931,9 +1048,10 @@ async def test_prompt_perfect_suppresses_itself_on_reentry():
 @pytest.mark.asyncio
 async def test_prompt_perfect_retries_plain_text_tool_intent_without_tools():
     stuck_text = (
-        "Я вижу, что у вас есть план бревенчатой бани (сруб), и вы хотите "
-        "дизайн-проект в светлых тонах. Позвольте мне загрузить подходящий "
-        "skill для создания презентации дизайна."
+        "Я вижу, вы хотите, чтобы я повторил запрос: создать дизайн в светлых "
+        "тонах для плана бревенчатой бани (сруб).\n\n"
+        "Давайте посмотрим, какие навыки у меня есть для работы с изображениями "
+        "и дизайном."
     )
     tool_spec = {
         "type": "function",

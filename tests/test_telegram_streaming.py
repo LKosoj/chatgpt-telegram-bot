@@ -726,6 +726,18 @@ async def test_reply_to_image_edit_request_still_edits_image(monkeypatch):
     assert bot.openai.stream_requests == []
 
 
+def test_active_image_is_available_as_image_context():
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.openai.get_last_image_file_id = Mock(side_effect=lambda key: "active-image" if key == 1234 else None)
+    update = FakeUpdate(FakeMessage(chat_id=1234, user_id=42))
+
+    assert bot._reply_context_kind(update) == "image"
+    assert bot._image_description_source_file_id(update, 42, 1234) == "active-image"
+
+
 @pytest.mark.asyncio
 async def test_reply_to_document_adds_downloaded_file_context_to_chat_request(monkeypatch):
     edit_message = AsyncMock()

@@ -71,6 +71,7 @@ from .user_settings import (
 logger = logging.getLogger(__name__)
 
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
+VISION_MAX_ATTEMPTS = 3
 THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
@@ -495,7 +496,7 @@ class OpenAIHelper:
                 **kwargs
             )
             
-            if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
+            if self.config['enable_functions']:
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 response, plugins_used = await self.__handle_function_call(
                     chat_id,
@@ -504,6 +505,7 @@ class OpenAIHelper:
                     user_id=user_id,
                     request_context=request_context,
                     model_to_use=self._chat_request_models.get(chat_id),
+                    retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
                 )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
@@ -692,7 +694,7 @@ class OpenAIHelper:
                 yield f"Error: {str(e)}", '0'
                 return
 
-            if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
+            if self.config['enable_functions']:
                 try:
                     allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                     response, plugins_used = await self.__handle_function_call(
@@ -703,6 +705,7 @@ class OpenAIHelper:
                         user_id=user_id,
                         request_context=request_context,
                         model_to_use=self._chat_request_models.get(chat_id),
+                        retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
                     )
                     if is_direct_result(response):
                         yield response, '0'
@@ -982,7 +985,7 @@ class OpenAIHelper:
                     'extra_headers': { "X-Title": "tgBot" },
                 })
 
-            if self.config['enable_functions'] and not self.conversations_vision.get(chat_id, False):
+            if self.config['enable_functions']:
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, memory_user_id)
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
                 
@@ -1035,6 +1038,7 @@ class OpenAIHelper:
         user_id=None,
         request_context=None,
         model_to_use=None,
+        retry_plain_text_tool_intent=False,
     ):
         return await handle_function_call(
             self,
@@ -1047,6 +1051,7 @@ class OpenAIHelper:
             user_id,
             request_context,
             model_to_use=model_to_use,
+            retry_plain_text_tool_intent=retry_plain_text_tool_intent,
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
@@ -1439,7 +1444,7 @@ class OpenAIHelper:
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response_vision(self, chat_id: int, content: list, stream=False):
+    async def __common_get_chat_response_vision(self, chat_id: int, content: list, stream=False, user_id: int | None = None):
         """
         Request a response from the GPT model.
         :param chat_id: The chat ID
@@ -1449,6 +1454,7 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         temperature = self.config['temperature']
         try:
+            session_id = None
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 await self.reset_chat_history(chat_id)
             else:
@@ -1512,13 +1518,12 @@ class OpenAIHelper:
             }
 
 
-            # vision model does not yet support functions
-
-            # if self.config['enable_functions']:
-            #     functions = self.plugin_manager.get_functions_specs(self, model_to_use)
-            #     if len(functions) > 0:
-            #         common_args['functions'] = self.plugin_manager.get_functions_specs(self, model_to_use)
-            #         common_args['function_call'] = 'auto'
+            if self.config['enable_functions']:
+                allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id or chat_id)
+                tools = self.plugin_manager.get_functions_specs(self, vision_model, allowed_plugins)
+                if tools and vision_model not in (O_MODELS + GOOGLE + PERPLEXITY):
+                    common_args['tools'] = tools
+                    common_args['tool_choice'] = 'auto'
             
             return await self.client.chat.completions.create(**common_args)
 
@@ -1545,34 +1550,98 @@ class OpenAIHelper:
         return text or "[image]"
 
 
-    async def interpret_image(self, chat_id, fileobj, prompt=None):
+    def _snapshot_chat_state(self, chat_id):
+        return {
+            "has_conversation": chat_id in self.conversations,
+            "conversation": list(self.conversations.get(chat_id, [])),
+            "has_vision": chat_id in self.conversations_vision,
+            "vision": self.conversations_vision.get(chat_id),
+            "has_last_updated": chat_id in self.last_updated,
+            "last_updated": self.last_updated.get(chat_id),
+            "has_loaded_session": chat_id in self.loaded_conversation_sessions,
+            "loaded_session": self.loaded_conversation_sessions.get(chat_id),
+        }
+
+    def _restore_chat_state(self, chat_id, snapshot) -> None:
+        if snapshot["has_conversation"]:
+            self.conversations[chat_id] = list(snapshot["conversation"])
+        else:
+            self.conversations.pop(chat_id, None)
+        if snapshot["has_vision"]:
+            self.conversations_vision[chat_id] = snapshot["vision"]
+        else:
+            self.conversations_vision.pop(chat_id, None)
+        if snapshot["has_last_updated"]:
+            self.last_updated[chat_id] = snapshot["last_updated"]
+        else:
+            self.last_updated.pop(chat_id, None)
+        if snapshot["has_loaded_session"]:
+            self.loaded_conversation_sessions[chat_id] = snapshot["loaded_session"]
+        else:
+            self.loaded_conversation_sessions.pop(chat_id, None)
+
+    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None):
         """
         Interprets a given PNG image file using the Vision model.
         """
         lock = await self._chat_lock(chat_id)
         async with lock:
-            return await self._interpret_image_locked(chat_id, fileobj, prompt)
+            return await self._interpret_image_locked(chat_id, fileobj, prompt, user_id=user_id)
 
-    async def _interpret_image_locked(self, chat_id, fileobj, prompt):
+    async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
         content = [{'type':'text', 'text':prompt}, {'type':'image_url', \
                     'image_url': {'url':image, 'detail':self.config['vision_detail'] } }]
 
-        response = await self.__common_get_chat_response_vision(chat_id, content)
+        last_error = None
+        for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
+            snapshot = self._snapshot_chat_state(chat_id)
+            try:
+                response = await self.__common_get_chat_response_vision(
+                    chat_id,
+                    content,
+                    user_id=user_id,
+                )
+            except Exception as exc:
+                last_error = exc
+            else:
+                plugins_used = ()
+                if self.config['enable_functions']:
+                    allowed_plugins = await self.resolve_allowed_plugins(chat_id, user_id=user_id or chat_id)
+                    response, plugins_used = await self.__handle_function_call(
+                        chat_id,
+                        response,
+                        allowed_plugins=allowed_plugins,
+                        user_id=user_id or chat_id,
+                        model_to_use=self.config['vision_model'],
+                        retry_plain_text_tool_intent=True,
+                    )
+                    if is_direct_result(response):
+                        return response, '0'
+                try:
+                    return await self._interpret_image_text_response(chat_id, response, plugins_used)
+                except ValueError as exc:
+                    last_error = exc
+            if attempt < VISION_MAX_ATTEMPTS:
+                logger.warning(
+                    "Vision request attempt %s/%s failed for chat_id=%s: %s",
+                    attempt,
+                    VISION_MAX_ATTEMPTS,
+                    chat_id,
+                    last_error,
+                    exc_info=(
+                        (type(last_error), last_error, last_error.__traceback__)
+                        if isinstance(last_error, Exception)
+                        else None
+                    ),
+                )
+                self._restore_chat_state(chat_id, snapshot)
+        raise last_error or ValueError(EMPTY_MODEL_RESPONSE_ERROR)
 
-        
-
-        # functions are not available for this model
-        
-        # if self.config['enable_functions']:
-        #     response, plugins_used = await self.__handle_function_call(chat_id, response)
-        #     if is_direct_result(response):
-        #         return response, '0'
-
+    async def _interpret_image_text_response(self, chat_id, response, plugins_used=()):
         answer = ''
-
         if len(response.choices) > 1 and self.config['n_choices'] > 1:
             for index, choice in enumerate(response.choices):
                 content = _required_choice_message_text(choice)
@@ -1586,46 +1655,54 @@ class OpenAIHelper:
             await self.__add_to_history(chat_id, role="assistant", content=answer)
 
         bot_language = self.config['bot_language']
-        # Plugins are not enabled either
-        # show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
-        # plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
+        plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
         if self.config['show_usage']:
             answer += "\n\n---\n" \
                       f"💰 {str(response.usage.total_tokens)} {localized_text('stats_tokens', bot_language)}" \
                       f" ({str(response.usage.prompt_tokens)} {localized_text('prompt', bot_language)}," \
                       f" {str(response.usage.completion_tokens)} {localized_text('completion', bot_language)})"
-            # if show_plugins_used:
-            #     answer += f"\n🔌 {', '.join(plugin_names)}"
-        # elif show_plugins_used:
-        #     answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+            if show_plugins_used:
+                answer += f"\n🔌 {', '.join(plugin_names)}"
+        elif show_plugins_used:
+            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
         return answer, response.usage.total_tokens
 
-    async def interpret_image_stream(self, chat_id, fileobj, prompt=None):
+    async def interpret_image_stream(self, chat_id, fileobj, prompt=None, user_id=None):
         """
         Interprets a given PNG image file using the Vision model.
         """
         lock = await self._chat_lock(chat_id)
         async with lock:
-            async for chunk in self._interpret_image_stream_locked(chat_id, fileobj, prompt):
+            async for chunk in self._interpret_image_stream_locked(chat_id, fileobj, prompt, user_id=user_id):
                 yield chunk
 
-    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt):
+    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt, user_id=None):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
         content = [{'type':'text', 'text':prompt}, {'type':'image_url', \
                     'image_url': {'url':image, 'detail':self.config['vision_detail'] } }]
 
-        response = await self.__common_get_chat_response_vision(chat_id, content, stream=True)
+        response = await self.__common_get_chat_response_vision(chat_id, content, stream=True, user_id=user_id)
 
         
 
-        # if self.config['enable_functions']:
-        #     response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
-        #     if is_direct_result(response):
-        #         yield response, '0'
-        #         return
+        if self.config['enable_functions']:
+            allowed_plugins = await self.resolve_allowed_plugins(chat_id, user_id=user_id or chat_id)
+            response, plugins_used = await self.__handle_function_call(
+                chat_id,
+                response,
+                stream=True,
+                allowed_plugins=allowed_plugins,
+                user_id=user_id or chat_id,
+                model_to_use=self.config['vision_model'],
+                retry_plain_text_tool_intent=True,
+            )
+            if is_direct_result(response):
+                yield response, '0'
+                return
 
         answer = ''
         async for chunk in response:
