@@ -75,6 +75,7 @@ class BeforeChatRequestPayload:
     chat_id: int
     user_id: int | None
     request_id: str | None
+    allow_dynamic_recall: bool = True
 
 
 @dataclass(frozen=True, slots=True)

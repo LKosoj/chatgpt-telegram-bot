@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import io
 import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, List
 from urllib.parse import quote
@@ -14,7 +16,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .background import BackgroundTask
-from .hooks import SessionBeforeDeletePayload
+from .hooks import (
+    AssistantResponsePayload,
+    SessionBeforeDeletePayload,
+    SessionResetPayload,
+    UserMessagePayload,
+)
 from .plugin import Plugin
 from ..utils import message_text
 
@@ -190,6 +197,7 @@ def format_recall_results(data: dict[str, Any], *, max_items: int = 8) -> str:
 
 
 HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
+HINDSIGHT_DYNAMIC_MEMORY_MARKER = "[HINDSIGHT_DYNAMIC_MEMORY_CONTEXT]"
 
 # Background-worker tunables (Stage 4C-3+5: moved from telegram_bot.py).
 HINDSIGHT_FINALIZE_JOB_LIMIT = 5
@@ -197,6 +205,35 @@ HINDSIGHT_FINALIZE_JOB_MAX_ATTEMPTS = 5
 HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS = 60
 HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS = 900
 HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS = 30
+HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS = 600
+
+HINDSIGHT_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)(api[_ -]?key|token|password|secret|credential)\s*[:=]\s*\S+"),
+    re.compile(
+        r"(?i)\b(api[_ -]?key|token|password|passphrase|secret|credential|"
+        r"парол\w*|токен\w*|секрет\w*|ключ(?:\s+(?:api|доступа))?)"
+        r"\s+(?:is|are|=|:|это|равен|равна|равно)\s+\S+"
+    ),
+    re.compile(
+        r"(?im)^(?P<label>.*(?:api[_ -]?key|token|password|passphrase|secret|credential|"
+        r"authorization|bearer|парол\w*|токен\w*|секрет\w*|ключ(?:\s+(?:api|доступа))?).*)"
+        r"\n(?P<value>\s*[^\s.!?]{4,}\s*)$"
+    ),
+    re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{6,}"),
+    re.compile(r"(?i)\bai-serv-[A-Za-z0-9_-]+"),
+)
+HINDSIGHT_SECRET_KEY_PATTERN = re.compile(
+    r"(?i)(api[_ -]?key|token|password|passphrase|secret|credential|authorization|"
+    r"парол\w*|токен\w*|секрет\w*|ключ(?:\s+(?:api|доступа))?)"
+)
+HINDSIGHT_SECRET_CONTEXT_PATTERN = re.compile(
+    r"(?i)[^\n.!?]*(api[_ -]?key|token|password|passphrase|secret|credential|authorization|"
+    r"bearer|sk-|ai-serv-|парол\w*|токен\w*|секрет\w*|ключ(?:\s+(?:api|доступа))?)[^\n.!?]*"
+)
+HINDSIGHT_MEMORY_PATH_PATTERN = re.compile(
+    r"^(profile|project|tools|mistakes|general)/[a-z0-9][a-z0-9._-]*\.md$"
+)
 
 HINDSIGHT_CONTEXT_PROMPT = f"""{HINDSIGHT_MEMORY_MARKER}
 Long-term memory recalled for this Telegram user:
@@ -205,6 +242,13 @@ Long-term memory recalled for this Telegram user:
 Use this only as background context when it is relevant. If the current user message
 contradicts this memory, prefer the current message. Do not mention Hindsight or memory
 retrieval unless the user asks about it."""
+
+HINDSIGHT_DYNAMIC_CONTEXT_PROMPT = f"""{HINDSIGHT_DYNAMIC_MEMORY_MARKER}
+Additional long-term memory relevant to the latest user message:
+{{memory}}
+
+Use this as low-priority background context. If it conflicts with the current
+conversation, prefer the current conversation."""
 
 HINDSIGHT_EXTRACTOR_PROMPT = """Extract durable memories from the Telegram conversation.
 Return only JSON in this exact shape:
@@ -229,6 +273,27 @@ Examples to reject:
 
 When in doubt, save nothing.
 If there is nothing worth saving, return {"items":[]}."""
+
+HINDSIGHT_DREAM_PROMPT = """You are the dream phase for a Telegram assistant memory system.
+You receive new chronological events plus existing approved memory documents.
+Create candidate memory documents that may help future conversations with the same user.
+
+Output only JSON in this exact shape:
+{"documents":[{"path":"profile/preferences.md","kind":"profile","content":"..."}]}
+
+Allowed kinds: profile, project, tool, mistake, general.
+Use stable semantic paths such as profile/preferences.md, project/<slug>.md,
+tools/<slug>.md, mistakes/<slug>.md, general/<slug>.md.
+
+Rules:
+- Prefer fewer, sharper documents over many vague ones.
+- Preserve existing useful facts and merge new evidence without duplicating it.
+- Remove or rewrite facts contradicted by the new events.
+- Save only durable preferences, ongoing projects, constraints, decisions,
+  recurring tool/workflow lessons, or explicit "remember this" facts.
+- Do not save one-off requests, transient debugging output, image/audio tasks,
+  web searches, or secrets.
+- If nothing is worth remembering, return {"documents":[]}."""
 
 
 class HindsightMemoryPlugin(Plugin):
@@ -261,6 +326,13 @@ class HindsightMemoryPlugin(Plugin):
         self.config.setdefault('hindsight_async_store', True)
         self.config.setdefault('hindsight_timeout', 30.0)
         self.config.setdefault('hindsight_max_auto_save_items', 5)
+        self.config.setdefault('hindsight_dream_enabled', False)
+        self.config.setdefault('hindsight_dream_interval_seconds', HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS)
+        self.config.setdefault('hindsight_dream_max_events', 50)
+        self.config.setdefault('hindsight_dream_max_event_chars', 1000)
+        self.config.setdefault('hindsight_dream_max_documents', 5)
+        self.config.setdefault('hindsight_dynamic_recall', False)
+        self.config.setdefault('hindsight_dynamic_recall_max_tokens', 1024)
         # Stage 4A: mirror defaults into openai.config so remaining helper-side
         # readers (_prepare_*/finalize_*) keep working until removed in 4B/4C.
         # setdefault (not assignment) — never overwrite an already-set value.
@@ -272,6 +344,10 @@ class HindsightMemoryPlugin(Plugin):
                 'hindsight_recall_budget', 'hindsight_recall_max_tokens',
                 'hindsight_memory_types', 'hindsight_async_store',
                 'hindsight_timeout', 'hindsight_max_auto_save_items',
+                'hindsight_dream_enabled', 'hindsight_dream_interval_seconds',
+                'hindsight_dream_max_events', 'hindsight_dream_max_event_chars',
+                'hindsight_dream_max_documents', 'hindsight_dynamic_recall',
+                'hindsight_dynamic_recall_max_tokens',
             ):
                 openai.config.setdefault(key, self.config[key])
 
@@ -283,6 +359,7 @@ class HindsightMemoryPlugin(Plugin):
                 namespace=self.config.get('hindsight_namespace', 'default'),
                 timeout=float(self.config.get('hindsight_timeout', 30.0)),
             )
+        self._memory_user_locks: dict[int, asyncio.Lock] = {}
 
     @property
     def is_active(self) -> bool:
@@ -302,6 +379,18 @@ class HindsightMemoryPlugin(Plugin):
     def auto_save_enabled(self) -> bool:
         return bool((getattr(self, "config", None) or {}).get('hindsight_auto_save', True))
 
+    @property
+    def dream_enabled(self) -> bool:
+        return bool((getattr(self, "config", None) or {}).get('hindsight_dream_enabled', False))
+
+    @property
+    def memory_pipeline_enabled(self) -> bool:
+        return bool(self.is_active and self.dream_enabled and self.db_handle is not None)
+
+    @property
+    def dynamic_recall_enabled(self) -> bool:
+        return bool((getattr(self, "config", None) or {}).get('hindsight_dynamic_recall', False))
+
     def bank_id_for(self, user_id: int | str) -> str:
         prefix = (getattr(self, "config", None) or {}).get('hindsight_bank_prefix', 'telegram-')
         return f"{prefix}{user_id}"
@@ -314,6 +403,14 @@ class HindsightMemoryPlugin(Plugin):
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return ['world', 'experience']
+
+    def _memory_user_lock(self, user_id: int) -> asyncio.Lock:
+        key = int(user_id)
+        lock = self._memory_user_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._memory_user_locks[key] = lock
+        return lock
 
     @staticmethod
     def is_hindsight_memory_message(message: Dict[str, Any]) -> bool:
@@ -342,13 +439,28 @@ class HindsightMemoryPlugin(Plugin):
             logger.exception("Failed to close Hindsight HTTP client")
 
     def get_background_tasks(self) -> List[BackgroundTask]:
-        return [
+        tasks = [
             BackgroundTask(
                 name="finalize_worker",
                 interval_seconds=HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS,
                 coroutine_factory=self._finalize_tick,
             ),
         ]
+        if self.dream_enabled:
+            tasks.append(
+                BackgroundTask(
+                    name="dream_worker",
+                    interval_seconds=max(
+                        1,
+                        int(self.config.get(
+                            'hindsight_dream_interval_seconds',
+                            HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS,
+                        )),
+                    ),
+                    coroutine_factory=self._dream_tick,
+                )
+            )
+        return tasks
 
     async def on_session_before_delete(self, payload: SessionBeforeDeletePayload) -> None:
         """Blocking hook: enqueue a finalize job for the session being deleted."""
@@ -362,16 +474,105 @@ class HindsightMemoryPlugin(Plugin):
         # Persisted shape mirrors the legacy ``Database.create_hindsight_finalize_job``
         # writer: ``{"messages": [...]}`` so the worker's reader stays compatible.
         messages = [dict(message) for message in payload.messages if isinstance(message, dict)]
-        messages_json = json.dumps({"messages": messages}, ensure_ascii=False)
-        await self.db_handle.execute(
-            'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
-            (payload.user_id, payload.session_id, messages_json),
+        db = getattr(self.db_handle, "database", None)
+        get_connection = getattr(db, "get_connection", None)
+        has_sync_db = (
+            db is not None
+            and callable(get_connection)
+            and not asyncio.iscoroutinefunction(get_connection)
+        )
+        async with self._memory_user_lock(int(payload.user_id)):
+            if has_sync_db:
+                inserted = await asyncio.to_thread(
+                    self._enqueue_finalize_job_sync,
+                    db,
+                    int(payload.user_id),
+                    payload.session_id,
+                    messages,
+                )
+                if not inserted:
+                    return
+            else:
+                messages_json = json.dumps(
+                    {"messages": messages, "clear_generation": 0},
+                    ensure_ascii=False,
+                )
+                await self.db_handle.execute(
+                    'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
+                    (payload.user_id, payload.session_id, messages_json),
+                )
+        await self._append_memory_event(
+            "session_before_delete",
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            payload={"message_count": len(payload.messages)},
         )
         logger.info(
             "Queued Hindsight finalize job for user_id=%s session_id=%s",
             payload.user_id,
             payload.session_id,
         )
+
+    def _enqueue_finalize_job_sync(
+        self, db, user_id: int, session_id: str, messages: list[dict[str, Any]]
+    ) -> bool:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            session_row = cursor.execute(
+                '''
+                SELECT created_at
+                FROM conversation_context
+                WHERE user_id = ? AND session_id = ?
+                ''',
+                (user_id, session_id),
+            ).fetchone()
+            clear_generation = self._clear_generation_from_conn(cursor, user_id)
+            cleared_jd = self._cleared_julianday_from_conn(cursor, user_id)
+            if cleared_jd is not None and not session_row:
+                return False
+            session_jd = None
+            if session_row:
+                session_jd = cursor.execute(
+                    "SELECT julianday(?) AS jd",
+                    (session_row["created_at"],),
+                ).fetchone()["jd"]
+            if cleared_jd is not None and (session_jd is None or session_jd <= cleared_jd):
+                return False
+
+            messages_json = json.dumps(
+                {"messages": messages, "clear_generation": clear_generation},
+                ensure_ascii=False,
+            )
+            cursor.execute(
+                'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
+                (user_id, session_id, messages_json),
+            )
+            return True
+
+    @staticmethod
+    def _clear_generation_from_conn(cursor, user_id: int) -> int:
+        row = cursor.execute(
+            '''
+            SELECT clear_generation
+            FROM hindsight_memory_clear_state
+            WHERE user_id = ?
+            ''',
+            (user_id,),
+        ).fetchone()
+        return int(row["clear_generation"]) if row else 0
+
+    @staticmethod
+    def _cleared_julianday_from_conn(cursor, user_id: int) -> float | None:
+        row = cursor.execute(
+            '''
+            SELECT julianday(cleared_at) AS cleared_jd
+            FROM hindsight_memory_clear_state
+            WHERE user_id = ?
+            ''',
+            (user_id,),
+        ).fetchone()
+        return row["cleared_jd"] if row else None
 
     # ---- Finalize worker (Stage 4C-3+5) ------------------------------------
     # SQL is owned by the plugin: claim/done/failed run via ``asyncio.to_thread``
@@ -429,12 +630,18 @@ class HindsightMemoryPlugin(Plugin):
         for row in rows:
             payload = json.loads(row["messages"])
             messages = payload.get("messages", []) if isinstance(payload, dict) else payload
+            clear_generation = (
+                payload.get("clear_generation", 0)
+                if isinstance(payload, dict)
+                else 0
+            )
             jobs.append({
                 "id": row["id"],
                 "user_id": row["user_id"],
                 "session_id": row["session_id"],
                 "messages": messages if isinstance(messages, list) else [],
                 "attempts": row["attempts"],
+                "clear_generation": int(clear_generation or 0),
             })
         jobs.sort(key=lambda job: order.get(job["id"], 0))
         return jobs
@@ -483,6 +690,18 @@ class HindsightMemoryPlugin(Plugin):
                 (status, attempts, error, f"+{retry_delay_seconds} seconds", job_id),
             )
 
+    def _current_clear_generation_sync(self, db, user_id: int) -> int:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                '''
+                SELECT clear_generation
+                FROM hindsight_memory_clear_state
+                WHERE user_id = ?
+                ''',
+                (user_id,),
+            ).fetchone()
+            return int(row["clear_generation"]) if row else 0
+
     async def _finalize_tick(self, *, application=None) -> None:
         """Single iteration of the finalize worker; called by ``BackgroundTask``."""
         if not self.is_active or not self.auto_save_enabled:
@@ -492,6 +711,11 @@ class HindsightMemoryPlugin(Plugin):
         db = getattr(self.db_handle, "database", None)
         if db is None:
             return
+        get_connection = getattr(db, "get_connection", None)
+        has_sync_db = (
+            callable(get_connection)
+            and not asyncio.iscoroutinefunction(get_connection)
+        )
 
         try:
             jobs = await asyncio.to_thread(self._claim_finalize_jobs_sync, db)
@@ -501,16 +725,28 @@ class HindsightMemoryPlugin(Plugin):
 
         for job in jobs:
             try:
-                saved_count = await self.finalize_session_memory(
-                    job["user_id"],
-                    job["session_id"],
-                    job["messages"],
-                    raise_on_error=True,
-                    async_store=False,
-                )
-                await asyncio.to_thread(
-                    self._mark_finalize_job_done_sync, db, job["id"], saved_count,
-                )
+                user_id = int(job["user_id"])
+                async with self._memory_user_lock(user_id):
+                    clear_generation = 0
+                    if has_sync_db:
+                        clear_generation = await asyncio.to_thread(
+                            self._current_clear_generation_sync, db, user_id,
+                        )
+                    if int(job.get("clear_generation") or 0) < clear_generation:
+                        await asyncio.to_thread(
+                            self._mark_finalize_job_done_sync, db, job["id"], 0,
+                        )
+                        continue
+                    saved_count = await self.finalize_session_memory(
+                        job["user_id"],
+                        job["session_id"],
+                        job["messages"],
+                        raise_on_error=True,
+                        async_store=False,
+                    )
+                    await asyncio.to_thread(
+                        self._mark_finalize_job_done_sync, db, job["id"], saved_count,
+                    )
                 logger.info(
                     "Processed Hindsight finalize job id=%s user_id=%s session_id=%s saved_count=%s",
                     job["id"], job["user_id"], job["session_id"], saved_count,
@@ -551,7 +787,620 @@ class HindsightMemoryPlugin(Plugin):
             CREATE INDEX IF NOT EXISTS idx_hindsight_finalize_jobs_status_next_attempt
             ON hindsight_finalize_jobs(status, next_attempt_at, created_at)
             ''',
+            '''
+            CREATE TABLE IF NOT EXISTS hindsight_memory_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id TEXT DEFAULT NULL,
+                session_id TEXT DEFAULT NULL,
+                request_id TEXT DEFAULT NULL,
+                clear_generation INTEGER NOT NULL DEFAULT 0,
+                event_type TEXT NOT NULL,
+                role TEXT DEFAULT NULL,
+                text_preview TEXT DEFAULT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                redaction_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_hindsight_memory_events_user_id
+            ON hindsight_memory_events(user_id, id)
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_hindsight_memory_events_request_id
+            ON hindsight_memory_events(request_id)
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS hindsight_dream_state (
+                user_id INTEGER PRIMARY KEY,
+                last_event_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS hindsight_memory_clear_state (
+                user_id INTEGER PRIMARY KEY,
+                clear_generation INTEGER NOT NULL DEFAULT 0,
+                cleared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS hindsight_dream_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_event_start_id INTEGER DEFAULT NULL,
+                source_event_end_id INTEGER DEFAULT NULL,
+                input_summary TEXT DEFAULT NULL,
+                output_json TEXT DEFAULT NULL,
+                error TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP DEFAULT NULL
+            )
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_hindsight_dream_runs_user_status
+            ON hindsight_dream_runs(user_id, status, created_at)
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS hindsight_memory_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'candidate',
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                source_run_id INTEGER DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP DEFAULT NULL,
+                discarded_at TIMESTAMP DEFAULT NULL
+            )
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_hindsight_memory_documents_user_status
+            ON hindsight_memory_documents(user_id, status, created_at)
+            ''',
+            '''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_hindsight_memory_documents_user_path_version
+            ON hindsight_memory_documents(user_id, path, version)
+            ''',
         ]
+
+    async def on_user_message(self, payload: UserMessagePayload) -> None:
+        await self._append_memory_event(
+            "user_message",
+            user_id=payload.user_id,
+            chat_id=payload.chat_id,
+            request_id=payload.request_id,
+            role="user",
+            text=payload.text,
+            payload={
+                "has_image": payload.has_image,
+                "has_voice": payload.has_voice,
+                "is_command": payload.is_command,
+                "ts": payload.ts,
+            },
+        )
+
+    async def on_assistant_response(self, payload: AssistantResponsePayload) -> None:
+        await self._append_memory_event(
+            "assistant_response",
+            user_id=payload.user_id,
+            chat_id=payload.chat_id,
+            request_id=payload.request_id,
+            role="assistant",
+            text=payload.text,
+            payload={
+                "tokens": payload.tokens,
+                "model": payload.model,
+                "ts": payload.ts,
+            },
+        )
+
+    async def on_session_reset(self, payload: SessionResetPayload) -> None:
+        await self._append_memory_event(
+            "session_reset",
+            user_id=payload.user_id,
+            chat_id=payload.chat_id,
+            payload={
+                "reason": payload.reason,
+                "terminal_only": payload.terminal_only,
+            },
+        )
+
+    async def _append_memory_event(
+        self,
+        event_type: str,
+        *,
+        user_id: int | None,
+        chat_id: int | str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        role: str | None = None,
+        text: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.memory_pipeline_enabled or user_id is None:
+            return
+
+        text_preview, text_redactions = self._redacted_preview(text)
+        safe_payload, payload_redactions = self._redact_event_value(payload or {})
+        event_ts = payload.get("ts") if isinstance(payload, dict) else None
+        try:
+            db = getattr(self.db_handle, "database", None)
+            get_connection = getattr(db, "get_connection", None)
+            has_sync_db = (
+                db is not None
+                and callable(get_connection)
+                and not asyncio.iscoroutinefunction(get_connection)
+            )
+            if has_sync_db:
+                await asyncio.to_thread(
+                    self._append_memory_event_sync,
+                    db,
+                    event_type,
+                    user_id=int(user_id),
+                    chat_id=str(chat_id) if chat_id is not None else None,
+                    session_id=session_id,
+                    request_id=request_id,
+                    role=role,
+                    text_preview=text_preview,
+                    payload_json=json.dumps(safe_payload, ensure_ascii=False, default=str),
+                    redaction_count=text_redactions + payload_redactions,
+                    event_ts=event_ts,
+                )
+            else:
+                await self.db_handle.execute(
+                    '''
+                    INSERT INTO hindsight_memory_events
+                    (user_id, chat_id, session_id, request_id, clear_generation,
+                     event_type, role, text_preview, payload_json, redaction_count)
+                    VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        int(user_id),
+                        str(chat_id) if chat_id is not None else None,
+                        session_id,
+                        request_id,
+                        event_type,
+                        role,
+                        text_preview,
+                        json.dumps(safe_payload, ensure_ascii=False, default=str),
+                        text_redactions + payload_redactions,
+                    ),
+                )
+        except Exception:
+            logger.exception("Failed to append Hindsight memory event")
+
+    def _append_memory_event_sync(
+        self,
+        db,
+        event_type: str,
+        *,
+        user_id: int,
+        chat_id: str | None,
+        session_id: str | None,
+        request_id: str | None,
+        role: str | None,
+        text_preview: str | None,
+        payload_json: str,
+        redaction_count: int,
+        event_ts: Any,
+    ) -> None:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            clear_generation = self._clear_generation_from_conn(cursor, user_id)
+            cleared_jd = self._cleared_julianday_from_conn(cursor, user_id)
+            event_jd = self._event_julianday_from_conn(cursor, event_ts)
+            if (
+                role in {"user", "assistant"}
+                and cleared_jd is not None
+                and (event_jd is None or event_jd <= cleared_jd)
+            ):
+                return
+            if request_id and role == "assistant":
+                user_event = cursor.execute(
+                    '''
+                    SELECT clear_generation
+                    FROM hindsight_memory_events
+                    WHERE user_id = ? AND request_id = ? AND role = 'user'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (user_id, request_id),
+                ).fetchone()
+                if not user_event or int(user_event["clear_generation"]) < clear_generation:
+                    return
+            cursor.execute(
+                '''
+                INSERT INTO hindsight_memory_events
+                (user_id, chat_id, session_id, request_id, clear_generation,
+                 event_type, role, text_preview, payload_json, redaction_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    user_id,
+                    chat_id,
+                    session_id,
+                    request_id,
+                    clear_generation,
+                    event_type,
+                    role,
+                    text_preview,
+                    payload_json,
+                    redaction_count,
+                ),
+            )
+
+    def _redacted_preview(self, text: str | None) -> tuple[str | None, int]:
+        if text is None:
+            return None, 0
+        redacted, count = self._redact_text(str(text))
+        limit = max(1, int(self.config.get('hindsight_dream_max_event_chars', 1000)))
+        if len(redacted) > limit:
+            redacted = redacted[:limit] + f"...[truncated {len(redacted) - limit} chars]"
+        return redacted, count
+
+    @staticmethod
+    def _event_julianday_from_conn(cursor, event_ts: Any) -> float | None:
+        if isinstance(event_ts, (int, float)):
+            row = cursor.execute(
+                "SELECT julianday(?, 'unixepoch') AS event_jd",
+                (float(event_ts),),
+            ).fetchone()
+            return row["event_jd"] if row else None
+        return None
+
+    def _redact_event_value(self, value: Any) -> tuple[Any, int]:
+        if isinstance(value, str):
+            return self._redact_text(value)
+        if isinstance(value, dict):
+            redactions = 0
+            safe = {}
+            for key, item in value.items():
+                safe_key = str(key)
+                if HINDSIGHT_SECRET_KEY_PATTERN.search(safe_key):
+                    safe[safe_key] = "[REDACTED]"
+                    redactions += 1
+                    continue
+                safe_item, item_redactions = self._redact_event_value(item)
+                safe[safe_key] = safe_item
+                redactions += item_redactions
+            return safe, redactions
+        if isinstance(value, list):
+            redactions = 0
+            safe = []
+            for item in value:
+                safe_item, item_redactions = self._redact_event_value(item)
+                safe.append(safe_item)
+                redactions += item_redactions
+            return safe, redactions
+        return value, 0
+
+    @staticmethod
+    def _redact_text(text: str) -> tuple[str, int]:
+        redacted = text
+        count = 0
+        for pattern in HINDSIGHT_SECRET_PATTERNS:
+            redacted, replacements = pattern.subn("[REDACTED]", redacted)
+            count += replacements
+        redacted, context_replacements = HINDSIGHT_SECRET_CONTEXT_PATTERN.subn(
+            "[REDACTED]",
+            redacted,
+        )
+        count += context_replacements
+        return redacted, count
+
+    async def _dream_tick(self, *, application=None) -> None:
+        if not self.memory_pipeline_enabled or self.openai is None:
+            return
+        db = getattr(self.db_handle, "database", None)
+        if db is None:
+            return
+
+        try:
+            users = await self._users_with_dream_events()
+        except Exception:
+            logger.exception("Failed to find Hindsight dream events")
+            return
+
+        for user in users:
+            run_id = None
+            try:
+                user_id = int(user["user_id"])
+                async with self._memory_user_lock(user_id):
+                    events = await self._fetch_dream_events(
+                        user_id,
+                        int(user.get("last_event_id") or 0),
+                    )
+                    if not events:
+                        continue
+                    start_event_id = int(events[0]["id"])
+                    end_event_id = int(events[-1]["id"])
+                    input_summary = self._render_dream_events(events)
+                    run_id = await asyncio.to_thread(
+                        self._create_dream_run_sync,
+                        db,
+                        user_id,
+                        start_event_id,
+                        end_event_id,
+                        input_summary,
+                    )
+                    existing = await self._fetch_approved_memory_documents(user_id)
+                    documents = await self._extract_dream_documents(input_summary, existing)
+                    output_json = json.dumps(
+                        {"documents": documents},
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    await asyncio.to_thread(
+                        self._complete_dream_run_sync,
+                        db,
+                        run_id,
+                        user_id,
+                        end_event_id,
+                        documents,
+                        output_json,
+                    )
+            except Exception as exc:
+                if run_id is not None:
+                    try:
+                        await asyncio.to_thread(
+                            self._mark_dream_run_failed_sync,
+                            db,
+                            run_id,
+                            str(exc),
+                        )
+                    except Exception:
+                        logger.exception("Failed to mark Hindsight dream run as failed")
+                logger.warning(
+                    "Hindsight dream run failed user_id=%s run_id=%s: %s",
+                    user.get("user_id"),
+                    run_id,
+                    exc,
+                )
+
+    async def _users_with_dream_events(self) -> list[dict[str, Any]]:
+        return await self.db_handle.fetch_all(
+            '''
+            SELECT e.user_id AS user_id,
+                   COALESCE(s.last_event_id, 0) AS last_event_id,
+                   MAX(e.id) AS max_event_id
+            FROM hindsight_memory_events e
+            LEFT JOIN hindsight_dream_state s ON s.user_id = e.user_id
+            WHERE e.id > COALESCE(s.last_event_id, 0)
+            GROUP BY e.user_id, COALESCE(s.last_event_id, 0)
+            ORDER BY max_event_id ASC
+            '''
+        )
+
+    async def _fetch_dream_events(self, user_id: int, last_event_id: int) -> list[dict[str, Any]]:
+        limit = max(1, int(self.config.get('hindsight_dream_max_events', 50)))
+        return await self.db_handle.fetch_all(
+            '''
+            SELECT id, event_type, role, text_preview, payload_json, request_id,
+                   session_id, created_at
+            FROM hindsight_memory_events
+            WHERE user_id = ? AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            ''',
+            (user_id, last_event_id, limit),
+        )
+
+    async def _fetch_approved_memory_documents(self, user_id: int) -> list[dict[str, Any]]:
+        limit = max(5, int(self.config.get('hindsight_dream_max_documents', 5)) * 4)
+        return await self.db_handle.fetch_all(
+            '''
+            SELECT d.path, d.kind, d.content, d.version
+            FROM hindsight_memory_documents d
+            JOIN (
+                SELECT path, MAX(version) AS version
+                FROM hindsight_memory_documents
+                WHERE user_id = ? AND status = 'approved'
+                GROUP BY path
+            ) latest
+              ON latest.path = d.path AND latest.version = d.version
+            WHERE d.user_id = ? AND d.status = 'approved'
+            ORDER BY d.path
+            LIMIT ?
+            ''',
+            (user_id, user_id, limit),
+        )
+
+    def _render_dream_events(self, events: list[dict[str, Any]]) -> str:
+        lines = []
+        for event in events:
+            head = f"[{event['id']}] {event.get('created_at') or ''} {event.get('event_type')}"
+            role = event.get("role")
+            if role:
+                head += f" role={role}"
+            request_id = event.get("request_id")
+            if request_id:
+                head += f" request_id={request_id}"
+            lines.append(head)
+            text = (event.get("text_preview") or "").strip()
+            if text:
+                lines.append(f"  text: {text}")
+            payload_json = event.get("payload_json")
+            if payload_json and payload_json != "{}":
+                lines.append(f"  payload: {payload_json}")
+        return "\n".join(lines)
+
+    async def _extract_dream_documents(
+        self,
+        rendered_events: str,
+        existing_documents: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        from ..openai_helper import _first_choice_or_raise, LLMGATEWAY_LIGHT_MODEL
+
+        existing = self._render_existing_documents(existing_documents)
+        response = await self.openai.chat_completion(
+            model=self.openai.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            messages=[
+                {"role": "system", "content": HINDSIGHT_DREAM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "<existing_memory_documents>\n"
+                        f"{existing}\n"
+                        "</existing_memory_documents>\n\n"
+                        "<new_events>\n"
+                        f"{rendered_events}\n"
+                        "</new_events>"
+                    ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=4000,
+            json_mode=True,
+            stream=False,
+        )
+        content = _first_choice_or_raise(response).message.content or ""
+        return self._parse_dream_documents(content)
+
+    @staticmethod
+    def _render_existing_documents(documents: list[dict[str, Any]]) -> str:
+        if not documents:
+            return "(no approved memory documents)"
+        parts = []
+        limit = 2000
+        for doc in documents:
+            content = str(doc.get('content') or '')
+            if len(content) > limit:
+                content = content[:limit] + f"...[truncated {len(content) - limit} chars]"
+            parts.append(
+                f"### {doc.get('path')} v{doc.get('version')}\n"
+                f"kind: {doc.get('kind')}\n"
+                f"{content}"
+            )
+        return "\n\n".join(parts)
+
+    def _parse_dream_documents(self, content: str) -> list[dict[str, Any]]:
+        text = (content or "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("Dream extractor returned no JSON object")
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as exc:
+            raise ValueError("Dream extractor returned invalid JSON") from exc
+
+        raw_docs = data.get("documents") if isinstance(data, dict) else None
+        if not isinstance(raw_docs, list):
+            raise ValueError("Dream extractor returned missing documents list")
+
+        allowed_kinds = {"profile", "project", "tool", "mistake", "general"}
+        max_docs = max(1, int(self.config.get('hindsight_dream_max_documents', 5)))
+        documents = []
+        for raw in raw_docs[:max_docs]:
+            if not isinstance(raw, dict):
+                continue
+            path = str(raw.get("path") or "").strip().strip("/")
+            kind = str(raw.get("kind") or "general").strip().lower()
+            body = str(raw.get("content") or "").strip()
+            if not path or not body or kind not in allowed_kinds:
+                continue
+            _, redactions = self._redact_text(body)
+            if (
+                not HINDSIGHT_MEMORY_PATH_PATTERN.fullmatch(path)
+                or redactions
+                or self._looks_sensitive_memory(body)
+            ):
+                continue
+            documents.append({"path": path, "kind": kind, "content": body})
+        return documents
+
+    def _create_dream_run_sync(
+        self,
+        db,
+        user_id: int,
+        start_event_id: int,
+        end_event_id: int,
+        input_summary: str,
+    ) -> int:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO hindsight_dream_runs
+                (user_id, status, source_event_start_id, source_event_end_id, input_summary)
+                VALUES (?, 'processing', ?, ?, ?)
+                ''',
+                (user_id, start_event_id, end_event_id, input_summary),
+            )
+            return int(cursor.lastrowid)
+
+    def _complete_dream_run_sync(
+        self,
+        db,
+        run_id: int,
+        user_id: int,
+        end_event_id: int,
+        documents: list[dict[str, Any]],
+        output_json: str,
+    ) -> None:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            for doc in documents:
+                cursor.execute(
+                    '''
+                    SELECT COALESCE(MAX(version), 0) + 1
+                    FROM hindsight_memory_documents
+                    WHERE user_id = ? AND path = ?
+                    ''',
+                    (user_id, doc["path"]),
+                )
+                version = int(cursor.fetchone()[0])
+                body = doc["content"]
+                content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                cursor.execute(
+                    '''
+                    INSERT INTO hindsight_memory_documents
+                    (user_id, path, kind, status, content, content_hash, version, source_run_id)
+                    VALUES (?, ?, ?, 'candidate', ?, ?, ?, ?)
+                    ''',
+                    (user_id, doc["path"], doc["kind"], body, content_hash, version, run_id),
+                )
+            cursor.execute(
+                '''
+                UPDATE hindsight_dream_runs
+                SET status = 'completed',
+                    output_json = ?,
+                    error = NULL,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (output_json, run_id),
+            )
+            cursor.execute(
+                '''
+                INSERT INTO hindsight_dream_state(user_id, last_event_id, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    last_event_id = MAX(hindsight_dream_state.last_event_id, excluded.last_event_id),
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (user_id, end_event_id),
+            )
+
+    def _mark_dream_run_failed_sync(self, db, run_id: int, error: str) -> None:
+        with db.get_connection() as conn:
+            conn.execute(
+                '''
+                UPDATE hindsight_dream_runs
+                SET status = 'failed',
+                    error = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (error, run_id),
+            )
 
     async def finalize_session_memory(
         self,
@@ -744,8 +1593,6 @@ class HindsightMemoryPlugin(Plugin):
         user_id = getattr(payload, "user_id", None)
         if user_id is None:
             return None
-        if any(self.is_hindsight_memory_message(msg) for msg in messages):
-            return None
         last_user = next(
             (msg for msg in reversed(messages)
              if isinstance(msg, dict) and msg.get("role") == "user"),
@@ -757,29 +1604,6 @@ class HindsightMemoryPlugin(Plugin):
         if not isinstance(query, str) or not query.strip():
             return None
 
-        try:
-            data = await self.client.recall(
-                self.bank_id_for(user_id),
-                query,
-                budget=self.config.get('hindsight_recall_budget', 'mid'),
-                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
-                memory_types=self.memory_types,
-                trace=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Hindsight recall failed for user_id=%s: %s", user_id, exc,
-            )
-            return None
-
-        memory = format_recall_results(data) if data else None
-        if not memory:
-            return None
-
-        memory_message = {
-            "role": "system",
-            "content": HINDSIGHT_CONTEXT_PROMPT.format(memory=memory),
-        }
         new_messages = list(messages)
         insert_at = 0
         for msg in new_messages:
@@ -787,9 +1611,57 @@ class HindsightMemoryPlugin(Plugin):
                 insert_at += 1
             else:
                 break
-        new_messages.insert(insert_at, memory_message)
-        logger.info("Hindsight recalled memory for bank %s", self.bank_id_for(user_id))
-        return new_messages
+
+        changed = False
+        has_baseline_memory = any(self.is_hindsight_memory_message(msg) for msg in messages)
+        if not has_baseline_memory:
+            memory = await self._recall_memory_text(
+                user_id,
+                query,
+                max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
+            )
+            if memory:
+                new_messages.insert(insert_at, {
+                    "role": "system",
+                    "content": HINDSIGHT_CONTEXT_PROMPT.format(memory=memory),
+                })
+                insert_at += 1
+                changed = True
+                logger.info("Hindsight recalled baseline memory for bank %s", self.bank_id_for(user_id))
+
+        allow_dynamic = bool(getattr(payload, "allow_dynamic_recall", True))
+        if has_baseline_memory and self.dynamic_recall_enabled and allow_dynamic:
+            memory = await self._recall_memory_text(
+                user_id,
+                query,
+                max_tokens=int(self.config.get('hindsight_dynamic_recall_max_tokens', 1024)),
+            )
+            if memory:
+                new_messages.insert(insert_at, {
+                    "role": "system",
+                    "content": HINDSIGHT_DYNAMIC_CONTEXT_PROMPT.format(memory=memory),
+                })
+                changed = True
+                logger.info("Hindsight recalled dynamic memory for bank %s", self.bank_id_for(user_id))
+
+        return new_messages if changed else None
+
+    async def _recall_memory_text(self, user_id: int, query: str, *, max_tokens: int) -> str:
+        try:
+            data = await self.client.recall(
+                self.bank_id_for(user_id),
+                query,
+                budget=self.config.get('hindsight_recall_budget', 'mid'),
+                max_tokens=max_tokens,
+                memory_types=self.memory_types,
+                trace=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Hindsight recall failed for user_id=%s: %s", user_id, exc,
+            )
+            return ""
+        return format_recall_results(data) if data else ""
 
     async def contribute_prompt_fragment(self, slot: str, payload: Any) -> Any | None:
         if not self.is_active:
@@ -934,6 +1806,14 @@ class HindsightMemoryPlugin(Plugin):
         if action == "export":
             await self._send_memory_export(message, helper, user_id)
             return
+        if action == "candidates":
+            rows = await self._candidate_documents(user_id)
+            await message.reply_text(
+                self._memory_candidates_text(rows),
+                reply_markup=self._memory_candidates_menu(rows),
+                parse_mode=None,
+            )
+            return
         if action == "clear":
             await message.reply_text(
                 "Clear all Hindsight memories for this Telegram user?",
@@ -966,6 +1846,43 @@ class HindsightMemoryPlugin(Plugin):
         if action == "export":
             await self._send_memory_export(query.message, helper, user_id)
             return
+        if action == "candidates":
+            rows = await self._candidate_documents(user_id)
+            await query.edit_message_text(
+                self._memory_candidates_text(rows),
+                reply_markup=self._memory_candidates_menu(rows),
+                parse_mode=None,
+            )
+            return
+        if action.startswith("candidate:"):
+            document_id = self._callback_id(action)
+            row = await self._candidate_document(user_id, document_id)
+            await query.edit_message_text(
+                self._memory_candidate_detail_text(row),
+                reply_markup=self._memory_candidate_detail_menu(document_id) if row else self._memory_candidates_menu([]),
+                parse_mode=None,
+            )
+            return
+        if action.startswith("approve:"):
+            document_id = self._callback_id(action)
+            text = await self._approve_candidate_document(user_id, document_id)
+            rows = await self._candidate_documents(user_id)
+            await query.edit_message_text(
+                text,
+                reply_markup=self._memory_candidates_menu(rows),
+                parse_mode=None,
+            )
+            return
+        if action.startswith("discard:"):
+            document_id = self._callback_id(action)
+            text = await self._discard_candidate_document(user_id, document_id)
+            rows = await self._candidate_documents(user_id)
+            await query.edit_message_text(
+                text,
+                reply_markup=self._memory_candidates_menu(rows),
+                parse_mode=None,
+            )
+            return
         if action == "clear":
             await query.edit_message_text(
                 "Clear all Hindsight memories for this Telegram user?",
@@ -996,6 +1913,7 @@ class HindsightMemoryPlugin(Plugin):
                 InlineKeyboardButton("Refresh", callback_data="memory:status"),
                 InlineKeyboardButton("Export", callback_data="memory:export"),
             ],
+            [InlineKeyboardButton("Candidates", callback_data="memory:candidates")],
             [InlineKeyboardButton("Clear", callback_data="memory:clear")],
             [InlineKeyboardButton("Close", callback_data="memory:close")],
         ])
@@ -1003,14 +1921,235 @@ class HindsightMemoryPlugin(Plugin):
     async def _memory_status_text(self, helper, user_id: int) -> str:
         bank_id = self.bank_id_for(user_id)
         count_text = await self._memory_count_text(bank_id)
+        candidate_count = await self._candidate_count(user_id)
         return (
             f"Hindsight memory is enabled.\n"
             f"Bank: `{bank_id}`\n"
-            f"Memories: `{count_text}`\n\n"
+            f"Memories: `{count_text}`\n"
+            f"Pending candidates: `{candidate_count}`\n\n"
             "Commands:\n"
             "`/memory search <query>`\n"
+            "`/memory candidates`\n"
             "`/memory export`\n"
             "`/memory clear`"
+        )
+
+    @staticmethod
+    def _callback_id(action: str) -> int | None:
+        raw = action.split(":", 1)[1] if ":" in action else ""
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    async def _candidate_count(self, user_id: int) -> int:
+        if self.db_handle is None:
+            return 0
+        row = await self.db_handle.fetch_one(
+            '''
+            SELECT COUNT(*) AS count
+            FROM hindsight_memory_documents
+            WHERE user_id = ? AND status = 'candidate'
+            ''',
+            (user_id,),
+        )
+        return int((row or {}).get("count") or 0)
+
+    async def _candidate_documents(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        if self.db_handle is None:
+            return []
+        return await self.db_handle.fetch_all(
+            '''
+            SELECT id, path, kind, content, version, created_at
+            FROM hindsight_memory_documents
+            WHERE user_id = ? AND status = 'candidate'
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            ''',
+            (user_id, limit),
+        )
+
+    async def _candidate_document(self, user_id: int, document_id: int | None) -> dict[str, Any] | None:
+        if self.db_handle is None or document_id is None:
+            return None
+        return await self.db_handle.fetch_one(
+            '''
+            SELECT id, path, kind, status, content, version, created_at
+            FROM hindsight_memory_documents
+            WHERE user_id = ? AND id = ? AND status = 'candidate'
+            ''',
+            (user_id, document_id),
+        )
+
+    @staticmethod
+    def _memory_candidates_text(rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return "No pending memory candidates."
+        lines = ["Pending memory candidates:"]
+        for row in rows:
+            preview = str(row.get("content") or "").replace("\n", " ")
+            if len(preview) > 120:
+                preview = preview[:120] + "..."
+            lines.append(
+                f"{row['id']}. {row.get('path')} v{row.get('version')} "
+                f"({row.get('kind')}): {preview}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _memory_candidate_detail_text(row: dict[str, Any] | None) -> str:
+        if not row:
+            return "Memory candidate not found."
+        content = str(row.get("content") or "")
+        if len(content) > 3000:
+            content = content[:3000] + f"\n...[truncated {len(content) - 3000} chars]"
+        return (
+            f"Memory candidate {row['id']}\n"
+            f"Path: {row.get('path')}\n"
+            f"Kind: {row.get('kind')}\n"
+            f"Version: {row.get('version')}\n\n"
+            f"{content}"
+        )
+
+    @staticmethod
+    def _memory_candidates_menu(rows: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+        buttons = [
+            [InlineKeyboardButton(str(row["path"])[:48], callback_data=f"memory:candidate:{row['id']}")]
+            for row in rows[:10]
+        ]
+        buttons.append([InlineKeyboardButton("Refresh", callback_data="memory:candidates")])
+        buttons.append([InlineKeyboardButton("Back", callback_data="memory:status")])
+        return InlineKeyboardMarkup(buttons)
+
+    @staticmethod
+    def _memory_candidate_detail_menu(document_id: int | None) -> InlineKeyboardMarkup:
+        if document_id is None:
+            return InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="memory:candidates")]])
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Approve", callback_data=f"memory:approve:{document_id}"),
+                InlineKeyboardButton("Discard", callback_data=f"memory:discard:{document_id}"),
+            ],
+            [InlineKeyboardButton("Back", callback_data="memory:candidates")],
+        ])
+
+    async def _approve_candidate_document(self, user_id: int, document_id: int | None) -> str:
+        if self.db_handle is None or document_id is None:
+            return "Memory candidate not found."
+        db = getattr(self.db_handle, "database", None)
+        if db is None:
+            return "Memory candidate storage is unavailable."
+
+        async with self._memory_user_lock(user_id):
+            row = await asyncio.to_thread(
+                self._load_candidate_for_approval_sync, db, user_id, document_id,
+            )
+            if not row:
+                return "Memory candidate not found."
+            try:
+                await self._retain_memory_document(user_id, row)
+            except Exception as exc:
+                return f"Approve failed: {exc}"
+            changed = await asyncio.to_thread(
+                self._finalize_candidate_approval_sync,
+                db,
+                user_id,
+                int(row["id"]),
+                str(row["path"]),
+            )
+            if not changed:
+                return "Memory candidate not found."
+            return f"Approved memory candidate {row['id']}."
+
+    async def _discard_candidate_document(self, user_id: int, document_id: int | None) -> str:
+        if self.db_handle is None or document_id is None:
+            return "Memory candidate not found."
+        db = getattr(self.db_handle, "database", None)
+        if db is None:
+            return "Memory candidate storage is unavailable."
+        async with self._memory_user_lock(user_id):
+            changed = await asyncio.to_thread(
+                self._discard_candidate_sync, db, user_id, document_id,
+            )
+        if not changed:
+            return "Memory candidate not found."
+        return f"Discarded memory candidate {document_id}."
+
+    def _load_candidate_for_approval_sync(
+        self, db, user_id: int, document_id: int
+    ) -> dict[str, Any] | None:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                '''
+                SELECT id, path, kind, content, version, created_at
+                FROM hindsight_memory_documents
+                WHERE user_id = ? AND id = ? AND status = 'candidate'
+                ''',
+                (user_id, document_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def _finalize_candidate_approval_sync(
+        self, db, user_id: int, document_id: int, path: str
+    ) -> bool:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                '''
+                UPDATE hindsight_memory_documents
+                SET status = 'approved', approved_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND id = ? AND status = 'candidate'
+                ''',
+                (user_id, document_id),
+            )
+            if cursor.rowcount != 1:
+                return False
+            cursor.execute(
+                '''
+                UPDATE hindsight_memory_documents
+                SET status = 'superseded'
+                WHERE user_id = ? AND path = ? AND status = 'approved' AND id <> ?
+                ''',
+                (user_id, path, document_id),
+            )
+            return True
+
+    def _discard_candidate_sync(self, db, user_id: int, document_id: int) -> bool:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE hindsight_memory_documents
+                SET status = 'discarded', discarded_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND id = ? AND status = 'candidate'
+                ''',
+                (user_id, document_id),
+            )
+            return cursor.rowcount == 1
+
+    async def _retain_memory_document(self, user_id: int, row: dict[str, Any]) -> None:
+        path = str(row.get("path") or "")
+        version = int(row.get("version") or 1)
+        path_hash = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+        await self._retain_hindsight_items(
+            chat_id=user_id,
+            user_id=user_id,
+            session_id=None,
+            mode="memory_document_approved",
+            document_id=f"telegram-{user_id}-memory-{path_hash}",
+            items=[{
+                "content": str(row.get("content") or ""),
+                "context": f"Approved dream memory document: {path}",
+                "tags": [
+                    "dream_memory",
+                    "memory_document",
+                    f"version:{version}",
+                    f"kind:{row.get('kind')}",
+                    f"path:{path}",
+                ],
+            }],
+            async_store=False,
         )
 
     async def _send_memory_search(self, message, helper, user_id: int, query: str) -> None:
@@ -1045,7 +2184,50 @@ class HindsightMemoryPlugin(Plugin):
 
     async def _clear_memory(self, helper, user_id: int) -> None:
         bank_id = self.bank_id_for(user_id)
-        await self.client.clear_bank(bank_id)
+        async with self._memory_user_lock(user_id):
+            if self.db_handle is not None:
+                db = getattr(self.db_handle, "database", None)
+                get_connection = getattr(db, "get_connection", None)
+                has_sync_db = (
+                    db is not None
+                    and callable(get_connection)
+                    and not asyncio.iscoroutinefunction(get_connection)
+                )
+                if has_sync_db:
+                    try:
+                        await self.client.clear_bank(bank_id)
+                    finally:
+                        await asyncio.to_thread(self._clear_local_memory_sync, db, user_id)
+                else:
+                    await self.client.clear_bank(bank_id)
+            else:
+                await self.client.clear_bank(bank_id)
+
+    def _clear_local_memory_sync(self, db, user_id: int) -> None:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                '''
+                INSERT INTO hindsight_memory_clear_state(user_id, clear_generation, cleared_at)
+                VALUES (?, 1, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+                ON CONFLICT(user_id) DO UPDATE SET
+                    clear_generation = clear_generation + 1,
+                    cleared_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+                ''',
+                (user_id,),
+            )
+            for table in (
+                "hindsight_finalize_jobs",
+                "hindsight_memory_events",
+                "hindsight_dream_runs",
+                "hindsight_dream_state",
+                "hindsight_memory_documents",
+            ):
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?",
+                    (user_id,),
+                )
 
     async def _memory_count_text(self, bank_id: str) -> str:
         try:

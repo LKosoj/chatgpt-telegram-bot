@@ -126,6 +126,13 @@ def main():
         'hindsight_async_store': os.environ.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true',
         'hindsight_timeout': float(os.environ.get('HINDSIGHT_TIMEOUT', '30')),
         'hindsight_max_auto_save_items': int(os.environ.get('HINDSIGHT_MAX_AUTO_SAVE_ITEMS', '5')),
+        'hindsight_dream_enabled': os.environ.get('HINDSIGHT_DREAM_ENABLED', 'false').lower() == 'true',
+        'hindsight_dream_interval_seconds': int(os.environ.get('HINDSIGHT_DREAM_INTERVAL_SECONDS', '600')),
+        'hindsight_dream_max_events': int(os.environ.get('HINDSIGHT_DREAM_MAX_EVENTS', '50')),
+        'hindsight_dream_max_event_chars': int(os.environ.get('HINDSIGHT_DREAM_MAX_EVENT_CHARS', '1000')),
+        'hindsight_dream_max_documents': int(os.environ.get('HINDSIGHT_DREAM_MAX_DOCUMENTS', '5')),
+        'hindsight_dynamic_recall': os.environ.get('HINDSIGHT_DYNAMIC_RECALL', 'false').lower() == 'true',
+        'hindsight_dynamic_recall_max_tokens': int(os.environ.get('HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS', '1024')),
     }
 
     if openai_config['enable_functions'] and not functions_available:

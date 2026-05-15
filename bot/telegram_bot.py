@@ -437,6 +437,7 @@ class ChatGPTTelegramBot:
         text: str | None,
         tokens: int,
         model: str,
+        ts: float | None = None,
     ) -> None:
         if not text:
             return
@@ -449,7 +450,7 @@ class ChatGPTTelegramBot:
                 text=text,
                 tokens=tokens,
                 model=model,
-                ts=time.time(),
+                ts=ts if ts is not None else time.time(),
             ),
             user_id=user_id,
         )
@@ -2419,7 +2420,7 @@ class ChatGPTTelegramBot:
                 'update': update,
                 'context': context,
                 'message_id': message_id,
-                'message_timestamp': update.message.date.timestamp()
+                'message_timestamp': self._message_timestamp(update)
             })
             
             # Запускаем таймер обработки буфера, если он не запущен
@@ -2492,7 +2493,12 @@ class ChatGPTTelegramBot:
                     first_msg = msg_group[0]
                     
                     try:
-                        await self.process_message(combined_text, first_msg['update'], first_msg['context'])
+                        await self.process_message(
+                            combined_text,
+                            first_msg['update'],
+                            first_msg['context'],
+                            request_started_at=first_msg['message_timestamp'],
+                        )
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")
                         continue
@@ -2508,7 +2514,21 @@ class ChatGPTTelegramBot:
                     if chat_id in self.message_buffer:
                         self.message_buffer[chat_id]['processing'] = False
                     
-    async def process_message(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    @staticmethod
+    def _message_timestamp(update: Update) -> float:
+        message_date = getattr(getattr(update, "message", None), "date", None)
+        timestamp = getattr(message_date, "timestamp", None)
+        if callable(timestamp):
+            return float(timestamp())
+        return time.time()
+
+    async def process_message(
+        self,
+        prompt: str,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        request_started_at: float | None = None,
+    ):
         conversation_key = get_conversation_key(update)
         conversation_lock = await self._get_conversation_lock(conversation_key)
         async with conversation_lock:
@@ -2517,8 +2537,18 @@ class ChatGPTTelegramBot:
             user_settings_scope = getattr(plugin_manager, 'user_settings_scope', None)
             if callable(user_settings_scope):
                 with user_settings_scope(user_id):
-                    return await self._process_message_locked(prompt, update, context)
-            return await self._process_message_locked(prompt, update, context)
+                    return await self._process_message_locked(
+                        prompt,
+                        update,
+                        context,
+                        request_started_at=request_started_at,
+                    )
+            return await self._process_message_locked(
+                prompt,
+                update,
+                context,
+                request_started_at=request_started_at,
+            )
 
     async def _get_conversation_lock(self, conversation_key: int) -> asyncio.Lock:
         if not hasattr(self, '_conversation_locks'):
@@ -2533,7 +2563,13 @@ class ChatGPTTelegramBot:
                 self._conversation_locks[conversation_key] = lock
             return lock
 
-    async def _process_message_locked(self, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def _process_message_locked(
+        self,
+        prompt: str,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        request_started_at: float | None = None,
+    ):
         """
         Обрабатывает полное сообщение
         """
@@ -2542,6 +2578,11 @@ class ChatGPTTelegramBot:
         message_id = update.message.message_id
         self.last_message[chat_id] = prompt
         request_id = f"{chat_id}_{message_id}"
+        request_started_at = (
+            request_started_at
+            if request_started_at is not None
+            else self._message_timestamp(update)
+        )
         request_context = RequestContext(
             chat_id=chat_id,
             user_id=user_id,
@@ -2605,7 +2646,7 @@ class ChatGPTTelegramBot:
                 has_image=False,
                 has_voice=False,
                 is_command=bool(update.message.text and update.message.text.startswith("/")),
-                ts=time.time(),
+                ts=request_started_at,
             ),
             user_id=user_id,
         )
@@ -2661,6 +2702,7 @@ class ChatGPTTelegramBot:
                             text=assistant_response_text,
                             tokens=total_tokens,
                             model=model_to_use,
+                            ts=request_started_at,
                         )
                         return
 
@@ -2839,6 +2881,7 @@ class ChatGPTTelegramBot:
                 text=assistant_response_text,
                 tokens=total_tokens,
                 model=model_to_use,
+                ts=request_started_at,
             )
 
             result = record_chat_tokens(self.usage, self.config, user_id, total_tokens)

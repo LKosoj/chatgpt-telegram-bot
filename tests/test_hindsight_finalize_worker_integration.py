@@ -100,6 +100,30 @@ async def test_worker_marks_failed_when_finalize_raises(db):
 
 
 @pytest.mark.asyncio
+async def test_worker_skips_claimed_job_after_memory_clear(db):
+    plugin = _make_plugin(db)
+    plugin.finalize_session_memory = AsyncMock(return_value=1)
+
+    await plugin.on_session_before_delete(SessionBeforeDeletePayload(
+        user_id=44, session_id="s-stale",
+        messages=({"role": "user", "content": "old fact"},),
+    ))
+    claimed_jobs = plugin._claim_finalize_jobs_sync(db)
+    assert len(claimed_jobs) == 1
+
+    plugin.client = SimpleNamespace(
+        enabled=True,
+        clear_bank=AsyncMock(return_value={"success": True}),
+    )
+    await plugin._clear_memory(SimpleNamespace(), 44)
+    plugin._claim_finalize_jobs_sync = lambda _db: claimed_jobs
+
+    await plugin._finalize_tick(application=None)
+
+    plugin.finalize_session_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_worker_status_becomes_failed_after_max_attempts(db, monkeypatch):
     # Lower the threshold so the test stays fast and intent-clear.
     monkeypatch.setattr(

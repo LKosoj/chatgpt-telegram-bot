@@ -7,12 +7,17 @@ from pathlib import Path
 from bot.plugins.hindsight_memory import HindsightMemoryPlugin
 
 
-def test_register_schema_returns_two_statements():
+def test_register_schema_declares_memory_pipeline_tables():
     plugin = HindsightMemoryPlugin()
     stmts = plugin.register_schema()
     assert isinstance(stmts, list)
-    assert len(stmts) == 2
-    assert any("CREATE TABLE" in s and "hindsight_finalize_jobs" in s for s in stmts)
+    joined = "\n".join(stmts)
+    assert "hindsight_finalize_jobs" in joined
+    assert "hindsight_memory_events" in joined
+    assert "hindsight_dream_state" in joined
+    assert "hindsight_memory_clear_state" in joined
+    assert "hindsight_dream_runs" in joined
+    assert "hindsight_memory_documents" in joined
     assert any("CREATE INDEX" in s for s in stmts)
 
 

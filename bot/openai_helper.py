@@ -1725,6 +1725,7 @@ class OpenAIHelper:
         base = self._messages_with_language_instruction(self.conversations[chat_id])
         payload = BeforeChatRequestPayload(
             chat_id=chat_id, user_id=user_id, request_id=request_id,
+            allow_dynamic_recall=persist,
         )
         mutated = await self.plugin_manager.apply_mutators(
             'on_before_chat_request',

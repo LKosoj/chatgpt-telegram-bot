@@ -403,6 +403,13 @@ Hindsight is auto-enabled when both `HINDSIGHT_BASE_URL` and
 | `HINDSIGHT_ASYNC_STORE` | `true` | bool | Run retain calls in the background. |
 | `HINDSIGHT_TIMEOUT` | `30` | float | Per-request timeout in seconds. |
 | `HINDSIGHT_MAX_AUTO_SAVE_ITEMS` | `5` | int | Max facts saved per session deletion. |
+| `HINDSIGHT_DREAM_ENABLED` | `false` | bool | Enable local event journaling plus background dream candidate extraction. |
+| `HINDSIGHT_DREAM_INTERVAL_SECONDS` | `600` | int | Background dream worker interval. |
+| `HINDSIGHT_DREAM_MAX_EVENTS` | `50` | int | Max new local memory events per dream run. |
+| `HINDSIGHT_DREAM_MAX_EVENT_CHARS` | `1000` | int | Max stored preview chars per memory event. |
+| `HINDSIGHT_DREAM_MAX_DOCUMENTS` | `5` | int | Max candidate memory documents produced per dream run. |
+| `HINDSIGHT_DYNAMIC_RECALL` | `false` | bool | Add per-request ephemeral recall after baseline memory exists in the session. |
+| `HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS` | `1024` | int | Max tokens for dynamic recall. |
 
 ### Plugin-Specific Keys
 
@@ -802,7 +809,7 @@ contract see [`bot/README_MCP.md`](bot/README_MCP.md).
 
 ## Hindsight Memory
 
-When configured, Hindsight is used twice:
+When configured, Hindsight is used twice by default:
 
 1. **Auto-recall**: on the first user message of a session, the bot fetches
    relevant memories from bank `telegram-<user_id>` and persists them into the
@@ -816,10 +823,21 @@ ongoing projects, long-term constraints, and explicit "remember this"
 statements, but skips one-off image edits, single technical questions,
 transient web searches, or secrets.
 
+When `HINDSIGHT_DREAM_ENABLED=true`, the plugin also keeps a local redacted
+event journal and runs a background dream worker. Dream output is saved as
+local candidate memory documents; candidates do not reach Hindsight until the
+user approves them through `/memory candidates`. Rejecting a candidate keeps it
+local and inactive.
+
+When `HINDSIGHT_DYNAMIC_RECALL=true`, the plugin may add an extra ephemeral
+memory block for the latest request after baseline session memory already
+exists. Dynamic blocks are not persisted into the saved session context.
+
 The `hindsight_memory` plugin (`recall`, `list_memories`, `stats`) is also
 available as a regular tool when manual memory inspection is needed. When the
 plugin is enabled and Hindsight is configured, `/memory` and Settings show
-status, memory count, manual search, export, and clear actions.
+status, memory count, pending candidates, manual search, export, and clear
+actions.
 
 ---
 

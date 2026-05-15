@@ -44,7 +44,8 @@ async def test_on_session_before_delete_inserts_finalize_job():
     assert params[0] == 42
     assert params[1] == "s-1"
     decoded = json.loads(params[2])
-    assert decoded == {"messages": [dict(m) for m in messages]}
+    assert decoded["messages"] == [dict(m) for m in messages]
+    assert decoded["clear_generation"] == 0
 
 
 @pytest.mark.asyncio

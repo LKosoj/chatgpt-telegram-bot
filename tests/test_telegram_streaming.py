@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import importlib.util
 import logging
 import sys
@@ -249,10 +250,21 @@ class FakeTelegramFile:
 
 
 class FakeMessage:
-    def __init__(self, chat_id=1234, user_id=42, message_id=7, reply_side_effects=None):
+    def __init__(
+        self,
+        chat_id=1234,
+        user_id=42,
+        message_id=7,
+        reply_side_effects=None,
+        date=None,
+    ):
         self.chat_id = chat_id
         self.message_id = message_id
         self.text = "hello"
+        self.date = date or datetime.datetime.fromtimestamp(
+            1000,
+            datetime.timezone.utc,
+        )
         self.reply_to_message = None
         self.from_user = SimpleNamespace(id=user_id, name="Alice")
         self.is_topic_message = False
@@ -610,6 +622,31 @@ async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
     assert request_context.request_id == "1234_7"
     edit_message.assert_awaited()
     assert edit_message.await_args.kwargs["text"] == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_memory_observers_use_message_admission_timestamp(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+    message_date = datetime.datetime.fromtimestamp(123.456, datetime.timezone.utc)
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "1"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+
+    await bot.process_message(
+        "hello",
+        FakeUpdate(FakeMessage(date=message_date)),
+        _make_context(),
+    )
+
+    events = bot.openai.plugin_manager.observer_events
+    user_events = [payload for name, payload, _ in events if name == "on_user_message"]
+    assistant_events = [payload for name, payload, _ in events if name == "on_assistant_response"]
+    assert user_events[0].ts == pytest.approx(123.456)
+    assert assistant_events[0].ts == pytest.approx(123.456)
 
 
 @pytest.mark.asyncio

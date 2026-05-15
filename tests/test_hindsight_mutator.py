@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import pytest
 
 from bot.plugins.hindsight_memory import (
+    HINDSIGHT_DYNAMIC_MEMORY_MARKER,
     HindsightMemoryPlugin,
     HINDSIGHT_MEMORY_MARKER,
 )
@@ -151,3 +152,43 @@ async def test_mutator_noop_on_empty_recall():
         _payload(),
     )
     assert new is None
+
+
+async def test_dynamic_recall_injects_ephemeral_marker_when_baseline_exists():
+    plugin = _make_plugin(FakeHindsight(), hindsight_dynamic_recall=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "new query"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert any(
+        isinstance(message.get("content"), str)
+        and message["content"].startswith(HINDSIGHT_DYNAMIC_MEMORY_MARKER)
+        for message in new
+    )
+    assert not any(
+        plugin.is_hindsight_memory_message(message)
+        and message["content"].startswith(HINDSIGHT_DYNAMIC_MEMORY_MARKER)
+        for message in new
+    )
+    assert plugin.client.recall_calls[0][1] == "new query"
+
+
+async def test_dynamic_recall_skips_non_persistent_retry_payload():
+    plugin = _make_plugin(FakeHindsight(), hindsight_dynamic_recall=True)
+    payload = BeforeChatRequestPayload(
+        chat_id=1, user_id=123, request_id=None, allow_dynamic_recall=False,
+    )
+    messages = [
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "retry query"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, payload)
+
+    assert new is None
+    assert plugin.client.recall_calls == []
