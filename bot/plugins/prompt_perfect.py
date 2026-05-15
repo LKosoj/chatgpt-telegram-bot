@@ -1,13 +1,15 @@
 # plugins/prompt_perfect.py
 import logging
-from typing import Dict
+from typing import Any, Dict
 
+from ..model_constants import LLMGATEWAY_LIGHT_MODEL
 from .plugin import Plugin
 
 class PromptPerfectPlugin(Plugin):
     """
     A plugin to optimize and refine user prompts for better ChatGPT responses
     """
+    plugin_id = "prompt_perfect"
 
     def get_source_name(self) -> str:
         return "Prompt Perfect"
@@ -15,7 +17,7 @@ class PromptPerfectPlugin(Plugin):
     def get_spec(self) -> [Dict]:
         return [{
             "name": "optimize_prompt",
-            "description": "Rewrite the user's raw prompt into a clearer, more specific instruction and return the model's answer to that rewritten prompt.",
+            "description": "Rewrite the user's raw prompt into a clearer, more specific instruction for the assistant's next response. The tool does not answer the prompt itself.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -39,28 +41,16 @@ class PromptPerfectPlugin(Plugin):
             context = kwargs.get('context', '')
 
             chat_id = kwargs.get('chat_id')
-            # Advanced prompt optimization logic
             optimized_prompt = await self._optimize_prompt(chat_id, original_prompt, context, helper)
 
             # Логируем оригинальный и оптимизированный промпты
             #logging.info(f"Original Prompt: {original_prompt}")
             #logging.info(f"Optimized Prompt: {optimized_prompt}")
 
-            # Получаем ответ на оптимизированный промпт
-            response, tokens = await helper.get_chat_response(
-                chat_id=chat_id,
-                query=optimized_prompt
-            )
-
             return {
                 "optimized_prompt" : optimized_prompt,
-                "model_response": response
-            }
-
-        except Exception as e:
-            logging.error(f"Error in Prompt Perfect plugin: {e}")
-            return {
-                "error": str(e)
+                "instruction": "Use optimized_prompt as the effective user request for your next assistant response. Do not call Prompt Perfect again for this same request.",
+                "suppress_reentry_tools": [f"{self.get_function_prefix()}.optimize_prompt"],
             }
 
         except Exception as e:
@@ -73,7 +63,7 @@ class PromptPerfectPlugin(Plugin):
         """
         Core method to optimize prompts using GPT's capabilities
         """
-        if helper is None:
+        if helper is None or not hasattr(helper, "chat_completion"):
             logging.error("No helper provided for prompt optimization")
             return original_prompt
 
@@ -92,11 +82,36 @@ class PromptPerfectPlugin(Plugin):
             "Optimized Prompt:"
         )
 
-        # Use the OpenAI helper to generate an optimized prompt
-        optimization_response, _ = await helper.get_chat_response(
-            chat_id=chat_id,
-            query=optimization_instruction
+        config = getattr(helper, "config", {}) or {}
+        model = config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+        response = await helper.chat_completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Rewrite prompts. Return only the optimized prompt text."},
+                {"role": "user", "content": optimization_instruction},
+            ],
+            temperature=0.2,
+            max_tokens=1000,
+            stream=False,
         )
+        optimization_response = self._extract_message_content(response)
 
-        # If optimization fails, return original prompt
         return optimization_response.strip() or original_prompt
+
+    def _extract_message_content(self, response: Any) -> str:
+        choices = self._get_value(response, "choices", [])
+        if not choices:
+            return ""
+        choice = choices[0]
+        message = self._get_value(choice, "message", None)
+        if message is None:
+            return ""
+        content = self._get_value(message, "content", "")
+        if not isinstance(content, str):
+            return ""
+        return content
+
+    def _get_value(self, source: Any, key: str, default: Any = None) -> Any:
+        if isinstance(source, dict):
+            return source.get(key, default)
+        return getattr(source, key, default)

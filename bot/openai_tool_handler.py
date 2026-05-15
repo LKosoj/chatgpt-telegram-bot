@@ -77,6 +77,7 @@ DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
+SUPPRESS_REENTRY_TOOLS_KEY = "suppress_reentry_tools"
 DELIVERY_REPAIR_PROMPT = (
     "The previous assistant text was not delivered to the user; treat it as internal progress. "
     "Continue solving the original user task from the current conversation state. Do not narrate "
@@ -107,6 +108,53 @@ def _should_defer_direct_result(response, defer_direct_results: bool, tool_name:
     if tool_name == ASK_USER_TOOL_NAME:
         return False
     return True
+
+
+def _tool_spec_name(spec) -> str | None:
+    if not isinstance(spec, dict):
+        return None
+    function_spec = spec.get("function")
+    if isinstance(function_spec, dict):
+        return function_spec.get("name")
+    return spec.get("name")
+
+
+def _filter_tools_by_name(tools, suppressed_names: set[str]):
+    if not suppressed_names:
+        return tools
+    if isinstance(tools, dict):
+        declarations = tools.get("function_declarations")
+        if not isinstance(declarations, list):
+            return tools
+        return {
+            **tools,
+            "function_declarations": [
+                spec for spec in declarations
+                if _tool_spec_name(spec) not in suppressed_names
+            ],
+        }
+    if isinstance(tools, list):
+        return [
+            spec for spec in tools
+            if _tool_spec_name(spec) not in suppressed_names
+        ]
+    return tools
+
+
+def _has_tool_specs(tools) -> bool:
+    if isinstance(tools, dict):
+        return bool(tools.get("function_declarations"))
+    return bool(tools)
+
+
+def _suppressed_reentry_tools(tool_result) -> set[str]:
+    payload = tool_result.payload if isinstance(tool_result.payload, dict) else {}
+    raw = payload.get(SUPPRESS_REENTRY_TOOLS_KEY)
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, list):
+        return {name for name in raw if isinstance(name, str) and name}
+    return set()
 
 
 def _agent_delivery_workflow_active(tool_calls: list[dict], tools_used: tuple) -> bool:
@@ -311,6 +359,7 @@ async def _retry_missing_delivery_tool(
     delivery_repair_attempts=0,
     plain_text=None,
     artifact_manifest=None,
+    suppressed_reentry_tools=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -335,7 +384,10 @@ async def _retry_missing_delivery_tool(
     active_session = next((s for s in sessions if s['is_active']), None)
     session_id = active_session['session_id'] if active_session else None
     max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
+    suppressed_reentry_tools = set(suppressed_reentry_tools or ())
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
+    tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+    tool_choice = "auto" if _has_tool_specs(tools) else "none"
 
     messages = await helper._apply_before_chat_request_mutators(
         chat_id=chat_id,
@@ -348,7 +400,7 @@ async def _retry_missing_delivery_tool(
         model=model_to_use,
         messages=messages,
         tools=tools,
-        tool_choice="auto",
+        tool_choice=tool_choice,
         max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
         stream=stream,
     )
@@ -366,6 +418,7 @@ async def _retry_missing_delivery_tool(
         model_to_use=model_to_use,
         delivery_repair_attempts=delivery_repair_attempts + 1,
         artifact_manifest=artifact_manifest,
+        suppressed_reentry_tools=suppressed_reentry_tools,
     )
 
 
@@ -383,10 +436,12 @@ async def handle_function_call(
     model_to_use=None,
     delivery_repair_attempts=0,
     artifact_manifest=None,
+    suppressed_reentry_tools=None,
 ):
     tool_calls = []
     try:
         artifact_manifest = list(artifact_manifest or [])
+        suppressed_reentry_tools = set(suppressed_reentry_tools or ())
         if request_context is not None:
             chat_id = request_context.chat_id
             user_id = request_context.user_id
@@ -419,6 +474,7 @@ async def handle_function_call(
                 delivery_repair_attempts,
                 plain_text,
                 artifact_manifest,
+                suppressed_reentry_tools,
             )
 
         if stream:
@@ -586,6 +642,7 @@ async def handle_function_call(
             logger.info(f'Function {tool_name} response: {tool_result.content}')
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
+            suppressed_reentry_tools.update(_suppressed_reentry_tools(tool_result))
             if tool_result.success:
                 final_delivery_required = True
             for entry in tool_result.artifacts:
@@ -602,7 +659,7 @@ async def handle_function_call(
                 direct_results_collected.append(tool_response)
                 add_tool_result(
                     tool_name,
-                    json.dumps({'result': 'Done, the content has been sent to the user.'}),
+                    json.dumps({'result': 'Direct result returned to Telegram handler for delivery.'}),
                     tool_call_id,
                 )
             else:
@@ -640,6 +697,12 @@ async def handle_function_call(
         logger.info(f'Function calls completed. messages: {helper.conversations[chat_id]} session_id: {session_id}')
 
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
+        tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+        tool_choice = (
+            'auto'
+            if _has_tool_specs(tools) and times < helper.config['functions_max_consecutive_calls']
+            else 'none'
+        )
 
         messages = await helper._apply_before_chat_request_mutators(
             chat_id=chat_id,
@@ -652,7 +715,7 @@ async def handle_function_call(
             model=model_to_use,
             messages=messages,
             tools=tools,
-            tool_choice='auto' if times < helper.config['functions_max_consecutive_calls'] else 'none',
+            tool_choice=tool_choice,
             max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
             stream=stream,
         )
@@ -670,6 +733,7 @@ async def handle_function_call(
             model_to_use,
             delivery_repair_attempts,
             artifact_manifest,
+            suppressed_reentry_tools,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

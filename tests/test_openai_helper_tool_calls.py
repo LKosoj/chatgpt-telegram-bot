@@ -47,7 +47,11 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import EMPTY_MODEL_RESPONSE_ERROR, OpenAIHelper, default_max_tokens  # noqa: E402
-from bot.openai_tool_handler import _call_function_bounded  # noqa: E402
+from bot.openai_tool_handler import (  # noqa: E402
+    _call_function_bounded,
+    _filter_tools_by_name,
+    _has_tool_specs,
+)
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
@@ -880,6 +884,122 @@ async def test_parallel_tool_calls_no_direct_result():
 
 
 @pytest.mark.asyncio
+async def test_prompt_perfect_suppresses_itself_on_reentry():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "prompt_perfect.optimize_prompt",
+            "description": "Rewrite prompt",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {
+            "prompt_perfect.optimize_prompt": {
+                "optimized_prompt": "write a detailed guide",
+                "instruction": "Use optimized_prompt as the request.",
+                "suppress_reentry_tools": ["prompt_perfect.optimize_prompt"],
+            }
+        },
+        specs=[tool_spec],
+    )
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="final answer")]))
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert out.choices[0].message.content == "final answer"
+    assert tools_used == ("prompt_perfect.optimize_prompt",)
+    assert helper.client.create_kwargs[0]["tools"] == []
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert len(pm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_prompt_perfect_suppression_survives_delivery_repair():
+    responses = {
+        "prompt_perfect.optimize_prompt": {
+            "optimized_prompt": "write a detailed guide",
+            "instruction": "Use optimized_prompt as the request.",
+            "suppress_reentry_tools": ["prompt_perfect.optimize_prompt"],
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "prompt_perfect.optimize_prompt"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(content="plain text should be repaired"),
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({"text": "Готово"}),
+                ),
+            ]),
+        ]),
+    )
+    helper.conversations[1] = [{"role": "system", "content": "agent-mode", "mode_key": "skills_agent"}]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    first_reentry_tools = helper.client.create_kwargs[0]["tools"]
+    repair_tools = helper.client.create_kwargs[1]["tools"]
+    assert [tool["function"]["name"] for tool in first_reentry_tools] == [
+        "agent_tools.deliver_to_user",
+    ]
+    assert [tool["function"]["name"] for tool in repair_tools] == [
+        "agent_tools.deliver_to_user",
+    ]
+    assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
+    assert helper.client.create_kwargs[1]["tool_choice"] == "auto"
+    assert set(tools_used) == {"prompt_perfect.optimize_prompt", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["text"] == "Готово"
+
+
+def test_tool_suppression_filters_google_function_declarations():
+    tools = {
+        "function_declarations": [
+            {"name": "prompt_perfect.optimize_prompt"},
+            {"name": "agent_tools.deliver_to_user"},
+        ]
+    }
+
+    filtered = _filter_tools_by_name(tools, {"prompt_perfect.optimize_prompt"})
+
+    assert filtered == {
+        "function_declarations": [
+            {"name": "agent_tools.deliver_to_user"},
+        ]
+    }
+    assert _has_tool_specs(filtered) is True
+    assert _has_tool_specs(_filter_tools_by_name(filtered, {"agent_tools.deliver_to_user"})) is False
+
+
+@pytest.mark.asyncio
 async def test_non_object_tool_arguments_are_recoverable_tool_error():
     pm = DummyPluginManager({"p1.do": {"result": "should not run"}})
     helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
@@ -919,6 +1039,12 @@ async def test_parallel_tool_calls_direct_result_short_circuit():
     assert helper.client.calls == 0
     assert set(tools_used) == {"p1.do", "p2.do"}
     assert out["direct_result"]["value"] == "ok"
+    history_content = "\n".join(
+        str(message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+    assert "Direct result returned to Telegram handler for delivery." in history_content
+    assert "sent to the user" not in history_content
 
 
 @pytest.mark.asyncio

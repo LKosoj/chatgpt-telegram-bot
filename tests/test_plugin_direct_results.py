@@ -125,12 +125,24 @@ async def test_handle_direct_result_text_branch_still_replies_with_markdown():
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_final_sends_text_and_multiple_artifacts(tmp_path):
+async def test_handle_direct_result_final_sends_artifacts_before_text(tmp_path):
     first_artifact = tmp_path / "one.pptx"
     second_artifact = tmp_path / "two.xlsx"
     first_artifact.write_bytes(b"one")
     second_artifact.write_bytes(b"two")
     message = FakeMessage()
+    calls = []
+
+    async def reply_document_side_effect(*args, **kwargs):
+        calls.append(("document", kwargs["document"].name))
+        return SimpleNamespace(message_id=201)
+
+    async def reply_text_side_effect(*args, **kwargs):
+        calls.append(("text", kwargs["text"]))
+        return SimpleNamespace(message_id=200)
+
+    message.reply_document.side_effect = reply_document_side_effect
+    message.reply_text.side_effect = reply_text_side_effect
 
     sent_messages = await handle_direct_result(
         _config(),
@@ -151,13 +163,67 @@ async def test_handle_direct_result_final_sends_text_and_multiple_artifacts(tmp_
     message.reply_text.assert_awaited_once()
     assert message.reply_text.await_args.kwargs["text"] == "summary"
     assert message.reply_document.await_count == 2
-    assert sent_messages == [
-        message.reply_text.return_value,
-        message.reply_document.return_value,
-        message.reply_document.return_value,
+    assert calls == [
+        ("document", str(first_artifact)),
+        ("document", str(second_artifact)),
+        ("text", "summary"),
     ]
+    assert [message.message_id for message in sent_messages] == [201, 201, 200]
     assert first_artifact.exists()
     assert second_artifact.exists()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_final_does_not_send_text_when_artifact_delivery_fails(tmp_path):
+    artifact = tmp_path / "broken.pptx"
+    artifact.write_bytes(b"data")
+    message = FakeMessage()
+    message.reply_document.side_effect = RuntimeError("telegram delivery failed")
+
+    with pytest.raises(RuntimeError, match="telegram delivery failed"):
+        await handle_direct_result(
+            _config(),
+            FakeUpdate(message),
+            {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "summary",
+                    "artifacts": [
+                        {"kind": "file", "format": "path", "value": str(artifact)},
+                    ],
+                }
+            },
+        )
+
+    message.reply_document.assert_awaited_once()
+    message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_final_does_not_send_text_when_artifact_is_not_delivered(tmp_path):
+    artifact = tmp_path / "broken.pptx"
+    artifact.write_bytes(b"data")
+    message = FakeMessage()
+
+    with pytest.raises(RuntimeError, match="final artifact was not delivered"):
+        await handle_direct_result(
+            _config(),
+            FakeUpdate(message),
+            {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "summary",
+                    "artifacts": [
+                        {"kind": "file", "format": "unknown", "value": str(artifact)},
+                    ],
+                }
+            },
+        )
+
+    message.reply_document.assert_not_called()
+    message.reply_text.assert_not_called()
 
 
 @pytest.mark.asyncio

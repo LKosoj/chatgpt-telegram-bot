@@ -827,6 +827,16 @@ async def handle_direct_result(config, update: Update, response: any):
     sent_messages = []
 
     if kind == 'final':
+        for artifact in result.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                raise ValueError(f"final artifact must be an object: {artifact!r}")
+            artifact_payload = dict(artifact)
+            artifact_payload["preserve_after_delivery"] = True
+            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload})
+            if not artifact_messages:
+                raise RuntimeError(f"final artifact was not delivered: {artifact_payload!r}")
+            sent_messages.extend(artifact_messages)
+
         text = str(result.get('text') or "").strip()
         if text:
             text_result = {
@@ -840,15 +850,6 @@ async def handle_direct_result(config, update: Update, response: any):
             text_messages = await handle_direct_result(config, update, text_result)
             if text_messages:
                 sent_messages.extend(text_messages)
-
-        for artifact in result.get("artifacts") or []:
-            if not isinstance(artifact, dict):
-                continue
-            artifact_payload = dict(artifact)
-            artifact_payload["preserve_after_delivery"] = True
-            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload})
-            if artifact_messages:
-                sent_messages.extend(artifact_messages)
         return sent_messages
 
     caption = result.get('caption')
