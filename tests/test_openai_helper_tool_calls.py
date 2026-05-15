@@ -354,6 +354,36 @@ def test_saved_vision_payloads_are_stripped_when_loaded():
 
 
 @pytest.mark.asyncio
+async def test_interpret_images_sends_multiple_images_and_saves_text_marker():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    client = DummyClient([FakeResponse(content="album answer")])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+
+    answer, total_tokens = await helper.interpret_images(
+        1,
+        [io.BytesIO(png_1x1), io.BytesIO(png_1x1)],
+        prompt="compare images",
+        user_id=1,
+        image_file_ids=["image-1", "image-2"],
+    )
+
+    assert answer == "album answer"
+    assert total_tokens == 3
+    assert helper.conversations[1][0]["content"] == "compare images\n[image_file_ids: image-1, image-2]"
+    assert sum(
+        1
+        for item in client.create_kwargs[0]["messages"][-1]["content"]
+        if item.get("type") == "image_url"
+    ) == 2
+    assert not any(
+        isinstance(message.get("content"), list)
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
 async def test_vision_follow_up_keeps_text_memory_and_uses_chat_model():
     png_1x1 = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="

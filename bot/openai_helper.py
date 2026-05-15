@@ -1647,13 +1647,17 @@ class OpenAIHelper:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     @staticmethod
-    def _vision_history_content(content: list, image_file_id: str | None = None) -> str:
+    def _vision_history_content(content: list, image_file_id: str | list[str] | None = None) -> str:
         text_parts = []
         for item in content:
             if isinstance(item, dict) and item.get('type') == 'text':
                 text_parts.append(str(item.get('text', '')))
         text = ' '.join(part.strip() for part in text_parts if part and part.strip())
-        image_ref = f"[image_file_id: {image_file_id}]" if image_file_id else "[image]"
+        if isinstance(image_file_id, list):
+            image_ids = [str(file_id) for file_id in image_file_id if file_id]
+            image_ref = f"[image_file_ids: {', '.join(image_ids)}]" if image_ids else "[images]"
+        else:
+            image_ref = f"[image_file_id: {image_file_id}]" if image_file_id else "[image]"
         return f"{text}\n{image_ref}" if text else image_ref
 
     @classmethod
@@ -1715,11 +1719,38 @@ class OpenAIHelper:
             )
 
     async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None):
-        image = encode_image(fileobj)
-        prompt = self.config['vision_prompt'] if prompt is None else prompt
+        return await self._interpret_images_locked(
+            chat_id,
+            [fileobj],
+            prompt,
+            user_id=user_id,
+            image_file_ids=image_file_id,
+        )
 
-        content = [{'type':'text', 'text':prompt}, {'type':'image_url', \
-                    'image_url': {'url':image, 'detail':self.config['vision_detail'] } }]
+    async def interpret_images(self, chat_id, fileobjs, prompt=None, user_id=None, image_file_ids=None):
+        lock = await self._chat_lock(chat_id)
+        async with lock:
+            return await self._interpret_images_locked(
+                chat_id,
+                fileobjs,
+                prompt,
+                user_id=user_id,
+                image_file_ids=image_file_ids,
+            )
+
+    async def _interpret_images_locked(self, chat_id, fileobjs, prompt, user_id=None, image_file_ids=None):
+        prompt = self.config['vision_prompt'] if prompt is None else prompt
+        fileobjs = list(fileobjs or [])
+        if not fileobjs:
+            raise ValueError("No images provided for vision request")
+
+        content = [{'type': 'text', 'text': prompt}]
+        for fileobj in fileobjs:
+            image = encode_image(fileobj)
+            content.append({
+                'type': 'image_url',
+                'image_url': {'url': image, 'detail': self.config['vision_detail']},
+            })
 
         last_error = None
         token_accumulator = []
@@ -1730,7 +1761,7 @@ class OpenAIHelper:
                     chat_id,
                     content,
                     user_id=user_id,
-                    image_file_id=image_file_id,
+                    image_file_id=image_file_ids,
                 )
             except Exception as exc:
                 last_error = exc
