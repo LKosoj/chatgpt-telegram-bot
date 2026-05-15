@@ -614,6 +614,7 @@ class ChatGPTTelegramBot:
                 image_file,
                 prompt=prompt,
                 user_id=user_id,
+                image_file_id=file_id,
             )
             if is_direct_result(interpretation):
                 await self._handle_direct_result(update, interpretation)
@@ -2186,11 +2187,19 @@ class ChatGPTTelegramBot:
             file_id = image.file_id
             logger.info(f"Storing photo file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
+            if self.config.get('enable_vision_follow_up_questions', True):
+                self.openai.set_last_image_file_id(chat_id, file_id)
+                if user_id != chat_id:
+                    self.openai.set_last_image_file_id(user_id, file_id)
         elif update.message.document and update.message.document.mime_type.startswith('image/'):
             image = update.message.document
             file_id = image.file_id
             logger.info(f"Storing document file_id: {file_id}")
             self.db.save_image(user_id, chat_id, file_id)
+            if self.config.get('enable_vision_follow_up_questions', True):
+                self.openai.set_last_image_file_id(chat_id, file_id)
+                if user_id != chat_id:
+                    self.openai.set_last_image_file_id(user_id, file_id)
 
         if not self.config['enable_vision']:
             return
@@ -2211,6 +2220,34 @@ class ChatGPTTelegramBot:
             if image is None:
                 logger.warning("Vision handler received no supported image attachment")
                 return
+
+            message_id = update.message.message_id
+            request_id = f"{chat_id}_{message_id}"
+            request_started_at = self._message_timestamp(update)
+            await self.openai.plugin_manager.dispatch_observe(
+                "on_user_message",
+                UserMessagePayload(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    text=prompt or "",
+                    has_image=True,
+                    has_voice=False,
+                    is_command=False,
+                    ts=request_started_at,
+                ),
+                user_id=user_id,
+            )
+            await self.openai.plugin_manager.dispatch_observe(
+                "on_session_reset",
+                SessionResetPayload(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    reason="request_start",
+                    terminal_only=False,
+                ),
+                user_id=user_id,
+            )
 
             async def _execute():
                 bot_language = self.config['bot_language']
@@ -2254,152 +2291,183 @@ class ChatGPTTelegramBot:
                     self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
                 total_tokens = 0
 
-                if self.config['stream']:
+                async def _run_vision_model_request():
+                    nonlocal total_tokens
+                    if self.config['stream']:
 
-                    stream_response = self.openai.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png,
-                                                                        prompt=prompt, user_id=user_id)
-                    i = 0
-                    prev = ''
-                    sent_message = None
-                    backoff = 0
-                    # Индекс последнего «закрытого» чанка, опубликованного как
-                    # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
-                    last_published_chunk = 0
+                        stream_response = self.openai.interpret_image_stream(
+                            chat_id=chat_id,
+                            fileobj=temp_file_png,
+                            prompt=prompt,
+                            user_id=user_id,
+                            image_file_id=file_id,
+                        )
+                        i = 0
+                        prev = ''
+                        sent_message = None
+                        backoff = 0
+                        # Индекс последнего «закрытого» чанка, опубликованного как
+                        # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
+                        last_published_chunk = 0
 
-                    async for content, tokens in stream_response:
-                        if is_direct_result(content):
-                            return await self._handle_direct_result(update, content)
+                        async for content, tokens in stream_response:
+                            if is_direct_result(content):
+                                if tokens != 'not_finished':
+                                    total_tokens = int(tokens)
+                                await self._handle_direct_result(update, content)
+                                record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+                                return
 
-                        if len(content.strip()) == 0:
-                            continue
+                            if len(content.strip()) == 0:
+                                continue
 
-                        stream_chunks = split_into_chunks(content)
-                        if len(stream_chunks) > 1:
-                            content = stream_chunks[-1]
-                            if last_published_chunk != len(stream_chunks) - 1:
-                                last_published_chunk += 1
-                                previous_chunk = stream_chunks[-2]
-                                if sent_message is not None:
-                                    try:
-                                        await edit_message_with_retry(
-                                            context, chat_id, str(sent_message.message_id),
-                                            previous_chunk,
-                                        )
-                                    except Exception:
-                                        logger.debug(
-                                            "vision stream: edit previous chunk failed",
-                                            exc_info=True,
-                                        )
-                                else:
-                                    # Первое сообщение ещё не отправлено: публикуем
-                                    # завершённый предыдущий чанк как новое сообщение.
+                            stream_chunks = split_into_chunks(content)
+                            if len(stream_chunks) > 1:
+                                content = stream_chunks[-1]
+                                if last_published_chunk != len(stream_chunks) - 1:
+                                    last_published_chunk += 1
+                                    previous_chunk = stream_chunks[-2]
+                                    if sent_message is not None:
+                                        try:
+                                            await edit_message_with_retry(
+                                                context, chat_id, str(sent_message.message_id),
+                                                previous_chunk,
+                                            )
+                                        except Exception:
+                                            logger.debug(
+                                                "vision stream: edit previous chunk failed",
+                                                exc_info=True,
+                                            )
+                                    else:
+                                        # Первое сообщение ещё не отправлено: публикуем
+                                        # завершённый предыдущий чанк как новое сообщение.
+                                        try:
+                                            sent_message = await update.effective_message.reply_text(
+                                                message_thread_id=get_thread_id(update),
+                                                text=previous_chunk or "...",
+                                            )
+                                        except Exception:
+                                            logger.debug(
+                                                "vision stream: initial reply for previous chunk failed",
+                                                exc_info=True,
+                                            )
                                     try:
                                         sent_message = await update.effective_message.reply_text(
                                             message_thread_id=get_thread_id(update),
-                                            text=previous_chunk or "...",
+                                            text=content if len(content) > 0 else "..."
                                         )
                                     except Exception:
                                         logger.debug(
-                                            "vision stream: initial reply for previous chunk failed",
+                                            "vision stream: reply for new chunk failed",
                                             exc_info=True,
                                         )
+                                    continue
+
+                            cutoff = get_stream_cutoff_values(update, content)
+                            cutoff += backoff
+
+                            if i == 0:
                                 try:
+                                    if sent_message is not None:
+                                        await context.bot.delete_message(chat_id=sent_message.chat_id,
+                                                                        message_id=sent_message.message_id)
                                     sent_message = await update.effective_message.reply_text(
                                         message_thread_id=get_thread_id(update),
-                                        text=content if len(content) > 0 else "..."
+                                        reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                        text=content,
                                     )
                                 except Exception:
-                                    logger.debug(
-                                        "vision stream: reply for new chunk failed",
-                                        exc_info=True,
-                                    )
-                                continue
+                                    logger.debug("vision stream: initial reply failed", exc_info=True)
+                                    continue
 
-                        cutoff = get_stream_cutoff_values(update, content)
-                        cutoff += backoff
+                            elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
+                                prev = content
 
-                        if i == 0:
-                            try:
-                                if sent_message is not None:
-                                    await context.bot.delete_message(chat_id=sent_message.chat_id,
-                                                                    message_id=sent_message.message_id)
-                                sent_message = await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                    text=content,
-                                )
-                            except Exception:
-                                logger.debug("vision stream: initial reply failed", exc_info=True)
-                                continue
+                                try:
+                                    use_markdown = tokens != 'not_finished'
+                                    await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
+                                                                  text=content, markdown=use_markdown)
 
-                        elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
-                            prev = content
+                                except RetryAfter as e:
+                                    backoff += 5
+                                    await asyncio.sleep(e.retry_after)
+                                    continue
 
-                            try:
-                                use_markdown = tokens != 'not_finished'
-                                await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
-                                                              text=content, markdown=use_markdown)
+                                except TimedOut:
+                                    backoff += 5
+                                    await asyncio.sleep(0.5)
+                                    continue
 
-                            except RetryAfter as e:
-                                backoff += 5
-                                await asyncio.sleep(e.retry_after)
-                                continue
+                                except Exception:
+                                    backoff += 5
+                                    continue
 
-                            except TimedOut:
-                                backoff += 5
-                                await asyncio.sleep(0.5)
-                                continue
+                                await asyncio.sleep(0.01)
 
-                            except Exception:
-                                backoff += 5
-                                continue
+                            i += 1
+                            if tokens != 'not_finished':
+                                total_tokens = int(tokens)
 
-                            await asyncio.sleep(0.01)
-
-                        i += 1
-                        if tokens != 'not_finished':
-                            total_tokens = int(tokens)
-
-                else:
-
-                    try:
-                        interpretation, total_tokens = await self.openai.interpret_image(chat_id, temp_file_png,
-                                                                                        prompt=prompt, user_id=user_id)
-
-                        if is_direct_result(interpretation):
-                            await self._handle_direct_result(update, interpretation)
-                            record_vision_tokens(self.usage, self.config, user_id, total_tokens)
-                            return
+                    else:
 
                         try:
+                            interpretation, total_tokens = await self.openai.interpret_image(
+                                chat_id,
+                                temp_file_png,
+                                prompt=prompt,
+                                user_id=user_id,
+                                image_file_id=file_id,
+                            )
+
+                            if is_direct_result(interpretation):
+                                await self._handle_direct_result(update, interpretation)
+                                record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+                                return
+
+                            try:
+                                await update.effective_message.reply_text(
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                    text=interpretation,
+                                    parse_mode=constants.ParseMode.MARKDOWN
+                                )
+                            except BadRequest:
+                                try:
+                                    await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                        text=interpretation
+                                    )
+                                except Exception as e:
+                                    logger.exception(e)
+                                    await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                        text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
+                                    )
+                        except Exception as e:
+                            logger.exception(e)
                             await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                text=interpretation,
-                                parse_mode=constants.ParseMode.MARKDOWN
+                                text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
                             )
-                        except BadRequest:
-                            try:
-                                await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                    text=interpretation
-                                )
-                            except Exception as e:
-                                logger.exception(e)
-                                await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                    text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
-                                )
-                    except Exception as e:
-                        logger.exception(e)
-                        await update.effective_message.reply_text(
-                            message_thread_id=get_thread_id(update),
-                            reply_to_message_id=get_reply_to_message_id(self.config, update),
-                            text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
-                        )
-                record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+                    record_vision_tokens(self.usage, self.config, user_id, total_tokens)
+
+                plan_provider, plan_interval = self._build_plan_status_provider(chat_id, user_id)
+                busy_status = BusyStatusMessage(
+                    update,
+                    context,
+                    localized_text("busy_status_preparing", self.config['bot_language']),
+                    config=self.config,
+                    plan_provider=plan_provider,
+                    interval=plan_interval,
+                )
+                await busy_status.start()
+                try:
+                    await _run_vision_model_request()
+                finally:
+                    await busy_status.stop()
 
             await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
         else:
@@ -2426,15 +2494,16 @@ class ChatGPTTelegramBot:
 
         logger.info(f"Prompt handler called for chat_id: {chat_id}, user_id: {user_id}")
 
-        # Get last active image from database if exists
-        user_images = self.db.get_user_images(user_id, chat_id, limit=1)
-        if user_images:
-            last_image = user_images[0]
-            if last_image['status'] == 'active':
-                self.openai.set_last_image_file_id(chat_id, last_image['file_id'])
-                if user_id != chat_id:
-                    self.openai.set_last_image_file_id(user_id, last_image['file_id'])
-                logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
+        # Get last active image from database if follow-up image questions are enabled.
+        if self.config.get('enable_vision_follow_up_questions', True):
+            user_images = self.db.get_user_images(user_id, chat_id, limit=1)
+            if user_images:
+                last_image = user_images[0]
+                if last_image['status'] == 'active':
+                    self.openai.set_last_image_file_id(chat_id, last_image['file_id'])
+                    if user_id != chat_id:
+                        self.openai.set_last_image_file_id(user_id, last_image['file_id'])
+                    logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
 
         async with self.buffer_lock:
             # Инициализируем буфер для чата, если его нет
@@ -2643,6 +2712,9 @@ class ChatGPTTelegramBot:
                     logger.warning('Message does not start with trigger keyword, ignoring...')
                     return
 
+        if user_id not in self.usage:
+            self.usage[user_id] = make_usage_tracker(self.config, user_id, update.message.from_user.name)
+
         reply_intent = await self._classify_reply_intent(update, prompt)
 
         if self.config['enable_image_generation'] and reply_intent == "image_edit":
@@ -2726,6 +2798,8 @@ class ChatGPTTelegramBot:
 
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
+                        if tokens != 'not_finished':
+                            total_tokens = int(tokens)
                         assistant_response_text = self._direct_result_observer_text(content)
                         await self._handle_direct_result(update, content)
                         await self._dispatch_assistant_response_observer(
@@ -2737,6 +2811,7 @@ class ChatGPTTelegramBot:
                             model=model_to_use,
                             ts=request_started_at,
                         )
+                        record_chat_tokens(self.usage, self.config, user_id, total_tokens)
                         return
 
                     if len(content.strip()) == 0:
@@ -3068,6 +3143,8 @@ class ChatGPTTelegramBot:
                 query = self.inline_queries_cache.get(unique_id)
                 if query:
                     self.inline_queries_cache.pop(unique_id)
+                    if user_id not in self.usage:
+                        self.usage[user_id] = make_usage_tracker(self.config, user_id, name)
                 else:
                     error_message = (
                         f'{localized_text("error", bot_language)}. '
@@ -3104,12 +3181,15 @@ class ChatGPTTelegramBot:
                     backoff = 0
                     async for content, tokens in stream_response:
                         if is_direct_result(content):
+                            if tokens != 'not_finished':
+                                total_tokens = int(tokens)
                             fallback_text = direct_result_inline_fallback_text(content, unavailable_message)
                             cleanup_intermediate_files(content)
                             await edit_message_with_retry(context, chat_id=None,
                                                           message_id=inline_message_id,
                                                           text=f'{query}\n\n_{answer_tr}:_\n{fallback_text}',
                                                           is_inline=True)
+                            record_chat_tokens(self.usage, self.config, user_id, total_tokens)
                             return
 
                         if len(content.strip()) == 0:

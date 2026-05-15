@@ -110,6 +110,14 @@ def _response_has_message_text(response) -> bool:
     return any(_choice_message_text(choice) for choice in getattr(response, "choices", []) or [])
 
 
+def _response_total_tokens(response) -> int:
+    tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+    try:
+        return int(tokens)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _first_choice_or_raise(response):
     choices = getattr(response, "choices", None) or []
     if not choices:
@@ -156,8 +164,8 @@ def are_functions_available(model: str) -> bool:
 
 
 # Per-chat state held by OpenAIHelper. Exists as documentation-as-code:
-# the four mappings (conversations, conversations_vision, last_updated,
-# loaded_conversation_sessions, last_image_file_ids) all key on chat_id and
+# the per-chat mappings (conversations, conversations_vision, last_updated,
+# loaded_conversation_sessions, last_image_file_ids, extra token usage) all key on chat_id and
 # must be reset together — see _clear_chat_state.
 @dataclass
 class ChatState:
@@ -204,6 +212,7 @@ class OpenAIHelper:
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
         self._chat_request_models: dict[int, str] = {}
+        self._chat_request_extra_tokens: dict[int, int] = {}
         self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
@@ -386,7 +395,7 @@ class OpenAIHelper:
 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[user_id] = saved_context['messages']
+                    self.conversations[user_id] = self._messages_without_image_payloads(saved_context['messages'])
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(user_id, session_id=None)
@@ -495,6 +504,10 @@ class OpenAIHelper:
                 user_id=user_id,
                 **kwargs
             )
+            token_accumulator = []
+            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+            if extra_tokens:
+                token_accumulator.append(extra_tokens)
             
             if self.config['enable_functions']:
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
@@ -506,10 +519,11 @@ class OpenAIHelper:
                     request_context=request_context,
                     model_to_use=self._chat_request_models.get(chat_id),
                     retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
+                    token_accumulator=token_accumulator,
                 )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
-                    return response, '0'
+                    return response, sum(token_accumulator)
                 if plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
                         chat_id,
@@ -526,11 +540,12 @@ class OpenAIHelper:
                             user_id=user_id,
                             request_context=request_context,
                             model_to_use=self._chat_request_models.get(chat_id),
+                            token_accumulator=token_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
-                            return response, '0'
+                            return response, sum(token_accumulator)
                     if not _response_has_message_text(response):
                         response = await self._retry_empty_response_after_tools(
                             chat_id,
@@ -538,6 +553,9 @@ class OpenAIHelper:
                             session_id,
                             model_to_use=self._chat_request_models.get(chat_id),
                         )
+                        retry_tokens = _response_total_tokens(response)
+                        if retry_tokens:
+                            token_accumulator.append(retry_tokens)
                 elif not plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
                         chat_id,
@@ -554,11 +572,12 @@ class OpenAIHelper:
                             user_id=user_id,
                             request_context=request_context,
                             model_to_use=self._chat_request_models.get(chat_id),
+                            token_accumulator=token_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
-                            return response, '0'
+                            return response, sum(token_accumulator)
                         if retry_plugins_used and not _response_has_message_text(response):
                             response = await self._retry_empty_response_after_tools(
                                 chat_id,
@@ -566,6 +585,13 @@ class OpenAIHelper:
                                 session_id,
                                 model_to_use=self._chat_request_models.get(chat_id),
                             )
+                            retry_tokens = _response_total_tokens(response)
+                            if retry_tokens:
+                                token_accumulator.append(retry_tokens)
+            else:
+                response_tokens = _response_total_tokens(response)
+                if response_tokens:
+                    token_accumulator.append(response_tokens)
 
             answer = ''
 
@@ -584,9 +610,13 @@ class OpenAIHelper:
             bot_language = self.config['bot_language']
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
             plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+            total_tokens = sum(token_accumulator) or _response_total_tokens(response)
             if self.config['show_usage']:
+                usage_tokens = _response_total_tokens(response)
                 answer += "\n\n---\n" \
-                        f"💰 {str(response.usage.total_tokens)} {localized_text('stats_tokens', bot_language)}" \
+                        f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
+                if total_tokens == usage_tokens:
+                    answer += \
                         f" ({str(response.usage.prompt_tokens)} {localized_text('prompt', bot_language)}," \
                         f" {str(response.usage.completion_tokens)} {localized_text('completion', bot_language)})"
                 if show_plugins_used:
@@ -594,8 +624,9 @@ class OpenAIHelper:
             elif show_plugins_used:
                 answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
-            return answer, response.usage.total_tokens
+            return answer, total_tokens
         except Exception as e:
+            self._chat_request_extra_tokens.pop(chat_id, None)
             logger.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
             raise
         finally:
@@ -669,7 +700,7 @@ class OpenAIHelper:
                 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[chat_id] = saved_context['messages']
+                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(chat_id, session_id=session_id)
@@ -690,10 +721,13 @@ class OpenAIHelper:
                     user_id=user_id
                 )
             except Exception as e:
+                self._chat_request_extra_tokens.pop(chat_id, None)
                 logger.error(f'Error getting chat response: {str(e)}')
                 yield f"Error: {str(e)}", '0'
                 return
 
+            model_to_use = self._chat_request_models.get(chat_id)
+            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
             if self.config['enable_functions']:
                 try:
                     allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
@@ -704,11 +738,12 @@ class OpenAIHelper:
                         allowed_plugins=allowed_plugins,
                         user_id=user_id,
                         request_context=request_context,
-                        model_to_use=self._chat_request_models.get(chat_id),
+                        model_to_use=model_to_use,
                         retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
                     )
                     if is_direct_result(response):
-                        yield response, '0'
+                        tokens_used = extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use)
+                        yield response, str(tokens_used)
                         return
                 except Exception as e:
                     logger.error(f'Error in function call: {str(e)}')
@@ -730,14 +765,15 @@ class OpenAIHelper:
             except Exception as e:
                 logger.error(f'Error processing response stream: {str(e)}')
                 if answer:
-                    yield answer, 'not_finished'
+                    tokens_used = extra_tokens + self._estimate_stream_tokens(chat_id, answer, model_to_use)
+                    yield answer, str(tokens_used)
                 return
 
             answer = answer.strip()
             if not answer:
                 raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
             await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
-            tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
+            tokens_used = str(extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use))
 
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
             plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
@@ -751,9 +787,16 @@ class OpenAIHelper:
             yield answer, tokens_used
 
         except Exception as e:
+            self._chat_request_extra_tokens.pop(chat_id, None)
             logger.error(f"Error in chat response stream: {e}", exc_info=True)
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
+
+    def _estimate_stream_tokens(self, chat_id: int, answer: str | None = None, model_to_use: str | None = None) -> int:
+        messages = list(self.conversations.get(chat_id, []))
+        if answer is not None:
+            messages.append({"role": "assistant", "content": answer})
+        return self.__count_tokens(messages, model_to_use)
 
     def _apply_user_disabled_plugins(self, allowed_plugins, user_id: int | None):
         disabled_plugins = self.plugin_manager.disabled_plugins_for_user(user_id)
@@ -798,6 +841,93 @@ class OpenAIHelper:
         allowed_plugins = self._apply_user_disabled_plugins(allowed_plugins, user_id)
         return self.plugin_manager.filter_allowed_plugins(allowed_plugins)
 
+    async def _maybe_apply_auto_chat_mode(
+        self,
+        chat_id: int,
+        query: str,
+        *,
+        session_id: str | None,
+        parse_mode,
+        temperature,
+        max_tokens_percent,
+        user_id: int | None,
+    ) -> None:
+        if not self.config['auto_chat_modes']:
+            return
+        if chat_id not in self.conversations:
+            return
+
+        user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
+        if user_messages:
+            return
+
+        model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+        auto_mode_prompt = await self._build_auto_chat_mode_prompt(
+            query, chat_id=chat_id, user_id=user_id
+        )
+        response = await self.chat_completion(
+            model=model_to_use,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ты маршрутизатор режимов работы. Возвращай только ключ режима без пояснений.",
+                },
+                {"role": "user", "content": auto_mode_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=self.get_max_tokens(model_to_use, 20, chat_id),
+            stream=False,
+        )
+        mode_tokens = _response_total_tokens(response)
+        if mode_tokens:
+            self._chat_request_extra_tokens[chat_id] = (
+                self._chat_request_extra_tokens.get(chat_id, 0) + mode_tokens
+            )
+        mode_name = _required_choice_message_text(_first_choice_or_raise(response))
+        logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
+
+        mode_key = mode_name.strip().lower()
+        mode_data = self.chat_modes_registry.get_mode_by_key(mode_key)
+        if not mode_data:
+            return
+
+        new_system_prompt = mode_data.get('prompt_start', '')
+        if not new_system_prompt:
+            return
+
+        if not self.conversations[chat_id]:
+            logger.warning(
+                f'Conversation history is empty for chat_id {chat_id}. Initializing with system message.'
+            )
+            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt, "mode_key": mode_key}]
+        else:
+            self.conversations[chat_id][0]['role'] = 'system'
+            self.conversations[chat_id][0]['content'] = new_system_prompt
+            self.conversations[chat_id][0]['mode_key'] = mode_key
+        logger.info(f"🔄 Режим работы изменен на: {mode_key}")
+
+        if parse_mode is None or temperature is None or max_tokens_percent is None or session_id is None:
+            _, saved_parse_mode, saved_temperature, saved_max_tokens_percent, saved_session_id = (
+                self.db.get_conversation_context(chat_id, session_id)
+            )
+            if parse_mode is None:
+                parse_mode = saved_parse_mode
+            if temperature is None:
+                temperature = saved_temperature
+            if max_tokens_percent is None:
+                max_tokens_percent = saved_max_tokens_percent
+            if session_id is None:
+                session_id = saved_session_id
+
+        await self._save_conversation_context(
+            chat_id,
+            {'messages': self.conversations[chat_id]},
+            parse_mode,
+            temperature,
+            max_tokens_percent,
+            session_id,
+        )
+
     @retry(
         reraise=True,
         retry=retry_if_exception_type(openai.RateLimitError),
@@ -826,7 +956,7 @@ class OpenAIHelper:
             if chat_id not in self.conversations or self.__max_age_reached(chat_id) or session_changed:
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[chat_id] = saved_context['messages']
+                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(chat_id, session_id=session_id)
@@ -836,56 +966,15 @@ class OpenAIHelper:
             if chat_id not in self.conversations_vision:
                 self.conversations_vision[chat_id] = False
 
-            # Проверяем, является ли это первым сообщением в сессии, если да, то определяем режим работы
-            user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
-            model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
-            if len(user_messages) == 0 and self.config['auto_chat_modes']:
-                auto_mode_prompt = await self._build_auto_chat_mode_prompt(
-                    query, chat_id=chat_id, user_id=kwargs.get('user_id')
-                )
-                response = await self.chat_completion(
-                    model=model_to_use,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Ты маршрутизатор режимов работы. Возвращай только ключ режима без пояснений.",
-                        },
-                        {"role": "user", "content": auto_mode_prompt},
-                    ],
-                    temperature=0.0,
-                    max_tokens=self.get_max_tokens(model_to_use, 20, chat_id),
-                    stream=False,
-                )
-                mode_name = _required_choice_message_text(_first_choice_or_raise(response))
-                logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
-                
-                # Ищем режим по имени
-                mode_key = mode_name.strip().lower()
-                mode_data = self.chat_modes_registry.get_mode_by_key(mode_key)
-                if mode_data:
-                    # Обновляем системное сообщение
-                    new_system_prompt = mode_data.get('prompt_start', '')
-                    if new_system_prompt:
-                        # Проверяем, что история не пуста
-                        if not self.conversations[chat_id]:
-                            logger.warning(f'Conversation history is empty for chat_id {chat_id}. Initializing with system message.')
-                            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt, "mode_key": mode_key}]
-                        else:
-                            # Заменяем системное сообщение в истории
-                            self.conversations[chat_id][0]['role'] = 'system'
-                            self.conversations[chat_id][0]['content'] = new_system_prompt
-                            self.conversations[chat_id][0]['mode_key'] = mode_key
-                        logger.info(f"🔄 Режим работы изменен на: {mode_key}")
-                        
-                        # Сохраняем обновленный контекст
-                        await self._save_conversation_context(
-                            chat_id,
-                            {'messages': self.conversations[chat_id]},
-                            parse_mode,
-                            temperature,
-                            max_tokens_percent,
-                            session_id,
-                        )
+            await self._maybe_apply_auto_chat_mode(
+                chat_id,
+                query,
+                session_id=session_id,
+                parse_mode=parse_mode,
+                temperature=temperature,
+                max_tokens_percent=max_tokens_percent,
+                user_id=kwargs.get('user_id'),
+            )
             
             memory_user_id = kwargs.get('user_id') or chat_id
 
@@ -1039,6 +1128,7 @@ class OpenAIHelper:
         request_context=None,
         model_to_use=None,
         retry_plain_text_tool_intent=False,
+        token_accumulator=None,
     ):
         return await handle_function_call(
             self,
@@ -1052,6 +1142,7 @@ class OpenAIHelper:
             request_context,
             model_to_use=model_to_use,
             retry_plain_text_tool_intent=retry_plain_text_tool_intent,
+            token_accumulator=token_accumulator,
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
@@ -1444,7 +1535,14 @@ class OpenAIHelper:
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response_vision(self, chat_id: int, content: list, stream=False, user_id: int | None = None):
+    async def __common_get_chat_response_vision(
+        self,
+        chat_id: int,
+        content: list,
+        stream=False,
+        user_id: int | None = None,
+        image_file_id: str | None = None,
+    ):
         """
         Request a response from the GPT model.
         :param chat_id: The chat ID
@@ -1455,22 +1553,30 @@ class OpenAIHelper:
         temperature = self.config['temperature']
         try:
             session_id = None
+            parse_mode = None
+            max_tokens_percent = None
             if chat_id not in self.conversations or self.__max_age_reached(chat_id):
                 await self.reset_chat_history(chat_id)
+                _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
             else:
                 # Загружаем сохраненный контекст из базы данных
                 saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
                 if saved_context and 'messages' in saved_context:
-                    self.conversations[chat_id] = saved_context['messages']
+                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
 
             self.last_updated[chat_id] = datetime.datetime.now()
-            history_content = self._vision_history_content(content)
-
-            if self.config['enable_vision_follow_up_questions']:
-                self.conversations_vision[chat_id] = True
-                await self.__add_to_history(chat_id, role="user", content=content)
-            else:
-                await self.__add_to_history(chat_id, role="user", content=history_content)
+            history_content = self._vision_history_content(content, image_file_id=image_file_id)
+            await self._maybe_apply_auto_chat_mode(
+                chat_id,
+                history_content,
+                session_id=session_id,
+                parse_mode=parse_mode,
+                temperature=temperature,
+                max_tokens_percent=max_tokens_percent,
+                user_id=user_id,
+            )
+            self.conversations_vision[chat_id] = False
+            await self.__add_to_history(chat_id, role="user", content=history_content)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             vision_model = self.config['vision_model']
@@ -1541,13 +1647,27 @@ class OpenAIHelper:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
     @staticmethod
-    def _vision_history_content(content: list) -> str:
+    def _vision_history_content(content: list, image_file_id: str | None = None) -> str:
         text_parts = []
         for item in content:
             if isinstance(item, dict) and item.get('type') == 'text':
                 text_parts.append(str(item.get('text', '')))
         text = ' '.join(part.strip() for part in text_parts if part and part.strip())
-        return text or "[image]"
+        image_ref = f"[image_file_id: {image_file_id}]" if image_file_id else "[image]"
+        return f"{text}\n{image_ref}" if text else image_ref
+
+    @classmethod
+    def _messages_without_image_payloads(cls, messages: list) -> list:
+        sanitized = []
+        for message in messages:
+            if not isinstance(message, dict):
+                sanitized.append(message)
+                continue
+            message_copy = dict(message)
+            if isinstance(message_copy.get("content"), list):
+                message_copy["content"] = cls._vision_history_content(message_copy["content"])
+            sanitized.append(message_copy)
+        return sanitized
 
 
     def _snapshot_chat_state(self, chat_id):
@@ -1580,15 +1700,21 @@ class OpenAIHelper:
         else:
             self.loaded_conversation_sessions.pop(chat_id, None)
 
-    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None):
+    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
         """
         Interprets a given PNG image file using the Vision model.
         """
         lock = await self._chat_lock(chat_id)
         async with lock:
-            return await self._interpret_image_locked(chat_id, fileobj, prompt, user_id=user_id)
+            return await self._interpret_image_locked(
+                chat_id,
+                fileobj,
+                prompt,
+                user_id=user_id,
+                image_file_id=image_file_id,
+            )
 
-    async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None):
+    async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
@@ -1596,6 +1722,7 @@ class OpenAIHelper:
                     'image_url': {'url':image, 'detail':self.config['vision_detail'] } }]
 
         last_error = None
+        token_accumulator = []
         for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
             snapshot = self._snapshot_chat_state(chat_id)
             try:
@@ -1603,10 +1730,15 @@ class OpenAIHelper:
                     chat_id,
                     content,
                     user_id=user_id,
+                    image_file_id=image_file_id,
                 )
             except Exception as exc:
                 last_error = exc
+                self._chat_request_extra_tokens.pop(chat_id, None)
             else:
+                extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+                if extra_tokens:
+                    token_accumulator.append(extra_tokens)
                 plugins_used = ()
                 if self.config['enable_functions']:
                     allowed_plugins = await self.resolve_allowed_plugins(chat_id, user_id=user_id or chat_id)
@@ -1617,11 +1749,21 @@ class OpenAIHelper:
                         user_id=user_id or chat_id,
                         model_to_use=self.config['vision_model'],
                         retry_plain_text_tool_intent=True,
+                        token_accumulator=token_accumulator,
                     )
                     if is_direct_result(response):
-                        return response, '0'
+                        return response, sum(token_accumulator)
+                else:
+                    response_tokens = _response_total_tokens(response)
+                    if response_tokens:
+                        token_accumulator.append(response_tokens)
                 try:
-                    return await self._interpret_image_text_response(chat_id, response, plugins_used)
+                    return await self._interpret_image_text_response(
+                        chat_id,
+                        response,
+                        plugins_used,
+                        token_accumulator=token_accumulator,
+                    )
                 except ValueError as exc:
                     last_error = exc
             if attempt < VISION_MAX_ATTEMPTS:
@@ -1638,9 +1780,10 @@ class OpenAIHelper:
                     ),
                 )
                 self._restore_chat_state(chat_id, snapshot)
+        self._chat_request_extra_tokens.pop(chat_id, None)
         raise last_error or ValueError(EMPTY_MODEL_RESPONSE_ERROR)
 
-    async def _interpret_image_text_response(self, chat_id, response, plugins_used=()):
+    async def _interpret_image_text_response(self, chat_id, response, plugins_used=(), token_accumulator=None):
         answer = ''
         if len(response.choices) > 1 and self.config['n_choices'] > 1:
             for index, choice in enumerate(response.choices):
@@ -1657,9 +1800,13 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
         plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        total_tokens = sum(token_accumulator or []) or _response_total_tokens(response)
         if self.config['show_usage']:
+            usage_tokens = _response_total_tokens(response)
             answer += "\n\n---\n" \
-                      f"💰 {str(response.usage.total_tokens)} {localized_text('stats_tokens', bot_language)}" \
+                      f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
+            if total_tokens == usage_tokens:
+                answer += \
                       f" ({str(response.usage.prompt_tokens)} {localized_text('prompt', bot_language)}," \
                       f" {str(response.usage.completion_tokens)} {localized_text('completion', bot_language)})"
             if show_plugins_used:
@@ -1667,25 +1814,41 @@ class OpenAIHelper:
         elif show_plugins_used:
             answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
-        return answer, response.usage.total_tokens
+        return answer, total_tokens
 
-    async def interpret_image_stream(self, chat_id, fileobj, prompt=None, user_id=None):
+    async def interpret_image_stream(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
         """
         Interprets a given PNG image file using the Vision model.
         """
         lock = await self._chat_lock(chat_id)
         async with lock:
-            async for chunk in self._interpret_image_stream_locked(chat_id, fileobj, prompt, user_id=user_id):
+            async for chunk in self._interpret_image_stream_locked(
+                chat_id,
+                fileobj,
+                prompt,
+                user_id=user_id,
+                image_file_id=image_file_id,
+            ):
                 yield chunk
 
-    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt, user_id=None):
+    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None):
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
         content = [{'type':'text', 'text':prompt}, {'type':'image_url', \
                     'image_url': {'url':image, 'detail':self.config['vision_detail'] } }]
 
-        response = await self.__common_get_chat_response_vision(chat_id, content, stream=True, user_id=user_id)
+        extra_tokens = 0
+        try:
+            response = await self.__common_get_chat_response_vision(
+                chat_id,
+                content,
+                stream=True,
+                user_id=user_id,
+                image_file_id=image_file_id,
+            )
+        finally:
+            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
 
         
 
@@ -1701,22 +1864,34 @@ class OpenAIHelper:
                 retry_plain_text_tool_intent=True,
             )
             if is_direct_result(response):
-                yield response, '0'
+                yield response, str(
+                    self._estimate_stream_tokens(chat_id, model_to_use=self.config['vision_model']) + extra_tokens
+                )
                 return
 
         answer = ''
-        async for chunk in response:
-            if len(chunk.choices) == 0:
-                continue
-            delta = chunk.choices[0].delta
-            if delta.content:
-                answer += delta.content
-                yield answer, 'not_finished'
+        try:
+            async for chunk in response:
+                if len(chunk.choices) == 0:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    answer += delta.content
+                    yield answer, 'not_finished'
+        except Exception as e:
+            logger.error(f'Error processing vision response stream: {str(e)}')
+            if answer:
+                yield answer, str(
+                    self._estimate_stream_tokens(chat_id, answer, self.config['vision_model']) + extra_tokens
+                )
+            return
         answer = answer.strip()
         if not answer:
             raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
         await self.__add_to_history(chat_id, role="assistant", content=answer)
-        tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
+        tokens_used = str(
+            self._estimate_stream_tokens(chat_id, model_to_use=self.config['vision_model']) + extra_tokens
+        )
 
         #show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
         #plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
@@ -1966,7 +2141,7 @@ class OpenAIHelper:
         """Atomically drop all per-chat state for chat_id.
 
         Why: conversations / conversations_vision / last_updated /
-        loaded_conversation_sessions / last_image_file_ids share the same
+        loaded_conversation_sessions / last_image_file_ids / extra token usage share the same
         chat_id key. Clearing only one of them leaves the others stale,
         and __max_age_reached / vision routing read stale flags.
         """
@@ -1974,6 +2149,7 @@ class OpenAIHelper:
         self.conversations_vision.pop(chat_id, None)
         self.last_updated.pop(chat_id, None)
         self.loaded_conversation_sessions.pop(chat_id, None)
+        self._chat_request_extra_tokens.pop(chat_id, None)
         self.last_image_file_ids.pop(chat_id, None)
 
     async def _dispatch_before_summarise_reset(

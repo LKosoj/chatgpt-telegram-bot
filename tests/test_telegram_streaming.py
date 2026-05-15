@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import datetime
 import importlib.util
 import logging
@@ -57,6 +58,7 @@ _install_module_if_missing("tenacity", _tenacity)
 from bot import telegram_bot  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from bot.utils import make_usage_tracker  # noqa: E402
 from bot.user_settings import (  # noqa: E402
     USER_DISABLED_PLUGINS_SETTING,
     get_user_settings,
@@ -180,11 +182,37 @@ class FakeOpenAINonStream(FakeOpenAI):
         return self.response, 1
 
 
+class FakeVisionOpenAI(FakeOpenAI):
+    def __init__(self, response="vision answer", agent_tools=None):
+        super().__init__([], agent_tools)
+        self.response = response
+        self.image_requests = []
+        self.last_image_ids = {}
+
+    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
+        self.image_requests.append({
+            "chat_id": chat_id,
+            "prompt": prompt,
+            "user_id": user_id,
+            "image_file_id": image_file_id,
+        })
+        await asyncio.sleep(0.01)
+        return self.response, 7
+
+    def set_last_image_file_id(self, chat_id, file_id):
+        self.last_image_ids[chat_id] = file_id
+
+    def get_last_image_file_id(self, chat_id):
+        return self.last_image_ids.get(chat_id)
+
+
 class FakeDB:
     def __init__(self, conversation_context):
         self.conversation_context = conversation_context
         self.calls = []
         self.user_settings = {}
+        self.saved_images = []
+        self.cleanup_calls = 0
 
     def get_conversation_context(self, chat_id):
         self.calls.append(chat_id)
@@ -192,6 +220,13 @@ class FakeDB:
 
     def get_user_settings(self, user_id):
         return self.user_settings.get(user_id)
+
+    def cleanup_old_images(self):
+        self.cleanup_calls += 1
+
+    def save_image(self, user_id, chat_id, file_id, file_path=None, status='active'):
+        self.saved_images.append((user_id, chat_id, file_id, file_path, status))
+        return len(self.saved_images)
 
 
 class FakeRagPlugin:
@@ -625,6 +660,46 @@ async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_streaming_direct_result_records_usage_before_return(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        telegram_bot,
+        "handle_direct_result",
+        AsyncMock(return_value=[SimpleNamespace(message_id=200)]),
+    )
+    monkeypatch.setattr(
+        telegram_bot,
+        "make_usage_tracker",
+        lambda config, user_id, user_name: make_usage_tracker(
+            config,
+            user_id,
+            user_name,
+            logs_dir=str(tmp_path),
+        ),
+    )
+    direct_response = {
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "text": "Delivered final answer",
+        }
+    }
+    bot = _make_bot(
+        chunks=[(direct_response, "7")],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+
+    await bot.process_message("hello", FakeUpdate(FakeMessage()), _make_context())
+
+    assert sum(bot.usage[42].usage["usage_history"]["chat_tokens"].values()) == 7
+    assistant_events = [
+        payload
+        for event_name, payload, _user_id in bot.openai.plugin_manager.observer_events
+        if event_name == "on_assistant_response"
+    ]
+    assert assistant_events[0].tokens == 7
+
+
+@pytest.mark.asyncio
 async def test_memory_observers_use_message_admission_timestamp(monkeypatch):
     edit_message = AsyncMock()
     monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
@@ -736,6 +811,67 @@ def test_active_image_is_available_as_image_context():
 
     assert bot._reply_context_kind(update) == "image"
     assert bot._image_description_source_file_id(update, 42, 1234) == "active-image"
+
+
+@pytest.mark.asyncio
+async def test_vision_uses_busy_status_and_passes_file_id(monkeypatch, tmp_path):
+    async def immediate_wrap(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_wrap)
+    monkeypatch.setattr(
+        telegram_bot,
+        "make_usage_tracker",
+        lambda config, user_id, user_name: make_usage_tracker(
+            config,
+            user_id,
+            user_name,
+            logs_dir=str(tmp_path),
+        ),
+    )
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    agent_tools = FakeAgentTools(
+        plan_tasks=[
+            {"id": "T1", "content": "Old vision plan", "status": "in_progress"},
+        ],
+    )
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        agent_tools=agent_tools,
+    )
+    bot.config["enable_vision"] = True
+    bot.config["stream"] = False
+    bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
+    bot.openai = FakeVisionOpenAI(agent_tools=agent_tools)
+    bot.openai.plugin_manager.set_db(bot.db)
+    bot.application = SimpleNamespace(
+        bot=SimpleNamespace(
+            get_file=AsyncMock(return_value=FakeTelegramFile(png_1x1)),
+        )
+    )
+    message = FakeMessage()
+    message.caption = "describe"
+    message.photo = [SimpleNamespace(file_id="telegram-image-file")]
+    message.document = None
+    update = FakeUpdate(message)
+
+    await bot.vision(update, _make_context())
+
+    assert bot.db.saved_images[0][2] == "telegram-image-file"
+    assert bot.openai.last_image_ids[1234] == "telegram-image-file"
+    assert bot.openai.image_requests[0]["image_file_id"] == "telegram-image-file"
+    assert agent_tools.clear_calls == [(1234, 42)]
+    busy_messages = [
+        call["text"]
+        for call in update.effective_message.reply_text_calls
+        if "Wait time" in call["text"]
+    ]
+    assert busy_messages
+    assert all("Old vision plan" not in text for text in busy_messages)
+    assert sum(bot.usage[42].usage["usage_history"]["vision_tokens"].values()) == 7
 
 
 @pytest.mark.asyncio

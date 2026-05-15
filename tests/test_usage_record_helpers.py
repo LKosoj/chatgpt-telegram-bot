@@ -63,6 +63,15 @@ def test_record_chat_tokens_returns_false_on_zero(tmp_path):
     assert record_chat_tokens(usage, _make_config(), 42, 0) is False
 
 
+def test_record_chat_tokens_rejects_negative_and_bool(tmp_path):
+    user = _make_tracker(tmp_path, 42, "owner")
+    usage = {42: user}
+
+    assert record_chat_tokens(usage, _make_config(), 42, -1) is False
+    assert record_chat_tokens(usage, _make_config(), 42, True) is False
+    assert user.usage["usage_history"]["chat_tokens"] == {}
+
+
 def test_record_chat_tokens_returns_false_for_unknown_user(tmp_path):
     usage = {}
     assert record_chat_tokens(usage, _make_config(), 7, 10) is False
@@ -98,6 +107,36 @@ def test_record_vision_tokens_charges_user_and_guest(tmp_path):
     assert guests.usage["current_cost"]["day"] == 1.0
 
 
+def test_record_vision_tokens_accepts_numeric_string(tmp_path):
+    user = UsageTracker(42, "owner", logs_dir=str(tmp_path), vision_token_price=0.5)
+    usage = {42: user}
+
+    assert record_vision_tokens(usage, _make_config(allowed="42"), 42, "2000") is True
+
+    assert sum(user.usage["usage_history"]["vision_tokens"].values()) == 2000
+    assert user.usage["current_cost"]["day"] == 1.0
+
+
+def test_record_vision_tokens_skips_zero_string(tmp_path):
+    user = UsageTracker(42, "owner", logs_dir=str(tmp_path), vision_token_price=0.5)
+    usage = {42: user}
+
+    assert record_vision_tokens(usage, _make_config(allowed="42"), 42, "0") is False
+
+    assert user.usage["usage_history"]["vision_tokens"] == {}
+    assert user.usage["current_cost"]["day"] == 0.0
+
+
+def test_record_vision_tokens_rejects_negative_and_bool(tmp_path):
+    user = UsageTracker(42, "owner", logs_dir=str(tmp_path), vision_token_price=0.5)
+    usage = {42: user}
+
+    assert record_vision_tokens(usage, _make_config(allowed="42"), 42, -1) is False
+    assert record_vision_tokens(usage, _make_config(allowed="42"), 42, False) is False
+    assert user.usage["usage_history"]["vision_tokens"] == {}
+    assert user.usage["current_cost"]["day"] == 0.0
+
+
 def test_record_tts_request_charges_user(tmp_path):
     user = UsageTracker(42, "owner", logs_dir=str(tmp_path), tts_prices=[0.5, 0.75])
     usage = {42: user}
@@ -113,6 +152,24 @@ def test_record_transcription_seconds_charges_user(tmp_path):
     assert record_transcription_seconds(usage, _make_config(allowed="42"), 42, 60) is True
     assert sum(user.usage["usage_history"]["transcription_seconds"].values()) == 60
     assert user.usage["current_cost"]["day"] == 0.5
+
+
+def test_record_tts_and_transcription_reject_negative_and_bool(tmp_path):
+    tts_user = UsageTracker(42, "owner", logs_dir=str(tmp_path / "tts"), tts_prices=[0.5, 0.75])
+    transcription_user = UsageTracker(
+        42,
+        "owner",
+        logs_dir=str(tmp_path / "transcription"),
+        transcription_price=0.5,
+    )
+
+    assert record_tts_request({42: tts_user}, _make_config(allowed="42"), 42, -100, "tts-1") is False
+    assert record_tts_request({42: tts_user}, _make_config(allowed="42"), 42, True, "tts-1") is False
+    assert tts_user.usage["usage_history"]["tts_characters"] == {}
+
+    assert record_transcription_seconds({42: transcription_user}, _make_config(allowed="42"), 42, -10) is False
+    assert record_transcription_seconds({42: transcription_user}, _make_config(allowed="42"), 42, False) is False
+    assert transcription_user.usage["usage_history"]["transcription_seconds"] == {}
 
 
 def test_make_usage_tracker_threads_config_prices(tmp_path):

@@ -126,6 +126,14 @@ def _stream_item_content(item) -> str:
     return content if isinstance(content, str) else ""
 
 
+def _response_total_tokens(response) -> int:
+    tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+    try:
+        return int(tokens)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _direct_result_payload(response) -> dict | None:
     return _normalized_direct_result_payload(response)
 
@@ -400,6 +408,7 @@ async def _retry_missing_delivery_tool(
     plain_text=None,
     artifact_manifest=None,
     suppressed_reentry_tools=None,
+    token_accumulator=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -459,6 +468,7 @@ async def _retry_missing_delivery_tool(
         delivery_repair_attempts=delivery_repair_attempts + 1,
         artifact_manifest=artifact_manifest,
         suppressed_reentry_tools=suppressed_reentry_tools,
+        token_accumulator=token_accumulator,
     )
 
 
@@ -476,6 +486,7 @@ async def _retry_plain_text_tool_intent(
     artifact_manifest=None,
     suppressed_reentry_tools=None,
     tool_intent_repair_attempts=0,
+    token_accumulator=None,
 ):
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
     helper.conversations.setdefault(chat_id, []).append({
@@ -528,6 +539,7 @@ async def _retry_plain_text_tool_intent(
         suppressed_reentry_tools=suppressed_reentry_tools,
         retry_plain_text_tool_intent=True,
         tool_intent_repair_attempts=tool_intent_repair_attempts + 1,
+        token_accumulator=token_accumulator,
     )
 
 
@@ -548,9 +560,14 @@ async def handle_function_call(
     suppressed_reentry_tools=None,
     retry_plain_text_tool_intent=False,
     tool_intent_repair_attempts=0,
+    token_accumulator=None,
 ):
     tool_calls = []
     try:
+        if token_accumulator is not None:
+            tokens = _response_total_tokens(response)
+            if tokens:
+                token_accumulator.append(tokens)
         artifact_manifest = list(artifact_manifest or [])
         suppressed_reentry_tools = set(suppressed_reentry_tools or ())
         if request_context is not None:
@@ -586,6 +603,7 @@ async def handle_function_call(
                 plain_text,
                 artifact_manifest,
                 suppressed_reentry_tools,
+                token_accumulator,
             )
 
         async def retry_plain_text_tool_intent_if_needed(plain_text=None):
@@ -609,6 +627,7 @@ async def handle_function_call(
                 artifact_manifest,
                 suppressed_reentry_tools,
                 tool_intent_repair_attempts,
+                token_accumulator,
             )
 
         async def retry_stream_plain_text_tool_intent_or_replay(first_item):
@@ -901,6 +920,7 @@ async def handle_function_call(
             suppressed_reentry_tools,
             retry_plain_text_tool_intent,
             tool_intent_repair_attempts,
+            token_accumulator,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

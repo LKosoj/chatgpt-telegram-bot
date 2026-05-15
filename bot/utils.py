@@ -581,13 +581,23 @@ def _charge_user_and_guest(usage, config, user_id, charge_fn):
         logging.warning(f'Failed to record usage: {str(e)}')
         return False
 
-def record_chat_tokens(usage, config, user_id, used_tokens):
+def _positive_int_usage(value, label):
+    if isinstance(value, bool):
+        logging.warning(f'Invalid {label}; not adding request to usage tracker.')
+        return None
     try:
-        if int(used_tokens) == 0:
-            logging.warning('No tokens used. Not adding chat request to usage tracker.')
-            return False
+        value = int(value)
     except (TypeError, ValueError):
-        logging.warning('Invalid token count; not adding chat request to usage tracker.')
+        logging.warning(f'Invalid {label}; not adding request to usage tracker.')
+        return None
+    if value <= 0:
+        logging.warning(f'No {label} used. Not adding request to usage tracker.')
+        return None
+    return value
+
+def record_chat_tokens(usage, config, user_id, used_tokens):
+    used_tokens = _positive_int_usage(used_tokens, 'chat tokens')
+    if used_tokens is None:
         return False
     return _charge_user_and_guest(
         usage, config, user_id,
@@ -601,18 +611,27 @@ def record_image_request(usage, config, user_id, image_size):
     )
 
 def record_vision_tokens(usage, config, user_id, used_tokens):
+    used_tokens = _positive_int_usage(used_tokens, 'vision tokens')
+    if used_tokens is None:
+        return False
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_vision_tokens(used_tokens),
     )
 
 def record_tts_request(usage, config, user_id, text_length, tts_model):
+    text_length = _positive_int_usage(text_length, 'TTS characters')
+    if text_length is None:
+        return False
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_tts_request(text_length, tts_model),
     )
 
 def record_transcription_seconds(usage, config, user_id, seconds):
+    seconds = _positive_int_usage(seconds, 'transcription seconds')
+    if seconds is None:
+        return False
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_transcription_seconds(seconds),

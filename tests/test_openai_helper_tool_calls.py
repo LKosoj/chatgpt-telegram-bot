@@ -85,6 +85,12 @@ class DummyDB:
         return self.user_settings.get(user_id)
 
 
+class SavingDummyDB(DummyDB):
+    def save_conversation_context(self, *args, **kwargs):
+        super().save_conversation_context(*args, **kwargs)
+        self.context = args[1]
+
+
 class MultiSessionDB(DummyDB):
     def __init__(self, contexts):
         super().__init__()
@@ -230,12 +236,12 @@ class FakeChoice:
 
 
 class FakeResponse:
-    def __init__(self, tool_calls=None, content=""):
+    def __init__(self, tool_calls=None, content="", total_tokens=3, prompt_tokens=1, completion_tokens=2):
         self.choices = [FakeChoice(tool_calls=tool_calls, content=content)]
         self.usage = types.SimpleNamespace(
-            total_tokens=3,
-            prompt_tokens=1,
-            completion_tokens=2,
+            total_tokens=total_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
 
@@ -316,17 +322,39 @@ def test_high_model_default_context_is_256k():
     assert default_max_tokens("llmgateway/high") == 256_000
 
 
-def test_vision_history_content_keeps_only_text():
+def test_vision_history_content_keeps_text_marker_and_file_id():
     content = [
         {"type": "text", "text": "что на этой картинке?"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
     ]
 
-    assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?"
+    assert OpenAIHelper._vision_history_content(content) == "что на этой картинке?\n[image]"
+    assert (
+        OpenAIHelper._vision_history_content(content, image_file_id="telegram-file-id")
+        == "что на этой картинке?\n[image_file_id: telegram-file-id]"
+    )
+
+
+def test_saved_vision_payloads_are_stripped_when_loaded():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe it"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+            ],
+        },
+        {"role": "assistant", "content": "summary"},
+    ]
+
+    sanitized = OpenAIHelper._messages_without_image_payloads(messages)
+
+    assert sanitized[0]["content"] == "describe it\n[image]"
+    assert messages[0]["content"][1]["type"] == "image_url"
 
 
 @pytest.mark.asyncio
-async def test_vision_follow_up_keeps_image_content_and_uses_vision_model():
+async def test_vision_follow_up_keeps_text_memory_and_uses_chat_model():
     png_1x1 = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
     )
@@ -336,20 +364,25 @@ async def test_vision_follow_up_keeps_image_content_and_uses_vision_model():
     ])
     helper = _make_helper(DummyPluginManager({}), client=client)
 
-    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="what is shown?")
+    answer, _tokens = await helper.interpret_image(
+        1,
+        io.BytesIO(png_1x1),
+        prompt="what is shown?",
+        image_file_id="telegram-file-id",
+    )
     assert answer == "image answer"
-    assert helper.conversations_vision[1] is True
-    assert isinstance(helper.conversations[1][0]["content"], list)
+    assert helper.conversations_vision[1] is False
+    assert helper.conversations[1][0]["content"] == "what is shown?\n[image_file_id: telegram-file-id]"
     assert any(
         item.get("type") == "image_url"
-        for item in helper.conversations[1][0]["content"]
+        for item in client.create_kwargs[0]["messages"][-1]["content"]
     )
 
     follow_up, _tokens = await helper.get_chat_response(1, "what color?", user_id=1)
 
     assert follow_up == "follow up"
-    assert client.create_kwargs[-1]["model"] == "llmgateway/big_context"
-    assert any(
+    assert client.create_kwargs[-1]["model"] == "llmgateway/high"
+    assert not any(
         isinstance(message.get("content"), list)
         for message in client.create_kwargs[-1]["messages"]
     )
@@ -406,6 +439,117 @@ async def test_interpret_image_handles_vision_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_interpret_image_uses_auto_chat_mode_routing_for_first_vision_request():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    skills_tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    delivery_tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "agent_tools.deliver_to_user",
+            "description": "Deliver final answer",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {
+            "agent_tools.deliver_to_user": {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "vision answer",
+                    "artifacts": [],
+                },
+            },
+        },
+        specs=[skills_tool_spec, delivery_tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(content="skills_agent", total_tokens=5),
+        FakeResponse(
+            tool_calls=[FakeToolCall("agent_tools.deliver_to_user", "{}")],
+            total_tokens=7,
+        ),
+    ])
+    helper = _make_helper(pm, db=SavingDummyDB(), client=client)
+    helper.config["auto_chat_modes"] = True
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_all_modes_list=lambda: [
+            "name: assistant, welcome_message: simple assistant",
+            "name: skills_agent, welcome_message: complex agent",
+        ],
+        get_mode_by_key=lambda key: (
+            {"prompt_start": "agent-mode", "tools": ["skills", "agent_tools"]}
+            if key == "skills_agent"
+            else None
+        ),
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    answer, total_tokens = await helper.interpret_image(
+        1,
+        io.BytesIO(png_1x1),
+        prompt="Создай дизайн-проект в светлых тонах по этому плану",
+        user_id=1,
+    )
+
+    assert answer["direct_result"]["text"] == "vision answer"
+    assert total_tokens == 12
+    assert client.calls == 2
+    assert client.create_kwargs[0]["model"] == "llmgateway/light_model"
+    assert "Создай дизайн-проект" in client.create_kwargs[0]["messages"][1]["content"]
+    assert client.create_kwargs[1]["messages"][0]["content"] == "agent-mode"
+    assert helper.conversations[1][0]["mode_key"] == "skills_agent"
+    assert pm.spec_calls[0] == ["skills", "agent_tools"]
+    assert pm.calls == [("agent_tools.deliver_to_user", json.dumps({"chat_id": 1, "user_id": 1}))]
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_direct_result_reports_initial_usage():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "agent_tools.deliver_to_user",
+            "description": "Deliver",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {
+            "agent_tools.deliver_to_user": {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "Готово",
+                    "artifacts": [],
+                },
+            }
+        },
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("agent_tools.deliver_to_user", "{}")]),
+    ])
+    helper = _make_helper(pm, client=client)
+
+    answer, total_tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="make design", user_id=1)
+
+    assert answer["direct_result"]["text"] == "Готово"
+    assert total_tokens == 3
+
+
+@pytest.mark.asyncio
 async def test_interpret_image_retries_plain_text_tool_intent():
     png_1x1 = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -428,9 +572,10 @@ async def test_interpret_image_retries_plain_text_tool_intent():
     ])
     helper = _make_helper(DummyPluginManager({}, specs=[tool_spec]), client=client)
 
-    answer, _tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="create design", user_id=1)
+    answer, total_tokens = await helper.interpret_image(1, io.BytesIO(png_1x1), prompt="create design", user_id=1)
 
     assert answer == "Сформирую дизайн напрямую."
+    assert total_tokens == 6
     assert client.calls == 2
     assert client.create_kwargs[0]["tools"] == [tool_spec]
     assert client.create_kwargs[1]["tools"] == [tool_spec]
@@ -467,7 +612,7 @@ async def test_vision_follow_up_can_use_tools():
 
     assert follow_up == "Use the design skill."
     assert pm.calls == [("skills.list_skills", json.dumps({"chat_id": 1, "user_id": 1}))]
-    assert client.create_kwargs[1]["model"] == "llmgateway/big_context"
+    assert client.create_kwargs[1]["model"] == "llmgateway/high"
     assert client.create_kwargs[1]["tools"] == [tool_spec]
     assert client.create_kwargs[1]["tool_choice"] == "auto"
 
@@ -899,7 +1044,7 @@ async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     )
 
     assert answer == "final answer"
-    assert total_tokens == 3
+    assert total_tokens == 9
     assert client.calls == 3
     assert pm.calls[0][0] == "skills.list_skills"
     assert "Предыдущий ответ был пустым" in client.create_kwargs[-1]["messages"][-1]["content"]
@@ -919,6 +1064,32 @@ async def test_get_chat_response_strips_think_markers():
 
     assert answer == "visible\ndone"
     assert total_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_auto_chat_mode_router_tokens_are_counted():
+    pm = DummyPluginManager({})
+    client = DummyClient([
+        FakeResponse(content="assistant", total_tokens=5),
+        FakeResponse(content="done", total_tokens=7),
+    ])
+    helper = _make_helper(pm, client=client)
+    helper.config["auto_chat_modes"] = True
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_all_modes_list=lambda: ["name: assistant, welcome_message: Assistant"],
+        get_mode_by_key=lambda key: {"prompt_start": "assistant mode"} if key == "assistant" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    )
+
+    assert answer == "done"
+    assert total_tokens == 12
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio
@@ -949,7 +1120,7 @@ async def test_raw_tool_result_response_is_retried_instead_of_sent():
     )
 
     assert answer == "final answer"
-    assert total_tokens == 3
+    assert total_tokens == 9
     assert client.calls == 3
 
 
@@ -981,7 +1152,7 @@ async def test_empty_response_before_tool_calls_is_retried_with_tools():
     )
 
     assert answer == "final answer"
-    assert total_tokens == 3
+    assert total_tokens == 9
     assert client.calls == 3
     assert pm.calls[0][0] == "skills.list_skills"
     assert "Предыдущий ответ был пустым" in client.create_kwargs[1]["messages"][-1]["content"]
@@ -1685,7 +1856,7 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
     )
 
     assert answer["direct_result"]["text"] == "presentation ready"
-    assert total_tokens == "0"
+    assert total_tokens == 9
     assert helper.client.calls == 3
     assert helper.conversations[1][0]["mode_key"] == "skills_agent"
     assert helper.loaded_conversation_sessions[1] == "new-session"
@@ -1892,7 +2063,7 @@ async def test_mode_allowlist_is_passed_to_tool_reentry():
     )
 
     assert answer == "done"
-    assert total_tokens == 3
+    assert total_tokens == 6
     assert pm.calls and pm.calls[0][0] == "weather.get_weather"
     assert pm.spec_calls == [["weather"], ["weather"]]
 
