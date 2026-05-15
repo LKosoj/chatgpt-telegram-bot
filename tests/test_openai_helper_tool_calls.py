@@ -51,6 +51,7 @@ from bot.openai_tool_handler import (  # noqa: E402
     _call_function_bounded,
     _filter_tools_by_name,
     _has_tool_specs,
+    handle_function_call,
 )
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
@@ -252,6 +253,14 @@ class FakeStreamItem:
 async def _fake_stream(contents):
     for content in contents:
         yield FakeStreamItem(content)
+
+
+async def _collect_stream_content(response):
+    content = ""
+    async for item in response:
+        if item.choices and item.choices[0].delta.content:
+            content += item.choices[0].delta.content
+    return content
 
 
 def _make_helper(plugin_manager, db=None, client=None):
@@ -917,6 +926,90 @@ async def test_prompt_perfect_suppresses_itself_on_reentry():
     assert helper.client.create_kwargs[0]["tools"] == []
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
     assert len(pm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_prompt_perfect_retries_plain_text_tool_intent_without_tools():
+    stuck_text = (
+        "Я вижу, что у вас есть план бревенчатой бани (сруб), и вы хотите "
+        "дизайн-проект в светлых тонах. Позвольте мне загрузить подходящий "
+        "skill для создания презентации дизайна."
+    )
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "prompt_perfect.optimize_prompt",
+            "description": "Rewrite prompt",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {
+            "prompt_perfect.optimize_prompt": {
+                "optimized_prompt": "create a light-toned bathhouse design project",
+                "instruction": "Use optimized_prompt as the request.",
+                "suppress_reentry_tools": ["prompt_perfect.optimize_prompt"],
+                "retry_plain_text_tool_intent": True,
+            }
+        },
+        specs=[tool_spec],
+    )
+    helper = _make_helper(
+        pm,
+        client=DummyClient([
+            FakeResponse(content=stuck_text),
+            FakeResponse(content="Сформирую дизайн-проект напрямую."),
+        ]),
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert out.choices[0].message.content == "Сформирую дизайн-проект напрямую."
+    assert tools_used == ("prompt_perfect.optimize_prompt",)
+    assert helper.client.calls == 2
+    assert helper.client.create_kwargs[0]["tools"] == []
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert helper.client.create_kwargs[1]["tools"] == []
+    assert helper.client.create_kwargs[1]["tool_choice"] == "none"
+    assert len(pm.calls) == 1
+    assert stuck_text != out.choices[0].message.content
+    assert "Undelivered assistant text" in helper.conversations[1][-1]["content"]
+    assert stuck_text in helper.conversations[1][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_perfect_retries_streamed_plain_text_tool_intent():
+    helper = _make_helper(
+        DummyPluginManager({}, specs=[]),
+        client=DummyClient([_fake_stream(["Сформирую ", "дизайн-проект напрямую."])]),
+    )
+
+    response, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=_fake_stream([
+            "Я вижу, что вам нужен дизайн-проект. ",
+            "Позвольте мне загрузить подходящий skill.",
+        ]),
+        stream=True,
+        times=1,
+        tools_used=("prompt_perfect.optimize_prompt",),
+        allowed_plugins=["All"],
+        user_id=1,
+        suppressed_reentry_tools={"prompt_perfect.optimize_prompt"},
+        retry_plain_text_tool_intent=True,
+    )
+
+    assert await _collect_stream_content(response) == "Сформирую дизайн-проект напрямую."
+    assert tools_used == ("prompt_perfect.optimize_prompt",)
+    assert helper.client.calls == 1
+    assert helper.client.create_kwargs[0]["stream"] is True
+    assert "Undelivered assistant text" in helper.conversations[1][-1]["content"]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 import openai
 
@@ -78,6 +79,21 @@ DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 SUPPRESS_REENTRY_TOOLS_KEY = "suppress_reentry_tools"
+RETRY_PLAIN_TEXT_TOOL_INTENT_KEY = "retry_plain_text_tool_intent"
+TOOL_INTENT_REPAIR_MAX_ATTEMPTS = 1
+TOOL_INTENT_REPAIR_PROMPT = (
+    "The previous assistant text narrated a future tool or skill action, but no tool was called. "
+    "Treat that text as internal progress, not as a user-visible answer. If a tool is available "
+    "and needed, call it now. If no suitable tool is available, answer directly or ask one concrete "
+    "clarifying question. Do not say that you will call, load, use, or activate a tool later."
+)
+TOOL_INTENT_TEXT_RE = re.compile(
+    r"(?is)("
+    r"позвольте\s+мне\s+(?:загрузить|подобрать|вызвать|использовать)|"
+    r"(?:сейчас|сначала|далее)\s+(?:загружу|загрузим|подберу|вызову|использую|активирую)|"
+    r"(?:let me|i will|i'll)\s+(?:load|call|use|activate|find).{0,80}\b(?:skill|tool)\b"
+    r")"
+)
 DELIVERY_REPAIR_PROMPT = (
     "The previous assistant text was not delivered to the user; treat it as internal progress. "
     "Continue solving the original user task from the current conversation state. Do not narrate "
@@ -93,6 +109,20 @@ async def _prepend_stream_item(first_item, response):
     yield first_item
     async for item in response:
         yield item
+
+
+async def _replay_stream_items(items):
+    for item in items:
+        yield item
+
+
+def _stream_item_content(item) -> str:
+    choices = getattr(item, "choices", None)
+    if not choices:
+        return ""
+    delta = getattr(choices[0], "delta", None)
+    content = getattr(delta, "content", "")
+    return content if isinstance(content, str) else ""
 
 
 def _direct_result_payload(response) -> dict | None:
@@ -155,6 +185,15 @@ def _suppressed_reentry_tools(tool_result) -> set[str]:
     if isinstance(raw, list):
         return {name for name in raw if isinstance(name, str) and name}
     return set()
+
+
+def _requires_plain_text_tool_intent_retry(tool_result) -> bool:
+    payload = tool_result.payload if isinstance(tool_result.payload, dict) else {}
+    return bool(payload.get(RETRY_PLAIN_TEXT_TOOL_INTENT_KEY))
+
+
+def _looks_like_plain_text_tool_intent(text) -> bool:
+    return bool(TOOL_INTENT_TEXT_RE.search(str(text or "")))
 
 
 def _agent_delivery_workflow_active(tool_calls: list[dict], tools_used: tuple) -> bool:
@@ -422,6 +461,75 @@ async def _retry_missing_delivery_tool(
     )
 
 
+async def _retry_plain_text_tool_intent(
+    helper,
+    chat_id,
+    stream,
+    times,
+    tools_used,
+    allowed_plugins,
+    user_id,
+    request_context,
+    model_to_use=None,
+    plain_text=None,
+    artifact_manifest=None,
+    suppressed_reentry_tools=None,
+    tool_intent_repair_attempts=0,
+):
+    plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
+    helper.conversations.setdefault(chat_id, []).append({
+        "role": "user",
+        "content": (
+            TOOL_INTENT_REPAIR_PROMPT
+            if not plain_text_preview
+            else f"{TOOL_INTENT_REPAIR_PROMPT}\n\nUndelivered assistant text: {plain_text_preview}"
+        ),
+    })
+    logger.warning("Retrying plain-text tool intent for chat_id=%s", chat_id)
+
+    model_to_use = model_to_use or helper.get_current_model(user_id)
+    sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
+    active_session = next((s for s in sessions if s['is_active']), None)
+    session_id = active_session['session_id'] if active_session else None
+    max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
+    suppressed_reentry_tools = set(suppressed_reentry_tools or ())
+    tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
+    tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+    tool_choice = "auto" if _has_tool_specs(tools) else "none"
+
+    messages = await helper._apply_before_chat_request_mutators(
+        chat_id=chat_id,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=None,
+        persist=False,
+    )
+    response = await helper.chat_completion(
+        model=model_to_use,
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
+        stream=stream,
+    )
+    return await handle_function_call(
+        helper,
+        chat_id,
+        response,
+        stream,
+        times + 1,
+        tools_used,
+        allowed_plugins,
+        user_id,
+        request_context,
+        model_to_use=model_to_use,
+        artifact_manifest=artifact_manifest,
+        suppressed_reentry_tools=suppressed_reentry_tools,
+        retry_plain_text_tool_intent=True,
+        tool_intent_repair_attempts=tool_intent_repair_attempts + 1,
+    )
+
+
 async def handle_function_call(
     helper,
     chat_id,
@@ -437,6 +545,8 @@ async def handle_function_call(
     delivery_repair_attempts=0,
     artifact_manifest=None,
     suppressed_reentry_tools=None,
+    retry_plain_text_tool_intent=False,
+    tool_intent_repair_attempts=0,
 ):
     tool_calls = []
     try:
@@ -477,6 +587,50 @@ async def handle_function_call(
                 suppressed_reentry_tools,
             )
 
+        async def retry_plain_text_tool_intent_if_needed(plain_text=None):
+            if (
+                not retry_plain_text_tool_intent
+                or tool_intent_repair_attempts >= TOOL_INTENT_REPAIR_MAX_ATTEMPTS
+                or not _looks_like_plain_text_tool_intent(plain_text)
+            ):
+                return None
+            return await _retry_plain_text_tool_intent(
+                helper,
+                chat_id,
+                stream,
+                times,
+                tools_used,
+                allowed_plugins,
+                user_id,
+                request_context,
+                model_to_use,
+                plain_text,
+                artifact_manifest,
+                suppressed_reentry_tools,
+                tool_intent_repair_attempts,
+            )
+
+        async def retry_stream_plain_text_tool_intent_or_replay(first_item):
+            if (
+                not retry_plain_text_tool_intent
+                or tool_intent_repair_attempts >= TOOL_INTENT_REPAIR_MAX_ATTEMPTS
+            ):
+                return None
+            buffered_items = [first_item]
+            text_parts = [_stream_item_content(first_item)]
+            try:
+                async for next_item in response:
+                    buffered_items.append(next_item)
+                    text_parts.append(_stream_item_content(next_item))
+            except openai.APIError as e:
+                logger.error(f"API Error while buffering plain-text tool intent stream: {e}")
+                return _replay_stream_items(buffered_items), tools_used
+            plain_text = "".join(text_parts)
+            repaired = await retry_plain_text_tool_intent_if_needed(plain_text)
+            if repaired is not None:
+                return repaired
+            return _replay_stream_items(buffered_items), tools_used
+
         if stream:
             try:
                 tool_call_parts = {}
@@ -502,6 +656,9 @@ async def handle_function_call(
                             enforced = await enforce_delivery_contract_if_needed()
                             if enforced is not None:
                                 return enforced
+                            repaired = await retry_stream_plain_text_tool_intent_or_replay(item)
+                            if repaired is not None:
+                                return repaired
                             return _prepend_stream_item(item, response), tools_used
                     else:
                         enforced = await enforce_delivery_contract_if_needed()
@@ -531,6 +688,9 @@ async def handle_function_call(
                     enforced = await enforce_delivery_contract_if_needed(plain_text)
                     if enforced is not None:
                         return enforced
+                    repaired = await retry_plain_text_tool_intent_if_needed(plain_text)
+                    if repaired is not None:
+                        return repaired
                     return response, tools_used
             else:
                 enforced = await enforce_delivery_contract_if_needed()
@@ -643,6 +803,10 @@ async def handle_function_call(
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             suppressed_reentry_tools.update(_suppressed_reentry_tools(tool_result))
+            retry_plain_text_tool_intent = (
+                retry_plain_text_tool_intent
+                or _requires_plain_text_tool_intent_retry(tool_result)
+            )
             if tool_result.success:
                 final_delivery_required = True
             for entry in tool_result.artifacts:
@@ -734,6 +898,8 @@ async def handle_function_call(
             delivery_repair_attempts,
             artifact_manifest,
             suppressed_reentry_tools,
+            retry_plain_text_tool_intent,
+            tool_intent_repair_attempts,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

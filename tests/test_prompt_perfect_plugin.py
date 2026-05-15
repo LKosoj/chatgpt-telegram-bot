@@ -52,6 +52,7 @@ async def test_execute_uses_low_level_completion_without_model_response():
     assert result["optimized_prompt"] == "Rewrite this as a precise request."
     assert "instruction" in result
     assert result["suppress_reentry_tools"] == ["prompt_perfect.optimize_prompt"]
+    assert result["retry_plain_text_tool_intent"] is True
     assert "model_response" not in result
 
 
