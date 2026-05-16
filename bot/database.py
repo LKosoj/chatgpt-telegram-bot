@@ -23,6 +23,10 @@ class Database:
     _lock = threading.Lock()
     _connection_lock = threading.Lock()
     _local = threading.local()
+
+    # Текущая целевая версия схемы. Миграция 1 — переход с legacy-таблицы
+    # `conversation_context` без session_id на новую схему с сессиями.
+    TARGET_SCHEMA_VERSION = 1
     
     def __new__(cls):
         with cls._lock:
@@ -61,8 +65,12 @@ class Database:
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         """
-        Контекстный менеджер для потокобезопасного доступа к соединению с базой данных.
-        Каждый поток получает свое собственное соединение.
+        Контекстный менеджер для потокобезопасного доступа к соединению.
+
+        Реентерабельный: вложенные `with get_connection()` в одном потоке
+        переиспользуют одно соединение и коммитят/откатывают только на самом
+        внешнем выходе. Это нужно, чтобы `transaction()` мог обернуть несколько
+        существующих `with get_connection()`-блоков в одну атомарную единицу.
         """
         if not hasattr(self._local, 'connection'):
             with self._connection_lock:
@@ -77,15 +85,51 @@ class Database:
                     self._local.connection.execute("PRAGMA journal_mode = WAL")
                 busy_timeout = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
                 self._local.connection.execute(f"PRAGMA busy_timeout = {busy_timeout}")
-        
+        if not hasattr(self._local, 'depth'):
+            self._local.depth = 0
+
+        self._op_lock.acquire()
+        self._local.depth += 1
+        is_outer = self._local.depth == 1
         try:
-            with self._op_lock:
-                yield self._local.connection
-        except Exception as e:
-            self._local.connection.rollback()
+            yield self._local.connection
+        except Exception:
+            if is_outer:
+                try:
+                    self._local.connection.rollback()
+                except sqlite3.Error:
+                    pass
             raise
         else:
-            self._local.connection.commit()
+            if is_outer:
+                self._local.connection.commit()
+        finally:
+            self._local.depth -= 1
+            self._op_lock.release()
+
+    @contextmanager
+    def transaction(self, immediate: bool = True) -> Generator[sqlite3.Connection, None, None]:
+        """Атомарная транзакция поверх (возможно нескольких) `get_connection()`.
+
+        На самом внешнем уровне открывает `BEGIN IMMEDIATE`, чтобы захватить
+        write-lock сразу и не зависеть от sqlite3 deferred-режима. Вложенные
+        вызовы переиспользуют ту же транзакцию (тогда BEGIN не повторяется и
+        управляющий commit/rollback делает внешний `transaction()`).
+        """
+        with self.get_connection() as conn:
+            started = False
+            if self._local.depth == 1 and not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                started = True
+            try:
+                yield conn
+            except Exception:
+                if started:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                raise
 
     def __del__(self):
         """Закрываем соединение текущего треда при сборке объекта."""
@@ -110,7 +154,20 @@ class Database:
             logger.info(f'Initializing database at {self.db_path}')
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                
+
+                # Версионирование схемы. Раньше миграция запускалась по
+                # «сниффингу» наличия колонки session_id; при крэше посередине
+                # миграции БД могла остаться в состоянии без conversation_context,
+                # но с conversation_context_old — последующий init_db не понимал
+                # этого. Теперь храним версию явно и восстанавливаем _old.
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS schema_version (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                self._recover_from_failed_migration(cursor)
+
                 # Таблица для пользовательских настроек
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS user_settings (
@@ -191,11 +248,21 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_file_id_hash ON images(file_id_hash)
                 ''')
 
-                cursor.execute("PRAGMA table_info(conversation_context)")
-                columns = [column[1] for column in cursor.fetchall()]
-                if 'session_id' not in columns:
-                    logger.warning('Performing database migration for conversation_context')
-                    self.migrate_conversation_context()
+                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
+                current_version = cursor.fetchone()[0]
+                if current_version < self.TARGET_SCHEMA_VERSION:
+                    cursor.execute("PRAGMA table_info(conversation_context)")
+                    columns = [column[1] for column in cursor.fetchall()]
+                    if 'session_id' not in columns:
+                        logger.warning('Performing database migration for conversation_context')
+                        self.migrate_conversation_context()
+                    else:
+                        # Схема уже соответствует целевой версии (БД создана с
+                        # нуля), но запись о version отсутствовала — фиксируем.
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO schema_version (version) VALUES (?)',
+                            (self.TARGET_SCHEMA_VERSION,),
+                        )
 
                 # Индекс для быстрого поиска сессий (создаем после миграции)
                 cursor.execute('''
@@ -215,6 +282,34 @@ class Database:
         except Exception as e:
             logger.error(f'Error initializing database: {e}', exc_info=True)
             raise
+
+    def _recover_from_failed_migration(self, cursor: sqlite3.Cursor) -> None:
+        """Восстанавливает БД, если предыдущая миграция упала между RENAME и DROP."""
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_context_old'"
+        )
+        if cursor.fetchone() is None:
+            return
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_context'"
+        )
+        has_new = cursor.fetchone() is not None
+        if not has_new:
+            logger.warning('Recovering conversation_context from _old after crashed migration')
+            cursor.execute('ALTER TABLE conversation_context_old RENAME TO conversation_context')
+            return
+        # Why: DROP _old делаем только если new — это уже мигрированная схема
+        # (имеет session_id). Иначе мы рискуем потерять данные пользователей.
+        cursor.execute("PRAGMA table_info(conversation_context)")
+        new_columns = {row[1] for row in cursor.fetchall()}
+        if 'session_id' not in new_columns:
+            logger.error(
+                'Refusing to drop conversation_context_old: new table lacks session_id, '
+                'manual intervention required.'
+            )
+            return
+        logger.warning('Dropping stale conversation_context_old leftover')
+        cursor.execute('DROP TABLE conversation_context_old')
 
     def _deduplicate_active_sessions(self, cursor: sqlite3.Cursor) -> None:
         cursor.execute('''
@@ -242,6 +337,18 @@ class Database:
                 WHERE user_id = ? AND is_active = 1 AND rowid != ?
             ''', (user_id, keep_rowid))
     
+    def _ensure_user(self, cursor: sqlite3.Cursor, user_id: int) -> None:
+        """Гарантирует наличие строки в user_settings для user_id.
+
+        Раньше тот же INSERT OR IGNORE инлайнился в save_image (FK requirement)
+        и нигде больше, из-за чего conversation_context/save_user_model могли
+        работать без user_settings. Helper унифицирует паттерн.
+        """
+        cursor.execute(
+            'INSERT OR IGNORE INTO user_settings (user_id, settings) VALUES (?, ?)',
+            (user_id, '{}'),
+        )
+
     def save_user_settings(self, user_id: int, settings: Dict[str, Any]) -> None:
         """Сохранение пользовательских настроек"""
         try:
@@ -424,22 +531,25 @@ class Database:
             # Считаем количество пользовательских сообщений в сессии
             message_count = len([msg for msg in context.get('messages', []) if msg.get('role') == 'user'])
 
-            with self.get_connection() as conn:
+            # Атомарная транзакция: UPDATE → (если rowcount=0) deactivate+INSERT →
+            # SELECT session_name. На partial index idx_conversation_context_one_active
+            # без BEGIN IMMEDIATE возможна гонка с параллельным save из соседней
+            # корутины — IntegrityError. transaction() поднимает write-lock сразу.
+            with self.transaction() as conn:
                 cursor = conn.cursor()
+                self._ensure_user(cursor, user_id)
 
-                # Обновляем существующую сессию
                 cursor.execute('''
-                    UPDATE conversation_context 
-                    SET context = ?, 
-                        parse_mode = ?, 
-                        temperature = ?, 
+                    UPDATE conversation_context
+                    SET context = ?,
+                        parse_mode = ?,
+                        temperature = ?,
                         max_tokens_percent = ?,
                         message_count = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND session_id = ?
                 ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
 
-                # Если ни одна строка не обновлена, создаем новую запись
                 if cursor.rowcount == 0:
                     logger.info(f"Создаем новую запись для сессии {session_id}")
                     model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
@@ -449,7 +559,7 @@ class Database:
                         WHERE user_id = ?
                     ''', (user_id,))
                     cursor.execute('''
-                        INSERT INTO conversation_context 
+                        INSERT INTO conversation_context
                         (user_id, session_id, context, model, parse_mode, temperature, max_tokens_percent, is_active, message_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                     ''', (user_id, session_id, context_json, model, parse_mode, temperature, max_tokens_percent, message_count))
@@ -526,6 +636,11 @@ class Database:
         context: Dict[str, Any],
         openai_helper = None,
     ) -> None:
+        """Если имя сессии всё ещё «...», ставит короткий fallback из первого
+        сообщения. LLM-генерация имени теперь выполняется в OpenAIHelper
+        (бывшая семантическая цикличная зависимость Database→OpenAIHelper).
+        Параметр openai_helper оставлен для обратной совместимости — игнорируется.
+        """
         if not session_id:
             return
         session = await asyncio.to_thread(self.get_session_details, user_id, session_id)
@@ -539,15 +654,12 @@ class Database:
         user_message = self._session_name_source_text(user_message)
         if not user_message:
             return
-        if len(user_message) <= 20 or openai_helper is None:
+        if len(user_message) <= 20:
             await asyncio.to_thread(self.set_session_name, user_id, session_id, user_message[:20])
             return
-        generate_session_name = getattr(openai_helper, "generate_session_name", None)
-        if not callable(generate_session_name):
-            await asyncio.to_thread(self.set_session_name, user_id, session_id, user_message[:20])
-            return
-        session_name, _tokens = await generate_session_name(user_id, user_message, session_id)
-        await asyncio.to_thread(self.set_session_name, user_id, session_id, session_name)
+        # Для длинных сообщений имя осталось "..." — OpenAIHelper.\
+        # ensure_session_name_with_llm в фоне сгенерирует осмысленное имя
+        # и сам вызовет db.set_session_name. БД больше не вызывает LLM.
     
     def get_conversation_context(self, user_id: int, session_id: str = None, openai_helper = None) -> Optional[Dict[str, Any]]:
         """Получение контекста разговора с поддержкой сессий"""
@@ -621,10 +733,7 @@ class Database:
 
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR IGNORE INTO user_settings (user_id, settings)
-                    VALUES (?, ?)
-                ''', (user_id, '{}'))
+                self._ensure_user(cursor, user_id)
                 cursor.execute('''
                     INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path, status)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -797,13 +906,14 @@ class Database:
     def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
         """
         Удаление самых старых сессий пользователя до достижения лимита
-        
+
         :param user_id: Идентификатор пользователя
         :return: Успешность удаления
         """
         try:
-            session_ids = self.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
-            return self.delete_sessions_by_ids(user_id, session_ids)
+            with self.transaction():
+                session_ids = self.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
+                return self.delete_sessions_by_ids(user_id, session_ids)
 
         except sqlite3.Error as e:
             logger.error(f"Ошибка при удалении старых сессий: {e}")
@@ -863,8 +973,9 @@ class Database:
             model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
             now = datetime.now()
 
-            with self.get_connection() as conn:
+            with self.transaction() as conn:
                 cursor = conn.cursor()
+                self._ensure_user(cursor, user_id)
                 cursor.execute('''
                     SELECT context, parse_mode, temperature, max_tokens_percent
                     FROM conversation_context
@@ -976,7 +1087,7 @@ class Database:
     def switch_active_session(self, user_id: int, session_id: str) -> bool:
         """Переключение активной сессии"""
         try:
-            with self.get_connection() as conn:
+            with self.transaction() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT 1
@@ -1007,65 +1118,69 @@ class Database:
     def delete_session(self, user_id: int, session_id: str, openai_helper=None):
         """Удаление сессии"""
         try:
-            # Проверяем количество сессий пользователя
-            session_count = self.count_user_sessions(user_id)
-                
-            # Если это последняя сессия, создаем новую перед удалением
-            if session_count == 1:
-                # Создаем новую сессию
-                new_session_id = self.create_session(user_id, openai_helper=openai_helper)
-                
-                if not new_session_id:
-                    logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
+            # Всё удаление — одна транзакция. Внутренние create_session/
+            # switch_active_session/list_user_sessions переиспользуют её через
+            # reentrant get_connection(); это закрывает гонку, при которой
+            # параллельная корутина видит промежуточное «активной сессии нет».
+            with self.transaction() as conn:
+                session_count = self.count_user_sessions(user_id)
 
-            # Получаем данные из активной сессии
-            sessions = self.list_user_sessions(user_id, 1)
-            active_session = next((s for s in sessions if s['is_active']), None)
+                if session_count == 1:
+                    new_session_id = self.create_session(user_id, openai_helper=openai_helper)
+                    if not new_session_id:
+                        raise RuntimeError(
+                            f"Не удалось создать новую сессию для пользователя {user_id}"
+                        )
 
-            # Если удаляется активная сессия, создаем новую
-            if active_session and active_session.get('session_id') == session_id:
-                new_session_id = self.create_session(
-                    user_id,
-                    openai_helper=openai_helper,
-                    prune_old_sessions=False,
-                )
-                if not new_session_id:
-                    logger.error(f"Не удалось создать новую сессию для пользователя {user_id}")
-                else:
+                sessions = self.list_user_sessions(user_id, 1)
+                active_session = next((s for s in sessions if s['is_active']), None)
+
+                if active_session and active_session.get('session_id') == session_id:
+                    new_session_id = self.create_session(
+                        user_id,
+                        openai_helper=openai_helper,
+                        prune_old_sessions=False,
+                    )
+                    if not new_session_id:
+                        raise RuntimeError(
+                            f"Не удалось создать новую сессию для пользователя {user_id}"
+                        )
                     self.switch_active_session(user_id, new_session_id)
-            
-            # Удаляем сессию
-            with self.get_connection() as conn:
+
                 cursor = conn.cursor()
-                # Удаляем сессию
                 cursor.execute('''
-                    DELETE FROM conversation_context 
+                    DELETE FROM conversation_context
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
-            
+
         except Exception as e:
             logger.error(f'Ошибка удаления сессии: {e}', exc_info=True)
             raise
 
     def migrate_conversation_context(self):
-        """
-        Миграция существующих данных в новую структуру сессий
-        Преобразует существующие записи в первую сессию для каждого пользователя
+        """Атомарная миграция conversation_context на схему с session_id.
+
+        Раньше: ALTER+CREATE+INSERT+DROP делались внутри `with get_connection`
+        самой `init_db`, что коммитило промежуточные DDL вместе с другими
+        CREATE'ами init_db (ALTER RENAME уже виден другим коннекшнам). При
+        крэше между RENAME и DROP БД оставалась без основной таблицы и теряла
+        все сессии. Сейчас вся миграция — отдельный `transaction()` с BEGIN
+        IMMEDIATE и финальным INSERT в schema_version. Восстановление _old
+        выполняется в _recover_from_failed_migration на старте.
         """
         try:
             logger.info('Начало миграции conversation_context')
-            with self.get_connection() as conn:
+            with self.transaction() as conn:
                 cursor = conn.cursor()
-                
-                # Проверяем существующие колонки
+                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
+                if cursor.fetchone()[0] >= self.TARGET_SCHEMA_VERSION:
+                    return
+
                 cursor.execute("PRAGMA table_info(conversation_context)")
                 columns = [column[1] for column in cursor.fetchall()]
-                
+
                 if 'session_id' not in columns:
-                    # Создаем временную таблицу
                     cursor.execute('ALTER TABLE conversation_context RENAME TO conversation_context_old')
-                    
-                    # Создаем новую таблицу с поддержкой сессий
                     cursor.execute('''
                         CREATE TABLE conversation_context (
                             user_id INTEGER,
@@ -1083,22 +1198,19 @@ class Database:
                             PRIMARY KEY (user_id, session_id)
                         )
                     ''')
-                    
-                    # Создаем индекс для поиска сессий
                     cursor.execute('''
-                        CREATE INDEX IF NOT EXISTS idx_conversation_context_session 
+                        CREATE INDEX IF NOT EXISTS idx_conversation_context_session
                         ON conversation_context(user_id, session_id, is_active)
                     ''')
-                    
+
                     model_expr = "COALESCE(model, ?)" if 'model' in columns else "?"
                     default_context = '{"messages": []}'
-                    # Миграция данных с генерацией сессий
                     cursor.execute(f'''
-                        INSERT INTO conversation_context 
+                        INSERT INTO conversation_context
                         (user_id, context, model, parse_mode, temperature, max_tokens_percent,
                          session_id, session_name, is_active, message_count, created_at, updated_at)
-                        SELECT 
-                            user_id, 
+                        SELECT
+                            user_id,
                             COALESCE(context, ?),
                             {model_expr},
                             COALESCE(parse_mode, 'HTML'),
@@ -1112,16 +1224,19 @@ class Database:
                             COALESCE(updated_at, CURRENT_TIMESTAMP)
                         FROM conversation_context_old
                     ''', (default_context, LLMGATEWAY_HIGH_MODEL))
-                    
-                    # Удаляем старую таблицу
+
                     cursor.execute('DROP TABLE conversation_context_old')
-                    
                     logger.info('Миграция conversation_context завершена успешно')
                 else:
                     logger.info('Миграция не требуется, таблица уже в новом формате')
+
+                cursor.execute(
+                    'INSERT OR IGNORE INTO schema_version (version) VALUES (?)',
+                    (self.TARGET_SCHEMA_VERSION,),
+                )
         except Exception as e:
             logger.error(f'Ошибка миграции базы данных: {e}', exc_info=True)
-            raise 
+            raise
 
     def get_session_details(self, user_id: int, session_id: str) -> Optional[Dict[str, Any]]:
         """

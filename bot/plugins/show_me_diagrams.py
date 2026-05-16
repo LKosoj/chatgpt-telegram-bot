@@ -147,6 +147,11 @@ class ShowMeDiagramsPlugin(Plugin):
         description = kwargs.get('description')
         title = kwargs.get('title', 'Diagram')
         user_id = kwargs.get('user_id')
+        # chat_id инжектится PluginManager-ом в kwargs перед execute (см.
+        # openai_tool_handler.py). Раньше тут читался несуществующий ключ
+        # helper.conversations['last_chat_id'], который всегда возвращал 0
+        # и слал follow-up-запрос «в никуда».
+        chat_id = kwargs.get('chat_id') or 0
         if not diagram_type:
             type_prompt = (
                 "Выберите тип диаграммы из следующих:\n"
@@ -154,7 +159,7 @@ class ShowMeDiagramsPlugin(Plugin):
                 "Какой тип диаграммы вы хотите создать?"
             )
             diagram_type_response, _ = await helper.get_chat_response(
-                chat_id=helper.conversations.get('last_chat_id', 0),
+                chat_id=chat_id,
                 query=type_prompt
             )
             diagram_type = diagram_type_response.strip().lower()
@@ -164,7 +169,7 @@ class ShowMeDiagramsPlugin(Plugin):
 
         if not description:
             description_prompt = f"Пожалуйста, предоставьте подробное описание для диаграммы типа '{diagram_type}'. "
-            
+
             type_hints = {
                 'gantt_chart': "Например: Разработка проекта, Дизайн (2 недели), Backend (3 недели), Frontend (4 недели)",
                 'mind_map': "Например: Изучение машинного обучения, Математика, Статистика, Программирование, Нейронные сети",
@@ -179,7 +184,7 @@ class ShowMeDiagramsPlugin(Plugin):
             description_prompt += hint
 
             description_response, _ = await helper.get_chat_response(
-                chat_id=helper.conversations.get('last_chat_id', 0),
+                chat_id=chat_id,
                 query=description_prompt
             )
             description = description_response.strip()

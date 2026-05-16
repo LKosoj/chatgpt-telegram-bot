@@ -2693,3 +2693,52 @@ def test_model_messages_include_current_user_language_instruction():
     assert messages[1]["role"] == "system"
     assert "Русский" in messages[1]["content"]
     assert messages[2] == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_name_with_llm_persists_generated_name():
+    """OpenAIHelper отвечает за LLM-генерацию имени (раньше это делала БД).
+    Проверяем сам граф вызовов: get_session_details → generate_session_name →
+    set_session_name. БД больше не вызывает LLM."""
+    captured = {}
+
+    class _DB:
+        def get_session_details(self, user_id, session_id):
+            return {"session_name": "..."}
+
+        def set_session_name(self, user_id, session_id, name):
+            captured["name"] = name
+
+    class _Helper:
+        async def generate_session_name(self, user_id, message, session_id):
+            captured["generate_called_with"] = (user_id, message, session_id)
+            return ("Generated", None)
+
+    helper = _Helper()
+    helper.db = _DB()
+    context = {"messages": [{"role": "user", "content": "long message " * 5}]}
+    await OpenAIHelper._ensure_session_name_with_llm(helper, 42, "sid", context)
+    assert captured["name"] == "Generated"
+    assert captured["generate_called_with"][0] == 42
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_name_with_llm_skips_short_messages():
+    """Короткое сообщение (≤20 символов) — fallback ставит сама БД, helper
+    остаётся в стороне и LLM не вызывается."""
+
+    class _DB:
+        def get_session_details(self, user_id, session_id):
+            return {"session_name": "..."}
+
+        def set_session_name(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("DB.set_session_name should not be called")
+
+    class _Helper:
+        async def generate_session_name(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("generate_session_name should not be called")
+
+    helper = _Helper()
+    helper.db = _DB()
+    context = {"messages": [{"role": "user", "content": "short"}]}
+    await OpenAIHelper._ensure_session_name_with_llm(helper, 1, "sid", context)

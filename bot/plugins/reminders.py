@@ -318,21 +318,21 @@ class RemindersPlugin(Plugin):
                 if not self.reminders[user_id]:
                     del self.reminders[user_id]
                 self.save_reminders()
-            return {
-                "direct_result": {
-                    "kind": "text",
-                    "format": "markdown",
-                    "value": self.t("reminders_deleted", reminder_id=reminder_id)
+                return {
+                    "direct_result": {
+                        "kind": "text",
+                        "format": "markdown",
+                        "value": self.t("reminders_deleted", reminder_id=reminder_id)
+                    }
                 }
-            }                
-            
+
             return {
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
                     "value": self.t("reminders_not_found")
                 }
-            }                
+            }
 
         return {"error": self.t("reminders_unknown_function")}
 

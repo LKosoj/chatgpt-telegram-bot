@@ -6,8 +6,10 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List
 from urllib.parse import quote
 
@@ -309,30 +311,34 @@ class HindsightMemoryPlugin(Plugin):
         # Async DbHandle facade (Stage 4C-3): used by hooks and the finalize worker.
         self.db_handle = db
         # Plugin-owned config slice (prefix "hindsight_"). Defaults set HERE.
+        # Why: core (__main__) больше не знает про hindsight-ключи — плагин читает
+        # свои env-переменные самостоятельно (через setdefault не перетирает значения,
+        # уже пришедшие из plugin_config).
         self.config: Dict[str, Any] = dict(plugin_config or {})
-        self.config.setdefault('hindsight_base_url', '')
-        self.config.setdefault('hindsight_api_token', '')
+        env = os.environ
+        self.config.setdefault('hindsight_base_url', env.get('HINDSIGHT_BASE_URL', ''))
+        self.config.setdefault('hindsight_api_token', env.get('HINDSIGHT_API_TOKEN', ''))
         self.config['hindsight_enabled'] = bool(
             self.config.get('hindsight_base_url')
             and self.config.get('hindsight_api_token')
         )
-        self.config.setdefault('hindsight_auto_recall', True)
-        self.config.setdefault('hindsight_auto_save', True)
-        self.config.setdefault('hindsight_namespace', 'default')
-        self.config.setdefault('hindsight_bank_prefix', 'telegram-')
-        self.config.setdefault('hindsight_recall_budget', 'mid')
-        self.config.setdefault('hindsight_recall_max_tokens', 4096)
-        self.config.setdefault('hindsight_memory_types', 'world,experience')
-        self.config.setdefault('hindsight_async_store', True)
-        self.config.setdefault('hindsight_timeout', 30.0)
-        self.config.setdefault('hindsight_max_auto_save_items', 5)
-        self.config.setdefault('hindsight_dream_enabled', False)
-        self.config.setdefault('hindsight_dream_interval_seconds', HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS)
-        self.config.setdefault('hindsight_dream_max_events', 50)
-        self.config.setdefault('hindsight_dream_max_event_chars', 1000)
-        self.config.setdefault('hindsight_dream_max_documents', 5)
-        self.config.setdefault('hindsight_dynamic_recall', False)
-        self.config.setdefault('hindsight_dynamic_recall_max_tokens', 1024)
+        self.config.setdefault('hindsight_namespace', env.get('HINDSIGHT_NAMESPACE', 'default'))
+        self.config.setdefault('hindsight_bank_prefix', env.get('HINDSIGHT_BANK_PREFIX', 'telegram-'))
+        self.config.setdefault('hindsight_auto_recall', env.get('HINDSIGHT_AUTO_RECALL', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_auto_save', env.get('HINDSIGHT_AUTO_SAVE', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_recall_budget', env.get('HINDSIGHT_RECALL_BUDGET', 'mid'))
+        self.config.setdefault('hindsight_recall_max_tokens', int(env.get('HINDSIGHT_RECALL_MAX_TOKENS', '4096')))
+        self.config.setdefault('hindsight_memory_types', env.get('HINDSIGHT_MEMORY_TYPES', 'world,experience'))
+        self.config.setdefault('hindsight_async_store', env.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_timeout', float(env.get('HINDSIGHT_TIMEOUT', '30')))
+        self.config.setdefault('hindsight_max_auto_save_items', int(env.get('HINDSIGHT_MAX_AUTO_SAVE_ITEMS', '5')))
+        self.config.setdefault('hindsight_dream_enabled', env.get('HINDSIGHT_DREAM_ENABLED', 'false').lower() == 'true')
+        self.config.setdefault('hindsight_dream_interval_seconds', int(env.get('HINDSIGHT_DREAM_INTERVAL_SECONDS', str(HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS))))
+        self.config.setdefault('hindsight_dream_max_events', int(env.get('HINDSIGHT_DREAM_MAX_EVENTS', '50')))
+        self.config.setdefault('hindsight_dream_max_event_chars', int(env.get('HINDSIGHT_DREAM_MAX_EVENT_CHARS', '1000')))
+        self.config.setdefault('hindsight_dream_max_documents', int(env.get('HINDSIGHT_DREAM_MAX_DOCUMENTS', '5')))
+        self.config.setdefault('hindsight_dynamic_recall', env.get('HINDSIGHT_DYNAMIC_RECALL', 'false').lower() == 'true')
+        self.config.setdefault('hindsight_dynamic_recall_max_tokens', int(env.get('HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS', '1024')))
         # Stage 4A: mirror defaults into openai.config so remaining helper-side
         # readers (_prepare_*/finalize_*) keep working until removed in 4B/4C.
         # setdefault (not assignment) — never overwrite an already-set value.
@@ -359,7 +365,11 @@ class HindsightMemoryPlugin(Plugin):
                 namespace=self.config.get('hindsight_namespace', 'default'),
                 timeout=float(self.config.get('hindsight_timeout', 30.0)),
             )
-        self._memory_user_locks: dict[int, asyncio.Lock] = {}
+        # LRU-кеш per-user локов: на крупных инсталляциях dict[user_id, Lock] рос
+        # неограниченно. OrderedDict + move_to_end даёт O(1) eviction; нагретые
+        # юзеры остаются, давно не активные вытесняются.
+        self._memory_user_locks: "OrderedDict[int, asyncio.Lock]" = OrderedDict()
+        self._memory_user_locks_max = 2048
 
     @property
     def is_active(self) -> bool:
@@ -410,6 +420,21 @@ class HindsightMemoryPlugin(Plugin):
         if lock is None:
             lock = asyncio.Lock()
             self._memory_user_locks[key] = lock
+        else:
+            self._memory_user_locks.move_to_end(key)
+        # Why: возвращаемый key никогда не эвиктим — иначе вторая корутина
+        # того же user_id получит новый Lock и mutex развалится.
+        while len(self._memory_user_locks) > self._memory_user_locks_max:
+            evicted = False
+            for old_key in list(self._memory_user_locks.keys()):
+                if old_key == key:
+                    continue
+                if not self._memory_user_locks[old_key].locked():
+                    self._memory_user_locks.pop(old_key, None)
+                    evicted = True
+                    break
+            if not evicted:
+                break
         return lock
 
     @staticmethod

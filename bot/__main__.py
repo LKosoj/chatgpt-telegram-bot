@@ -70,8 +70,6 @@ def main():
     functions_available = are_functions_available(model=model)
     max_tokens_default = default_max_tokens(model=model)
     api_key = os.environ['OPENAI_API_KEY']
-    hindsight_base_url = os.environ.get('HINDSIGHT_BASE_URL', '')
-    hindsight_api_token = os.environ.get('HINDSIGHT_API_TOKEN', '')
     bot_language = configured_language(os.environ.get('BOT_LANGUAGE', 'auto'))
 
     openai_config = {
@@ -113,26 +111,7 @@ def main():
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
         'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', LLMGATEWAY_BIG_CONTEXT_MODEL),
         'light_model': os.environ.get('LIGHT_MODEL', LLMGATEWAY_LIGHT_MODEL),
-        'hindsight_enabled': bool(hindsight_base_url and hindsight_api_token),
-        'hindsight_base_url': hindsight_base_url,
-        'hindsight_api_token': hindsight_api_token,
-        'hindsight_namespace': os.environ.get('HINDSIGHT_NAMESPACE', 'default'),
-        'hindsight_bank_prefix': os.environ.get('HINDSIGHT_BANK_PREFIX', 'telegram-'),
-        'hindsight_auto_recall': os.environ.get('HINDSIGHT_AUTO_RECALL', 'true').lower() == 'true',
-        'hindsight_auto_save': os.environ.get('HINDSIGHT_AUTO_SAVE', 'true').lower() == 'true',
-        'hindsight_recall_budget': os.environ.get('HINDSIGHT_RECALL_BUDGET', 'mid'),
-        'hindsight_recall_max_tokens': int(os.environ.get('HINDSIGHT_RECALL_MAX_TOKENS', '4096')),
-        'hindsight_memory_types': os.environ.get('HINDSIGHT_MEMORY_TYPES', 'world,experience'),
-        'hindsight_async_store': os.environ.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true',
-        'hindsight_timeout': float(os.environ.get('HINDSIGHT_TIMEOUT', '30')),
-        'hindsight_max_auto_save_items': int(os.environ.get('HINDSIGHT_MAX_AUTO_SAVE_ITEMS', '5')),
-        'hindsight_dream_enabled': os.environ.get('HINDSIGHT_DREAM_ENABLED', 'false').lower() == 'true',
-        'hindsight_dream_interval_seconds': int(os.environ.get('HINDSIGHT_DREAM_INTERVAL_SECONDS', '600')),
-        'hindsight_dream_max_events': int(os.environ.get('HINDSIGHT_DREAM_MAX_EVENTS', '50')),
-        'hindsight_dream_max_event_chars': int(os.environ.get('HINDSIGHT_DREAM_MAX_EVENT_CHARS', '1000')),
-        'hindsight_dream_max_documents': int(os.environ.get('HINDSIGHT_DREAM_MAX_DOCUMENTS', '5')),
-        'hindsight_dynamic_recall': os.environ.get('HINDSIGHT_DYNAMIC_RECALL', 'false').lower() == 'true',
-        'hindsight_dynamic_recall_max_tokens': int(os.environ.get('HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS', '1024')),
+        # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
     }
 
     if openai_config['enable_functions'] and not functions_available:

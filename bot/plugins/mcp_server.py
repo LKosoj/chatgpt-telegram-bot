@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from contextlib import AsyncExitStack
 from typing import Dict, List, Any, Optional, Tuple
 import httpx
 import json
@@ -31,7 +32,13 @@ class MCPServerPlugin(Plugin):
         self.load_servers_config()
         self.admin_ids = self._get_admin_ids()
         self.allowed_users = self._get_allowed_users()
-        self.sessions = {}  # Словарь для хранения активных сессий
+        self.sessions: Dict[str, ClientSession] = {}
+        # Why: stdio_client + ClientSession используют anyio cancel scopes, которые
+        # обязаны закрываться той же task, что открывала. Поэтому per-server
+        # держим owner-task: она открывает stack, ждёт close_event, закрывает stack.
+        self._session_owners: Dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
+        self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._connect_locks: Dict[str, asyncio.Lock] = {}
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
@@ -249,10 +256,39 @@ class MCPServerPlugin(Plugin):
                     tool_spec["description"] = f"[{server_name}] {tool['description']}"
                     specs.append(tool_spec)
             else:
-                # Если инструменты не загружены, пробуем загрузить их асинхронно
-                asyncio.create_task(self._refresh_server_tools(server_name))
-        
+                # Если инструменты не загружены, планируем фоновое обновление, но
+                # только когда есть запущенный event loop (get_spec может вызываться
+                # синхронно при сборке схемы). Ссылку на task сохраняем, чтобы GC
+                # не убил его и чтобы close_async мог дождаться завершения.
+                self._schedule_tools_refresh(server_name)
+
         return specs
+
+    def _schedule_tools_refresh(self, server_name: str) -> None:
+        """Запускает _refresh_server_tools только если event loop работает.
+
+        Без этой проверки asyncio.create_task() в синхронном get_spec падает
+        RuntimeError'ом при первом вызове из инициализации.
+        """
+        existing = self._refresh_tasks.get(server_name)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._refresh_server_tools(server_name))
+        self._refresh_tasks[server_name] = task
+
+        def _done(t: asyncio.Task) -> None:
+            self._refresh_tasks.pop(server_name, None)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(f"Ошибка фонового обновления tools для {server_name}: {exc}")
+
+        task.add_done_callback(_done)
 
     async def _refresh_server_tools(self, server_name: str):
         """
@@ -335,26 +371,42 @@ class MCPServerPlugin(Plugin):
     async def _get_or_create_session(self, server_name: str) -> Optional[ClientSession]:
         """
         Получает существующую сессию или создает новую для stdio транспорта
-        
-        :param server_name: Имя сервера
-        :return: Клиентская сессия или None при ошибке
         """
-        # Проверяем наличие активной сессии
-        if server_name in self.sessions and self.sessions[server_name]:
-            try:
-                # Проверяем, что сессия все еще активна
-                await self.sessions[server_name].ping()
-                return self.sessions[server_name]
-            except Exception:
-                # Сессия больше не активна, закрываем и создаем новую
+        lock = self._connect_locks.setdefault(server_name, asyncio.Lock())
+        async with lock:
+            if server_name in self.sessions and self.sessions[server_name]:
                 try:
-                    await self.sessions[server_name].__aexit__(None, None, None)
+                    await self.sessions[server_name].ping()
+                    return self.sessions[server_name]
                 except Exception:
-                    pass
-                self.sessions.pop(server_name, None)
-        
-        # Создаем новую сессию
-        return await self._connect_to_server(server_name)
+                    await self._close_session(server_name)
+
+            return await self._connect_to_server(server_name)
+
+    async def _close_session(self, server_name: str) -> None:
+        """Сигналит owner-task закрыть stack и ждёт её завершения."""
+        self.sessions.pop(server_name, None)
+        entry = self._session_owners.pop(server_name, None)
+        if entry is None:
+            return
+        owner_task, close_event = entry
+        close_event.set()
+        try:
+            await owner_task
+        except Exception as exc:
+            logger.warning(f"Ошибка при закрытии MCP сессии {server_name}: {exc}")
+
+    async def close_async(self) -> None:
+        """Закрывает все stdio-сессии и отменяет фоновые refresh-задачи."""
+        for task in list(self._refresh_tasks.values()):
+            task.cancel()
+        if self._refresh_tasks:
+            await asyncio.gather(*self._refresh_tasks.values(), return_exceptions=True)
+            self._refresh_tasks.clear()
+
+        for server_name in list(self._session_owners.keys()):
+            await self._close_session(server_name)
+        self._connect_locks.clear()
 
     async def _connect_to_server(self, server_name: str) -> Optional[ClientSession]:
         """
@@ -394,33 +446,48 @@ class MCPServerPlugin(Plugin):
             logger.error(f"Отсутствует команда для запуска MCP сервера {server_name}")
             return None
         
-        try:
-            # Создаем параметры для запуска сервера
-            server_params = StdioServerParameters(
-                command=server_config["command"],
-                args=server_config.get("args", []),
-                env=server_config.get("env", {})
+        server_params = StdioServerParameters(
+            command=server_config["command"],
+            args=server_config.get("args", []),
+            env=server_config.get("env", {})
+        )
+
+        ready = asyncio.Event()
+        close_event = asyncio.Event()
+        result: Dict[str, Any] = {"session": None, "error": None}
+
+        async def _owner() -> None:
+            try:
+                async with AsyncExitStack() as stack:
+                    read_stream, write_stream = await stack.enter_async_context(
+                        stdio_client(server_params)
+                    )
+                    session = await stack.enter_async_context(
+                        ClientSession(read_stream, write_stream)
+                    )
+                    await session.initialize()
+                    result["session"] = session
+                    ready.set()
+                    await close_event.wait()
+            except Exception as exc:
+                result["error"] = exc
+                if not ready.is_set():
+                    ready.set()
+
+        owner_task = asyncio.create_task(_owner(), name=f"mcp_owner:{server_name}")
+        await ready.wait()
+        if result["error"] is not None:
+            logger.error(
+                f"Ошибка при подключении к MCP серверу {server_name} через stdio: {result['error']}"
             )
-            
-            # Подключаемся к серверу через stdio транспорт
-            read_stream, write_stream = await stdio_client(server_params).__aenter__()
-            
-            # Создаем клиентскую сессию
-            session = ClientSession(read_stream, write_stream)
-            await session.__aenter__()
-            
-            # Инициализируем соединение
-            await session.initialize()
-            
-            # Сохраняем сессию
-            self.sessions[server_name] = session
-            logger.info(f"Установлено соединение с MCP сервером {server_name} через stdio транспорт")
-            
-            return session
-            
-        except Exception as e:
-            logger.error(f"Ошибка при подключении к MCP серверу {server_name} через stdio: {str(e)}")
             return None
+        session = result["session"]
+        if session is None:
+            return None
+        self.sessions[server_name] = session
+        self._session_owners[server_name] = (owner_task, close_event)
+        logger.info(f"Установлено соединение с MCP сервером {server_name} через stdio транспорт")
+        return session
 
     async def register_server(self, server_name: str, user_id: int, **kwargs) -> Dict:
         """
@@ -552,12 +619,16 @@ class MCPServerPlugin(Plugin):
             
         if server_name not in self.servers:
             return {"error": self.t("mcp_server_not_found", server_name=server_name)}
-        
+
+        # Закрываем активную сессию и чистим per-server lock, чтобы они не
+        # утекали при последующих регистрациях с тем же или другими именами.
+        await self._close_session(server_name)
+        self._connect_locks.pop(server_name, None)
         del self.servers[server_name]
-        
+
         # Сохраняем обновленную конфигурацию
         self.save_servers_config()
-        
+
         return {
             "success": True,
             "message": self.t("mcp_server_removed", server_name=server_name)

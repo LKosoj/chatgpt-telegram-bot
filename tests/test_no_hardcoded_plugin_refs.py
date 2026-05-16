@@ -30,6 +30,7 @@ CORE_FILES = (
     REPO_ROOT / "bot" / "openai_helper.py",
     REPO_ROOT / "bot" / "openai_tool_handler.py",
     REPO_ROOT / "bot" / "database.py",
+    REPO_ROOT / "bot" / "skill_script_routing.py",
 )
 PLUGIN_IDS = (
     "conversation_analytics",
@@ -58,6 +59,14 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
     ("bot/openai_helper.py", "hindsight_memory"): (
         1,
         "Strategy Z (4B): helper persists plugin-injected memory marker via plugin.is_hindsight_memory_message; documented compromise.",
+    ),
+    ("bot/skill_script_routing.py", "skills"): (
+        9,
+        "Routing module hardcodes skills.run_skill_script and terminal.terminal in user-facing routing-denied error payloads; documented Strategy Z compromise.",
+    ),
+    ("bot/skill_script_routing.py", "agent_tools"): (
+        1,
+        "Routing error message references agent_tools.deliver_to_user as the canonical artifact-delivery path; documented Strategy Z compromise.",
     ),
 }
 

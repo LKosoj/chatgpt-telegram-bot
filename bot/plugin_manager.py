@@ -1007,8 +1007,16 @@ class PluginManager:
             except Exception as exc:  # noqa: BLE001
                 self._log_hook_error(plugin, slot, "fragment", exc)
                 continue
-            if fragment:
-                fragments.append(fragment)
+            if not fragment:
+                continue
+            if not isinstance(fragment, str):
+                # Why: collect_fragments всегда ждёт строки; объекты идут через collect_objects.
+                logger.warning(
+                    "Plugin %s returned non-string fragment for slot=%s (got %s); skipping",
+                    type(plugin).__name__, slot, type(fragment).__name__,
+                )
+                continue
+            fragments.append(fragment)
         return fragments
 
     async def collect_objects(
@@ -1031,8 +1039,9 @@ class PluginManager:
             except Exception as exc:  # noqa: BLE001
                 self._log_hook_error(plugin, slot, "object", exc)
                 continue
-            if obj is not None:
-                objects.append(obj)
+            if obj is None:
+                continue
+            objects.append(obj)
         return objects
 
     async def apply_mutators(

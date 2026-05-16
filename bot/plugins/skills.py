@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import http.client
+import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -15,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -1735,9 +1739,12 @@ class SkillsPlugin(Plugin):
             return None, "git executable not found; use an archive URL instead"
         if source_kind == "url":
             parsed = urllib.parse.urlparse(source)
-            if parsed.scheme == "file":
-                local_path = Path(urllib.request.url2pathname(urllib.parse.unquote(parsed.path)))
-                return self._materialize_local_skill_source(local_path, temp_dir)
+            if parsed.scheme not in {"http", "https"}:
+                # file://, ftp:// и любые другие схемы — потенциальный LFI/SSRF
+                # вектор: модель в prompt-injection-сценарии могла бы подсунуть
+                # file:///etc/passwd. Локальные источники доступны через
+                # source_kind="path" из CLI и от админа явно.
+                return None, f"URL scheme '{parsed.scheme}' is not allowed; use http(s)://"
             blob_info = self._github_blob_info(source)
             if blob_info is not None:
                 rewritten, blob_error = self._rewrite_github_blob_to_raw(blob_info)
@@ -1881,15 +1888,133 @@ class SkillsPlugin(Plugin):
 
     def _github_default_branch(self, owner: str, repo: str) -> str:
         api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        if self._validate_external_url(api_url) is not None:
+            return ""
         request = urllib.request.Request(api_url, headers={"User-Agent": "chatgpt-telegram-bot-skills"})
         try:
-            with urllib.request.urlopen(request, timeout=self.install_timeout) as response:
+            with self._safe_open(request, timeout=self.install_timeout) as response:
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
         except Exception:
             return ""
         if isinstance(payload, dict):
             return str(payload.get("default_branch") or "").strip()
         return ""
+
+    def _resolve_safe_ip(self, host: str) -> Optional[str]:
+        """Возвращает первый IP с is_global==True для host, иначе None."""
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return None
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            if ip.is_global:
+                return ip_str
+        return None
+
+    def _safe_open(self, url, timeout):
+        # Why: закрываем сразу две дыры:
+        # 1) urlopen по умолчанию слепо следует за редиректами → атакующий отдаёт
+        #    302 на http://169.254.169.254/. Свой HTTPRedirectHandler пере-валидирует
+        #    каждый new URL.
+        # 2) DNS rebinding: между _validate_external_url и реальным connect стандартный
+        #    HTTPSConnection делает ещё один getaddrinfo, который атакующий может
+        #    отравить через short-TTL DNS. Пин IP перед connect устраняет TOCTOU.
+        validator = self._validate_external_url
+        resolver = self._resolve_safe_ip
+
+        class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+            def connect(self):
+                sock = socket.create_connection(
+                    (self._pinned_ip, self.port), self.timeout
+                )
+                self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+        class _PinnedHTTPConnection(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = socket.create_connection(
+                    (self._pinned_ip, self.port), self.timeout
+                )
+
+        def _build_conn(scheme, host, **kw):
+            # urllib передаёт host вида "example.com:8443" или "[::1]:443" — getaddrinfo
+            # не принимает host:port, поэтому вытаскиваем чистый hostname для resolve.
+            hostname = urllib.parse.urlparse(f"//{host}").hostname or host
+            ip = resolver(hostname)
+            if ip is None:
+                raise urllib.error.URLError(f"refused: {hostname} has no public IP")
+            cls = _PinnedHTTPSConnection if scheme == "https" else _PinnedHTTPConnection
+            conn = cls(host, **kw)
+            conn._pinned_ip = ip
+            return conn
+
+        class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return self.do_open(
+                    lambda h, **kw: _build_conn("http", h, **kw), req
+                )
+
+        class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return self.do_open(
+                    lambda h, **kw: _build_conn("https", h, **kw),
+                    req,
+                    context=self._context,
+                    check_hostname=self._check_hostname,
+                )
+
+        class _Validating(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                err = validator(newurl)
+                if err is not None:
+                    raise urllib.error.HTTPError(
+                        newurl, code, f"redirect refused: {err}", headers, fp,
+                    )
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = urllib.request.build_opener(
+            _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _Validating()
+        )
+        return opener.open(url, timeout=timeout)
+
+    def _validate_external_url(self, url: str) -> Optional[str]:
+        """Возвращает None если URL безопасен, иначе строку с причиной отказа.
+
+        Защищает urllib.request.urlopen от: file:// (LFI), ftp:// и прочих
+        схем, hostname'ов, резолвящихся в private/loopback/link-local IP
+        (SSRF на внутренние сервисы — облачные metadata-эндпоинты, локальные
+        админ-панели и т.п.). DNS-resolve блокирующий, но это install-путь,
+        вызываемый редко и из админа.
+        """
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except Exception as exc:  # pragma: no cover - urlparse редко падает
+            return f"invalid URL: {exc}"
+        if parsed.scheme not in {"http", "https"}:
+            return f"URL scheme '{parsed.scheme}' is not allowed; use http(s)://"
+        host = parsed.hostname
+        if not host:
+            return "URL has no hostname"
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            return f"DNS resolution failed for {host}: {exc}"
+        for info in infos:
+            sockaddr = info[4]
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            # is_global отрицает private/loopback/link-local/multicast/reserved/
+            # unspecified + CGNAT (100.64/10) + TEST-NET (198.18/15).
+            if not ip.is_global:
+                return f"URL host {host} resolves to non-public address {ip_str}"
+        return None
 
     def _github_blob_info(
         self, source: str
@@ -1956,11 +2081,14 @@ class SkillsPlugin(Plugin):
         return owner, repo, branch, subpath
 
     def _download_url_to_path(self, url: str, temp_dir: Path) -> tuple[Path | None, str | None]:
+        validation_error = self._validate_external_url(url)
+        if validation_error is not None:
+            return None, f"Refused to download skill source URL: {validation_error}"
         parsed = urllib.parse.urlparse(url)
         filename = Path(urllib.parse.unquote(parsed.path)).name or "skill-source"
         target_path = temp_dir / filename
         try:
-            with urllib.request.urlopen(url, timeout=self.install_timeout) as response:
+            with self._safe_open(url, timeout=self.install_timeout) as response:
                 with target_path.open("wb") as target:
                     shutil.copyfileobj(response, target)
         except Exception as exc:

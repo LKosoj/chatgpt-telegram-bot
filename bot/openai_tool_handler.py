@@ -32,16 +32,26 @@ def _tool_call_semaphore(helper) -> asyncio.Semaphore:
 
     Why: a single batch from the model can request many tool calls; without a
     bound, asyncio.gather fans out unbounded subprocess/HTTP work and starves
-    the event loop. Lazy-init keeps the semaphore bound to the current loop.
+    the event loop. Lazy-init keeps the semaphore bound to the current loop —
+    если loop пересоздан (restart, отдельные тесты), привязанный к мёртвому
+    loop Semaphore поднимет RuntimeError; поэтому проверяем id(loop) и
+    пересоздаём по необходимости.
     """
-    sem = getattr(helper, "_tool_call_semaphore", None)
-    if sem is None:
-        try:
-            limit = max(1, int(os.getenv("TOOL_CALL_PARALLELISM", "5")))
-        except ValueError:
-            limit = 5
-        sem = asyncio.Semaphore(limit)
-        helper._tool_call_semaphore = sem
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    cached = getattr(helper, "_tool_call_semaphore_bundle", None)
+    if cached is not None and loop is not None and cached[0] is loop:
+        return cached[1]
+    try:
+        limit = max(1, int(os.getenv("TOOL_CALL_PARALLELISM", "5")))
+    except ValueError:
+        limit = 5
+    sem = asyncio.Semaphore(limit)
+    if loop is not None:
+        helper._tool_call_semaphore_bundle = (loop, sem)
+    helper._tool_call_semaphore = sem
     return sem
 
 
@@ -702,10 +712,14 @@ async def handle_function_call(
                             for tc in first_choice.delta.tool_calls:
                                 idx = getattr(tc, "index", 0)
                                 entry = tool_call_parts.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                                if getattr(tc, "id", None):
-                                    entry["id"] += tc.id
-                                if tc.function.name:
-                                    entry["name"] += tc.function.name
+                                # id/name приходят одним куском в первой дельте;
+                                # дублирующие чанки (reconnect/quirks провайдера)
+                                # при `+=` склеивались бы в "call_abc1call_abc1"
+                                # и ломали tool_call_id matching на стороне OpenAI.
+                                if getattr(tc, "id", None) and not entry["id"]:
+                                    entry["id"] = tc.id
+                                if tc.function.name and not entry["name"]:
+                                    entry["name"] = tc.function.name
                                 if tc.function.arguments:
                                     entry["arguments"] += tc.function.arguments
                         elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':

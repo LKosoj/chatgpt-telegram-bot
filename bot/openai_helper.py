@@ -164,6 +164,11 @@ def are_functions_available(model: str) -> bool:
     return model in LLMGATEWAY_CHAT_MODELS
 
 
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
 class OpenAIHelper:
     """
     ChatGPT helper class.
@@ -177,14 +182,14 @@ class OpenAIHelper:
         :param db: Database instance
         """
         # http_client = httpx.AsyncClient(proxies=config['proxy']) if 'proxy' in config else None
-        http_client = httpx.AsyncClient()
-        
+        self._http_client = httpx.AsyncClient()
+
         if config['openai_base'] != '' :
             openai.api_base = config['openai_base']
         self.api_key = config['api_key']
         client_kwargs = {
             "api_key": config["api_key"],
-            "http_client": http_client,
+            "http_client": self._http_client,
             "timeout": 300.0,
             "max_retries": 3,
         }
@@ -199,6 +204,7 @@ class OpenAIHelper:
         self.conversations: dict[int, list] = {}  # {chat_id: history}
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
+        self._background_tasks: set[asyncio.Task] = set()
         self._chat_request_models: dict[int, str] = {}
         self._chat_request_extra_tokens: dict[int, int] = {}
         self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
@@ -351,7 +357,7 @@ class OpenAIHelper:
     ) -> str | None:
         save_async = getattr(self.db, "save_conversation_context_async", None)
         if callable(save_async):
-            return await save_async(
+            saved = await save_async(
                 chat_id,
                 context,
                 parse_mode,
@@ -360,15 +366,81 @@ class OpenAIHelper:
                 session_id,
                 self,
             )
-        return self.db.save_conversation_context(
-            chat_id,
-            context,
-            parse_mode,
-            temperature,
-            max_tokens_percent,
-            session_id,
-            self,
+        else:
+            saved = self.db.save_conversation_context(
+                chat_id,
+                context,
+                parse_mode,
+                temperature,
+                max_tokens_percent,
+                session_id,
+                self,
+            )
+        if saved and not getattr(self, "_closed", False):
+            # Why: LLM-генерация имени не должна блокировать держателя conversation_lock;
+            # сохраняем ссылку, чтобы task не был GC до завершения.
+            task = asyncio.create_task(
+                self._ensure_session_name_with_llm(chat_id, saved, context),
+                name=f"ensure_session_name:{saved}",
+            )
+            bg = getattr(self, "_background_tasks", None)
+            if bg is None:
+                bg = set()
+                self._background_tasks = bg
+            bg.add(task)
+            task.add_done_callback(bg.discard)
+        return saved
+
+    async def _ensure_session_name_with_llm(
+        self,
+        user_id: int,
+        session_id: str,
+        context: dict[str, Any],
+    ) -> None:
+        """LLM-генерация имени сессии. Раньше эта логика жила внутри
+        Database.ensure_session_name_async и нарушала инкапсуляцию (нижний слой
+        вызывал LLM). Теперь БД отвечает только за персистенцию, а вызов модели
+        делает OpenAIHelper после save.
+        """
+        get_details = getattr(self.db, "get_session_details", None)
+        if not callable(get_details):
+            return
+        try:
+            session = await asyncio.to_thread(get_details, user_id, session_id)
+        except Exception as exc:
+            logger.debug(f"ensure_session_name: cannot fetch session details: {exc}")
+            return
+        if not session or session.get("session_name") != "...":
+            return
+        user_message = next(
+            (msg.get('content') for msg in context.get('messages', [])
+             if msg.get('role') == 'user'),
+            None,
         )
+        normalize = getattr(self.db, "_session_name_source_text", None)
+        text = normalize(user_message) if callable(normalize) else (
+            user_message if isinstance(user_message, str) else ""
+        )
+        text = (text or "").strip()
+        if not text or len(text) <= 20:
+            return  # db.ensure_session_name_async уже поставит короткий fallback
+        user_message = text
+        try:
+            session_name, _tokens = await self.generate_session_name(
+                user_id, user_message, session_id
+            )
+        except Exception as exc:
+            logger.warning(f"ensure_session_name: LLM generation failed: {exc}")
+            return
+        if not session_name:
+            return
+        set_name = getattr(self.db, "set_session_name", None)
+        if not callable(set_name):
+            return
+        try:
+            await asyncio.to_thread(set_name, user_id, session_id, session_name)
+        except Exception as exc:
+            logger.warning(f"ensure_session_name: failed to persist: {exc}")
 
     async def ask(self, prompt, user_id, assistant_prompt=None, model=None, json_mode: bool = False):
         """
@@ -1532,16 +1604,16 @@ class OpenAIHelper:
         Transcribes the audio file using the Whisper model.
         """
         try:
-            with open(filename, "rb") as audio:
-                prompt_text = self.config['whisper_prompt']
-                result = await self.client.audio.transcriptions.create(
-                    model=self.config.get('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL),
-                    file=audio, 
-                    prompt=prompt_text,
-                    response_format="text",
-                    extra_headers={ "X-Title": "tgBot" },
-                )
-                return result
+            audio_bytes = await asyncio.to_thread(_read_file_bytes, filename)
+            prompt_text = self.config['whisper_prompt']
+            result = await self.client.audio.transcriptions.create(
+                model=self.config.get('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL),
+                file=(os.path.basename(filename), audio_bytes),
+                prompt=prompt_text,
+                response_format="text",
+                extra_headers={ "X-Title": "tgBot" },
+            )
+            return result
         except Exception as e:
             logger.exception(e)
             error_message = escape_markdown(str(e))
@@ -2858,19 +2930,21 @@ class OpenAIHelper:
     async def close(self):
         """
         Закрывает HTTP-клиенты и освобождает ресурсы OpenAIHelper.
-        
-        Этот метод необходим для корректного завершения работы, так как:
-        - OpenAI клиент использует httpx.AsyncClient для HTTP-соединений
-        - Без закрытия могут остаться висящие соединения
-        - Вызывается из telegram_bot.cleanup() при завершении работы бота
         """
+        self._closed = True
+        bg = getattr(self, "_background_tasks", None)
+        if bg:
+            for task in list(bg):
+                task.cancel()
+            await asyncio.gather(*list(bg), return_exceptions=True)
+            bg.clear()
         try:
-            # Закрываем OpenAI клиент, который автоматически закроет httpx.AsyncClient
             if hasattr(self, 'client') and self.client:
                 await self.client.close()
-                logger.info("OpenAI client closed successfully")
             if hasattr(self, 'gateway_client') and self.gateway_client:
                 await self.gateway_client.close()
-                logger.info("LLMGateway client closed successfully")
+            # OpenAI SDK не владеет переданным http_client и не закроет его сам.
+            if hasattr(self, '_http_client') and self._http_client is not None:
+                await self._http_client.aclose()
         except Exception as e:
             logger.error(f"Error closing OpenAI client: {e}")

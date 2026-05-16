@@ -39,8 +39,13 @@ def test_message_count_saved(db):
 
 
 @pytest.mark.asyncio
-async def test_session_name_uses_text_from_multimodal_content(db):
-    context = {
+async def test_save_conversation_context_async_does_not_call_llm(db):
+    """После разрыва цикличной зависимости Database→OpenAIHelper, БД не должна
+    вызывать LLM. Длинное сообщение оставляет имя «...», короткое — ставит
+    fallback из первых 20 символов. Сгенерированное LLM имя — ответственность
+    OpenAIHelper._ensure_session_name_with_llm (тестируется отдельно)."""
+    helper = DummyOpenAI()
+    long_context = {
         "messages": [
             {"role": "system", "content": "s"},
             {
@@ -52,18 +57,19 @@ async def test_session_name_uses_text_from_multimodal_content(db):
             },
         ]
     }
-
-    await db.save_conversation_context_async(
-        1,
-        context,
-        "HTML",
-        0.8,
-        80,
-        openai_helper=DummyOpenAI(),
-    )
-
+    await db.save_conversation_context_async(1, long_context, "HTML", 0.8, 80, openai_helper=helper)
     sessions = db.list_user_sessions(1, is_active=1)
-    assert sessions[0]["session_name"] == "ShortName"
+    assert sessions[0]["session_name"] == "..."
+
+    short_context = {
+        "messages": [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "hi"},
+        ]
+    }
+    await db.save_conversation_context_async(2, short_context, "HTML", 0.8, 80, openai_helper=helper)
+    sessions2 = db.list_user_sessions(2, is_active=1)
+    assert sessions2[0]["session_name"] == "hi"
 
 
 def test_max_sessions_enforced(db):

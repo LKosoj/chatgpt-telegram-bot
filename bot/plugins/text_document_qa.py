@@ -60,6 +60,19 @@ class TextDocumentQAPlugin(Plugin):
         if loop and not self.cleanup_task:
             self.cleanup_task = loop.create_task(self._cleanup_loop())
 
+    async def close_async(self) -> None:
+        """Отменяет фоновую cleanup-задачу при shutdown плагина."""
+        task = self.cleanup_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        finally:
+            self.cleanup_task = None
+
     def get_source_name(self) -> str:
         return "TextDocumentQA"
 

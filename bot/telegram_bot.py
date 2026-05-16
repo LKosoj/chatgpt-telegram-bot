@@ -58,6 +58,16 @@ LANGUAGE_MENU_PAGE_SIZE = 10
 SETTINGS_MENU_PAGE_SIZE = 10
 
 
+def _read_file_bytes_for_telegram(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _load_yaml_file(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 class ChatGPTTelegramBot:
     """
     Class representing a ChatGPT Telegram Bot.
@@ -91,9 +101,9 @@ class ChatGPTTelegramBot:
         self.openai.plugin_manager.set_db(self.db)
         self.openai.plugin_manager.set_openai(self.openai)
         
-        # Кешируем chat_modes.yml
+        # Кешируем chat_modes.yml с инвалидацией по mtime.
         self._chat_modes_cache = None
-        self._chat_modes_cache_time = 0
+        self._chat_modes_mtime = 0.0
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
@@ -127,9 +137,17 @@ class ChatGPTTelegramBot:
         self.plugin_menu_entries = []
         self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
         self._background_tasks = []
+        self._transient_tasks: set[asyncio.Task] = set()
         self._cleanup_called = False
         self._plugin_message_handlers_registered = False
         self._message_tail_handlers_registered = False
+
+    def _track_task(self, coro, *, name: str | None = None) -> asyncio.Task:
+        # Why: asyncio.create_task без сохранения ссылки рискует GC до завершения task.
+        task = asyncio.create_task(coro, name=name)
+        self._transient_tasks.add(task)
+        task.add_done_callback(self._transient_tasks.discard)
+        return task
 
     def _is_auto_language_enabled(self) -> bool:
         return is_auto_language(self.config.get('bot_language', DEFAULT_LANGUAGE))
@@ -175,26 +193,25 @@ class ChatGPTTelegramBot:
 
     def get_chat_modes(self):
         """
-        Получает chat_modes с кешированием
+        Получает chat_modes с кешированием.
+        Why: ленивый sync open() на event loop'е приводил к ~100мс stall при cache-miss.
+        Кешируем результат до изменения mtime, чтобы правки chat_modes.yml на
+        работающем боте подхватывались без рестарта.
         """
-        current_time = time.time()
-        
-        # Если кеш устарел (старше 5 минут) или не существует, перезагружаем
-        if (self._chat_modes_cache is None or 
-            current_time - self._chat_modes_cache_time > 300):
-            
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
-            
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        chat_modes_path = os.path.join(current_dir, 'chat_modes.yml')
+        try:
+            mtime = os.stat(chat_modes_path).st_mtime
+        except OSError:
+            mtime = 0.0
+        if self._chat_modes_cache is None or mtime != self._chat_modes_mtime:
             try:
-                with open(chat_modes_path, 'r', encoding='utf-8') as file:
-                    self._chat_modes_cache = yaml.safe_load(file)
-                    self._chat_modes_cache_time = current_time
+                self._chat_modes_cache = _load_yaml_file(chat_modes_path) or {}
+                self._chat_modes_mtime = mtime
             except Exception as e:
                 logger.error(f"Ошибка загрузки chat_modes.yml: {e}")
                 if self._chat_modes_cache is None:
                     self._chat_modes_cache = {}
-        
         return self._chat_modes_cache
 
     def _image_file_id_from_message(self, message):
@@ -1781,9 +1798,21 @@ class ChatGPTTelegramBot:
                 text=localized_text('access_denied_command', self.config['bot_language'])
             )
             return
-        
+
         conversation_key = get_conversation_key(update)
-        
+        # Why: запись в self.openai.conversations[conversation_key] должна идти под
+        # conversation_lock, иначе сталкивается с write'ами из process_message.
+        conversation_lock = await self._get_conversation_lock(conversation_key)
+        async with conversation_lock:
+            await self._handle_prompt_selection_locked(update, context, query, conversation_key)
+
+    async def _handle_prompt_selection_locked(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        query,
+        conversation_key,
+    ):
         # Безопасное разделение данных с расширенной обработкой
         data_parts = query.data.split(':')
         action = data_parts[0] if data_parts else ''
@@ -3141,14 +3170,14 @@ class ChatGPTTelegramBot:
             exc = task.exception()
         except asyncio.CancelledError:
             if token:
-                asyncio.create_task(
+                self._track_task(
                     self._remove_pending_busy_message(token),
                     name="busy_message_cancel_cleanup",
                 )
             return
         if exc is None:
             if token:
-                asyncio.create_task(
+                self._track_task(
                     self._remove_pending_busy_message(token),
                     name="busy_message_success_cleanup",
                 )
@@ -3157,7 +3186,7 @@ class ChatGPTTelegramBot:
             "Pending busy message failed in background",
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-        asyncio.create_task(
+        self._track_task(
             self._release_and_notify_pending_busy_message_failed(pending, exc),
             name="busy_message_failure_notification",
         )
@@ -4839,10 +4868,12 @@ class ChatGPTTelegramBot:
         while True:
             try:
                 async with self.buffer_lock:
-                    for chat_id, buffer_data in list(self.message_buffer.items()):  # Create copy for iteration                
+                    for chat_id, buffer_data in list(self.message_buffer.items()):
                         if not buffer_data['processing'] and buffer_data['messages']:
-                            if buffer_data.get('timer'):
-                                buffer_data['timer'].cancel()
+                            existing = buffer_data.get('timer')
+                            # Why: не пересоздаём активный timer — это убьёт идущую обработку.
+                            if existing is not None and not existing.done():
+                                continue
                             buffer_data['timer'] = asyncio.create_task(
                                 self.process_buffer(chat_id)
                             )
@@ -4850,7 +4881,7 @@ class ChatGPTTelegramBot:
                 break
             except Exception as e:
                 logger.error(f"Error in buffer data checker: {e}")
-            
+
             await asyncio.sleep(1)
 
 
@@ -5051,16 +5082,15 @@ class ChatGPTTelegramBot:
                     filepath = self.db.export_sessions_to_yaml(conversation_key)
                     
                     if filepath:
-                        # Отправляем файл пользователю
-                        with open(filepath, 'rb') as file:
-                            await query.message.reply_document(
-                                document=file, 
-                                filename=os.path.basename(filepath),
-                                caption=localized_text('session_export_done', self.config['bot_language'])
-                            )
-                        
-                        # Удаляем файл после отправки
-                        os.remove(filepath)
+                        # Why: передаём bytes (а не file handle), чтобы не блокировать loop sync open().
+                        file_bytes = await asyncio.to_thread(_read_file_bytes_for_telegram, filepath)
+                        await query.message.reply_document(
+                            document=file_bytes,
+                            filename=os.path.basename(filepath),
+                            caption=localized_text('session_export_done', self.config['bot_language'])
+                        )
+
+                        await asyncio.to_thread(os.remove, filepath)
                     else:
                         await query.edit_message_text(
                             localized_text('session_export_failed', self.config['bot_language'])

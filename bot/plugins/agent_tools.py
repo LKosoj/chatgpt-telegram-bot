@@ -736,7 +736,10 @@ class AgentToolsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         request_context = kwargs.pop("request_context", None)
         if function_name == "manage_plan_tasks":
-            return self._manage_plan_tasks(helper, **kwargs)
+            # _manage_plan_tasks ходит в SQLite через sync get_connection
+            # (_db_get_plan / _db_save_plan / _db_clear_plan). На event loop это
+            # давало блокирующий write под WAL-busy. to_thread снимает блокировку.
+            return await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
         if function_name == "ask_telegram_user":
             return await self._ask_telegram_user(helper, **kwargs)
         if function_name == "cancel_pending_question":
