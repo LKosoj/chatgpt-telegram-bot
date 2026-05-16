@@ -631,6 +631,7 @@ agent_cron,web_research
 | `crypto` | `get_crypto_rate` | CoinCap rates. |
 | `iplocation` | `iplocation` | IP geolocation / ASN. |
 | `weather` | `get_current_weather`, `get_forecast_weather` | Open Meteo. |
+| `pravo_gov_ru_api` | `search_documents` | Official publication.pravo.gov.ru legal act search; no API key required. |
 | `worldtimeapi` | `worldtimeapi` | Time zone clock; `WORLDTIME_DEFAULT_TIMEZONE` is required for fallbacks. |
 | `whois_` | `get_whois` | python-whois. |
 | `text_summarizer` | `summarize_text` | Yandex summarisation; needs `YANDEX_API_TOKEN`. |
