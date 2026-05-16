@@ -121,7 +121,7 @@ class SharedHelper:
         self.message_id = None
         self.history = []
 
-    def get_current_model(self, user_id):
+    def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
     def _add_function_call_to_history(self, chat_id, function_name, content):

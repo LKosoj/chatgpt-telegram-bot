@@ -74,6 +74,43 @@ async def _list_user_sessions(db, user_id, *, is_active: int = 0):
     return db.list_user_sessions(user_id, is_active=is_active)
 
 
+def _chat_state_key(helper, chat_id):
+    get_state_key = getattr(helper, "_chat_state_key", None)
+    if callable(get_state_key):
+        return get_state_key(chat_id)
+    return chat_id
+
+
+def _conversation_messages(helper, chat_id):
+    return helper.conversations.setdefault(_chat_state_key(helper, chat_id), [])
+
+
+def _model_owner(chat_id, user_id, session_id):
+    return chat_id if session_id else (user_id if user_id is not None else chat_id)
+
+
+async def _reentry_session(helper, chat_id, user_id, request_context):
+    session_id = getattr(request_context, "session_id", None)
+    if session_id:
+        try:
+            _, _, _, max_tokens_percent, resolved_session_id = helper.db.get_conversation_context(
+                chat_id,
+                session_id,
+            )
+        except Exception:
+            logger.warning("Failed to load request session %s for tool reentry", session_id, exc_info=True)
+            return session_id, 80
+        return resolved_session_id or session_id, max_tokens_percent or 80
+
+    session_owner = user_id if user_id is not None else chat_id
+    sessions = await _list_user_sessions(helper.db, session_owner, is_active=1)
+    active_session = next((s for s in sessions if s['is_active']), None)
+    return (
+        active_session['session_id'] if active_session else None,
+        active_session['max_tokens_percent'] if active_session else 80,
+    )
+
+
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
@@ -87,11 +124,12 @@ TOOL_INTENT_REPAIR_PROMPT = (
     "and needed, call it now. If no suitable tool is available, answer directly or ask one concrete "
     "clarifying question. Do not say that you will call, load, use, or activate a tool later."
 )
+EN_SKILL_WORD_RE = r"skill(?:s)?"
 TOOL_INTENT_TEXT_RE = re.compile(
     r"(?is)("
     r"позвольте\s+мне\s+(?:загрузить|подобрать|вызвать|использовать)|"
     r"(?:сейчас|сначала|далее)\s+(?:загружу|загрузим|подберу|вызову|использую|активирую)|"
-    r"давайте\s+посмотрим.{0,80}(?:навык|навыки|инструмент|tools?|skills?)|"
+    r"давайте\s+посмотрим.{0,80}(?:навык|навыки|инструмент|tools?|" + EN_SKILL_WORD_RE + r")|"
     r"(?:let me|i will|i'll)\s+(?:load|call|use|activate|find).{0,80}\b(?:skill|tool)\b"
     r")"
 )
@@ -415,7 +453,7 @@ async def _retry_missing_delivery_tool(
         return _delivery_contract_error(helper), tools_used
 
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
-    helper.conversations.setdefault(chat_id, []).append({
+    _conversation_messages(helper, chat_id).append({
         "role": "user",
         "content": (
             DELIVERY_REPAIR_PROMPT
@@ -428,11 +466,11 @@ async def _retry_missing_delivery_tool(
         DELIVERY_TOOL_NAME,
     )
 
-    model_to_use = model_to_use or helper.get_current_model(user_id)
-    sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
-    active_session = next((s for s in sessions if s['is_active']), None)
-    session_id = active_session['session_id'] if active_session else None
-    max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
+    session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
+    model_to_use = model_to_use or helper.get_current_model(
+        _model_owner(chat_id, user_id, session_id),
+        session_id=session_id,
+    )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
     tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
@@ -489,7 +527,7 @@ async def _retry_plain_text_tool_intent(
     token_accumulator=None,
 ):
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
-    helper.conversations.setdefault(chat_id, []).append({
+    _conversation_messages(helper, chat_id).append({
         "role": "user",
         "content": (
             TOOL_INTENT_REPAIR_PROMPT
@@ -499,11 +537,11 @@ async def _retry_plain_text_tool_intent(
     })
     logger.warning("Retrying plain-text tool intent for chat_id=%s", chat_id)
 
-    model_to_use = model_to_use or helper.get_current_model(user_id)
-    sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
-    active_session = next((s for s in sessions if s['is_active']), None)
-    session_id = active_session['session_id'] if active_session else None
-    max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
+    session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
+    model_to_use = model_to_use or helper.get_current_model(
+        _model_owner(chat_id, user_id, session_id),
+        session_id=session_id,
+    )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
     tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
@@ -724,7 +762,11 @@ async def handle_function_call(
                 return enforced
             return response, tools_used
 
-        model_to_use = model_to_use or helper.get_current_model(user_id)
+        request_session_id = getattr(request_context, "session_id", None)
+        model_to_use = model_to_use or helper.get_current_model(
+            _model_owner(chat_id, user_id, request_session_id),
+            session_id=request_session_id,
+        )
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
         add_assistant_tool_calls_to_history = getattr(helper, "_add_assistant_tool_calls_to_history", None)
         structured_tool_history = (
@@ -868,17 +910,18 @@ async def handle_function_call(
             return _merge_direct_results_into_final(direct_results_collected), tools_used
 
         if batch_artifact_count:
-            helper.conversations.setdefault(chat_id, []).append({
+            _conversation_messages(helper, chat_id).append({
                 "role": "user",
                 "content": _artifact_manifest_message(artifact_manifest),
             })
 
-        sessions = await _list_user_sessions(helper.db, user_id, is_active=1)
-        active_session = next((s for s in sessions if s['is_active']), None)
-        session_id = active_session['session_id'] if active_session else None
-        max_tokens_percent = active_session['max_tokens_percent'] if active_session else 80
+        session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
 
-        logger.info(f'Function calls completed. messages: {helper.conversations[chat_id]} session_id: {session_id}')
+        logger.info(
+            "Function calls completed. messages: %s session_id: %s",
+            helper.conversations.get(_chat_state_key(helper, chat_id)),
+            session_id,
+        )
 
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
         tools = _filter_tools_by_name(tools, suppressed_reentry_tools)

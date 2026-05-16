@@ -51,6 +51,7 @@ from bot.openai_tool_handler import (  # noqa: E402
     _call_function_bounded,
     _filter_tools_by_name,
     _has_tool_specs,
+    _retry_plain_text_tool_intent,
     handle_function_call,
 )
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
@@ -98,6 +99,90 @@ class MultiSessionDB(DummyDB):
 
     def get_conversation_context(self, chat_id, session_id=None, *args, **kwargs):
         return self.contexts[session_id], None, 0.1, 80, session_id
+
+
+class SessionModelDB(DummyDB):
+    def list_user_sessions(self, user_id, is_active=1):
+        sessions = [
+            {
+                "session_id": "old-session",
+                "is_active": 0,
+                "model": "llmgateway/light_model",
+            },
+            {
+                "session_id": "new-session",
+                "is_active": 1,
+                "model": "llmgateway/high",
+            },
+        ]
+        if is_active == 1:
+            return [session for session in sessions if session["is_active"]]
+        return sessions
+
+
+class OwnerAwareSessionModelDB(DummyDB):
+    def __init__(self):
+        super().__init__()
+        self.contexts = {
+            "group-session": {"messages": [{"role": "system", "content": "group system"}]},
+        }
+        self.session_lookups = []
+
+    def get_conversation_context(self, chat_id, session_id=None, *args, **kwargs):
+        return self.contexts[session_id], None, 0.1, 80, session_id
+
+    def save_conversation_context(self, chat_id, context, *args, **kwargs):
+        super().save_conversation_context(chat_id, context, *args, **kwargs)
+        session_id = args[-1] if args else kwargs.get("session_id")
+        if session_id:
+            self.contexts[session_id] = context
+
+    def list_user_sessions(self, user_id, is_active=1):
+        self.session_lookups.append((user_id, is_active))
+        sessions_by_owner = {
+            -100: [{
+                "session_id": "group-session",
+                "is_active": 1,
+                "model": "llmgateway/light_model",
+                "max_tokens_percent": 80,
+            }],
+            202: [{
+                "session_id": "group-session",
+                "is_active": 1,
+                "model": "llmgateway/high",
+                "max_tokens_percent": 80,
+            }],
+        }
+        sessions = sessions_by_owner.get(user_id, [])
+        if is_active == 1:
+            return [session for session in sessions if session["is_active"]]
+        return sessions
+
+
+class RetrySessionDB(DummyDB):
+    def __init__(self):
+        super().__init__()
+        self.session_lookups = []
+
+    def list_user_sessions(self, user_id, is_active=1):
+        self.session_lookups.append((user_id, is_active))
+        sessions = [
+            {
+                "session_id": "pinned-session",
+                "is_active": 0,
+                "model": "llmgateway/light_model",
+                "max_tokens_percent": 30,
+            },
+            {
+                "session_id": "active-session",
+                "is_active": 1,
+                "model": "llmgateway/high",
+                "max_tokens_percent": 90,
+            },
+        ]
+        if is_active == 1:
+            return [session for session in sessions if session["is_active"]]
+        return sessions
 
 
 class DummyPluginManager:
@@ -322,6 +407,32 @@ def test_high_model_default_context_is_256k():
     assert default_max_tokens("llmgateway/high") == 256_000
 
 
+def test_get_current_model_prefers_explicit_session_model():
+    helper = _make_helper(DummyPluginManager({}), db=SessionModelDB())
+
+    assert helper.get_current_model(1, session_id="old-session") == "llmgateway/light_model"
+    assert helper.get_current_model(1) == "llmgateway/high"
+
+
+@pytest.mark.asyncio
+async def test_group_chat_response_uses_session_owner_for_model_lookup():
+    db = OwnerAwareSessionModelDB()
+    client = DummyClient([FakeResponse(content="group answer")])
+    helper = _make_helper(DummyPluginManager({}), db=db, client=client)
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=-100,
+        query="hello group",
+        user_id=202,
+        session_id="group-session",
+    )
+
+    assert answer == "group answer"
+    assert total_tokens == 3
+    assert client.create_kwargs[0]["model"] == "llmgateway/light_model"
+    assert (-100, 0) in db.session_lookups
+
+
 def test_vision_history_content_keeps_text_marker_and_file_id():
     content = [
         {"type": "text", "text": "что на этой картинке?"},
@@ -381,6 +492,108 @@ async def test_interpret_images_sends_multiple_images_and_saves_text_marker():
         isinstance(message.get("content"), list)
         for message in helper.conversations[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_uses_current_chat_state_key():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    state_key = (1, "session-2")
+    helper = _make_helper(
+        DummyPluginManager({}),
+        db=MultiSessionDB({"session-2": {"messages": [{"role": "system", "content": "isolated"}]}}),
+        client=DummyClient([FakeResponse(content="isolated vision")]),
+    )
+    helper.conversations[state_key] = [{"role": "system", "content": "isolated"}]
+
+    with helper._with_chat_state(state_key):
+        answer, total_tokens = await helper.interpret_image(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-2",
+            session_id="session-2",
+        )
+
+    assert answer == "isolated vision"
+    assert total_tokens == 3
+    assert helper.conversations[state_key][-2]["content"] == "describe\n[image_file_id: image-2]"
+    assert helper.conversations[state_key][-1]["content"] == "isolated vision"
+    assert helper.conversations[1] == []
+    assert helper.client.create_kwargs[0]["messages"][0]["content"] == "isolated"
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_pinned_session_loads_saved_context_without_reset():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    helper = _make_helper(
+        DummyPluginManager({}),
+        db=MultiSessionDB({
+            "session-2": {
+                "messages": [
+                    {"role": "system", "content": "saved system"},
+                    {"role": "assistant", "content": "saved answer"},
+                ]
+            },
+        }),
+        client=DummyClient([FakeResponse(content="vision answer")]),
+    )
+    helper.conversations.pop(1, None)
+
+    answer, total_tokens = await helper.interpret_image(
+        1,
+        io.BytesIO(png_1x1),
+        prompt="describe",
+        user_id=1,
+        image_file_id="image-2",
+        session_id="session-2",
+    )
+
+    assert answer == "vision answer"
+    assert total_tokens == 3
+    assert helper.loaded_conversation_sessions[1] == "session-2"
+    assert helper.conversations[1][0]["content"] == "saved system"
+    assert helper.conversations[1][1]["content"] == "saved answer"
+    assert helper.client.create_kwargs[0]["messages"][0]["content"] == "saved system"
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_tool_reentry_uses_request_session():
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    state_key = (1, "session-2")
+    helper = _make_helper(
+        DummyPluginManager({"p.do": {"ok": True}}),
+        db=MultiSessionDB({
+            "session-2": {"messages": [{"role": "system", "content": "isolated"}]},
+        }),
+        client=DummyClient([
+            FakeResponse(tool_calls=[FakeToolCall("p.do", "{}")]),
+            FakeResponse(content="after tool"),
+        ]),
+    )
+    helper.conversations[state_key] = [{"role": "system", "content": "isolated"}]
+
+    with helper._with_chat_state(state_key):
+        answer, total_tokens = await helper.interpret_image(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-2",
+            session_id="session-2",
+        )
+
+    assert answer == "after tool"
+    assert total_tokens == 6
+    assert helper.plugin_manager.call_contexts[0].session_id == "session-2"
+    assert helper.client.create_kwargs[1]["messages"][0]["content"] == "isolated"
+    assert helper.conversations[1] == []
 
 
 @pytest.mark.asyncio
@@ -1208,6 +1421,105 @@ async def test_parallel_tool_calls_no_direct_result():
     assert helper.client.calls == 1
     assert set(tools_used) == {"p1.do", "p2.do"}
     assert out.choices[0].message.tool_calls is None
+
+
+@pytest.mark.asyncio
+async def test_tool_reentry_uses_current_chat_state_key():
+    state_key = (1, "session-2")
+    helper = _make_helper(
+        DummyPluginManager({}),
+        db=MultiSessionDB({"session-2": {"messages": []}}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.conversations[state_key] = [{"role": "system", "content": "system"}]
+
+    with helper._with_chat_state(state_key):
+        out, tools_used = await _retry_plain_text_tool_intent(
+            helper,
+            chat_id=1,
+            stream=False,
+            times=0,
+            tools_used=(),
+            allowed_plugins=["All"],
+            user_id=1,
+            request_context=RequestContext(
+                chat_id=1,
+                user_id=1,
+                session_id="session-2",
+            ),
+            model_to_use="llmgateway/high",
+            plain_text="I will call a tool",
+        )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ()
+    assert "Undelivered assistant text" in helper.conversations[state_key][-1]["content"]
+    assert all(
+        "Undelivered assistant text" not in str(message.get("content", ""))
+        for message in helper.conversations.get(1, [])
+    )
+    assert helper.client.create_kwargs[0]["messages"][0]["content"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_tool_reentry_uses_session_owner_for_group_model_lookup():
+    db = OwnerAwareSessionModelDB()
+    state_key = (-100, "group-session")
+    helper = _make_helper(
+        DummyPluginManager({}),
+        db=db,
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.conversations[state_key] = [{"role": "system", "content": "group system"}]
+
+    with helper._with_chat_state(state_key):
+        out, tools_used = await _retry_plain_text_tool_intent(
+            helper,
+            chat_id=-100,
+            stream=False,
+            times=0,
+            tools_used=(),
+            allowed_plugins=["All"],
+            user_id=202,
+            request_context=RequestContext(
+                chat_id=-100,
+                user_id=202,
+                session_id="group-session",
+            ),
+            plain_text="I will call a tool",
+        )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ()
+    assert helper.client.create_kwargs[0]["model"] == "llmgateway/light_model"
+    assert (-100, 0) in db.session_lookups
+
+
+@pytest.mark.asyncio
+async def test_empty_response_retry_uses_pinned_session_max_tokens_percent():
+    db = RetrySessionDB()
+    client = DummyClient([FakeResponse(content="retry done")])
+    helper = _make_helper(DummyPluginManager({}), db=db, client=client)
+    helper.conversations[-100] = [{"role": "system", "content": "group system"}]
+    seen_percent = []
+
+    def fake_get_max_tokens(model_to_use, max_tokens_percent, chat_id):
+        seen_percent.append(max_tokens_percent)
+        return 123
+
+    helper.get_max_tokens = fake_get_max_tokens
+
+    response = await helper._retry_empty_response_after_tools(
+        chat_id=-100,
+        user_id=202,
+        session_id="pinned-session",
+        model_to_use="llmgateway/light_model",
+    )
+
+    assert response.choices[0].message.content == "retry done"
+    assert seen_percent == [30]
+    assert (-100, 0) in db.session_lookups
+    assert client.create_kwargs[0]["max_tokens"] == 123
 
 
 @pytest.mark.asyncio

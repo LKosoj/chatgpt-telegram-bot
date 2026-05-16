@@ -720,7 +720,12 @@ class Database:
             logger.error(f"Ошибка при подсчете сессий пользователя: {e}")
             return 0
 
-    def get_oldest_session_ids_for_limit(self, user_id: int, max_sessions: Optional[int] = None) -> List[str]:
+    def get_oldest_session_ids_for_limit(
+        self,
+        user_id: int,
+        max_sessions: Optional[int] = None,
+        exclude_session_ids: Optional[List[str]] = None,
+    ) -> List[str]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -728,6 +733,7 @@ class Database:
                     cursor,
                     user_id,
                     max_sessions=max_sessions,
+                    exclude_session_ids=exclude_session_ids,
                 )
         except sqlite3.Error as e:
             logger.error(f"Ошибка при получении старых сессий: {e}")
@@ -738,6 +744,7 @@ class Database:
         cursor: sqlite3.Cursor,
         user_id: int,
         max_sessions: Optional[int] = None,
+        exclude_session_ids: Optional[List[str]] = None,
     ) -> List[str]:
         if max_sessions is None:
             max_sessions = int(os.getenv('MAX_SESSIONS', 5))
@@ -753,13 +760,22 @@ class Database:
         if to_delete <= 0:
             return []
 
-        cursor.execute("""
+        excluded = [session_id for session_id in (exclude_session_ids or []) if session_id]
+        exclude_clause = ""
+        params: List[Any] = [user_id]
+        if excluded:
+            placeholders = ",".join("?" for _ in excluded)
+            exclude_clause = f" AND session_id NOT IN ({placeholders})"
+            params.extend(excluded)
+        params.append(to_delete)
+
+        cursor.execute(f"""
             SELECT session_id
             FROM conversation_context
-            WHERE user_id = ?
+            WHERE user_id = ?{exclude_clause}
             ORDER BY created_at ASC
             LIMIT ?
-        """, (user_id, to_delete))
+        """, params)
         return [row[0] for row in cursor.fetchall()]
 
     def delete_sessions_by_ids(self, user_id: int, session_ids: List[str]) -> bool:

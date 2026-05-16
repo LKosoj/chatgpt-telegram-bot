@@ -239,7 +239,7 @@ class FakeLLMHelper:
         self.plugin_manager = plugin_manager or FakePluginManager()
         self.model_name = model_name
 
-    def get_current_model(self, user_id):
+    def get_current_model(self, user_id, session_id=None):
         return self.model_name
 
     async def chat_completion(self, **kwargs):
@@ -1156,7 +1156,7 @@ class _DeepAnalysisHelper:
         self.client = SimpleNamespace(chat=SimpleNamespace(completions=self.completions))
         self.plugin_manager = FakeSkillsAwarePluginManager()
 
-    def get_current_model(self, user_id):
+    def get_current_model(self, user_id, session_id=None):
         return "llmgateway/high"
 
     async def chat_completion(self, **kwargs):

@@ -71,6 +71,10 @@ class ChatGPTTelegramBot:
         """
         # Добавляем словарь для буферизации сообщений
         self.message_buffer = {}
+        self.pending_busy_messages = {}
+        self.pending_busy_message_ttl = 600
+        self._parallel_session_ids = {}
+        self._inflight_session_ids = {}
         # Добавляем время ожидания для буфера (в секундах)
         self.buffer_timeout = 1.0
 
@@ -627,8 +631,17 @@ class ChatGPTTelegramBot:
             return 0
         return 1
 
-    async def _dispatch_and_delete_oldest_sessions_for_limit(self, user_id: int, max_sessions: int) -> None:
-        session_ids = self.db.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
+    async def _dispatch_and_delete_oldest_sessions_for_limit(
+        self,
+        user_id: int,
+        max_sessions: int,
+        exclude_session_ids: list[str] | None = None,
+    ) -> None:
+        session_ids = self.db.get_oldest_session_ids_for_limit(
+            user_id,
+            max_sessions=max_sessions,
+            exclude_session_ids=exclude_session_ids,
+        )
         if not session_ids:
             return
         for session_id in session_ids:
@@ -680,7 +693,14 @@ class ChatGPTTelegramBot:
             }
         })
 
-    async def _describe_image_from_context(self, update: Update, prompt: str, file_id: str) -> None:
+    async def _describe_image_from_context(
+        self,
+        update: Update,
+        prompt: str,
+        file_id: str,
+        session_id: str | None = None,
+        conversation_state_key=None,
+    ) -> None:
         bot_language = self.config['bot_language']
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
@@ -692,6 +712,8 @@ class ChatGPTTelegramBot:
                 prompt=prompt,
                 user_id=user_id,
                 image_file_id=file_id,
+                session_id=session_id,
+                conversation_state_key=conversation_state_key,
             )
             if is_direct_result(interpretation):
                 await self._handle_direct_result(update, interpretation)
@@ -1686,7 +1708,10 @@ class ChatGPTTelegramBot:
                     ) + "\n"
                     
                     # Добавляем информацию о модели сессии
-                    current_model = self.openai.get_current_model(conversation_key)
+                    current_model = self.openai.get_current_model(
+                        conversation_key,
+                        session_id=active_session.get('session_id'),
+                    )
                     message_text += localized_text('session_model_label', self.config['bot_language']).format(
                         model=current_model
                     ) + "\n"
@@ -2296,8 +2321,10 @@ class ChatGPTTelegramBot:
         update = first_item["update"]
         context = first_item["context"]
         chat_id = first_item["chat_id"]
+        conversation_key = get_conversation_key(update)
         user_id = first_item["user_id"]
         prompt = self._normalize_vision_prompt(items)
+        session_id = self._pinned_session_id(conversation_key, None)
 
         if is_group_chat(update):
             if self.config.get('ignore_group_vision', False):
@@ -2396,6 +2423,7 @@ class ChatGPTTelegramBot:
                         prompt=prompt,
                         user_id=user_id,
                         image_file_ids=image_file_ids,
+                        session_id=session_id,
                     )
                 else:
                     raise RuntimeError("OpenAI helper does not support multi-image vision requests")
@@ -2436,10 +2464,12 @@ class ChatGPTTelegramBot:
             plan_provider=plan_provider,
             interval=plan_interval,
         )
+        self._remember_inflight_session(conversation_key, session_id)
         await busy_status.start()
         try:
             await _execute()
         finally:
+            self._forget_inflight_session(conversation_key, session_id)
             await busy_status.stop()
 
     async def vision(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2451,8 +2481,10 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
+        conversation_key = get_conversation_key(update)
         user_id = update.message.from_user.id
         prompt = update.message.caption
+        session_id = self._pinned_session_id(conversation_key, None)
         
         logger.info(f"Vision handler called for chat_id: {chat_id}, user_id: {user_id}")
 
@@ -2589,6 +2621,7 @@ class ChatGPTTelegramBot:
                             prompt=prompt,
                             user_id=user_id,
                             image_file_id=file_id,
+                            session_id=session_id,
                         )
                         i = 0
                         prev = ''
@@ -2705,6 +2738,7 @@ class ChatGPTTelegramBot:
                                 prompt=prompt,
                                 user_id=user_id,
                                 image_file_id=file_id,
+                                session_id=session_id,
                             )
 
                             if is_direct_result(interpretation):
@@ -2757,7 +2791,11 @@ class ChatGPTTelegramBot:
                 finally:
                     await busy_status.stop()
 
-            await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+            self._remember_inflight_session(conversation_key, session_id)
+            try:
+                await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+            finally:
+                self._forget_inflight_session(conversation_key, session_id)
         else:
             # If no caption, just acknowledge receipt of image
                             await update.effective_message.reply_text(
@@ -2796,30 +2834,445 @@ class ChatGPTTelegramBot:
                     logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
 
         async with self.buffer_lock:
-            # Инициализируем буфер для чата, если его нет
-            if chat_id not in self.message_buffer:
-                self.message_buffer[chat_id] = {
-                    'messages': [],  # Очередь сообщений
-                    'processing': False,  # Флаг обработки
-                    'timer': None  # Таймер для обработки буфера
-                }
+            self._cleanup_pending_busy_messages()
+            if self._is_message_processing_locked(chat_id, update):
+                pending_token = self._store_pending_busy_message(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    prompt=prompt,
+                    update=update,
+                    context=context,
+                    message_id=message_id,
+                )
+                reply_markup = self._busy_message_reply_markup(pending_token)
+                should_ask_busy_action = True
+            else:
+                should_ask_busy_action = False
+                reply_markup = None
 
-            buffer_data = self.message_buffer[chat_id]
-            
-            # Добавляем сообщение в буфер
+            if not should_ask_busy_action:
+                # Инициализируем буфер для чата, если его нет
+                buffer_data = self._ensure_message_buffer(chat_id)
+
+                # Добавляем сообщение в буфер
+                buffer_data['messages'].append(self._buffer_message_payload(
+                    prompt=prompt,
+                    update=update,
+                    context=context,
+                    message_id=message_id,
+                ))
+
+                # Запускаем таймер обработки буфера, если он не запущен
+                if buffer_data['timer'] is None or buffer_data['timer'].done():
+                    buffer_data['timer'] = asyncio.create_task(
+                        self._delayed_process_buffer(chat_id)
+                    )
+
+        if should_ask_busy_action:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                text=localized_text('busy_message_choose_action', self.config['bot_language']),
+                reply_markup=reply_markup,
+            )
+
+    def _ensure_message_buffer(self, chat_id: int) -> dict:
+        if chat_id not in self.message_buffer:
+            self.message_buffer[chat_id] = {
+                'messages': [],
+                'processing': False,
+                'timer': None
+            }
+        return self.message_buffer[chat_id]
+
+    def _buffer_message_payload(self, *, prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE, message_id: int) -> dict:
+        return {
+            'text': prompt,
+            'update': update,
+            'context': context,
+            'message_id': message_id,
+            'message_timestamp': self._message_timestamp(update),
+        }
+
+    def _is_message_processing_locked(self, chat_id: int, update: Update) -> bool:
+        buffer_data = self.message_buffer.get(chat_id)
+        if buffer_data and buffer_data.get('processing'):
+            return True
+        conversation_key = get_conversation_key(update)
+        return self._conversation_has_locked_work(conversation_key)
+
+    def _ensure_pending_busy_messages(self) -> dict:
+        if not hasattr(self, 'pending_busy_messages'):
+            self.pending_busy_messages = {}
+        if not hasattr(self, 'pending_busy_message_ttl'):
+            self.pending_busy_message_ttl = 600
+        return self.pending_busy_messages
+
+    def _conversation_lock_matches(self, lock_key, conversation_key) -> bool:
+        if lock_key == conversation_key:
+            return True
+        return isinstance(lock_key, tuple) and bool(lock_key) and lock_key[0] == conversation_key
+
+    def _conversation_has_locked_work(self, conversation_key) -> bool:
+        return any(
+            self._conversation_lock_matches(lock_key, conversation_key) and lock.locked()
+            for lock_key, lock in getattr(self, '_conversation_locks', {}).items()
+        )
+
+    async def _wait_until_conversation_idle(self, update: Update) -> None:
+        conversation_key = get_conversation_key(update)
+        while self._conversation_has_locked_work(conversation_key):
+            await asyncio.sleep(0.1)
+
+    def _cleanup_pending_busy_messages(self) -> None:
+        now = time.time()
+        pending_busy_messages = self._ensure_pending_busy_messages()
+        expired_tokens = [
+            token
+            for token, pending in pending_busy_messages.items()
+            if now - pending['created_at'] > self.pending_busy_message_ttl
+        ]
+        for token in expired_tokens:
+            pending_busy_messages.pop(token, None)
+
+    def _store_pending_busy_message(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        prompt: str,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_id: int,
+    ) -> str:
+        token = uuid4().hex
+        conversation_key = get_conversation_key(update)
+        get_active_session_id = getattr(self.db, "get_active_session_id", None)
+        active_session_id = (
+            get_active_session_id(conversation_key)
+            if callable(get_active_session_id)
+            else None
+        )
+        self._ensure_pending_busy_messages()[token] = {
+            'chat_id': chat_id,
+            'user_id': user_id,
+            'conversation_key': conversation_key,
+            'active_session_id': active_session_id,
+            'text': prompt,
+            'update': update,
+            'context': context,
+            'message_id': message_id,
+            'message_timestamp': self._message_timestamp(update),
+            'created_at': time.time(),
+        }
+        return token
+
+    def _busy_message_reply_markup(self, token: str) -> InlineKeyboardMarkup:
+        bot_language = self.config['bot_language']
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                localized_text('busy_message_queue_button', bot_language),
+                callback_data=f'busymsg:queue:{token}',
+            ),
+            InlineKeyboardButton(
+                localized_text('busy_message_new_session_button', bot_language),
+                callback_data=f'busymsg:new_session:{token}',
+            ),
+        ]])
+
+    async def _enqueue_pending_busy_message(self, pending: dict) -> None:
+        chat_id = pending['chat_id']
+        async with self.buffer_lock:
+            buffer_data = self._ensure_message_buffer(chat_id)
             buffer_data['messages'].append({
-                'text': prompt,
-                'update': update,
-                'context': context,
-                'message_id': message_id,
-                'message_timestamp': self._message_timestamp(update)
+                'text': pending['text'],
+                'update': pending['update'],
+                'context': pending['context'],
+                'message_id': pending['message_id'],
+                'message_timestamp': pending['message_timestamp'],
             })
-            
-            # Запускаем таймер обработки буфера, если он не запущен
-            if buffer_data['timer'] is None or buffer_data['timer'].done():
+            if not buffer_data['processing'] and (
+                buffer_data['timer'] is None or buffer_data['timer'].done()
+            ):
                 buffer_data['timer'] = asyncio.create_task(
                     self._delayed_process_buffer(chat_id)
                 )
+
+    async def _start_pending_busy_message_in_new_session(self, pending: dict) -> str | None:
+        conversation_key = pending['conversation_key']
+        max_sessions = self.config.get('max_sessions', 5)
+        mutation_lock = await self._get_conversation_lock(("session_mutation", conversation_key))
+        async with mutation_lock:
+            active_session_id = pending.get('active_session_id') or self.db.get_active_session_id(conversation_key)
+            protected_session_ids = self._protected_session_ids(conversation_key)
+            if active_session_id:
+                protected_session_ids.add(active_session_id)
+            await self._dispatch_and_delete_oldest_sessions_for_limit(
+                conversation_key,
+                max_sessions,
+                exclude_session_ids=sorted(protected_session_ids) if protected_session_ids else None,
+            )
+            session_id = self.db.create_session(
+                user_id=conversation_key,
+                max_sessions=max_sessions,
+                openai_helper=self.openai,
+                prune_old_sessions=False,
+            )
+            if session_id:
+                self._remember_parallel_session(conversation_key, session_id)
+        if not session_id:
+            return None
+        session_key = (conversation_key, session_id)
+        task = asyncio.create_task(
+            self._run_pending_busy_message_in_new_session(
+                pending,
+                session_id,
+                session_key,
+            ),
+            name=f"busy_new_session_{conversation_key}_{session_id}",
+        )
+        task.add_done_callback(lambda done: self._handle_pending_busy_message_task_done(done, pending))
+        return session_id
+
+    async def _run_pending_busy_message_in_new_session(self, pending: dict, session_id: str, session_key) -> None:
+        try:
+            await self.process_message(
+                pending['text'],
+                pending['update'],
+                pending['context'],
+                request_started_at=pending['message_timestamp'],
+                session_id=session_id,
+                conversation_lock_key=session_key,
+                conversation_state_key=session_key,
+            )
+        finally:
+            await self._cleanup_parallel_session_state(session_key)
+
+    async def _cleanup_parallel_session_state(self, session_key) -> None:
+        conversation_key = self._forget_parallel_session(session_key)
+        if conversation_key is not None:
+            await self._prune_after_parallel_session_complete(conversation_key)
+        if hasattr(self, '_conversation_locks_guard') and hasattr(self, '_conversation_locks'):
+            async with self._conversation_locks_guard:
+                self._conversation_locks.pop(session_key, None)
+        clear_chat_state = getattr(self.openai, "_clear_chat_state", None)
+        if callable(clear_chat_state):
+            clear_chat_state(session_key)
+
+    def _ensure_parallel_session_ids(self) -> dict:
+        if not hasattr(self, '_parallel_session_ids'):
+            self._parallel_session_ids = {}
+        return self._parallel_session_ids
+
+    def _ensure_inflight_session_ids(self) -> dict:
+        if not hasattr(self, '_inflight_session_ids'):
+            self._inflight_session_ids = {}
+        return self._inflight_session_ids
+
+    def _protected_parallel_session_ids(self, conversation_key) -> set:
+        return set(self._ensure_parallel_session_ids().get(conversation_key, set()))
+
+    def _protected_session_ids(self, conversation_key) -> set:
+        return (
+            self._protected_parallel_session_ids(conversation_key)
+            | set(self._ensure_inflight_session_ids().get(conversation_key, {}).keys())
+        )
+
+    def _remember_parallel_session(self, conversation_key, session_id: str) -> None:
+        sessions = self._ensure_parallel_session_ids().setdefault(conversation_key, set())
+        sessions.add(session_id)
+
+    def _remember_inflight_session(self, conversation_key, session_id: str | None) -> None:
+        if not session_id:
+            return
+        sessions = self._ensure_inflight_session_ids().setdefault(conversation_key, {})
+        sessions[session_id] = sessions.get(session_id, 0) + 1
+
+    def _forget_parallel_session(self, session_key):
+        if not isinstance(session_key, tuple) or len(session_key) != 2:
+            return None
+        conversation_key, session_id = session_key
+        parallel_sessions = self._ensure_parallel_session_ids()
+        sessions = parallel_sessions.get(conversation_key)
+        if not sessions or session_id not in sessions:
+            return None
+        sessions.discard(session_id)
+        if not sessions:
+            parallel_sessions.pop(conversation_key, None)
+        return conversation_key
+
+    def _forget_inflight_session(self, conversation_key, session_id: str | None) -> None:
+        if not session_id:
+            return
+        inflight_sessions = self._ensure_inflight_session_ids()
+        sessions = inflight_sessions.get(conversation_key)
+        if not sessions or session_id not in sessions:
+            return
+        remaining = sessions[session_id] - 1
+        if remaining > 0:
+            sessions[session_id] = remaining
+            return
+        sessions.pop(session_id, None)
+        if not sessions:
+            inflight_sessions.pop(conversation_key, None)
+
+    async def _prune_after_parallel_session_complete(self, conversation_key) -> None:
+        max_sessions = int(self.config.get('max_sessions', 5))
+        mutation_lock = await self._get_conversation_lock(("session_mutation", conversation_key))
+        async with mutation_lock:
+            protected_session_ids = self._protected_session_ids(conversation_key)
+            try:
+                # The DB helper reserves one slot for a session about to be created.
+                # Here creation already happened, so pass one extra slot to prune down to the configured cap.
+                await self._dispatch_and_delete_oldest_sessions_for_limit(
+                    conversation_key,
+                    max_sessions + 1,
+                    exclude_session_ids=sorted(protected_session_ids) if protected_session_ids else None,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to prune old sessions after parallel session completion for user_id=%s",
+                    conversation_key,
+                )
+
+    def _handle_pending_busy_message_task_done(self, task: asyncio.Task, pending: dict) -> None:
+        token = pending.get('token')
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            if token:
+                asyncio.create_task(
+                    self._remove_pending_busy_message(token),
+                    name="busy_message_cancel_cleanup",
+                )
+            return
+        if exc is None:
+            if token:
+                asyncio.create_task(
+                    self._remove_pending_busy_message(token),
+                    name="busy_message_success_cleanup",
+                )
+            return
+        logger.error(
+            "Pending busy message failed in background",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        asyncio.create_task(
+            self._release_and_notify_pending_busy_message_failed(pending, exc),
+            name="busy_message_failure_notification",
+        )
+
+    async def _release_and_notify_pending_busy_message_failed(self, pending: dict, exc: BaseException) -> None:
+        token = pending.get('token')
+        retry_token = None
+        if token and await self._release_pending_busy_message(token, refresh_created_at=True):
+            retry_token = token
+        await self._notify_pending_busy_message_failed(pending, exc, retry_token=retry_token)
+
+    async def _notify_pending_busy_message_failed(
+        self,
+        pending: dict,
+        exc: BaseException,
+        retry_token: str | None = None,
+    ) -> None:
+        try:
+            from .utils import escape_markdown
+
+            await pending['update'].effective_message.reply_text(
+                message_thread_id=get_thread_id(pending['update']),
+                reply_to_message_id=get_reply_to_message_id(self.config, pending['update']),
+                text=(
+                    f"{localized_text('chat_fail', self.config['bot_language'])} "
+                    f"{escape_markdown(str(exc))}"
+                ),
+                parse_mode=constants.ParseMode.MARKDOWN,
+                reply_markup=self._busy_message_reply_markup(retry_token) if retry_token else None,
+            )
+        except Exception:
+            logger.exception("Failed to notify user about pending busy message failure")
+
+    async def handle_busy_message_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+
+        if not await is_allowed(self.config, update, context):
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return
+
+        data = (query.data or '').split(':', 2)
+        if len(data) != 3 or data[0] != 'busymsg':
+            return
+        action, token = data[1], data[2]
+        if action not in {'queue', 'new_session'}:
+            return
+
+        callback_user_id = getattr(getattr(query, 'from_user', None), 'id', None)
+        async with self.buffer_lock:
+            self._cleanup_pending_busy_messages()
+            pending = self.pending_busy_messages.get(token)
+            if pending and pending['user_id'] == callback_user_id and not pending.get('claimed'):
+                pending['claimed'] = True
+                pending = dict(pending)
+                pending['token'] = token
+            else:
+                pending = None
+
+        if pending is None:
+            await query.edit_message_text(
+                text=localized_text('busy_message_expired', self.config['bot_language'])
+            )
+            return
+
+        if action == 'queue':
+            try:
+                await self._enqueue_pending_busy_message(pending)
+            except Exception:
+                await self._release_pending_busy_message(token)
+                logger.exception("Failed to queue pending busy message")
+                await query.edit_message_text(
+                    text=localized_text('error', self.config['bot_language'])
+                )
+                return
+            await self._remove_pending_busy_message(token)
+            await query.edit_message_text(
+                text=localized_text('busy_message_queued', self.config['bot_language'])
+            )
+            return
+
+        try:
+            session_id = await self._start_pending_busy_message_in_new_session(pending)
+        except Exception:
+            await self._release_pending_busy_message(token)
+            logger.exception("Failed to start pending busy message in a new session")
+            await query.edit_message_text(
+                text=localized_text('error', self.config['bot_language'])
+            )
+            return
+        if not session_id:
+            await self._release_pending_busy_message(token)
+            await query.edit_message_text(
+                text=localized_text('session_create_failed', self.config['bot_language'])
+            )
+            return
+        await query.edit_message_text(
+            text=localized_text('busy_message_new_session_started', self.config['bot_language'])
+        )
+
+    async def _remove_pending_busy_message(self, token: str) -> None:
+        async with self.buffer_lock:
+            self._ensure_pending_busy_messages().pop(token, None)
+
+    async def _release_pending_busy_message(self, token: str, refresh_created_at: bool = False) -> bool:
+        async with self.buffer_lock:
+            pending = self._ensure_pending_busy_messages().get(token)
+            if pending:
+                pending.pop('claimed', None)
+                if refresh_created_at:
+                    pending['created_at'] = time.time()
+                return True
+            return False
 
     async def _delayed_process_buffer(self, chat_id: int):
         """
@@ -2885,6 +3338,7 @@ class ChatGPTTelegramBot:
                     first_msg = msg_group[0]
                     
                     try:
+                        await self._wait_until_conversation_idle(first_msg['update'])
                         await self.process_message(
                             combined_text,
                             first_msg['update'],
@@ -2904,7 +3358,14 @@ class ChatGPTTelegramBot:
             if started_processing:
                 async with self.buffer_lock:
                     if chat_id in self.message_buffer:
-                        self.message_buffer[chat_id]['processing'] = False
+                        buffer_data = self.message_buffer[chat_id]
+                        buffer_data['processing'] = False
+                        if buffer_data['messages'] and (
+                            buffer_data['timer'] is None or buffer_data['timer'].done()
+                        ):
+                            buffer_data['timer'] = asyncio.create_task(
+                                self._delayed_process_buffer(chat_id)
+                            )
                     
     @staticmethod
     def _message_timestamp(update: Update) -> float:
@@ -2920,29 +3381,50 @@ class ChatGPTTelegramBot:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         request_started_at: float | None = None,
+        session_id: str | None = None,
+        conversation_lock_key=None,
+        conversation_state_key=None,
     ):
         conversation_key = get_conversation_key(update)
-        conversation_lock = await self._get_conversation_lock(conversation_key)
+        lock_key = conversation_lock_key or conversation_key
+        conversation_lock = await self._get_conversation_lock(lock_key)
         async with conversation_lock:
-            user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
-            plugin_manager = getattr(self.openai, 'plugin_manager', None)
-            user_settings_scope = getattr(plugin_manager, 'user_settings_scope', None)
-            if callable(user_settings_scope):
-                with user_settings_scope(user_id):
-                    return await self._process_message_locked(
-                        prompt,
-                        update,
-                        context,
-                        request_started_at=request_started_at,
-                    )
-            return await self._process_message_locked(
-                prompt,
-                update,
-                context,
-                request_started_at=request_started_at,
-            )
+            pinned_session_id = self._pinned_session_id(conversation_key, session_id)
+            self._remember_inflight_session(conversation_key, pinned_session_id)
 
-    async def _get_conversation_lock(self, conversation_key: int) -> asyncio.Lock:
+            async def _run_locked():
+                user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+                plugin_manager = getattr(self.openai, 'plugin_manager', None)
+                user_settings_scope = getattr(plugin_manager, 'user_settings_scope', None)
+                if callable(user_settings_scope):
+                    with user_settings_scope(user_id):
+                        return await self._process_message_locked(
+                            prompt,
+                            update,
+                            context,
+                            request_started_at=request_started_at,
+                            session_id=pinned_session_id,
+                            conversation_state_key=conversation_state_key,
+                        )
+                return await self._process_message_locked(
+                    prompt,
+                    update,
+                    context,
+                    request_started_at=request_started_at,
+                    session_id=pinned_session_id,
+                    conversation_state_key=conversation_state_key,
+                )
+
+            try:
+                chat_state_scope = getattr(self.openai, '_with_chat_state', None)
+                if conversation_state_key is not None and callable(chat_state_scope):
+                    with chat_state_scope(conversation_state_key):
+                        return await _run_locked()
+                return await _run_locked()
+            finally:
+                self._forget_inflight_session(conversation_key, pinned_session_id)
+
+    async def _get_conversation_lock(self, conversation_key) -> asyncio.Lock:
         if not hasattr(self, '_conversation_locks'):
             self._conversation_locks = {}
         if not hasattr(self, '_conversation_locks_guard'):
@@ -2955,21 +3437,36 @@ class ChatGPTTelegramBot:
                 self._conversation_locks[conversation_key] = lock
             return lock
 
+    def _pinned_session_id(self, chat_id: int, session_id: str | None) -> str | None:
+        if session_id:
+            return session_id
+        get_active_session_id = getattr(self.db, "get_active_session_id", None)
+        if not callable(get_active_session_id):
+            return None
+        session_id = get_active_session_id(chat_id)
+        if session_id:
+            return session_id
+        return None
+
     async def _process_message_locked(
         self,
         prompt: str,
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         request_started_at: float | None = None,
+        session_id: str | None = None,
+        conversation_state_key=None,
     ):
         """
         Обрабатывает полное сообщение
         """
         chat_id = update.effective_chat.id
+        conversation_key = get_conversation_key(update)
         user_id = update.message.from_user.id
         message_id = update.message.message_id
         self.last_message[chat_id] = prompt
         request_id = f"{chat_id}_{message_id}"
+        session_id = self._pinned_session_id(conversation_key, session_id)
         request_started_at = (
             request_started_at
             if request_started_at is not None
@@ -2979,6 +3476,7 @@ class ChatGPTTelegramBot:
             chat_id=chat_id,
             user_id=user_id,
             message_id=message_id,
+            session_id=session_id,
             request_id=request_id,
         )
             
@@ -3021,7 +3519,13 @@ class ChatGPTTelegramBot:
             source_file_id = self._image_description_source_file_id(update, user_id, chat_id, prompt)
             if source_file_id:
                 async def _describe():
-                    await self._describe_image_from_context(update, prompt, source_file_id)
+                    await self._describe_image_from_context(
+                        update,
+                        prompt,
+                        source_file_id,
+                        session_id=session_id,
+                        conversation_state_key=conversation_state_key,
+                    )
 
                 await wrap_with_indicator(update, context, _describe, constants.ChatAction.TYPING)
                 return
@@ -3051,7 +3555,7 @@ class ChatGPTTelegramBot:
             if replied_file_context:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
-            model_to_use = self.openai.get_current_model(user_id)
+            model_to_use = self.openai.get_current_model(conversation_key, session_id=session_id)
             await self.openai.plugin_manager.dispatch_observe(
                 "on_session_reset",
                 SessionResetPayload(
@@ -3074,8 +3578,10 @@ class ChatGPTTelegramBot:
                     chat_id=chat_id,
                     query=prompt,
                     request_id=request_id,
+                    session_id=session_id,
                     user_id=user_id,
                     request_context=request_context,
+                    conversation_state_key=conversation_state_key,
                 )
                 i = 0
                 prev = ''
@@ -3227,8 +3733,10 @@ class ChatGPTTelegramBot:
                             chat_id=chat_id,
                             query=prompt,
                             request_id=request_id,
+                            session_id=session_id,
                             user_id=user_id,
                             request_context=request_context,
+                            conversation_state_key=conversation_state_key,
                         )
                         await busy_status.stop()
 
@@ -3788,6 +4296,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
         application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
         application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^settings"))
+        application.add_handler(CallbackQueryHandler(self.handle_busy_message_callback, pattern="^busymsg:"))
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
         application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
         application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))

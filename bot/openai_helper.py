@@ -8,7 +8,6 @@ import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import Any, Optional
 from datetime import datetime as dt
 
@@ -62,6 +61,7 @@ from .chat_modes_registry import ChatModesRegistry
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
 from .i18n import get_current_language, language_name, localized_text
+from .request_context import RequestContext
 from .user_settings import (
     USER_TTS_MODEL_SETTING,
     USER_TTS_VOICE_SETTING,
@@ -77,6 +77,7 @@ THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
 TTS_OPTIONS_CACHE_SECONDS = 300
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
+_CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 
 
 def _choice_message_text(choice) -> str:
@@ -161,19 +162,6 @@ def are_functions_available(model: str) -> bool:
     Whether the given model supports functions
     """
     return model in LLMGATEWAY_CHAT_MODELS
-
-
-# Per-chat state held by OpenAIHelper. Exists as documentation-as-code:
-# the per-chat mappings (conversations, conversations_vision, last_updated,
-# loaded_conversation_sessions, last_image_file_ids, extra token usage) all key on chat_id and
-# must be reset together — see _clear_chat_state.
-@dataclass
-class ChatState:
-    messages: list
-    vision: bool = False
-    last_updated: datetime.datetime | None = None
-    session_id: str | None = None
-    last_image_file_id: str | None = None
 
 
 class OpenAIHelper:
@@ -306,9 +294,10 @@ class OpenAIHelper:
         :param chat_id: The chat ID
         :return: A tuple containing the number of messages and tokens used
         """
-        if chat_id not in self.conversations:
+        state_key = self._chat_state_key(chat_id)
+        if state_key not in self.conversations:
             await self.reset_chat_history(chat_id)
-        return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
+        return len(self.conversations[state_key]), self.__count_tokens(self.conversations[state_key])
 
     async def chat_completion(
         self,
@@ -454,32 +443,41 @@ class OpenAIHelper:
         :param **kwargs: Additional keyword arguments
         :return: The answer from the model and the number of tokens used
         """
+        conversation_state_key = kwargs.pop("conversation_state_key", None)
         if request_context is not None:
             chat_id = request_context.chat_id
             user_id = request_context.user_id
             if session_id is None:
                 session_id = request_context.session_id
 
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
         if self._chat_lock_bypass_enabled(chat_id):
-            return await self._get_chat_response_locked(
-                chat_id=chat_id,
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                request_context=request_context,
-                **kwargs,
-            )
+            try:
+                return await self._get_chat_response_locked(
+                    chat_id=chat_id,
+                    query=query,
+                    session_id=session_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                    **kwargs,
+                )
+            finally:
+                _CHAT_STATE_KEY.reset(token)
 
-        lock = await self._chat_lock(chat_id)
-        async with lock:
-            return await self._get_chat_response_locked(
-                chat_id=chat_id,
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                request_context=request_context,
-                **kwargs,
-            )
+        try:
+            lock = await self._chat_lock(state_key)
+            async with lock:
+                return await self._get_chat_response_locked(
+                    chat_id=chat_id,
+                    query=query,
+                    session_id=session_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                    **kwargs,
+                )
+        finally:
+            _CHAT_STATE_KEY.reset(token)
 
     async def _get_chat_response_locked(
         self,
@@ -491,6 +489,7 @@ class OpenAIHelper:
         **kwargs,
     ):
         try:
+            state_key = self._chat_state_key(chat_id)
             # Add the last image file ID to the context if available
             if chat_id in self.last_image_file_ids:
                 # The model can now access this through the function calls
@@ -505,7 +504,7 @@ class OpenAIHelper:
                 **kwargs
             )
             token_accumulator = []
-            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+            extra_tokens = self._chat_request_extra_tokens.pop(state_key, 0)
             if extra_tokens:
                 token_accumulator.append(extra_tokens)
             
@@ -517,8 +516,8 @@ class OpenAIHelper:
                     allowed_plugins=allowed_plugins,
                     user_id=user_id,
                     request_context=request_context,
-                    model_to_use=self._chat_request_models.get(chat_id),
-                    retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
+                    model_to_use=self._chat_request_models.get(state_key),
+                    retry_plain_text_tool_intent=self.conversations_vision.get(state_key, False),
                     token_accumulator=token_accumulator,
                 )
                 if is_direct_result(response):
@@ -530,7 +529,7 @@ class OpenAIHelper:
                         user_id,
                         session_id,
                         allowed_plugins,
-                        model_to_use=self._chat_request_models.get(chat_id),
+                        model_to_use=self._chat_request_models.get(state_key),
                     )
                     if retry_response is not None:
                         response, retry_plugins_used = await self.__handle_function_call(
@@ -539,7 +538,7 @@ class OpenAIHelper:
                             allowed_plugins=allowed_plugins,
                             user_id=user_id,
                             request_context=request_context,
-                            model_to_use=self._chat_request_models.get(chat_id),
+                            model_to_use=self._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
                         )
                         plugins_used += retry_plugins_used
@@ -551,7 +550,7 @@ class OpenAIHelper:
                             chat_id,
                             user_id,
                             session_id,
-                            model_to_use=self._chat_request_models.get(chat_id),
+                            model_to_use=self._chat_request_models.get(state_key),
                         )
                         retry_tokens = _response_total_tokens(response)
                         if retry_tokens:
@@ -562,7 +561,7 @@ class OpenAIHelper:
                         user_id,
                         session_id,
                         allowed_plugins,
-                        model_to_use=self._chat_request_models.get(chat_id),
+                        model_to_use=self._chat_request_models.get(state_key),
                     )
                     if retry_response is not None:
                         response, retry_plugins_used = await self.__handle_function_call(
@@ -571,7 +570,7 @@ class OpenAIHelper:
                             allowed_plugins=allowed_plugins,
                             user_id=user_id,
                             request_context=request_context,
-                            model_to_use=self._chat_request_models.get(chat_id),
+                            model_to_use=self._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
                         )
                         plugins_used += retry_plugins_used
@@ -583,7 +582,7 @@ class OpenAIHelper:
                                 chat_id,
                                 user_id,
                                 session_id,
-                                model_to_use=self._chat_request_models.get(chat_id),
+                                model_to_use=self._chat_request_models.get(state_key),
                             )
                             retry_tokens = _response_total_tokens(response)
                             if retry_tokens:
@@ -626,7 +625,7 @@ class OpenAIHelper:
 
             return answer, total_tokens
         except Exception as e:
-            self._chat_request_extra_tokens.pop(chat_id, None)
+            self._chat_request_extra_tokens.pop(self._chat_state_key(chat_id), None)
             logger.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
             raise
         finally:
@@ -642,6 +641,7 @@ class OpenAIHelper:
         session_id: str = None,
         user_id: int = None,
         request_context=None,
+        **kwargs,
     ):
         """
         Stream response from the GPT model with optional session support.
@@ -651,33 +651,42 @@ class OpenAIHelper:
         :param session_id: Optional session identifier
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
+        conversation_state_key = kwargs.pop("conversation_state_key", None)
         if request_context is not None:
             chat_id = request_context.chat_id
             user_id = request_context.user_id
             if session_id is None:
                 session_id = request_context.session_id
 
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
         if self._chat_lock_bypass_enabled(chat_id):
-            async for chunk in self._get_chat_response_stream_locked(
-                chat_id=chat_id,
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                request_context=request_context,
-            ):
-                yield chunk
-            return
+            try:
+                async for chunk in self._get_chat_response_stream_locked(
+                    chat_id=chat_id,
+                    query=query,
+                    session_id=session_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                ):
+                    yield chunk
+                return
+            finally:
+                _CHAT_STATE_KEY.reset(token)
 
-        lock = await self._chat_lock(chat_id)
-        async with lock:
-            async for chunk in self._get_chat_response_stream_locked(
-                chat_id=chat_id,
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                request_context=request_context,
-            ):
-                yield chunk
+        try:
+            lock = await self._chat_lock(state_key)
+            async with lock:
+                async for chunk in self._get_chat_response_stream_locked(
+                    chat_id=chat_id,
+                    query=query,
+                    session_id=session_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                ):
+                    yield chunk
+        finally:
+            _CHAT_STATE_KEY.reset(token)
 
     async def _get_chat_response_stream_locked(
         self,
@@ -687,28 +696,29 @@ class OpenAIHelper:
         user_id,
         request_context,
     ):
+        state_key = self._chat_state_key(chat_id)
         plugins_used = ()
         try:
             logger.info(f'Starting chat response stream for chat_id={chat_id}')
 
             # Проверяем, инициализирован ли контекст разговора
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
-            loaded_session_id = self.loaded_conversation_sessions.get(chat_id)
-            session_changed = chat_id in self.loaded_conversation_sessions and loaded_session_id != session_id
-            if chat_id not in self.conversations or session_changed:
+            loaded_session_id = self.loaded_conversation_sessions.get(state_key)
+            session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
+            if state_key not in self.conversations or session_changed:
                 logger.info(f'Initializing conversation context for chat_id={chat_id}')
                 
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
+                    self.conversations[state_key] = self._messages_without_image_payloads(saved_context['messages'])
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(chat_id, session_id=session_id)
-                self.loaded_conversation_sessions[chat_id] = session_id
+                self.loaded_conversation_sessions[state_key] = session_id
 
             # Инициализируем conversations_vision для чата, если его нет
-            if chat_id not in self.conversations_vision:
-                self.conversations_vision[chat_id] = False
+            if state_key not in self.conversations_vision:
+                self.conversations_vision[state_key] = False
 
             logger.info('Getting chat response from model')
             try:
@@ -721,13 +731,13 @@ class OpenAIHelper:
                     user_id=user_id
                 )
             except Exception as e:
-                self._chat_request_extra_tokens.pop(chat_id, None)
+                self._chat_request_extra_tokens.pop(state_key, None)
                 logger.error(f'Error getting chat response: {str(e)}')
                 yield f"Error: {str(e)}", '0'
                 return
 
-            model_to_use = self._chat_request_models.get(chat_id)
-            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+            model_to_use = self._chat_request_models.get(state_key)
+            extra_tokens = self._chat_request_extra_tokens.pop(state_key, 0)
             if self.config['enable_functions']:
                 try:
                     allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
@@ -739,7 +749,7 @@ class OpenAIHelper:
                         user_id=user_id,
                         request_context=request_context,
                         model_to_use=model_to_use,
-                        retry_plain_text_tool_intent=self.conversations_vision.get(chat_id, False),
+                        retry_plain_text_tool_intent=self.conversations_vision.get(state_key, False),
                     )
                     if is_direct_result(response):
                         tokens_used = extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use)
@@ -787,13 +797,13 @@ class OpenAIHelper:
             yield answer, tokens_used
 
         except Exception as e:
-            self._chat_request_extra_tokens.pop(chat_id, None)
+            self._chat_request_extra_tokens.pop(self._chat_state_key(chat_id), None)
             logger.error(f"Error in chat response stream: {e}", exc_info=True)
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
     def _estimate_stream_tokens(self, chat_id: int, answer: str | None = None, model_to_use: str | None = None) -> int:
-        messages = list(self.conversations.get(chat_id, []))
+        messages = list(self.conversations.get(self._chat_state_key(chat_id), []))
         if answer is not None:
             messages.append({"role": "assistant", "content": answer})
         return self.__count_tokens(messages, model_to_use)
@@ -854,10 +864,11 @@ class OpenAIHelper:
     ) -> None:
         if not self.config['auto_chat_modes']:
             return
-        if chat_id not in self.conversations:
+        state_key = self._chat_state_key(chat_id)
+        if state_key not in self.conversations:
             return
 
-        user_messages = [msg for msg in self.conversations[chat_id] if msg['role'] == 'user']
+        user_messages = [msg for msg in self.conversations[state_key] if msg['role'] == 'user']
         if user_messages:
             return
 
@@ -880,8 +891,8 @@ class OpenAIHelper:
         )
         mode_tokens = _response_total_tokens(response)
         if mode_tokens:
-            self._chat_request_extra_tokens[chat_id] = (
-                self._chat_request_extra_tokens.get(chat_id, 0) + mode_tokens
+            self._chat_request_extra_tokens[state_key] = (
+                self._chat_request_extra_tokens.get(state_key, 0) + mode_tokens
             )
         mode_name = _required_choice_message_text(_first_choice_or_raise(response))
         logger.info(f"🎯 Определен режим для первого сообщения: {mode_name}")
@@ -895,15 +906,15 @@ class OpenAIHelper:
         if not new_system_prompt:
             return
 
-        if not self.conversations[chat_id]:
+        if not self.conversations[state_key]:
             logger.warning(
                 f'Conversation history is empty for chat_id {chat_id}. Initializing with system message.'
             )
-            self.conversations[chat_id] = [{"role": "system", "content": new_system_prompt, "mode_key": mode_key}]
+            self.conversations[state_key] = [{"role": "system", "content": new_system_prompt, "mode_key": mode_key}]
         else:
-            self.conversations[chat_id][0]['role'] = 'system'
-            self.conversations[chat_id][0]['content'] = new_system_prompt
-            self.conversations[chat_id][0]['mode_key'] = mode_key
+            self.conversations[state_key][0]['role'] = 'system'
+            self.conversations[state_key][0]['content'] = new_system_prompt
+            self.conversations[state_key][0]['mode_key'] = mode_key
         logger.info(f"🔄 Режим работы изменен на: {mode_key}")
 
         if parse_mode is None or temperature is None or max_tokens_percent is None or session_id is None:
@@ -921,7 +932,7 @@ class OpenAIHelper:
 
         await self._save_conversation_context(
             chat_id,
-            {'messages': self.conversations[chat_id]},
+            {'messages': self.conversations[state_key]},
             parse_mode,
             temperature,
             max_tokens_percent,
@@ -945,26 +956,27 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         big_context = kwargs.get('big_context', False)
         try:
+            state_key = self._chat_state_key(chat_id)
             logger.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
             logger.debug(f'Query: {query}')
             
             # Пытаемся загрузить контекст из базы данных
             saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
 
-            loaded_session_id = self.loaded_conversation_sessions.get(chat_id)
-            session_changed = chat_id in self.loaded_conversation_sessions and loaded_session_id != session_id
-            if chat_id not in self.conversations or self.__max_age_reached(chat_id) or session_changed:
+            loaded_session_id = self.loaded_conversation_sessions.get(state_key)
+            session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
+            if state_key not in self.conversations or self.__max_age_reached(state_key) or session_changed:
                 if saved_context and 'messages' in saved_context:
                     # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
+                    self.conversations[state_key] = self._messages_without_image_payloads(saved_context['messages'])
                 else:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(chat_id, session_id=session_id)
-                self.loaded_conversation_sessions[chat_id] = session_id
+                self.loaded_conversation_sessions[state_key] = session_id
 
             # Инициализируем conversations_vision для чата, если его нет
-            if chat_id not in self.conversations_vision:
-                self.conversations_vision[chat_id] = False
+            if state_key not in self.conversations_vision:
+                self.conversations_vision[state_key] = False
 
             await self._maybe_apply_auto_chat_mode(
                 chat_id,
@@ -978,29 +990,29 @@ class OpenAIHelper:
             
             memory_user_id = kwargs.get('user_id') or chat_id
 
-            self.last_updated[chat_id] = datetime.datetime.now()
+            self.last_updated[state_key] = datetime.datetime.now()
 
             await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
-            user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-            if self.conversations_vision.get(chat_id, False):
+            if self.conversations_vision.get(state_key, False):
                 model_to_use = self.config['vision_model']
             else:
-                model_to_use = self.get_current_model(memory_user_id or user_id)
+                model_owner = chat_id if session_id else (memory_user_id or chat_id)
+                model_to_use = self.get_current_model(model_owner, session_id=session_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
             logger.info(f"Model: {model_to_use}, max_tokens: {max_tokens}, max_tokens_percent: {max_tokens_percent}")
 
             # Summarize the chat history if it's too long to avoid excessive token usage
-            token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
+            token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
             exceeded_max_tokens = token_count + max_tokens > default_max_tokens(model_to_use) * 0.95
-            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+            exceeded_max_history_size = len(self.conversations[state_key]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
-                    summary = await self.__summarise(self.conversations[chat_id][:-1], user_id, session_id)
+                    summary = await self.__summarise(self.conversations[state_key][:-1], chat_id, session_id)
                     logger.debug(f'Summary: {summary}')
                     # Pre-dispatch: let session-memory subscribers snapshot the
                     # outgoing window before we wipe it via reset_chat_history.
@@ -1011,16 +1023,16 @@ class OpenAIHelper:
                     )
                     await self.reset_chat_history(
                         chat_id,
-                        self.conversations[chat_id][0]['content'],
+                        self.conversations[state_key][0]['content'],
                         session_id,
                         prune_old_sessions=False,
                     )
                     await self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
                     await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
-                    token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
+                    token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
                 except Exception as e:
                     logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+                    self.conversations[state_key] = self.conversations[state_key][-self.config['max_history_size']:]
 
             logger.info(f"Model: {model_to_use}")
 
@@ -1030,7 +1042,7 @@ class OpenAIHelper:
             if (token_count > max_tokens or big_context) and self.config['big_model_to_use']:
                 model_to_use = self.config['big_model_to_use']
                 max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
-            self._chat_request_models[chat_id] = model_to_use
+            self._chat_request_models[state_key] = model_to_use
 
             messages = await self._apply_before_chat_request_mutators(
                 chat_id=chat_id,
@@ -1152,7 +1164,8 @@ class OpenAIHelper:
         return tool_result_content(content)
 
     def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -> None:
-        self.conversations[chat_id].append({
+        state_key = self._chat_state_key(chat_id)
+        self.conversations[state_key].append({
             "role": "assistant",
             "content": None,
             "tool_calls": [
@@ -1187,7 +1200,7 @@ class OpenAIHelper:
         return None
 
     def _defer_direct_tool_results(self, chat_id: int) -> bool:
-        messages = self.conversations.get(chat_id, [])
+        messages = self.conversations.get(self._chat_state_key(chat_id), [])
         system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
         current_mode = self._mode_from_system_message(system_message)
         return bool(current_mode and current_mode.get("defer_direct_results"))
@@ -1222,20 +1235,24 @@ class OpenAIHelper:
             user_id,
             session_id,
         )
-        model_to_use = model_to_use or self.get_current_model(user_id)
-        session_owner = user_id if user_id is not None else chat_id
+        session_owner = chat_id if session_id else (user_id if user_id is not None else chat_id)
+        model_to_use = model_to_use or self.get_current_model(session_owner, session_id=session_id)
         max_tokens_percent = 80
         try:
             list_async = getattr(self.db, "list_user_sessions_async", None)
+            session_filter = 0 if session_id else 1
             if list_async is not None:
-                sessions = await list_async(session_owner, is_active=1)
+                sessions = await list_async(session_owner, is_active=session_filter)
             else:
-                sessions = self.db.list_user_sessions(session_owner, is_active=1)
-            active_session = next((s for s in sessions if s['is_active']), None)
-            if active_session:
-                max_tokens_percent = active_session.get('max_tokens_percent') or max_tokens_percent
+                sessions = self.db.list_user_sessions(session_owner, is_active=session_filter)
+            if session_id:
+                session = next((s for s in sessions if s.get('session_id') == session_id), None)
+            else:
+                session = next((s for s in sessions if s.get('is_active')), None)
+            if session:
+                max_tokens_percent = session.get('max_tokens_percent') or max_tokens_percent
         except Exception as exc:
-            logger.warning("Failed to read active session for empty response retry: %s", exc)
+            logger.warning("Failed to read session for empty response retry: %s", exc)
 
         max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
         messages = await self._apply_before_chat_request_mutators(
@@ -1277,7 +1294,8 @@ class OpenAIHelper:
         allowed_plugins,
         model_to_use: str | None = None,
     ):
-        model_to_use = model_to_use or self.get_current_model(user_id)
+        model_owner = chat_id if session_id else (user_id if user_id is not None else chat_id)
+        model_to_use = model_to_use or self.get_current_model(model_owner, session_id=session_id)
         if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
             return None
 
@@ -1542,6 +1560,7 @@ class OpenAIHelper:
         stream=False,
         user_id: int | None = None,
         image_file_id: str | None = None,
+        session_id: str | None = None,
     ):
         """
         Request a response from the GPT model.
@@ -1552,19 +1571,18 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         temperature = self.config['temperature']
         try:
-            session_id = None
-            parse_mode = None
-            max_tokens_percent = None
-            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
-                await self.reset_chat_history(chat_id)
-                _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
-            else:
-                # Загружаем сохраненный контекст из базы данных
-                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id)
+            state_key = self._chat_state_key(chat_id)
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+            loaded_session_id = self.loaded_conversation_sessions.get(state_key)
+            session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
+            if state_key not in self.conversations or self.__max_age_reached(state_key) or session_changed:
                 if saved_context and 'messages' in saved_context:
-                    self.conversations[chat_id] = self._messages_without_image_payloads(saved_context['messages'])
+                    self.conversations[state_key] = self._messages_without_image_payloads(saved_context['messages'])
+                else:
+                    await self.reset_chat_history(chat_id, session_id=session_id)
+                self.loaded_conversation_sessions[state_key] = session_id
 
-            self.last_updated[chat_id] = datetime.datetime.now()
+            self.last_updated[state_key] = datetime.datetime.now()
             history_content = self._vision_history_content(content, image_file_id=image_file_id)
             await self._maybe_apply_auto_chat_mode(
                 chat_id,
@@ -1575,45 +1593,46 @@ class OpenAIHelper:
                 max_tokens_percent=max_tokens_percent,
                 user_id=user_id,
             )
-            self.conversations_vision[chat_id] = False
-            await self.__add_to_history(chat_id, role="user", content=history_content)
+            self.conversations_vision[state_key] = False
+            await self.__add_to_history(chat_id, role="user", content=history_content, session_id=session_id)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             vision_model = self.config['vision_model']
-            token_count = self.__count_tokens(self.conversations[chat_id], vision_model)
+            token_count = self.__count_tokens(self.conversations[state_key], vision_model)
             exceeded_max_tokens = token_count + self.config['vision_max_tokens'] > default_max_tokens(vision_model)
-            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+            exceeded_max_history_size = len(self.conversations[state_key]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
 
-                    last = self.conversations[chat_id][-1]
-                    summary = await self.__summarise(self.conversations[chat_id][:-1])
+                    last = self.conversations[state_key][-1]
+                    summary = await self.__summarise(self.conversations[state_key][:-1], chat_id, session_id)
                     logger.debug(f'Summary: {summary}')
                     # Pre-dispatch: let session-memory subscribers snapshot the
                     # outgoing vision window before we wipe it.
                     await self._dispatch_before_summarise_reset(
                         chat_id=chat_id,
-                        user_id=chat_id,
-                        session_id=None,
+                        user_id=user_id or chat_id,
+                        session_id=session_id,
                     )
                     await self.reset_chat_history(
                         chat_id,
-                        self.conversations[chat_id][0]['content'],
+                        self.conversations[state_key][0]['content'],
+                        session_id=session_id,
                         prune_old_sessions=False,
                     )
-                    await self.__add_to_history(chat_id, role="assistant", content=summary)
-                    self.conversations[chat_id] += [last]
+                    await self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
+                    self.conversations[state_key] += [last]
                 except Exception as e:
                     logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+                    self.conversations[state_key] = self.conversations[state_key][-self.config['max_history_size']:]
 
             message = {'role':'user', 'content':content}
 
             common_args = {
                 'model': vision_model,
-                'messages': self._messages_with_language_instruction(self.conversations[chat_id][:-1] + [message]),
+                'messages': self._messages_with_language_instruction(self.conversations[state_key][:-1] + [message]),
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
                 'max_tokens': self.config['vision_max_tokens'],
@@ -1675,70 +1694,104 @@ class OpenAIHelper:
 
 
     def _snapshot_chat_state(self, chat_id):
+        state_key = self._chat_state_key(chat_id)
         return {
-            "has_conversation": chat_id in self.conversations,
-            "conversation": list(self.conversations.get(chat_id, [])),
-            "has_vision": chat_id in self.conversations_vision,
-            "vision": self.conversations_vision.get(chat_id),
-            "has_last_updated": chat_id in self.last_updated,
-            "last_updated": self.last_updated.get(chat_id),
-            "has_loaded_session": chat_id in self.loaded_conversation_sessions,
-            "loaded_session": self.loaded_conversation_sessions.get(chat_id),
+            "has_conversation": state_key in self.conversations,
+            "conversation": list(self.conversations.get(state_key, [])),
+            "has_vision": state_key in self.conversations_vision,
+            "vision": self.conversations_vision.get(state_key),
+            "has_last_updated": state_key in self.last_updated,
+            "last_updated": self.last_updated.get(state_key),
+            "has_loaded_session": state_key in self.loaded_conversation_sessions,
+            "loaded_session": self.loaded_conversation_sessions.get(state_key),
         }
 
     def _restore_chat_state(self, chat_id, snapshot) -> None:
+        state_key = self._chat_state_key(chat_id)
         if snapshot["has_conversation"]:
-            self.conversations[chat_id] = list(snapshot["conversation"])
+            self.conversations[state_key] = list(snapshot["conversation"])
         else:
-            self.conversations.pop(chat_id, None)
+            self.conversations.pop(state_key, None)
         if snapshot["has_vision"]:
-            self.conversations_vision[chat_id] = snapshot["vision"]
+            self.conversations_vision[state_key] = snapshot["vision"]
         else:
-            self.conversations_vision.pop(chat_id, None)
+            self.conversations_vision.pop(state_key, None)
         if snapshot["has_last_updated"]:
-            self.last_updated[chat_id] = snapshot["last_updated"]
+            self.last_updated[state_key] = snapshot["last_updated"]
         else:
-            self.last_updated.pop(chat_id, None)
+            self.last_updated.pop(state_key, None)
         if snapshot["has_loaded_session"]:
-            self.loaded_conversation_sessions[chat_id] = snapshot["loaded_session"]
+            self.loaded_conversation_sessions[state_key] = snapshot["loaded_session"]
         else:
-            self.loaded_conversation_sessions.pop(chat_id, None)
+            self.loaded_conversation_sessions.pop(state_key, None)
 
-    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
+    async def interpret_image(
+        self,
+        chat_id,
+        fileobj,
+        prompt=None,
+        user_id=None,
+        image_file_id=None,
+        session_id=None,
+        conversation_state_key=None,
+    ):
         """
         Interprets a given PNG image file using the Vision model.
         """
-        lock = await self._chat_lock(chat_id)
-        async with lock:
-            return await self._interpret_image_locked(
-                chat_id,
-                fileobj,
-                prompt,
-                user_id=user_id,
-                image_file_id=image_file_id,
-            )
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
+        try:
+            lock = await self._chat_lock(state_key)
+            async with lock:
+                return await self._interpret_image_locked(
+                    chat_id,
+                    fileobj,
+                    prompt,
+                    user_id=user_id,
+                    image_file_id=image_file_id,
+                    session_id=session_id,
+                )
+        finally:
+            _CHAT_STATE_KEY.reset(token)
 
-    async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None):
+    async def _interpret_image_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None, session_id=None):
         return await self._interpret_images_locked(
             chat_id,
             [fileobj],
             prompt,
             user_id=user_id,
             image_file_ids=image_file_id,
+            session_id=session_id,
         )
 
-    async def interpret_images(self, chat_id, fileobjs, prompt=None, user_id=None, image_file_ids=None):
-        lock = await self._chat_lock(chat_id)
-        async with lock:
-            return await self._interpret_images_locked(
-                chat_id,
-                fileobjs,
-                prompt,
-                user_id=user_id,
-                image_file_ids=image_file_ids,
-            )
+    async def interpret_images(
+        self,
+        chat_id,
+        fileobjs,
+        prompt=None,
+        user_id=None,
+        image_file_ids=None,
+        session_id=None,
+        conversation_state_key=None,
+    ):
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
+        try:
+            lock = await self._chat_lock(state_key)
+            async with lock:
+                return await self._interpret_images_locked(
+                    chat_id,
+                    fileobjs,
+                    prompt,
+                    user_id=user_id,
+                    image_file_ids=image_file_ids,
+                    session_id=session_id,
+                )
+        finally:
+            _CHAT_STATE_KEY.reset(token)
 
-    async def _interpret_images_locked(self, chat_id, fileobjs, prompt, user_id=None, image_file_ids=None):
+    async def _interpret_images_locked(self, chat_id, fileobjs, prompt, user_id=None, image_file_ids=None, session_id=None):
+        state_key = self._chat_state_key(chat_id)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
         fileobjs = list(fileobjs or [])
         if not fileobjs:
@@ -1762,22 +1815,29 @@ class OpenAIHelper:
                     content,
                     user_id=user_id,
                     image_file_id=image_file_ids,
+                    session_id=session_id,
                 )
             except Exception as exc:
                 last_error = exc
-                self._chat_request_extra_tokens.pop(chat_id, None)
+                self._chat_request_extra_tokens.pop(state_key, None)
             else:
-                extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+                extra_tokens = self._chat_request_extra_tokens.pop(state_key, 0)
                 if extra_tokens:
                     token_accumulator.append(extra_tokens)
                 plugins_used = ()
                 if self.config['enable_functions']:
-                    allowed_plugins = await self.resolve_allowed_plugins(chat_id, user_id=user_id or chat_id)
+                    allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id or chat_id)
+                    request_context = RequestContext(
+                        chat_id=chat_id,
+                        user_id=user_id or chat_id,
+                        session_id=session_id,
+                    )
                     response, plugins_used = await self.__handle_function_call(
                         chat_id,
                         response,
                         allowed_plugins=allowed_plugins,
                         user_id=user_id or chat_id,
+                        request_context=request_context,
                         model_to_use=self.config['vision_model'],
                         retry_plain_text_tool_intent=True,
                         token_accumulator=token_accumulator,
@@ -1794,6 +1854,7 @@ class OpenAIHelper:
                         response,
                         plugins_used,
                         token_accumulator=token_accumulator,
+                        session_id=session_id,
                     )
                 except ValueError as exc:
                     last_error = exc
@@ -1811,22 +1872,22 @@ class OpenAIHelper:
                     ),
                 )
                 self._restore_chat_state(chat_id, snapshot)
-        self._chat_request_extra_tokens.pop(chat_id, None)
+        self._chat_request_extra_tokens.pop(state_key, None)
         raise last_error or ValueError(EMPTY_MODEL_RESPONSE_ERROR)
 
-    async def _interpret_image_text_response(self, chat_id, response, plugins_used=(), token_accumulator=None):
+    async def _interpret_image_text_response(self, chat_id, response, plugins_used=(), token_accumulator=None, session_id=None):
         answer = ''
         if len(response.choices) > 1 and self.config['n_choices'] > 1:
             for index, choice in enumerate(response.choices):
                 content = _required_choice_message_text(choice)
                 if index == 0:
-                    await self.__add_to_history(chat_id, role="assistant", content=content)
+                    await self.__add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
                 answer += f'{index + 1}\u20e3\n'
                 answer += content
                 answer += '\n\n'
         else:
             answer = _required_choice_message_text(_first_choice_or_raise(response))
-            await self.__add_to_history(chat_id, role="assistant", content=answer)
+            await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
 
         bot_language = self.config['bot_language']
         show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
@@ -1847,22 +1908,38 @@ class OpenAIHelper:
 
         return answer, total_tokens
 
-    async def interpret_image_stream(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
+    async def interpret_image_stream(
+        self,
+        chat_id,
+        fileobj,
+        prompt=None,
+        user_id=None,
+        image_file_id=None,
+        session_id=None,
+        conversation_state_key=None,
+    ):
         """
         Interprets a given PNG image file using the Vision model.
         """
-        lock = await self._chat_lock(chat_id)
-        async with lock:
-            async for chunk in self._interpret_image_stream_locked(
-                chat_id,
-                fileobj,
-                prompt,
-                user_id=user_id,
-                image_file_id=image_file_id,
-            ):
-                yield chunk
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
+        try:
+            lock = await self._chat_lock(state_key)
+            async with lock:
+                async for chunk in self._interpret_image_stream_locked(
+                    chat_id,
+                    fileobj,
+                    prompt,
+                    user_id=user_id,
+                    image_file_id=image_file_id,
+                    session_id=session_id,
+                ):
+                    yield chunk
+        finally:
+            _CHAT_STATE_KEY.reset(token)
 
-    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None):
+    async def _interpret_image_stream_locked(self, chat_id, fileobj, prompt, user_id=None, image_file_id=None, session_id=None):
+        state_key = self._chat_state_key(chat_id)
         image = encode_image(fileobj)
         prompt = self.config['vision_prompt'] if prompt is None else prompt
 
@@ -1877,20 +1954,27 @@ class OpenAIHelper:
                 stream=True,
                 user_id=user_id,
                 image_file_id=image_file_id,
+                session_id=session_id,
             )
         finally:
-            extra_tokens = self._chat_request_extra_tokens.pop(chat_id, 0)
+            extra_tokens = self._chat_request_extra_tokens.pop(state_key, 0)
 
         
 
         if self.config['enable_functions']:
-            allowed_plugins = await self.resolve_allowed_plugins(chat_id, user_id=user_id or chat_id)
+            allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id or chat_id)
+            request_context = RequestContext(
+                chat_id=chat_id,
+                user_id=user_id or chat_id,
+                session_id=session_id,
+            )
             response, plugins_used = await self.__handle_function_call(
                 chat_id,
                 response,
                 stream=True,
                 allowed_plugins=allowed_plugins,
                 user_id=user_id or chat_id,
+                request_context=request_context,
                 model_to_use=self.config['vision_model'],
                 retry_plain_text_tool_intent=True,
             )
@@ -1919,7 +2003,7 @@ class OpenAIHelper:
         answer = answer.strip()
         if not answer:
             raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
-        await self.__add_to_history(chat_id, role="assistant", content=answer)
+        await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
         tokens_used = str(
             self._estimate_stream_tokens(chat_id, model_to_use=self.config['vision_model']) + extra_tokens
         )
@@ -1966,7 +2050,8 @@ class OpenAIHelper:
         → on_before_chat_request mutator chain → optional persistence of any
         session-memory injection so subsequent turns skip recall.
         """
-        self._repair_tool_call_history(chat_id)
+        state_key = self._chat_state_key(chat_id)
+        self._repair_tool_call_history(state_key)
         plugin = (
             self.plugin_manager.get_plugin("hindsight_memory")
             if getattr(self, "plugin_manager", None)
@@ -1986,10 +2071,10 @@ class OpenAIHelper:
                 and not disabled_for_user
             )
             if callable(is_memory_message) and not can_send_memory:
-                original = self.conversations[chat_id]
+                original = self.conversations[state_key]
                 cleaned = [msg for msg in original if not is_memory_message(msg)]
                 if len(cleaned) != len(original):
-                    self.conversations[chat_id] = cleaned
+                    self.conversations[state_key] = cleaned
                     if persist:
                         try:
                             await self._save_conversation_context(
@@ -2005,7 +2090,7 @@ class OpenAIHelper:
                                 "Failed to persist removal of session-memory message for chat_id=%s: %s",
                                 chat_id, exc,
                             )
-        base = self._messages_with_language_instruction(self.conversations[chat_id])
+        base = self._messages_with_language_instruction(self.conversations[state_key])
         payload = BeforeChatRequestPayload(
             chat_id=chat_id, user_id=user_id, request_id=request_id,
             allow_dynamic_recall=persist,
@@ -2023,7 +2108,7 @@ class OpenAIHelper:
             return mutated
         already_in_conv = any(
             plugin.is_hindsight_memory_message(msg)
-            for msg in self.conversations[chat_id]
+            for msg in self.conversations[state_key]
         )
         if already_in_conv:
             return mutated
@@ -2033,7 +2118,7 @@ class OpenAIHelper:
         )
         if injected is None:
             return mutated
-        conv = self.conversations[chat_id]
+        conv = self.conversations[state_key]
         if conv and conv[0].get("role") == "system":
             conv.insert(1, injected)
         else:
@@ -2156,6 +2241,17 @@ class OpenAIHelper:
                 self._per_chat_locks[chat_id] = lock
             return lock
 
+    def _chat_state_key(self, chat_id):
+        return _CHAT_STATE_KEY.get() or chat_id
+
+    @contextmanager
+    def _with_chat_state(self, state_key):
+        token = _CHAT_STATE_KEY.set(state_key)
+        try:
+            yield
+        finally:
+            _CHAT_STATE_KEY.reset(token)
+
     def _chat_lock_bypass_enabled(self, chat_id) -> bool:
         bypass_chat_id = _CHAT_LOCK_BYPASS_CHAT_ID.get()
         return bypass_chat_id is not None and str(bypass_chat_id) == str(chat_id)
@@ -2169,7 +2265,7 @@ class OpenAIHelper:
             _CHAT_LOCK_BYPASS_CHAT_ID.reset(token)
 
     def _clear_chat_state(self, chat_id) -> None:
-        """Atomically drop all per-chat state for chat_id.
+        """Drop all per-chat state for chat_id.
 
         Why: conversations / conversations_vision / last_updated /
         loaded_conversation_sessions / last_image_file_ids / extra token usage share the same
@@ -2181,7 +2277,10 @@ class OpenAIHelper:
         self.last_updated.pop(chat_id, None)
         self.loaded_conversation_sessions.pop(chat_id, None)
         self._chat_request_extra_tokens.pop(chat_id, None)
+        self._chat_request_models.pop(chat_id, None)
         self.last_image_file_ids.pop(chat_id, None)
+        if hasattr(self, '_per_chat_locks'):
+            self._per_chat_locks.pop(chat_id, None)
 
     async def _dispatch_before_summarise_reset(
         self,
@@ -2200,7 +2299,7 @@ class OpenAIHelper:
         pm = getattr(self, "plugin_manager", None)
         if pm is None:
             return
-        conv = self.conversations.get(chat_id) or ()
+        conv = self.conversations.get(self._chat_state_key(chat_id)) or ()
         messages = tuple(dict(m) for m in conv if isinstance(m, dict))
         if not messages:
             return
@@ -2286,6 +2385,7 @@ class OpenAIHelper:
             summarise-overflow paths so we don't cascade old-session deletes.
         """
         try:
+            state_key = self._chat_state_key(chat_id)
             # Получаем или создаем сессию через базу данных
             if not session_id:
                 # Pre-dispatch on_session_before_delete for any sessions that
@@ -2307,13 +2407,13 @@ class OpenAIHelper:
             # Инициализируем историю чата
             system_message = self.db.get_mode_from_context(context)
             
-            self.conversations[chat_id] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
-            self.loaded_conversation_sessions[chat_id] = session_id
+            self.conversations[state_key] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
+            self.loaded_conversation_sessions[state_key] = session_id
             
             # Сохраняем обновленный контекст
             await self._save_conversation_context(
                 chat_id,
-                {'messages': self.conversations[chat_id]},
+                {'messages': self.conversations[state_key]},
                 parse_mode,
                 temperature,
                 max_tokens_percent,
@@ -2344,12 +2444,12 @@ class OpenAIHelper:
         Adds a function call to the conversation history
         """
         # For models that don't support function role, add as a user message
-        user_id = next((uid for uid, conversations in self.conversations.items() if conversations == self.conversations[chat_id]), None)
-        model_to_use = self.get_current_model(user_id)
+        state_key = self._chat_state_key(chat_id)
+        model_to_use = self._chat_request_models.get(state_key) or self.get_current_model(chat_id)
         content = self._tool_result_content(content)
 
         if tool_call_id and self._uses_structured_tool_history(model_to_use):
-            self.conversations[chat_id].append({
+            self.conversations[state_key].append({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "content": content,
@@ -2360,18 +2460,18 @@ class OpenAIHelper:
         # For those, we inject tool results as regular user text so the model reliably sees them.
         if model_to_use in (ANTHROPIC + DEEPSEEK):
             function_result = f"Function {function_name} returned: {content}"
-            self.conversations[chat_id].append({"role": "user", "content": function_result})
+            self.conversations[state_key].append({"role": "user", "content": function_result})
         elif model_to_use in (MISTRALAI + MOONSHOTAI):
             # Mistral и Moonshot используют роль "tool" вместо "function"
-            self.conversations[chat_id].append({"role": "tool", "name": function_name, "content": content})
+            self.conversations[state_key].append({"role": "tool", "name": function_name, "content": content})
         elif model_to_use in (O_MODELS + GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS):
             # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
             # The 'function' role is no longer supported in OpenAI API as of 2025
             function_result = f"Function {function_name} returned: {content}"
-            self.conversations[chat_id].append({"role": "assistant", "content": function_result})
+            self.conversations[state_key].append({"role": "assistant", "content": function_result})
         else:
             # For OpenAI-style models, use the function role
-            self.conversations[chat_id].append({"role": "function", "name": function_name, "content": content})
+            self.conversations[state_key].append({"role": "function", "name": function_name, "content": content})
 
     async def __add_to_history(self, chat_id, role, content, session_id=None):
         """
@@ -2382,20 +2482,21 @@ class OpenAIHelper:
         :param session_id: Optional session identifier
         """
         # Дополнительная проверка инициализации conversation
-        if chat_id not in self.conversations:
+        state_key = self._chat_state_key(chat_id)
+        if state_key not in self.conversations:
             logger.warning(f'Conversation not initialized for chat_id={chat_id}, initializing now')
             await self.reset_chat_history(chat_id, session_id=session_id)
 
-        self.conversations[chat_id].append({"role": role, "content": content})
+        self.conversations[state_key].append({"role": role, "content": content})
         
         # Получаем текущий контекст для сохранения с учетом session_id
         _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
-        self.loaded_conversation_sessions[chat_id] = session_id
+        self.loaded_conversation_sessions[state_key] = session_id
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
         await self._save_conversation_context(
             chat_id, 
-            {'messages': self.conversations[chat_id]}, 
+            {'messages': self.conversations[state_key]},
             parse_mode, 
             temperature, 
             max_tokens_percent,
@@ -2414,7 +2515,7 @@ class OpenAIHelper:
             # Ограничиваем размер входных данных
             model_to_use = self.config['model']
             if chat_id is not None:
-                model_to_use = self.get_current_model(chat_id)
+                model_to_use = self.get_current_model(chat_id, session_id=session_id)
 
             max_tokens = default_max_tokens(model_to_use)
             current_tokens = 0
@@ -2444,6 +2545,7 @@ class OpenAIHelper:
             summary = _first_choice_or_raise(response).message.content
 
             if chat_id is not None:
+                state_key = self._chat_state_key(chat_id)
                 # Получаем текущие настройки из базы данных
                 _, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)
                 
@@ -2452,8 +2554,8 @@ class OpenAIHelper:
                 
                 # Сохраняем обновленный контекст после суммаризации
                 await self._save_conversation_context(
-                    chat_id, 
-                    {'messages': self.conversations[chat_id]}, 
+                    chat_id,
+                    {'messages': self.conversations[state_key]},
                     parse_mode,
                     temperature,
                     max_tokens_percent,
@@ -2641,25 +2743,34 @@ class OpenAIHelper:
             logger.error(f"Ошибка генерации названия сессии: {e}")
             return f"Сессия {dt.now().strftime('%d.%m')}", 0
 
-    def get_current_model(self, user_id: int = None) -> str:
+    def get_current_model(self, user_id: int = None, session_id: str | None = None) -> str:
         """
         Получает текущую модель с учетом приоритетов:
-        1. Модель из активной сессии
+        1. Модель из указанной или активной сессии
         2. Глобальная модель пользователя
         3. Модель по умолчанию из конфига
         
         :param user_id: ID пользователя (опционально)
+        :param session_id: ID сессии для уже закрепленного запроса (опционально)
         :return: Название модели
         """
+        session_model = ''
         if user_id:
-            # Получаем активную сессию
-            sessions = self.db.list_user_sessions(user_id, is_active=1)
-            active_session = next((s for s in sessions if s['is_active']), None)
-            
+            if session_id:
+                sessions = self.db.list_user_sessions(user_id, is_active=0)
+                selected_session = next(
+                    (s for s in sessions if s.get('session_id') == session_id),
+                    None,
+                )
+                session_model = selected_session.get('model', '') if selected_session else ''
+            else:
+                sessions = self.db.list_user_sessions(user_id, is_active=1)
+                active_session = next((s for s in sessions if s.get('is_active')), None)
+                session_model = active_session.get('model', '') if active_session else ''
+
             # Проверяем модель в сессии, но используем только разрешенные llmgateway модели.
-            session_model = active_session.get('model', '') if active_session else ''
             if session_model in LLMGATEWAY_CHAT_MODELS:
-                logger.info(f"Модель из активной сессии: {session_model}")
+                logger.info(f"Модель из сессии: {session_model}")
                 return session_model
             if session_model:
                 logger.info(f"Игнорируем неподдерживаемую модель из сессии: {session_model}")
@@ -2674,8 +2785,9 @@ class OpenAIHelper:
         
         # Рассчитываем текущее количество токенов в контексте
         current_tokens = 0
-        if chat_id is not None and chat_id in self.conversations:
-            current_tokens = self.__count_tokens(self.conversations[chat_id], model_to_use)
+        state_key = self._chat_state_key(chat_id) if chat_id is not None else None
+        if state_key is not None and state_key in self.conversations:
+            current_tokens = self.__count_tokens(self.conversations[state_key], model_to_use)
         
         # Резервируем место для системных токенов
         reserved_tokens = 3000  # Увеличено резервирование

@@ -157,7 +157,7 @@ class FakeOpenAI:
         self.plugin_manager = FakePluginManager(agent_tools, text_document_qa, plugin_help_texts)
         self.stream_requests = []
 
-    def get_current_model(self, user_id):
+    def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
     def get_chat_response_stream(self, **kwargs):
@@ -189,24 +189,46 @@ class FakeVisionOpenAI(FakeOpenAI):
         self.image_requests = []
         self.last_image_ids = {}
 
-    async def interpret_image(self, chat_id, fileobj, prompt=None, user_id=None, image_file_id=None):
+    async def interpret_image(
+        self,
+        chat_id,
+        fileobj,
+        prompt=None,
+        user_id=None,
+        image_file_id=None,
+        session_id=None,
+        conversation_state_key=None,
+    ):
         self.image_requests.append({
             "chat_id": chat_id,
             "prompt": prompt,
             "user_id": user_id,
             "image_file_id": image_file_id,
             "image_count": 1,
+            "session_id": session_id,
+            "conversation_state_key": conversation_state_key,
         })
         await asyncio.sleep(0.01)
         return self.response, 7
 
-    async def interpret_images(self, chat_id, fileobjs, prompt=None, user_id=None, image_file_ids=None):
+    async def interpret_images(
+        self,
+        chat_id,
+        fileobjs,
+        prompt=None,
+        user_id=None,
+        image_file_ids=None,
+        session_id=None,
+        conversation_state_key=None,
+    ):
         self.image_requests.append({
             "chat_id": chat_id,
             "prompt": prompt,
             "user_id": user_id,
             "image_file_id": image_file_ids,
             "image_count": len(fileobjs),
+            "session_id": session_id,
+            "conversation_state_key": conversation_state_key,
         })
         await asyncio.sleep(0.01)
         return self.response, 7
@@ -909,6 +931,53 @@ async def test_vision_uses_busy_status_and_passes_file_id(monkeypatch, tmp_path)
     assert sum(bot.usage[42].usage["usage_history"]["vision_tokens"].values()) == 7
 
 
+@pytest.mark.asyncio
+async def test_direct_vision_upload_uses_pinned_session(monkeypatch, tmp_path):
+    async def immediate_wrap(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_wrap)
+    monkeypatch.setattr(
+        telegram_bot,
+        "make_usage_tracker",
+        lambda config, user_id, user_name: make_usage_tracker(
+            config,
+            user_id,
+            user_name,
+            logs_dir=str(tmp_path),
+        ),
+    )
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["enable_vision"] = True
+    bot.config["stream"] = False
+    bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
+    bot.db.get_active_session_id = Mock(return_value="session-1")
+    bot.openai = FakeVisionOpenAI()
+    bot.openai.plugin_manager.set_db(bot.db)
+    bot.application = SimpleNamespace(
+        bot=SimpleNamespace(
+            get_file=AsyncMock(return_value=FakeTelegramFile(png_1x1)),
+        )
+    )
+    message = FakeMessage()
+    message.caption = "describe"
+    message.photo = [SimpleNamespace(file_id="telegram-image-file")]
+    message.document = None
+    update = FakeUpdate(message)
+
+    await bot.vision(update, _make_context())
+
+    assert bot.db.get_active_session_id.call_args.args == (42,)
+    assert bot.openai.image_requests[0]["session_id"] == "session-1"
+    assert not bot._protected_session_ids(42)
+
+
 def test_forwarded_image_caption_is_external_context():
     bot = _make_bot(
         chunks=[],
@@ -977,6 +1046,7 @@ async def test_media_group_images_are_processed_as_one_vision_request(monkeypatc
     bot.config["stream"] = False
     bot.media_group_timeout = 0.01
     bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
+    bot.db.get_active_session_id = Mock(return_value="session-1")
     bot.openai = FakeVisionOpenAI()
     bot.openai.plugin_manager.set_db(bot.db)
     bot.application = SimpleNamespace(
@@ -1008,8 +1078,12 @@ async def test_media_group_images_are_processed_as_one_vision_request(monkeypatc
         "user_id": 42,
         "image_file_id": ["image-1", "image-2"],
         "image_count": 2,
+        "session_id": "session-1",
+        "conversation_state_key": None,
     }]
+    assert bot.db.get_active_session_id.call_args.args == (42,)
     assert bot.openai.last_image_ids[1234] == "image-2"
+    assert not bot._protected_session_ids(42)
     assert sum(bot.usage[42].usage["usage_history"]["vision_tokens"].values()) == 7
 
 

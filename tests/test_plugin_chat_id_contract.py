@@ -128,7 +128,7 @@ class FakeHelper:
         self.conversations = {1234: []}
         self.history = []
 
-    def get_current_model(self, user_id):
+    def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
     async def chat_completion(self, **kwargs):
