@@ -2202,3 +2202,91 @@ def test_entrypoint_subpath_is_allowed(tmp_path, monkeypatch):
     plugin.initialize(storage_root=str(storage_dir))
 
     assert plugin.available_skills["nested"]["scripts"] == ["tools/run.py"]
+
+
+# ----------------- on_before_chat_request: skills catalog injection -----------------
+
+
+from bot.plugins.hooks import BeforeChatRequestPayload
+
+
+def _skills_agent_system_message(content: str = "skills_agent prompt") -> dict:
+    return {"role": "system", "content": content, "mode_key": "skills_agent"}
+
+
+@pytest.mark.asyncio
+async def test_on_before_chat_request_injects_catalog_in_skills_agent(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    messages = [
+        _skills_agent_system_message(),
+        {"role": "user", "content": "do something with PPTX"},
+    ]
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+
+    new_messages = await plugin.on_before_chat_request(messages, payload)
+
+    assert new_messages is not None
+    assert len(new_messages) == len(messages) + 1
+    injected = new_messages[1]
+    assert injected["role"] == "system"
+    assert "Доступные локальные skills" in injected["content"]
+    assert "- demo: Demo skill for tests" in injected["content"]
+    # No active skills in this scope → no scripts section.
+    assert "Активные skills в этой сессии" not in injected["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_before_chat_request_skips_other_modes(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    messages = [
+        {"role": "system", "content": "assistant prompt", "mode_key": "assistant"},
+        {"role": "user", "content": "hi"},
+    ]
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+
+    assert await plugin.on_before_chat_request(messages, payload) is None
+
+
+@pytest.mark.asyncio
+async def test_on_before_chat_request_lists_scripts_for_active_skills(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    messages = [_skills_agent_system_message(), {"role": "user", "content": "go"}]
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+    new_messages = await plugin.on_before_chat_request(messages, payload)
+
+    assert new_messages is not None
+    content = new_messages[1]["content"]
+    assert "Активные skills в этой сессии" in content
+    assert "demo:" in content
+    expected_abs = str((tmp_path / "skills" / "demo" / "scripts" / "echo.py").resolve())
+    # as_posix() output is what we render
+    assert (tmp_path / "skills" / "demo" / "scripts" / "echo.py").as_posix() in content
+    # Active-skill scripts section is irrelevant to other scopes
+    other_payload = BeforeChatRequestPayload(chat_id=999, user_id=999, request_id=None)
+    other_messages = await plugin.on_before_chat_request(messages, other_payload)
+    assert other_messages is not None
+    assert "Активные skills в этой сессии" not in other_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_before_chat_request_no_system_message_returns_none(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+    assert await plugin.on_before_chat_request([{"role": "user", "content": "hi"}], payload) is None
+    assert await plugin.on_before_chat_request([], payload) is None
+
+
+@pytest.mark.asyncio
+async def test_on_before_chat_request_does_not_mutate_input(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    messages = [_skills_agent_system_message(), {"role": "user", "content": "go"}]
+    original_len = len(messages)
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+
+    new_messages = await plugin.on_before_chat_request(messages, payload)
+
+    assert new_messages is not None
+    assert new_messages is not messages
+    assert len(messages) == original_len  # input list untouched

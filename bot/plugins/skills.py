@@ -142,7 +142,7 @@ class SkillsPlugin(Plugin):
             "SKILLS_SCRIPT_INTERIM_AFTER_SECONDS", default=20, minimum=5
         )
         self.script_admin_ids, self.script_admin_all = self._parse_admin_ids(
-            os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", ""),
+            os.getenv("SKILLS_SCRIPT_ADMIN_USER_IDS", "*"),
             env_name="SKILLS_SCRIPT_ADMIN_USER_IDS",
         )
         self.allow_installs = self._env_flag("SKILLS_ALLOW_INSTALLS", default=True)
@@ -200,6 +200,117 @@ class SkillsPlugin(Plugin):
             f"{direct_match_block}"
             "Если ни один skill из списка по семантике не подходит к задаче — переходи к остальным правилам ниже."
         )
+
+    SKILLS_AGENT_MODE_KEY = "skills_agent"
+
+    async def on_before_chat_request(
+        self,
+        messages: List[Dict[str, Any]],
+        payload: Any,
+    ) -> List[Dict[str, Any]] | None:
+        """Inject a skills catalog as a system message when the active chat mode is skills_agent.
+
+        Catalog content:
+        - All available local skills (id + short description), filtered by per-user disabled list.
+        - For skills active in the current scope: their entrypoint scripts with absolute paths,
+          so the model can call skills.run_skill_script (or fall back to terminal) without guessing.
+        """
+        if not messages:
+            return None
+        first_system = next(
+            (msg for msg in messages if isinstance(msg, dict) and msg.get("role") == "system"),
+            None,
+        )
+        if first_system is None:
+            return None
+        if not self._is_skills_agent_mode(first_system):
+            return None
+        if not self.available_skills:
+            return None
+
+        chat_id = getattr(payload, "chat_id", None)
+        user_id = getattr(payload, "user_id", None)
+        disabled_skills = self._disabled_skills_for_user(getattr(self, "openai", None), user_id)
+        scope = compute_scope_key(chat_id, user_id) if chat_id is not None else None
+        active_scope_state = self.active_skills.get(scope, {}) if scope is not None else {}
+
+        catalog_text = self._build_session_skills_catalog(disabled_skills, active_scope_state)
+        if not catalog_text:
+            return None
+
+        new_messages = list(messages)
+        insert_at = 0
+        for msg in new_messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                insert_at += 1
+            else:
+                break
+        new_messages.insert(insert_at, {"role": "system", "content": catalog_text})
+        return new_messages
+
+    def _is_skills_agent_mode(self, system_message: Dict[str, Any]) -> bool:
+        mode_key = system_message.get("mode_key")
+        if mode_key:
+            return str(mode_key).strip().lower() == self.SKILLS_AGENT_MODE_KEY
+        registry = getattr(getattr(self, "openai", None), "chat_modes_registry", None)
+        if registry is None:
+            return False
+        get_by_key = getattr(registry, "get_mode_by_key", None)
+        resolver = getattr(registry, "get_mode_by_system_prompt", None)
+        if not callable(get_by_key) or not callable(resolver):
+            return False
+        try:
+            target = get_by_key(self.SKILLS_AGENT_MODE_KEY)
+            resolved = resolver(system_message.get("content", ""))
+        except Exception:  # noqa: BLE001
+            return False
+        return target is not None and resolved is target
+
+    def _build_session_skills_catalog(
+        self,
+        disabled_skills: set[str],
+        active_scope_state: Dict[str, Any],
+    ) -> str:
+        catalog_lines: List[str] = []
+        for skill_id, info in self.available_skills.items():
+            if skill_id in disabled_skills:
+                continue
+            desc = (info.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 240:
+                desc = desc[:240].rstrip() + "..."
+            catalog_lines.append(f"- {skill_id}: {desc}" if desc else f"- {skill_id}")
+        if not catalog_lines:
+            return ""
+
+        sections: List[str] = [
+            "Доступные локальные skills (id: description). Активируйте через "
+            "skills.activate_skill, читайте через skills.get_skill:",
+            "\n".join(catalog_lines),
+        ]
+
+        active_lines: List[str] = []
+        for skill_id in sorted(active_scope_state.keys()):
+            info = self.available_skills.get(skill_id)
+            if not info:
+                continue
+            scripts = info.get("scripts") or []
+            if not scripts:
+                continue
+            skill_root = Path(info.get("path") or "")
+            scripts_dir = skill_root / "scripts"
+            active_lines.append(f"{skill_id}:")
+            for script_name in scripts:
+                abs_path = (scripts_dir / script_name).as_posix()
+                active_lines.append(f"  - {script_name}  →  {abs_path}")
+        if active_lines:
+            sections.append(
+                "Активные skills в этой сессии и их scripts. Запускайте через "
+                "skills.run_skill_script(skill_name=..., script_name=...); абсолютные "
+                "пути даны как fallback на случай, если требуется terminal.terminal:"
+            )
+            sections.append("\n".join(active_lines))
+
+        return "\n\n".join(sections)
 
     def _auto_mode_direct_match_block(self, query: Any, disabled_skills: set[str]) -> str:
         query_text = str(query or "").lower()
@@ -520,7 +631,8 @@ class SkillsPlugin(Plugin):
                     "Run one allowed entrypoint script from an active skill's scripts directory with "
                     "optional CLI arguments and return its stdout/stderr. Call when the skill's workflow "
                     "explicitly directs you to execute that script (path must come from get_skill). Gated "
-                    "by SKILLS_ALLOW_SCRIPTS and the SKILLS_SCRIPT_ADMIN_USER_IDS allow-list."
+                    "by SKILLS_ALLOW_SCRIPTS; SKILLS_SCRIPT_ADMIN_USER_IDS (default '*' — everyone) may "
+                    "narrow execution to a user-id allow-list."
                 ),
                 "parameters": {
                     "type": "object",
