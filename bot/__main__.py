@@ -36,6 +36,26 @@ def parse_bool_env(name, default):
     raise ValueError(f'{name} must be a boolean value')
 
 
+def _parse_numeric_env(name, default, cast):
+    """Parse a numeric env var without aborting startup on malformed input.
+
+    Falls back to ``default`` and logs a warning when the value cannot be
+    cast. Only used for the new ``SUMMARY_*`` knobs introduced with T4 — the
+    existing strict ``int(...)`` / ``float(...)`` calls keep their behaviour.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == '':
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        logging.warning(
+            'Invalid %s=%r; falling back to default %r',
+            name, raw, default,
+        )
+        return default
+
+
 def validate_telegram_base_url(value):
     if not value:
         return ''
@@ -111,6 +131,14 @@ def main():
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
         'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', LLMGATEWAY_BIG_CONTEXT_MODEL),
         'light_model': os.environ.get('LIGHT_MODEL', LLMGATEWAY_LIGHT_MODEL),
+        # T4: context summarisation knobs. ``SUMMARY_MODEL`` empty -> helper
+        # falls back to ``light_model``/``model``.
+        'summary_enabled': parse_bool_env('SUMMARY_ENABLED', True),
+        'summary_model': os.environ.get('SUMMARY_MODEL', ''),
+        'summary_max_tokens': _parse_numeric_env('SUMMARY_MAX_TOKENS', 400, int),
+        'summary_timeout_seconds': _parse_numeric_env('SUMMARY_TIMEOUT_SECONDS', 20.0, float),
+        'summary_min_messages_between_runs': _parse_numeric_env('SUMMARY_MIN_MESSAGES_BETWEEN_RUNS', 6, int),
+        'summary_target_keep_ratio': _parse_numeric_env('SUMMARY_TARGET_KEEP_RATIO', 0.5, float),
         # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
     }
 

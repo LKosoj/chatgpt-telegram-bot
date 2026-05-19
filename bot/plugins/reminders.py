@@ -23,25 +23,33 @@ class RemindersPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "set_reminder",
-            "description": f'Set a reminder for a specific time. Current server time is {datetime.now().strftime("%Y%m%d%H%M%S")}.',
+            "description": (
+                "Schedule a delayed Telegram notification for the current user at an absolute date/time. "
+                "Call when the user asks to be reminded about something later — resolve any relative "
+                "phrasing ('tomorrow', 'in 2 hours') into the absolute YYYY-MM-DD HH:MM 'time' value "
+                "yourself before calling."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "time": {
                         "type": "string",
-                        "description": "Reminder time in YYYY-MM-DD HH:MM format."
+                        "description": "Target reminder date/time in 'YYYY-MM-DD HH:MM' 24-hour local format."
                     },
                     "message": {
                         "type": "string",
-                        "description": "Reminder text."
+                        "description": "Text shown to the user when the reminder fires."
                     },
                     "current_time": {
                         "type": "string",
-                        "description": f'Current server time: {datetime.now().strftime("%Y-%m-%d %H:%M")}.'
+                        "description": (
+                            "Caller's best estimate of the current local date/time as 'YYYY-MM-DD HH:MM', "
+                            "used as the reference point for resolving relative phrasings into 'time'."
+                        )
                     },
                     "integration": {
                         "type": "string",
-                        "description": "Delivery integration.",
+                        "description": "Delivery channel for the reminder; only 'telegram' is supported.",
                         "enum": ["telegram",]
                     }
                 },
@@ -50,26 +58,37 @@ class RemindersPlugin(Plugin):
         },
         {
             "name": "list_reminders",
-            "description": "List active reminders.",
+            "description": (
+                "List the active (not yet fired) reminders for the current Telegram user with their ids "
+                "and scheduled times. Call when the user asks what is on their reminder list or to look "
+                "up an id before deleting one."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "current_time": {
                         "type": "string",
-                        "description": f'Current server time: {datetime.now().strftime("%Y-%m-%d %H:%M")}.'
+                        "description": (
+                            "Caller's best estimate of the current local date/time as 'YYYY-MM-DD HH:MM'; "
+                            "used only for formatting relative due times in the response."
+                        )
                     }
                 },
             }
         },
         {
             "name": "delete_reminder",
-            "description": "Delete a reminder by id.",
+            "description": (
+                "Remove one scheduled reminder belonging to the current Telegram user by its id. Call "
+                "when the user explicitly asks to cancel a reminder — use list_reminders first if the "
+                "id is not already known."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reminder_id": {
                         "type": "string",
-                        "description": "Reminder id to delete."
+                        "description": "Reminder id as returned by list_reminders."
                     }
                 },
                 "required": ["reminder_id"]

@@ -263,7 +263,11 @@ class SkillsPlugin(Plugin):
         return [
             {
                 "name": "list_skills",
-                "description": "List local skills available to the current agent.",
+                "description": (
+                    "List local skills installed in SKILLS_DIR with their ids, names, and short descriptions. "
+                    "Call when picking a skill to activate or before searching for installable ones, to see "
+                    "what is already available."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -277,7 +281,11 @@ class SkillsPlugin(Plugin):
             },
             {
                 "name": "get_skill",
-                "description": "Return the full instruction body and metadata for one skill.",
+                "description": (
+                    "Return the full SKILL.md instruction body and metadata (scripts, agents, references, "
+                    "resources) for one local skill. Call before activating a skill or before fetching its "
+                    "reference/resource files, to read the workflow and discover available paths."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -292,8 +300,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "get_skill_reference",
                 "description": (
-                    "Return one markdown reference file used by a skill, such as references/*.md "
-                    "or META-SKILLS/_shared/*.md. The path must come from skills.get_skill."
+                    "Return the contents of one markdown reference file belonging to a skill, such as "
+                    "references/*.md or META-SKILLS/_shared/*.md. Call when the active skill workflow "
+                    "instructs you to consult a specific reference path returned by get_skill."
                 ),
                 "parameters": {
                     "type": "object",
@@ -313,8 +322,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "get_skill_resource",
                 "description": (
-                    "Return one non-markdown resource file used by a skill, such as templates/*.txt "
-                    "or assets/*.png. The path must come from skills.get_skill."
+                    "Return the contents of one non-markdown resource file belonging to a skill, such as "
+                    "templates/*.txt or assets/*.png (binary payloads come back base64-encoded). Call when "
+                    "the skill workflow requires a specific resource path returned by get_skill."
                 ),
                 "parameters": {
                     "type": "object",
@@ -334,8 +344,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "find_installable_skills",
                 "description": (
-                    "Search skills.sh through the `skills` CLI for new skills that can be installed. "
-                    "Returns package ids like owner/repo@skill for skills.install_skill."
+                    "Search the skills.sh catalog through the `skills` CLI for packages that can be "
+                    "installed locally and return package ids like owner/repo@skill. Call when the user "
+                    "asks for a capability that no currently installed skill (see list_skills) provides."
                 ),
                 "parameters": {
                     "type": "object",
@@ -351,11 +362,12 @@ class SkillsPlugin(Plugin):
             {
                 "name": "install_skill",
                 "description": (
-                    "Install a skill from a skills package id, GitHub/git repository URL, URL, "
-                    "local directory, markdown file, or .zip/.tar* archive, then sync it into "
-                    "SKILLS_DIR and refresh the local skill registry. Enabled by default unless "
-                    "SKILLS_ALLOW_INSTALLS=false. SKILLS_INSTALL_ADMIN_USER_IDS is a user allow-list "
-                    "that defaults to '*'. confirmed=true is required after explicit user approval."
+                    "Install a skill into SKILLS_DIR from a package id, GitHub/git URL, http(s) URL, "
+                    "file:// URL, local directory, markdown file, or .zip/.tar* archive, then refresh "
+                    "the local skill registry. Call only after the user has explicitly approved this "
+                    "exact source — confirmed=true must reflect that approval. Gated by "
+                    "SKILLS_ALLOW_INSTALLS (default on) and the SKILLS_INSTALL_ADMIN_USER_IDS allow-list "
+                    "(default '*')."
                 ),
                 "parameters": {
                     "type": "object",
@@ -395,10 +407,11 @@ class SkillsPlugin(Plugin):
             {
                 "name": "create_skill",
                 "description": (
-                    "Create a new local skill directory with SKILL.md under SKILLS_DIR. "
-                    "Uses the same filesystem mutation policy as install_skill: "
-                    "SKILLS_ALLOW_INSTALLS and SKILLS_INSTALL_ADMIN_USER_IDS apply, and "
-                    "confirmed=true is required after explicit user approval."
+                    "Create a new local skill directory under SKILLS_DIR with a generated SKILL.md "
+                    "(frontmatter plus instruction body). Call when the user explicitly asks to author a "
+                    "fresh skill from scratch instead of installing an existing one — confirmed=true must "
+                    "follow that approval. Same gating as install_skill: SKILLS_ALLOW_INSTALLS and "
+                    "SKILLS_INSTALL_ADMIN_USER_IDS apply."
                 ),
                 "parameters": {
                     "type": "object",
@@ -430,7 +443,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "activate_skill",
                 "description": (
-                    "Activate a skill for the current Telegram chat/user and store initial task context."
+                    "Activate a skill for the current Telegram chat/user and persist its initial task "
+                    "context so the workflow steps can be tracked. Call after get_skill has shown the "
+                    "skill is appropriate for the user's task and you intend to follow its instructions."
                 ),
                 "parameters": {
                     "type": "object",
@@ -449,7 +464,11 @@ class SkillsPlugin(Plugin):
             },
             {
                 "name": "get_skill_status",
-                "description": "Show active skill state for the current Telegram chat/user.",
+                "description": (
+                    "Return the stored progress, current step, and context for an active skill in this "
+                    "Telegram chat/user scope. Call to resume work mid-workflow or to inspect what an "
+                    "active skill recorded last."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -463,14 +482,19 @@ class SkillsPlugin(Plugin):
             {
                 "name": "list_active_skills",
                 "description": (
-                    "List skills currently active for this Telegram chat/user. "
-                    "Returns a compact summary without internal context details."
+                    "List the skills currently active for this Telegram chat/user as a compact summary "
+                    "without internal context payloads. Call to check whether a workflow is already "
+                    "running before activating another or before deciding to deactivate one."
                 ),
                 "parameters": {"type": "object", "properties": {}},
             },
             {
                 "name": "update_skill_progress",
-                "description": "Update active skill progress and merge additional JSON/text context.",
+                "description": (
+                    "Record the active skill's current step number and merge new JSON or plain-text "
+                    "context into its stored state. Call after completing each step of the skill "
+                    "workflow so progress is preserved across turns."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -493,8 +517,10 @@ class SkillsPlugin(Plugin):
             {
                 "name": "run_skill_script",
                 "description": (
-                    "Run an allowed script from an active skill scripts directory. Scripts must be enabled by "
-                    "SKILLS_ALLOW_SCRIPTS and the caller must be allowed by SKILLS_SCRIPT_ADMIN_USER_IDS."
+                    "Run one allowed entrypoint script from an active skill's scripts directory with "
+                    "optional CLI arguments and return its stdout/stderr. Call when the skill's workflow "
+                    "explicitly directs you to execute that script (path must come from get_skill). Gated "
+                    "by SKILLS_ALLOW_SCRIPTS and the SKILLS_SCRIPT_ADMIN_USER_IDS allow-list."
                 ),
                 "parameters": {
                     "type": "object",
@@ -521,10 +547,10 @@ class SkillsPlugin(Plugin):
             {
                 "name": "run_skill_agent",
                 "description": (
-                    "Run a tool-capable subagent declared by a skill under agents/*.yaml. "
-                    "Use when a skill exposes a specialist agent profile for the task. "
-                    "Fails with a clear error if the underlying subagent runtime is unavailable "
-                    "in the current chat mode."
+                    "Run a tool-capable subagent declared by an active skill under its agents/*.yaml "
+                    "profile, with a concrete bounded task. Call when the skill exposes a specialist "
+                    "agent profile that fits the current subtask better than running the work inline. "
+                    "Fails with a clear error if the subagent runtime is unavailable in the current chat mode."
                 ),
                 "parameters": {
                     "type": "object",
@@ -564,9 +590,11 @@ class SkillsPlugin(Plugin):
             {
                 "name": "record_skill_reflection",
                 "description": (
-                    "Record a reflection proposal after a skill failure. "
-                    "Repeated identical proposals are accumulated; when the repeat count is greater "
-                    "than three, the proposal is appended to that skill's SKILL.md as a learned clarification."
+                    "Log one concise reflection proposal after a skill run failed or produced wrong output, "
+                    "so the proposal can be deduplicated and eventually promoted into SKILL.md. Call only "
+                    "after a real failure where a missing instruction would have prevented the mistake; "
+                    "duplicates accumulate and proposals repeated more than three times are appended to "
+                    "that skill's SKILL.md as a learned clarification."
                 ),
                 "parameters": {
                     "type": "object",
@@ -594,10 +622,10 @@ class SkillsPlugin(Plugin):
             {
                 "name": "deactivate_skill",
                 "description": (
-                    "Mark an active skill as completed and free its in-memory state. "
-                    "Use mid-conversation when the skill workflow is finished and its state is no "
-                    "longer needed. Active skills are also released automatically when the agent "
-                    "loop ends, so explicit deactivation is only needed before that."
+                    "Mark an active skill as completed and free its stored chat/user state. Call mid-"
+                    "conversation only when the workflow is finished and you want to stop tracking it; "
+                    "active skills are released automatically when the agent loop ends, so explicit "
+                    "deactivation is only needed before that."
                 ),
                 "parameters": {
                     "type": "object",

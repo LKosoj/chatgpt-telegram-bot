@@ -268,20 +268,19 @@ with open("голосовое.ogg", "rb") as audio:
 
 ```python
 # Проверяем, не слишком ли длинный разговор
-token_count = self.__count_tokens(self.conversations[chat_id], model_to_use)
+token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
 exceeded_max_tokens = token_count > лимит_модели * 0.95
 
 if exceeded_max_tokens:
-    # Просим нейросеть сделать краткое содержание
-    summary = await self.__summarise(
-        self.conversations[chat_id][:-1]  # Всё, кроме последнего сообщения
+    # Заменяем старую половину истории одним system-сообщением-сводкой.
+    # На неудачу (throttle / таймаут / пустой ответ) — fallback с
+    # head-preserve trim в вызывающем коде.
+    summarized = await self._summarize_and_trim(
+        state_key,
+        chat_id=chat_id,
+        session_id=session_id,
+        memory_user_id=memory_user_id,
     )
-    # Начинаем новый дневник с кратким содержанием вместо полной истории
-    self.reset_chat_history(chat_id, system_prompt)
-    self.conversations[chat_id].append({
-        "role": "assistant", 
-        "content": summary
-    })
 ```
 
 ## Защита от пустых ответов

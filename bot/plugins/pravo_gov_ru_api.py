@@ -43,11 +43,10 @@ class PravoGovRuAPIPlugin(Plugin):
             {
                 "name": "search_documents",
                 "description": (
-                    "Search the official Russian publication.pravo.gov.ru API for laws, decrees, "
-                    "orders, resolutions, and other normative legal acts. Supports search by title, "
-                    "document number, document type, signatory authority, public block/category, "
-                    "and fetching document metadata by eo_number. Use for Russian legal questions "
-                    "that need official links and publication dates."
+                    "Query the official Russian publication.pravo.gov.ru API for laws, decrees, orders, "
+                    "resolutions, and other normative legal acts, returning titles, dates, and official "
+                    "links — or fetch one document's metadata directly via eo_number. Call when answering "
+                    "Russian legal questions that require citing the official publication source."
                 ),
                 "parameters": {
                     "type": "object",

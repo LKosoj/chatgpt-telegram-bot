@@ -165,81 +165,93 @@ class MCPServerPlugin(Plugin):
         # Добавляем функции управления серверами
         specs.append({
             "name": "register_mcp_server",
-            "description": "Регистрирует новый MCP сервер для использования в качестве инструмента (только для администраторов)",
+            "description": (
+                "Регистрирует новый MCP сервер (HTTP или stdio) в реестре бота, чтобы его инструменты стали "
+                "доступны как функции модели. Вызывай только когда администратор явно просит подключить "
+                "конкретный MCP сервер; обычным пользователям регистрация запрещена."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "server_name": {
                         "type": "string",
-                        "description": "Уникальное имя сервера для ссылок"
+                        "description": "Уникальный короткий идентификатор сервера, используется как префикс для имён его tools."
                     },
                     "base_url": {
-                        "type": "string", 
-                        "description": "Базовый URL MCP сервера"
+                        "type": "string",
+                        "description": "Базовый HTTP(S) URL MCP сервера; обязателен при transport='http'."
                     },
                     "api_key": {
                         "type": "string",
-                        "description": "API ключ для доступа к серверу (если требуется)"
+                        "description": "Bearer-токен для HTTP-транспорта; опционален, передаётся в заголовке Authorization."
                     },
                     "description": {
                         "type": "string",
-                        "description": "Описание сервера и его функций"
+                        "description": "Короткое описание назначения сервера для отображения в списке."
                     },
                     "transport": {
                         "type": "string",
-                        "description": "Тип транспорта (http или stdio)",
+                        "description": "Тип транспорта: 'http' для удалённых серверов, 'stdio' для локального процесса.",
                         "enum": ["http", "stdio"]
                     },
                     "command": {
                         "type": "string",
-                        "description": "Команда для запуска сервера (для stdio транспорта)"
+                        "description": "Исполняемая команда запуска для transport='stdio', например 'npx' или абсолютный путь к бинарю."
                     },
                     "args": {
                         "type": "array",
-                        "description": "Аргументы командной строки (для stdio транспорта)",
+                        "description": "Список аргументов командной строки для запускаемого stdio-процесса.",
                         "items": {"type": "string"}
                     },
                     "env": {
                         "type": "object",
-                        "description": "Переменные окружения (для stdio транспорта)"
+                        "description": "Дополнительные переменные окружения для stdio-процесса в виде объекта ключ→значение."
                     },
                     "user_id": {
                         "type": "integer",
-                        "description": "ID пользователя, выполняющего действие"
+                        "description": "Telegram user id вызывающего; проверяется по списку администраторов."
                     }
                 },
                 "required": ["server_name", "user_id"]
             }
         })
-        
+
         specs.append({
             "name": "list_mcp_servers",
-            "description": "Получить список всех зарегистрированных MCP серверов",
+            "description": (
+                "Возвращает список всех зарегистрированных MCP серверов с их URL/транспортом и числом "
+                "загруженных tools. Вызывай когда нужно показать пользователю или администратору, какие "
+                "MCP-источники сейчас подключены."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "user_id": {
                         "type": "integer",
-                        "description": "ID пользователя, выполняющего действие"
+                        "description": "Telegram user id вызывающего; используется для логирования действия."
                     }
                 },
                 "required": ["user_id"]
             }
         })
-        
+
         specs.append({
             "name": "remove_mcp_server",
-            "description": "Удалить зарегистрированный MCP сервер (только для администраторов)",
+            "description": (
+                "Удаляет ранее зарегистрированный MCP сервер из реестра и отключает все его tools. Вызывай "
+                "только по явной просьбе администратора, обычно после list_mcp_servers, чтобы убедиться в "
+                "точном имени удаляемого сервера."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "server_name": {
                         "type": "string",
-                        "description": "Имя сервера для удаления"
+                        "description": "Имя сервера в реестре, ровно как оно показано в list_mcp_servers."
                     },
                     "user_id": {
                         "type": "integer",
-                        "description": "ID пользователя, выполняющего действие"
+                        "description": "Telegram user id вызывающего; проверяется по списку администраторов."
                     }
                 },
                 "required": ["server_name", "user_id"]

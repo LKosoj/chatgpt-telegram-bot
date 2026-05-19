@@ -144,24 +144,33 @@ class TextDocumentQAPlugin(Plugin):
     def get_spec(self) -> List[Dict]:
         return [{
             "name": "upload_document",
-            "description": "Upload a text document into this chat's document workspace.",
+            "description": (
+                "Save a text document (already-extracted plaintext) into this Telegram chat's document "
+                "workspace and index it for question answering. Call only when the model itself has the "
+                "extracted text and the user wants it stored for follow-up questions; uploads from "
+                "Telegram attachments are handled by the document-upload handler automatically."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_content": {
                         "type": "string",
-                        "description": "Text content of the file.",
+                        "description": "Full plain-text content of the document to store.",
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "File name.",
+                        "description": "Display file name including extension, for example 'contract.md'.",
                     },
                 },
                 "required": ["file_content", "file_name"],
             },
         }, {
             "name": "list_documents",
-            "description": "List documents stored in this chat's workspace. Call this before ask_question or delete_document to obtain document_id values.",
+            "description": (
+                "List documents stored in this Telegram chat's workspace with their ids, file names, "
+                "creation timestamps, and summaries. Call before ask_question or delete_document to "
+                "discover the document_id that those tools require."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -170,20 +179,20 @@ class TextDocumentQAPlugin(Plugin):
         }, {
             "name": "ask_question",
             "description": (
-                "Ask a question about ONE specific document. Requires document_id — call "
-                "list_documents first to obtain it. Use when the user names a specific file or "
-                "asks about the contents of a particular document."
+                "Ask a question scoped to ONE specific document in this chat's workspace and return a "
+                "grounded answer. Call when the user names or clearly points at a single file; obtain "
+                "the document_id via list_documents first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "Document ID, obtained from list_documents.",
+                        "description": "Document id taken from list_documents output.",
                     },
                     "query": {
                         "type": "string",
-                        "description": "Question to ask about the document.",
+                        "description": "Natural-language question about that specific document.",
                     },
                 },
                 "required": ["document_id", "query"],
@@ -191,15 +200,16 @@ class TextDocumentQAPlugin(Plugin):
         }, {
             "name": "ask_workspace",
             "description": (
-                "Ask a free-form question across ALL documents in the workspace. Use when the "
-                "user wants a cross-document answer or does not reference a specific file."
+                "Run a free-form retrieval-augmented question across ALL documents in this chat's "
+                "workspace and return a synthesized answer with citations. Call when the user asks a "
+                "cross-document question or does not reference any particular file."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Question to ask across the workspace.",
+                        "description": "Natural-language question to answer using the whole workspace.",
                     },
                 },
                 "required": ["query"],
@@ -207,26 +217,28 @@ class TextDocumentQAPlugin(Plugin):
         }, {
             "name": "set_rag_mode",
             "description": (
-                "Enable or disable persistent RAG mode for this Telegram chat. When enabled, "
-                "every subsequent user text message is automatically answered against the "
-                "uploaded documents in this chat's workspace (equivalent to calling "
-                "ask_workspace each time), without the user having to invoke a tool. "
-                "When disabled, the chat returns to the normal conversational flow. "
-                "Call only when the user explicitly asks to switch document/RAG mode on or off."
+                "Toggle persistent RAG mode for this Telegram chat: when on, each plain user message is "
+                "automatically answered against the workspace documents (equivalent to an implicit "
+                "ask_workspace) without a tool call; when off, the chat returns to the normal flow. Call "
+                "only when the user explicitly asks to enter or leave document/RAG mode."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "enabled": {
                         "type": "boolean",
-                        "description": "true to enable RAG mode, false to disable.",
+                        "description": "Pass true to enable RAG mode for this chat, false to disable it.",
                     },
                 },
                 "required": ["enabled"],
             },
         }, {
             "name": "get_rag_status",
-            "description": "Show RAG mode status and the number of documents in this chat's workspace.",
+            "description": (
+                "Report whether RAG mode is currently enabled for this Telegram chat and how many "
+                "documents are in its workspace. Call when the user asks about the current document/RAG "
+                "state or before deciding whether to call set_rag_mode."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -234,13 +246,17 @@ class TextDocumentQAPlugin(Plugin):
             },
         }, {
             "name": "delete_document",
-            "description": "Delete a document from this chat's workspace.",
+            "description": (
+                "Permanently remove one document from this Telegram chat's workspace and its vector "
+                "index. Call when the user explicitly asks to delete a specific file; obtain the "
+                "document_id from list_documents first."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "Document ID to delete, obtained from list_documents.",
+                        "description": "Document id to delete, taken from list_documents output.",
                     },
                 },
                 "required": ["document_id"],

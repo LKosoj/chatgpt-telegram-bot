@@ -1712,19 +1712,30 @@ class HindsightMemoryPlugin(Plugin):
         return [
             {
                 "name": "recall",
-                "description": "Search the current Telegram user's Hindsight long-term memory.",
+                "description": (
+                    "Semantic search over the current Telegram user's long-term memory bank, returning "
+                    "ranked snippets with a short summary. Call when the user references past facts, "
+                    "preferences, or events from earlier conversations that are not in the current chat "
+                    "context."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Memory search query."},
+                        "query": {
+                            "type": "string",
+                            "description": "Natural-language query describing the facts to retrieve.",
+                        },
                         "budget": {
                             "type": "string",
                             "enum": ["low", "mid", "high"],
-                            "description": "Recall budget. Use mid by default.",
+                            "description": (
+                                "Recall depth: 'low' for a single quick lookup, 'mid' for normal use, "
+                                "'high' for broad multi-pass retrieval. Defaults to mid."
+                            ),
                         },
                         "max_tokens": {
                             "type": "integer",
-                            "description": "Maximum recall payload size in tokens.",
+                            "description": "Maximum total token size of the recall payload returned to the model.",
                         },
                     },
                     "required": ["query"],
@@ -1732,23 +1743,40 @@ class HindsightMemoryPlugin(Plugin):
             },
             {
                 "name": "list_memories",
-                "description": "List recently saved memories for the current Telegram user.",
+                "description": (
+                    "Page through saved memory entries for the current Telegram user in reverse-"
+                    "chronological order, with optional text and memory_type filters. Call when the "
+                    "user wants to browse or audit what is stored rather than answer a semantic query."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Maximum memories to return."},
-                        "offset": {"type": "integer", "description": "Pagination offset."},
-                        "query": {"type": "string", "description": "Optional text filter."},
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of memory entries to return in one page.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Number of entries to skip from the most recent end (pagination offset).",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional substring filter applied to memory text.",
+                        },
                         "memory_type": {
                             "type": "string",
-                            "description": "Optional memory type filter, such as world or experience.",
+                            "description": "Optional memory type filter such as 'world' or 'experience'.",
                         },
                     },
                 },
             },
             {
                 "name": "stats",
-                "description": "Get Hindsight memory statistics for the current Telegram user.",
+                "description": (
+                    "Return aggregate statistics for the current Telegram user's memory bank (total "
+                    "entries, types, sizes). Call when the user asks how much is stored or to verify "
+                    "that the memory bank is populated."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {},

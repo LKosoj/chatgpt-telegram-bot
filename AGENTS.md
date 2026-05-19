@@ -92,6 +92,12 @@ There are four kinds of hooks, each with a different dispatch policy:
    payload; returns a possibly-modified value or `None` (= no change). Identity on failure:
    a raising plugin yields the unchanged value from the previous step. Order is
    deterministic — `sorted(self.plugins.keys())`, i.e. by plugin module name.
+   Active mutators in tree:
+   - `agent_tools.on_before_chat_request` (`bot/plugins/agent_tools.py:200`) — injects the
+     planning-prefix system message that reminds the model to call `manage_plan_tasks`
+     before non-trivial work.
+   - `hindsight_memory.on_before_chat_request` (`bot/plugins/hindsight_memory.py:1607`) —
+     injects a recalled long-term-memory system message when auto-recall is enabled.
 4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, called
    **sequentially**. Active slots in tree: `auto_mode_priority` (auto-mode prompt prefix,
    `bot/openai_helper.py:2379`), `stats_block` (`/stats` extra blocks,

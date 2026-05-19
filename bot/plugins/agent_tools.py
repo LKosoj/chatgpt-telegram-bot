@@ -17,6 +17,7 @@ from ..model_constants import LLMGATEWAY_CHAT_MODELS
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..utils import compute_scope_key, get_thread_id, message_text
+from .hooks import BeforeChatRequestPayload
 from .plugin import Plugin
 
 
@@ -70,6 +71,15 @@ _CONTRACT_UNSET = object()
 
 _SUBAGENT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "subagent_system.md"
 _SUBAGENT_SYSTEM_PROMPT_CACHE: str | None = None
+
+_PLAN_RULE_MARKER = "[plan-rule-v1] "
+_PLAN_RULE_TEXT = (
+    "Если для выполнения запроса понадобятся 3+ tool-вызова или последовательная координация "
+    "шагов (несколько разных тулов, проверка промежуточных результатов, исправление ошибок) — "
+    "ПЕРВЫМ ходом вызови agent_tools.manage_plan_tasks с goal/success_criteria/verification и "
+    "зафиксируй план. Для тривиальных запросов (быстрый ответ из знаний, один очевидный тул, "
+    "перевод/время/факт) план НЕ создавай."
+)
 
 
 def _load_subagent_system_prompt() -> str:
@@ -187,20 +197,87 @@ class AgentToolsPlugin(Plugin):
     def get_source_name(self) -> str:
         return "AgentTools"
 
+    async def on_before_chat_request(
+        self,
+        messages: List[Dict[str, Any]],
+        payload: BeforeChatRequestPayload,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Inject a system-level reminder to call ``manage_plan_tasks`` for non-trivial work.
+
+        Skipped when ``agent_tools`` is not in the active mode's allow-list, when the
+        marker is already present (idempotency), or when the leading system prompt
+        already mentions ``manage_plan_tasks`` (mode prompt covers the rule itself).
+        Returns ``None`` for "no change".
+        """
+        helper = getattr(self, "openai", None)
+        if helper is None:
+            return None
+        chat_id = getattr(payload, "chat_id", None)
+        if chat_id is None:
+            return None
+
+        # Cheap idempotency / mode-prompt checks BEFORE the SQL-backed
+        # ``resolve_allowed_plugins`` call: this mutator runs on the hot path
+        # of every chat request, so short-circuit before touching the DB
+        # whenever possible.
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "system":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.startswith(_PLAN_RULE_MARKER):
+                return None
+
+        first_system = next(
+            (m for m in messages
+             if isinstance(m, dict) and m.get("role") == "system"),
+            None,
+        )
+        if first_system is not None:
+            content = first_system.get("content")
+            if isinstance(content, str) and "manage_plan_tasks" in content:
+                return None
+
+        user_id = getattr(payload, "user_id", None)
+        try:
+            allowed = await helper.resolve_allowed_plugins(
+                chat_id, session_id=None, user_id=user_id,
+            )
+        except Exception:
+            logging.debug(
+                "agent_tools plan-rule: resolve_allowed_plugins failed",
+                exc_info=True,
+            )
+            return None
+        plugin_id = self.get_plugin_id()
+        if allowed != ['All'] and plugin_id not in (allowed or []):
+            return None
+
+        new_messages = list(messages)
+        insert_at = 0
+        for msg in new_messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                insert_at += 1
+            else:
+                break
+        new_messages.insert(insert_at, {
+            "role": "system",
+            "content": _PLAN_RULE_MARKER + _PLAN_RULE_TEXT,
+        })
+        return new_messages
+
     def get_spec(self) -> List[Dict]:
         return [
             {
                 "name": "manage_plan_tasks",
                 "description": (
                     "Manage the current Telegram chat's durable task plan and Definition of Done. "
-                    "Use this before work expected to take more than two steps to set the goal, "
-                    "success criteria, constraints, and verification checks; then add/update tasks. "
-                    "Do not create a durable plan for one- or two-step work unless the user or an "
-                    "active skill explicitly requires it. Keep task ids stable: update "
-                    "existing tasks instead of adding semantic duplicates. Use depends_on to model "
-                    "a task DAG; a task may start only after its dependencies are closed. Without "
-                    "depends_on, preserve list order and do not start later tasks while earlier "
-                    "tasks are still pending. Only one task may be in_progress."
+                    "Call before starting work that needs more than two steps: record goal, success "
+                    "criteria, verification checks, and the task list. Skip the durable plan for "
+                    "one- or two-step requests. Keep task ids stable: update existing tasks instead "
+                    "of inserting semantic duplicates. Use depends_on to model a task DAG; a task may "
+                    "start only after its dependencies close. Without depends_on, preserve list order "
+                    "and do not start later tasks while earlier tasks are still pending. Only one "
+                    "task may be in_progress."
                 ),
                 "parameters": {
                     "type": "object",
@@ -262,9 +339,10 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "ask_telegram_user",
                 "description": (
-                    "Ask the Telegram user a concrete question and wait for a button or text answer. "
-                    "Use when explicit confirmation, a choice, or missing information is required. "
-                    "Answer variants must be passed in options, not embedded into the question text."
+                    "Send the Telegram user a question with inline-button choices and wait for their reply. "
+                    "Call when explicit confirmation, a choice between alternatives, or missing user "
+                    "input is required before proceeding. Answer variants go in options, not in the "
+                    "question text."
                 ),
                 "parameters": {
                     "type": "object",
@@ -301,9 +379,9 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "cancel_pending_question",
                 "description": (
-                    "Cancel an outstanding ask_telegram_user question for this Telegram chat. "
-                    "Use when the question is no longer needed (e.g., the agent decided to "
-                    "proceed differently). Clears the inline keyboard."
+                    "Cancel the currently pending ask_telegram_user question in this Telegram chat and "
+                    "clear its inline keyboard. Call when the question is no longer needed because the "
+                    "answer was inferred from context or the plan changed."
                 ),
                 "parameters": {
                     "type": "object",
@@ -318,11 +396,10 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "deliver_to_user",
                 "description": (
-                    "Final delivery to the Telegram user. Send optional final text and zero or "
-                    "more local files. Calling this tool ends the agent loop, delivers everything "
-                    "to the user, and automatically deactivates any skills still active in this "
-                    "chat scope. Use this as the only way to publish a final answer — do not "
-                    "address the user with plain assistant text and do not call this twice."
+                    "Publish the agent's final answer to the Telegram user as one message with optional "
+                    "text and zero or more local files, ending the agent loop. Call exactly once when "
+                    "the task is finished or cannot continue; this is the only sanctioned way to address "
+                    "the user — do not produce a plain assistant reply alongside it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -377,11 +454,12 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "run_subagents",
                 "description": (
-                    "Run independent tool-capable subagents in parallel for bounded subtasks. "
-                    "Subagents may call tools and skills, but they cannot ask Telegram questions, "
-                    "publish final artifacts, or start nested subagents. Give each subagent a "
-                    "bounded output contract: what to inspect, expected evidence, files it may "
-                    "touch, and what risks/unknowns it must report back to the parent."
+                    "Fan out independent, bounded subtasks to tool-capable subagents that run in parallel "
+                    "and return structured findings to the parent. Call when the work has two or more "
+                    "independent investigation branches and you want them executed concurrently with their "
+                    "own tool budgets. Subagents cannot ask Telegram questions, publish final artifacts, "
+                    "or spawn nested subagents; give each one an explicit output contract (what to inspect, "
+                    "what evidence to return, what files it may touch)."
                 ),
                 "parameters": {
                     "type": "object",

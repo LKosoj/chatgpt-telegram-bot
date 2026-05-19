@@ -31,32 +31,36 @@ class GoogleWebSearchPlugin(Plugin):
         return [
             {
                 'name': 'web_search',
-                'description': 'Execute a web search for the given query and return a list of results',
+                'description': (
+                    'Run a Google Custom Search query and return ranked organic results with title, link, '
+                    'and snippet. Call when the user needs fresh public information from the broad web and '
+                    'precise Google ranking matters more than speed.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
-                            'type': 'string', 
-                            'description': 'the user query'
+                            'type': 'string',
+                            'description': 'Search query in natural language, the way the user would type it into Google.'
                         },
                         'num': {
                             'type': 'integer',
-                            'description': 'number of search results to return (1-10)',
+                            'description': 'Number of organic results to return, from 1 to 10.',
                             'minimum': 1,
                             'maximum': 10
                         },
                         'hl': {
                             'type': 'string',
-                            'description': 'interface language (e.g., "en", "ru", "es")'
+                            'description': 'Interface language as an ISO-639-1 code such as "en", "ru", or "es".'
                         },
                         'gl': {
                             'type': 'string',
-                            'description': 'geolocation country code (e.g., "us", "ru", "de")'
+                            'description': 'Geolocation bias as a 2-letter ISO country code such as "us", "ru", or "de".'
                         },
                         'safe': {
                             'type': 'string',
                             'enum': ['active', 'off'],
-                            'description': 'safe search level'
+                            'description': 'SafeSearch filter: "active" filters explicit content, "off" disables filtering.'
                         }
                     },
                     'required': ['query'],

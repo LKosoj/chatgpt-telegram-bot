@@ -29,17 +29,21 @@ class JinaWebSearchPlugin(Plugin):
         return [
             {
                 'name': 'web_search',
-                'description': 'Execute a web search for the given query using Jina AI and return a list of results',
+                'description': (
+                    'Run a Jina AI web search and return ranked results with title, URL, and snippet. '
+                    'Call when the user needs current public web information and a Jina-backed result '
+                    'set (favouring readable English-language sources) is preferred.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
-                            'type': 'string', 
-                            'description': 'the user query'
+                            'type': 'string',
+                            'description': 'Search query phrased in natural language, the way the user would type it.'
                         },
                         'max_results': {
                             'type': 'integer',
-                            'description': 'maximum number of search results to return (1-20)',
+                            'description': 'Maximum number of result snippets to return, from 1 to 20.',
                             'minimum': 1,
                             'maximum': 20,
                             'default': 10

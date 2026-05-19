@@ -27,23 +27,27 @@ class DDGWebSearchPlugin(Plugin):
         return [{
             "name": "web_search",
             "description": (
-                "Quick web search for one concrete fact, current news, or local/regional info. "
-                "Returns short result snippets with title, url, and excerpt."
+                "Run a quick LLMGateway-backed web search for one concrete fact, recent news, or local/"
+                "regional information, returning ranked snippets with title, URL, and excerpt. Call when "
+                "the answer depends on fresh public information that the model is unlikely to know."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "User query."
+                        "description": "Search query phrased in natural language, the way the user would type it."
                     },
                     "region": {
                         "type": "string",
-                        "description": "Optional region/language hint, e.g. 'en' for English-language sources, 'ru' for Russian.",
+                        "description": (
+                            "Optional language hint as a 2-letter code such as 'en' for English-language "
+                            "sources or 'ru' for Russian; defaults to Russian."
+                        ),
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Maximum number of search results to return",
+                        "description": "Maximum number of result snippets to return (1-20).",
                         "minimum": 1,
                         "maximum": 20,
                         "default": 5

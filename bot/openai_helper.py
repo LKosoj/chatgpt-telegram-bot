@@ -207,6 +207,9 @@ class OpenAIHelper:
         self._background_tasks: set[asyncio.Task] = set()
         self._chat_request_models: dict[int, str] = {}
         self._chat_request_extra_tokens: dict[int, int] = {}
+        # T4: per-state message-count snapshot at the time of the last successful
+        # summarisation; used by ``_should_summarize_now`` to throttle reruns.
+        self._last_summary_at: dict = {}
         self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
         self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
@@ -228,6 +231,14 @@ class OpenAIHelper:
         self.config.setdefault('tts_voice', 'kseniya')
         self.config.setdefault('tts_response_format', 'wav')
         self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
+        # T4: summary defaults. ``summary_model`` defaults to '' meaning
+        # ``_summarise_window`` falls back to ``light_model``/``model``.
+        self.config.setdefault('summary_enabled', True)
+        self.config.setdefault('summary_model', '')
+        self.config.setdefault('summary_max_tokens', 400)
+        self.config.setdefault('summary_timeout_seconds', 20.0)
+        self.config.setdefault('summary_min_messages_between_runs', 6)
+        self.config.setdefault('summary_target_keep_ratio', 0.5)
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -1083,28 +1094,38 @@ class OpenAIHelper:
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                # Pre-dispatch: let session-memory subscribers (e.g. Hindsight)
+                # snapshot the outgoing window before _summarize_and_trim
+                # replaces it with a summary, OR before the head-preserve
+                # fallback trims it. The hook must fire even if summarisation
+                # is later throttled or fails — Hindsight may still want to
+                # snapshot the soon-to-be-trimmed tail.
+                await self._dispatch_before_summarise_reset(
+                    chat_id=chat_id,
+                    user_id=memory_user_id,
+                    session_id=session_id,
+                )
+                summarized = False
                 try:
-                    summary = await self.__summarise(self.conversations[state_key][:-1], chat_id, session_id)
-                    logger.debug(f'Summary: {summary}')
-                    # Pre-dispatch: let session-memory subscribers snapshot the
-                    # outgoing window before we wipe it via reset_chat_history.
-                    await self._dispatch_before_summarise_reset(
+                    summarized = await self._summarize_and_trim(
+                        state_key,
                         chat_id=chat_id,
-                        user_id=memory_user_id,
                         session_id=session_id,
+                        memory_user_id=memory_user_id,
                     )
-                    await self.reset_chat_history(
-                        chat_id,
-                        self.conversations[state_key][0]['content'],
-                        session_id,
-                        prune_old_sessions=False,
-                    )
-                    await self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
-                    await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
-                    token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
                 except Exception as e:
-                    logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[state_key] = self.conversations[state_key][-self.config['max_history_size']:]
+                    logger.warning(f'Error while summarising chat history: {str(e)}. Falling back to head-preserve trim.')
+                    summarized = False
+                if not summarized:
+                    conv = self.conversations[state_key]
+                    # Preserve ALL system messages (initial assistant prompt
+                    # AND any prior `[prior_summary]:` system messages from
+                    # earlier successful summarisations) so accumulated memory
+                    # survives the throttle-then-fallback path.
+                    head = [m for m in conv if isinstance(m, dict) and m.get('role') == 'system']
+                    tail = conv[-self.config['max_history_size']:]
+                    self.conversations[state_key] = head + [m for m in tail if m not in head]
+                token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
 
             logger.info(f"Model: {model_to_use}")
 
@@ -1676,29 +1697,36 @@ class OpenAIHelper:
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logger.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                # Pre-dispatch: let session-memory subscribers (e.g. Hindsight)
+                # snapshot the outgoing vision window before _summarize_and_trim
+                # replaces it with a summary, OR before the head-preserve
+                # fallback trims it. See the chat-path comment for the
+                # throttle-then-fallback rationale.
+                await self._dispatch_before_summarise_reset(
+                    chat_id=chat_id,
+                    user_id=user_id or chat_id,
+                    session_id=session_id,
+                )
+                summarized = False
                 try:
-
-                    last = self.conversations[state_key][-1]
-                    summary = await self.__summarise(self.conversations[state_key][:-1], chat_id, session_id)
-                    logger.debug(f'Summary: {summary}')
-                    # Pre-dispatch: let session-memory subscribers snapshot the
-                    # outgoing vision window before we wipe it.
-                    await self._dispatch_before_summarise_reset(
+                    summarized = await self._summarize_and_trim(
+                        state_key,
                         chat_id=chat_id,
-                        user_id=user_id or chat_id,
                         session_id=session_id,
+                        memory_user_id=user_id or chat_id,
                     )
-                    await self.reset_chat_history(
-                        chat_id,
-                        self.conversations[state_key][0]['content'],
-                        session_id=session_id,
-                        prune_old_sessions=False,
-                    )
-                    await self.__add_to_history(chat_id, role="assistant", content=summary, session_id=session_id)
-                    self.conversations[state_key] += [last]
                 except Exception as e:
-                    logger.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[state_key] = self.conversations[state_key][-self.config['max_history_size']:]
+                    logger.warning(f'Error while summarising chat history: {str(e)}. Falling back to head-preserve trim.')
+                    summarized = False
+                if not summarized:
+                    conv = self.conversations[state_key]
+                    # Preserve ALL system messages (initial prompt + any prior
+                    # `[prior_summary]:` from earlier summarisations) so
+                    # accumulated memory survives the throttle-then-fallback
+                    # path.
+                    head = [m for m in conv if isinstance(m, dict) and m.get('role') == 'system']
+                    tail = conv[-self.config['max_history_size']:]
+                    self.conversations[state_key] = head + [m for m in tail if m not in head]
 
             message = {'role':'user', 'content':content}
 
@@ -2481,7 +2509,15 @@ class OpenAIHelper:
             
             self.conversations[state_key] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
             self.loaded_conversation_sessions[state_key] = session_id
-            
+            # Reset throttle state so the next summarise pass on this state_key
+            # starts from a clean slate (avoids stale "summarised at len=N"
+            # markers carrying over after a fresh /reset). Guarded via
+            # ``getattr`` because some legacy tests construct the helper via
+            # ``object.__new__`` and skip ``__init__``.
+            last_summary_at = getattr(self, '_last_summary_at', None)
+            if last_summary_at is not None:
+                last_summary_at.pop(state_key, None)
+
             # Сохраняем обновленный контекст
             await self._save_conversation_context(
                 chat_id,
@@ -2575,70 +2611,256 @@ class OpenAIHelper:
             session_id,
         )
 
-    async def __summarise(self, conversation, chat_id=None, session_id=None) -> str:
+    # ------------------------------------------------------------------ #
+    # T4: context summarisation on window overflow
+    # ------------------------------------------------------------------ #
+
+    SUMMARY_WINDOW_PROMPT = (
+        "Ты — компонент памяти ассистента. Получишь фрагмент истории диалога между\n"
+        "пользователем и ассистентом. Сожми его в краткую сводку (до 800 символов).\n\n"
+        "Правила:\n"
+        "1. ВСЕГДА сохраняй: имя пользователя, локацию, язык, профессию, явные\n"
+        "   предпочтения, упомянутые проекты и сущности.\n"
+        "2. Сохраняй фактические выводы инструментов (результаты поиска, расчёты),"
+        " но без полного текста — только итог.\n"
+        "3. Не сохраняй: small-talk, повторы, извинения, форматирование.\n"
+        "4. Пиши третьим лицом: \"Пользователь сказал...\", \"Ассистент сообщил...\".\n"
+        "5. Никаких выдуманных фактов.\n\n"
+        "Формат: один абзац, без списков, без markdown."
+    )
+
+    @staticmethod
+    def _safe_cut_index(msgs: list, naive_cut: int) -> int:
+        """Adjust ``naive_cut`` so it does not slice the middle of an
+        assistant/tool_calls -> tool_result chain.
+
+        Returns the adjusted cut index, or 0 if the chain can't be resolved
+        within a bounded retry window (caller should then skip summarisation).
         """
-        Summarises the conversation history.
-        :param conversation: The conversation history
-        :param chat_id: The chat ID of the conversation
-        :param session_id: Optional session identifier
-        :return: The summary
+        if not msgs or naive_cut <= 0 or naive_cut >= len(msgs):
+            return naive_cut if 0 <= naive_cut <= len(msgs) else 0
+
+        cut = naive_cut
+        moves = 0
+        max_moves = 10
+
+        # Step 1: if cut points to a dangling 'tool' message (its assistant
+        # call is in the "to_summarize" half), walk forward past contiguous
+        # tool messages so the tool result stays with its caller.
+        while cut < len(msgs) and isinstance(msgs[cut], dict) and msgs[cut].get('role') == 'tool':
+            cut += 1
+            moves += 1
+            if moves > max_moves:
+                return 0
+
+        # Step 2: if the last message in "to_summarize" is an assistant with
+        # tool_calls, every tool_call_id must be closed by a 'tool' message
+        # within the "to_keep" half. Shift cut forward until all pending ids
+        # are resolved.
+        if cut > 0 and isinstance(msgs[cut - 1], dict):
+            prev = msgs[cut - 1]
+            if prev.get('role') == 'assistant' and prev.get('tool_calls'):
+                pending_ids = set()
+                for tc in prev.get('tool_calls') or ():
+                    if isinstance(tc, dict):
+                        tid = tc.get('id') or (tc.get('function') or {}).get('id')
+                        if tid:
+                            pending_ids.add(tid)
+                # The naive cut already put this assistant in "to_summarize";
+                # consume any pending tool replies that follow.
+                while pending_ids and cut < len(msgs) and moves <= max_moves:
+                    m = msgs[cut]
+                    if isinstance(m, dict) and m.get('role') == 'tool':
+                        tid = m.get('tool_call_id')
+                        if tid in pending_ids:
+                            pending_ids.discard(tid)
+                        cut += 1
+                        moves += 1
+                        continue
+                    # A non-tool message before all ids are closed means we
+                    # can't safely split. Bail.
+                    return 0
+                if pending_ids:
+                    return 0
+
+        if moves > max_moves:
+            return 0
+        return cut
+
+    @staticmethod
+    def _serialize_messages_for_summary(msgs: list) -> str:
+        """Render messages as plain text for the summariser prompt.
+
+        Unlike ``str(msg)``, this collapses tool calls / tool results into
+        explicit markers so the summariser sees structure without raw dict
+        noise.
+        """
+        lines: list[str] = []
+        for msg in msgs:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', 'user')
+            content = msg.get('content')
+            tool_calls = msg.get('tool_calls') or ()
+            if isinstance(content, list):
+                # vision/multimodal payload — keep only text parts
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get('type') == 'text':
+                        text_parts.append(str(part.get('text', '')))
+                content_text = ' '.join(p for p in text_parts if p)
+            elif content is None:
+                content_text = ''
+            else:
+                content_text = str(content)
+            if role == 'tool':
+                name = msg.get('name') or msg.get('tool_call_id') or ''
+                lines.append(f"[tool_result {name}] {content_text}".rstrip())
+                continue
+            if tool_calls:
+                names = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = (tc.get('function') or {}).get('name') or tc.get('name') or ''
+                        if fn:
+                            names.append(fn)
+                marker = f"[tool_call {', '.join(names)}]" if names else "[tool_call]"
+                prefix = f"{role}: {content_text}".rstrip()
+                lines.append(f"{prefix} {marker}".strip())
+                continue
+            lines.append(f"{role}: {content_text}".rstrip())
+        return "\n".join(lines)
+
+    def _should_summarize_now(self, state_key) -> bool:
+        """Throttle: skip a fresh summary run if too few messages have been
+        appended since the last one.
         """
         try:
-            # Ограничиваем размер входных данных
-            model_to_use = self.config['model']
-            if chat_id is not None:
-                model_to_use = self.get_current_model(chat_id, session_id=session_id)
+            min_between = int(self.config.get('summary_min_messages_between_runs', 6))
+        except (TypeError, ValueError):
+            min_between = 6
+        last = self._last_summary_at.get(state_key)
+        if last is None:
+            return True
+        current = len(self.conversations.get(state_key) or ())
+        return (current - last) >= min_between
 
-            max_tokens = default_max_tokens(model_to_use)
-            current_tokens = 0
-            truncated_conversation = []
-            
-            # Подсчитываем токены и обрезаем историю если нужно
-            for msg in reversed(conversation):  # Идем с конца, чтобы сохранить последние сообщения
-                msg_tokens = self.__count_tokens([msg])
-                if current_tokens + msg_tokens > max_tokens:
-                    break
-                current_tokens += msg_tokens
-                truncated_conversation.insert(0, msg)  # Вставляем в начало списка
+    async def _summarise_window(self, messages_to_summarize: list) -> str:
+        """Call the cheap summary model on a window of messages.
 
-            messages = [
-                {"role": "assistant", "content": "Summarize this conversation in 1000 characters or less"},
-                {"role": "user", "content": str(truncated_conversation)}
-            ]
-            
-            response = await self.client.chat.completions.create(
-                model=model_to_use,
-                messages=messages,
-                temperature=0.4,
-                max_tokens=self.get_max_tokens(model_to_use, 80, chat_id),  # Явно ограничиваем размер ответа
-                extra_headers={ "X-Title": "tgBot" },
+        Isolated so tests can mock it without spinning up the full LLM client.
+        Raises on transport / timeout errors — caller wraps with try/except.
+        """
+        rendered = self._serialize_messages_for_summary(messages_to_summarize)
+        summary_model = self.config.get('summary_model') or self.config.get('light_model') or self.config.get('model')
+        max_tokens = int(self.config.get('summary_max_tokens', 400) or 400)
+        response = await self.client.chat.completions.create(
+            model=summary_model,
+            messages=[
+                {"role": "system", "content": self.SUMMARY_WINDOW_PROMPT},
+                {"role": "user", "content": rendered},
+            ],
+            temperature=0.2,
+            max_tokens=max_tokens,
+            stream=False,
+            extra_headers={"X-Title": "tgBot"},
+        )
+        summary = _first_choice_or_raise(response).message.content or ""
+        return summary.strip()
+
+    async def _summarize_and_trim(
+        self,
+        state_key,
+        *,
+        chat_id: int,
+        session_id: str | None,
+        memory_user_id: int | None,
+    ) -> bool:
+        """Replace the older half of ``self.conversations[state_key]`` with a
+        single summary system message produced by ``_summarise_window``.
+
+        Returns True if the conversation was actually trimmed, False on any
+        skip path (throttle, unresolvable cut, summary failure). Caller
+        applies a head-preserve fallback on False.
+        """
+        if not self.config.get('summary_enabled', True):
+            return False
+
+        conv = self.conversations.get(state_key)
+        if not conv:
+            return False
+
+        if not self._should_summarize_now(state_key):
+            logger.info(
+                "Summary throttled for state_key=%s (last=%s, current=%s, min=%s)",
+                state_key,
+                self._last_summary_at.get(state_key),
+                len(conv),
+                self.config.get('summary_min_messages_between_runs', 6),
             )
-            
-            summary = _first_choice_or_raise(response).message.content
+            return False
 
-            if chat_id is not None:
-                state_key = self._chat_state_key(chat_id)
-                # Получаем текущие настройки из базы данных
-                _, parse_mode, temperature, max_tokens_percent, current_session_id = self.db.get_conversation_context(chat_id, session_id)
-                
-                # Используем session_id из параметров, если он передан, иначе из базы
-                session_id = session_id or current_session_id
-                
-                # Сохраняем обновленный контекст после суммаризации
-                await self._save_conversation_context(
-                    chat_id,
-                    {'messages': self.conversations[state_key]},
-                    parse_mode,
-                    temperature,
-                    max_tokens_percent,
-                    session_id,
-                )
-                
-            return summary
-        except Exception as e:
-            logger.error(f'Error in summarise: {str(e)}')
-            # В случае ошибки возвращаем базовое сообщение
-            return "Previous conversation history was too long and has been truncated."
+        # Protect leading system messages (assistant_prompt, mode prompt, etc).
+        head_end = 0
+        for m in conv:
+            if isinstance(m, dict) and m.get('role') == 'system':
+                head_end += 1
+            else:
+                break
+        head = conv[:head_end]
+        non_system = conv[head_end:]
+        if len(non_system) < 4:
+            # Nothing meaningful to summarise.
+            return False
+
+        try:
+            keep_ratio = float(self.config.get('summary_target_keep_ratio', 0.5))
+        except (TypeError, ValueError):
+            keep_ratio = 0.5
+        keep_ratio = min(max(keep_ratio, 0.1), 0.9)
+        naive_cut = max(1, int(len(non_system) * (1.0 - keep_ratio)))
+        cut = self._safe_cut_index(non_system, naive_cut)
+        if cut <= 0 or cut >= len(non_system):
+            logger.info(
+                "Summary safe-cut returned %s for non_system len=%s; skipping",
+                cut, len(non_system),
+            )
+            return False
+
+        to_summarize = non_system[:cut]
+        to_keep = non_system[cut:]
+
+        try:
+            timeout_seconds = float(self.config.get('summary_timeout_seconds', 20.0))
+        except (TypeError, ValueError):
+            timeout_seconds = 20.0
+
+        try:
+            summary = await asyncio.wait_for(
+                self._summarise_window(to_summarize),
+                timeout=timeout_seconds,
+            )
+        except Exception:
+            logger.exception(
+                "Summary window call failed for state_key=%s",
+                state_key,
+            )
+            return False
+
+        if not summary:
+            logger.warning("Summary window returned empty content; skipping trim")
+            return False
+
+        summary_msg = {"role": "system", "content": "[prior_summary]: " + summary}
+        self.conversations[state_key] = [*head, summary_msg, *to_keep]
+        self._last_summary_at[state_key] = len(self.conversations[state_key])
+        logger.info(
+            "Summarised %s messages -> 1 summary; kept %s; new length=%s "
+            "(chat_id=%s, session_id=%s)",
+            len(to_summarize), len(to_keep), len(self.conversations[state_key]),
+            chat_id, session_id,
+        )
+        return True
 
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
     def __count_tokens(self, messages, model_to_use = None) -> int:

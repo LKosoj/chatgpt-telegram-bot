@@ -152,6 +152,30 @@ DELIVERY_REPAIR_PROMPT = (
     "artifacts if any, and a concise verification_summary or blocked_reason. If previous tool "
     "results created local files, use their paths as artifacts."
 )
+REFLECTION_NOTE_MAX_TOOLS = 5
+REFLECTION_NOTE_PREFIX = "Tool error(s) in last batch: "
+REFLECTION_NOTE_INSTRUCTION = (
+    " Перед следующим действием объясни в одной фразе, что пошло не так и почему. "
+    "Только после этого продолжай."
+)
+
+
+def _format_reflection_note(failed_calls: list[tuple[str, str]]) -> str:
+    """Build a short reflection note listing failed tools.
+
+    Keeps total length under 400 chars (per spec): names are deduplicated and
+    truncated to REFLECTION_NOTE_MAX_TOOLS; the instruction tail is fixed.
+    """
+    seen: list[str] = []
+    for name, _err in failed_calls:
+        if name and name not in seen:
+            seen.append(name)
+    visible = seen[:REFLECTION_NOTE_MAX_TOOLS]
+    omitted = len(seen) - len(visible)
+    names_part = ", ".join(visible)
+    if omitted > 0:
+        names_part = f"{names_part} (+{omitted} more)"
+    return f"{REFLECTION_NOTE_PREFIX}{names_part}.{REFLECTION_NOTE_INSTRUCTION}"
 
 
 async def _prepend_stream_item(first_item, response):
@@ -866,6 +890,7 @@ async def handle_function_call(
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         direct_results_collected: list = []
+        failed_calls: list[tuple[str, str]] = []
         seen_artifact_paths = {
             entry.get("path") for entry in artifact_manifest if isinstance(entry, dict)
         }
@@ -912,11 +937,25 @@ async def handle_function_call(
                     )
                 else:
                     add_tool_result(tool_name, tool_result.content, tool_call_id)
+                    if not tool_result.success:
+                        failed_calls.append(
+                            (tool_name, tool_result.error or tool_result.content[:200])
+                        )
 
         for tool_name, tool_call_id, tool_response in errors:
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             add_tool_result(tool_name, tool_response, tool_call_id)
+            err_tr = normalize_tool_result(tool_response, tool_name=tool_name)
+            failed_calls.append(
+                (tool_name, err_tr.error or err_tr.content[:200])
+            )
+
+        if failed_calls and not direct_results_collected:
+            _conversation_messages(helper, chat_id).append({
+                "role": "user",
+                "content": _format_reflection_note(failed_calls),
+            })
 
         if direct_results_collected:
             if len(direct_results_collected) == 1:
