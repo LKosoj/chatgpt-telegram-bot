@@ -3083,11 +3083,26 @@ class OpenAIHelper:
                         num_tokens += len(encoding.encode(value))
                     elif isinstance(value, list):
                         for message1 in value:
-                            if message1['type'] == 'image_url':
+                            if not isinstance(message1, dict):
+                                num_tokens += len(encoding.encode(str(message1)))
+                                continue
+                            part_type = message1.get('type')
+                            if part_type == 'image_url':
                                 image = decode_image(message1['image_url']['url'])
                                 num_tokens += self.__count_tokens_vision(image)
+                            elif part_type == 'text':
+                                num_tokens += len(encoding.encode(message1.get('text') or ''))
                             else:
-                                num_tokens += len(encoding.encode(message1['text']))
+                                # Non-standard content part (no 'type', or unknown
+                                # part type). Fall back to a JSON-serialised string
+                                # rather than raising — counting must not break the
+                                # request loop on malformed history.
+                                try:
+                                    num_tokens += len(encoding.encode(
+                                        json.dumps(message1, ensure_ascii=False)
+                                    ))
+                                except (TypeError, ValueError):
+                                    num_tokens += len(encoding.encode(str(message1)))
                     else:
                         num_tokens += len(encoding.encode(str(value)))
                 elif key == 'tool_calls':

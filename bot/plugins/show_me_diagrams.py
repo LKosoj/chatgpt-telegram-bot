@@ -234,11 +234,21 @@ class ShowMeDiagramsPlugin(Plugin):
             with open(puml_file, 'r', encoding='utf-8') as f:
                 current_puml_code = f.read()
                 
-            messages = [
-                {"role": "system", "content": "Ты самый лучший специалист по генерации и исправлению ошибок в коде для PlantUML."},
-                {"role": "user", "content": f"При генерации диаграммы возникла ошибка:\n{result.stderr}\n\nВот текущий код PlantUML:\n\n{current_puml_code}\n\nИсправь ошибку, так же проверь код на отсутствие других ошибок и верни правильный код для PlantUML. Верни только исправленный код, без комментариев и объяснений."}
-            ]
-            response, _ = await helper.ask(messages, user_id=user_id)
+            repair_prompt = (
+                f"При генерации диаграммы возникла ошибка:\n{result.stderr}\n\n"
+                f"Вот текущий код PlantUML:\n\n{current_puml_code}\n\n"
+                "Исправь ошибку, так же проверь код на отсутствие других ошибок и "
+                "верни правильный код для PlantUML. Верни только исправленный код, "
+                "без комментариев и объяснений."
+            )
+            response, _ = await helper.ask(
+                repair_prompt,
+                user_id=user_id,
+                assistant_prompt=(
+                    "Ты самый лучший специалист по генерации и исправлению ошибок "
+                    "в коде для PlantUML."
+                ),
+            )
             
             # Удаляем маркеры кода, если они есть
             generated_text = response.replace("```plantuml", "").replace("```", "").strip()
