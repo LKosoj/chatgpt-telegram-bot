@@ -22,7 +22,7 @@ from .plugin import Plugin
 
 
 CLOSED_STATUSES = {"completed", "cancelled"}
-TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled", "blocked"}
 BACKGROUND_CLOSED_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 DELIVERY_ACTION_WORDS = (
     "attach",
@@ -71,6 +71,9 @@ _CONTRACT_UNSET = object()
 
 _SUBAGENT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "subagent_system.md"
 _SUBAGENT_SYSTEM_PROMPT_CACHE: str | None = None
+
+_REPLAN_TRIGGER_MARKER = "[re-plan trigger-v1] "
+_REPLAN_ERROR_THRESHOLD = 2
 
 _PLAN_RULE_MARKER = "[plan-rule-v1] "
 _PLAN_RULE_TEXT = (
@@ -134,6 +137,12 @@ class AgentToolsPlugin(Plugin):
         self._orphaned_pending: List[Dict[str, Any]] = []
         self._recent_deliveries: Dict[str, float] = {}
         self._background_subagent_tasks: set[asyncio.Task] = set()
+        # Re-plan trigger state. Keyed by scope (compute_scope_key result).
+        # _tool_error_streaks tracks consecutive failures for the SAME task_id.
+        # _pending_replan is a one-shot inject flag consumed by on_before_chat_request.
+        self._tool_error_streaks: Dict[str, Dict[str, Any]] = {}
+        self._pending_replan: Dict[str, Dict[str, Any]] = {}
+        self._replan_lock: Optional[asyncio.Lock] = None
         self._load_orphaned_pending()
         self._load_background_jobs()
 
@@ -207,6 +216,11 @@ class AgentToolsPlugin(Plugin):
         Skipped when ``agent_tools`` is not in the active mode's allow-list, when the
         marker is already present (idempotency), or when the leading system prompt
         already mentions ``manage_plan_tasks`` (mode prompt covers the rule itself).
+
+        Also delivers a one-shot re-plan trigger system message scheduled by
+        :meth:`_schedule_replan`. The trigger is popped under a lock so concurrent
+        chat requests cannot duplicate the inject.
+
         Returns ``None`` for "no change".
         """
         helper = getattr(self, "openai", None)
@@ -215,18 +229,32 @@ class AgentToolsPlugin(Plugin):
         chat_id = getattr(payload, "chat_id", None)
         if chat_id is None:
             return None
+        user_id = getattr(payload, "user_id", None)
+
+        # Pop pending re-plan trigger ONCE per scope; idempotent.
+        scope = compute_scope_key(chat_id, user_id)
+        pending = None
+        try:
+            async with self._get_replan_lock():
+                pending = self._pending_replan.pop(scope, None)
+        except Exception:
+            logging.debug("agent_tools: replan-pop failed", exc_info=True)
+            pending = None
 
         # Cheap idempotency / mode-prompt checks BEFORE the SQL-backed
         # ``resolve_allowed_plugins`` call: this mutator runs on the hot path
         # of every chat request, so short-circuit before touching the DB
         # whenever possible.
+        plan_rule_present = False
         for msg in messages:
             if not isinstance(msg, dict) or msg.get("role") != "system":
                 continue
             content = msg.get("content")
             if isinstance(content, str) and content.startswith(_PLAN_RULE_MARKER):
-                return None
+                plan_rule_present = True
+                break
 
+        mode_prompt_covers_rule = False
         first_system = next(
             (m for m in messages
              if isinstance(m, dict) and m.get("role") == "system"),
@@ -235,21 +263,27 @@ class AgentToolsPlugin(Plugin):
         if first_system is not None:
             content = first_system.get("content")
             if isinstance(content, str) and "manage_plan_tasks" in content:
-                return None
+                mode_prompt_covers_rule = True
 
-        user_id = getattr(payload, "user_id", None)
-        try:
-            allowed = await helper.resolve_allowed_plugins(
-                chat_id, session_id=None, user_id=user_id,
-            )
-        except Exception:
-            logging.debug(
-                "agent_tools plan-rule: resolve_allowed_plugins failed",
-                exc_info=True,
-            )
-            return None
-        plugin_id = self.get_plugin_id()
-        if allowed != ['All'] and plugin_id not in (allowed or []):
+        inject_plan_rule = not (plan_rule_present or mode_prompt_covers_rule)
+        if inject_plan_rule:
+            try:
+                allowed = await helper.resolve_allowed_plugins(
+                    chat_id, session_id=None, user_id=user_id,
+                )
+            except Exception:
+                logging.debug(
+                    "agent_tools plan-rule: resolve_allowed_plugins failed",
+                    exc_info=True,
+                )
+                allowed = None
+                inject_plan_rule = False
+            if allowed is not None:
+                plugin_id = self.get_plugin_id()
+                if allowed != ['All'] and plugin_id not in (allowed or []):
+                    inject_plan_rule = False
+
+        if not inject_plan_rule and not pending:
             return None
 
         new_messages = list(messages)
@@ -259,10 +293,21 @@ class AgentToolsPlugin(Plugin):
                 insert_at += 1
             else:
                 break
-        new_messages.insert(insert_at, {
-            "role": "system",
-            "content": _PLAN_RULE_MARKER + _PLAN_RULE_TEXT,
-        })
+        injected = 0
+        if inject_plan_rule:
+            new_messages.insert(insert_at, {
+                "role": "system",
+                "content": _PLAN_RULE_MARKER + _PLAN_RULE_TEXT,
+            })
+            injected += 1
+        if pending:
+            reason = str(pending.get("reason") or "errors")
+            task_id = str(pending.get("task_id") or "")
+            body = self._replan_message_body(reason, task_id)
+            new_messages.insert(insert_at + injected, {
+                "role": "system",
+                "content": body,
+            })
         return new_messages
 
     def get_spec(self) -> List[Dict]:
@@ -297,7 +342,7 @@ class AgentToolsPlugin(Plugin):
                                     "content": {"type": "string", "description": "Task text."},
                                     "status": {
                                         "type": "string",
-                                        "enum": ["pending", "in_progress", "completed", "cancelled"],
+                                        "enum": ["pending", "in_progress", "completed", "cancelled", "blocked"],
                                     },
                                     "depends_on": {
                                         "type": "array",
@@ -1020,6 +1065,14 @@ class AgentToolsPlugin(Plugin):
                 )
         except Exception:
             logging.exception("agent_tools.on_session_reset failed scope=%s", scope)
+        # Re-plan trigger state is in-process only and lives until the next
+        # chat request. Only wipe it on a full session reset (terminal_only=False);
+        # a terminal-only reset clears finished tasks but the session continues,
+        # so a pending re-plan inject scheduled earlier in the same session must
+        # still be delivered on the next chat request.
+        if not payload.terminal_only:
+            self._tool_error_streaks.pop(scope, None)
+            self._pending_replan.pop(scope, None)
 
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
@@ -1063,6 +1116,85 @@ class AgentToolsPlugin(Plugin):
         if self.db is not None:
             self._db_clear_plan(scope, clear_contract=False)
             return
+
+    # ---- re-plan trigger helpers --------------------------------------------------
+
+    def _get_replan_lock(self) -> asyncio.Lock:
+        # Lazy-init: __init__ may run before any event loop exists.
+        if self._replan_lock is None:
+            self._replan_lock = asyncio.Lock()
+        return self._replan_lock
+
+    def _current_in_progress_task_id(self, scope: str) -> Optional[str]:
+        if self.db is None:
+            return None
+        try:
+            plan = self._get_scope_plan(scope)
+        except Exception:
+            logging.debug("agent_tools: _current_in_progress_task_id read failed", exc_info=True)
+            return None
+        for task in plan.get("tasks") or []:
+            if task.get("status") == "in_progress":
+                task_id = str(task.get("id") or "").strip()
+                return task_id or None
+        return None
+
+    def _schedule_replan(self, scope: str, reason: str, task_id: str) -> None:
+        if not scope or not task_id:
+            return
+        existing = self._pending_replan.get(scope)
+        new_entry = {"reason": reason, "task_id": task_id}
+        if existing == new_entry:
+            return
+        self._pending_replan[scope] = new_entry
+
+    async def _record_tool_outcome(
+        self,
+        scope: str,
+        task_id: Optional[str],
+        success: bool,
+        tool_name: str,
+    ) -> None:
+        """Update consecutive-error streak and schedule re-plan if threshold reached.
+
+        Args:
+            scope: canonical scope key from ``compute_scope_key``.
+            task_id: id of the in_progress task at the start of the batch, may be None.
+            success: whether the tool call succeeded.
+            tool_name: tool function name (unused for now; reserved for filtering).
+        """
+        if not scope:
+            return
+        if success:
+            self._tool_error_streaks.pop(scope, None)
+            return
+        if not task_id:
+            # No in_progress task — no task-scoped streak to track.
+            return
+        entry = self._tool_error_streaks.get(scope)
+        if not entry or entry.get("task_id") != task_id:
+            self._tool_error_streaks[scope] = {"task_id": task_id, "count": 1}
+            return
+        entry["count"] = int(entry.get("count") or 0) + 1
+        if entry["count"] >= _REPLAN_ERROR_THRESHOLD:
+            self._schedule_replan(scope, "errors", task_id)
+            # Reset streak so the next streak must accumulate from zero
+            # (prevents trigger spam on subsequent failures).
+            self._tool_error_streaks.pop(scope, None)
+
+    @staticmethod
+    def _replan_message_body(reason: str, task_id: str) -> str:
+        if reason == "blocked":
+            return (
+                f"{_REPLAN_TRIGGER_MARKER}task {task_id} marked blocked. "
+                "Опиши блок и предложи альтернативную ветку через manage_plan_tasks(action=update)."
+            )
+        # default to "errors"
+        return (
+            f"{_REPLAN_TRIGGER_MARKER}consecutive errors on task {task_id}. "
+            "Пересмотри план через manage_plan_tasks(action=update). "
+            "Опиши, что не сработало, и предложи альтернативную ветку плана."
+        )
 
     @staticmethod
     def _normalize_existing_task(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -1378,6 +1510,7 @@ class AgentToolsPlugin(Plugin):
             if not items and contract_update is _CONTRACT_UNSET:
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
+            blocked_transitions: List[str] = []
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 content = str(item.get("content") or "").strip()
@@ -1388,6 +1521,7 @@ class AgentToolsPlugin(Plugin):
                 if status not in TASK_STATUSES:
                     return {"success": False, "error": f"Invalid task status: {status}"}
                 existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
+                previous_status = existing.get("status") if existing else None
                 if existing:
                     existing["content"] = content
                     existing["status"] = status
@@ -1405,6 +1539,8 @@ class AgentToolsPlugin(Plugin):
                             "updated_at": now,
                         }
                     )
+                if status == "blocked" and previous_status != "blocked":
+                    blocked_transitions.append(task_id)
             validation_error = self._validate_plan_tasks(candidate_tasks)
             if validation_error:
                 return {"success": False, "error": validation_error}
@@ -1415,6 +1551,8 @@ class AgentToolsPlugin(Plugin):
             changed = bool(items) or contract_changed
             if changed:
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
+                for task_id in blocked_transitions:
+                    self._schedule_replan(scope, "blocked", task_id)
             return self._tasks_response(
                 action,
                 candidate_tasks,
@@ -1428,6 +1566,7 @@ class AgentToolsPlugin(Plugin):
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
             changed = contract_changed
+            blocked_transitions: List[str] = []
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
@@ -1446,6 +1585,8 @@ class AgentToolsPlugin(Plugin):
                     if existing.get("status") != status:
                         existing["status"] = status
                         item_changed = True
+                        if status == "blocked":
+                            blocked_transitions.append(task_id)
                 if "depends_on" in item:
                     depends_on = self._normalize_depends_on(item.get("depends_on"))
                     if self._normalize_depends_on(existing.get("depends_on")) != depends_on:
@@ -1459,6 +1600,8 @@ class AgentToolsPlugin(Plugin):
                 if validation_error:
                     return {"success": False, "error": validation_error}
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
+                for task_id in blocked_transitions:
+                    self._schedule_replan(scope, "blocked", task_id)
             return self._tasks_response(
                 action,
                 candidate_tasks,
@@ -1476,6 +1619,8 @@ class AgentToolsPlugin(Plugin):
                 changed = True
             if changed:
                 self._save_scope_plan(scope, active, contract=effective_contract)
+            self._tool_error_streaks.pop(scope, None)
+            self._pending_replan.pop(scope, None)
             return self._tasks_response(
                 action,
                 active,

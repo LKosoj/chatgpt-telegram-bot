@@ -79,6 +79,29 @@ TTS_OPTIONS_CACHE_SECONDS = 300
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 
+# skills_agent first-turn planner gate: information-only tools that are safe to
+# call BEFORE the model has called manage_plan_tasks. Anything not in this set is
+# an "execution-tool" and triggers a forced retry routed through manage_plan_tasks.
+# Names are fully namespaced (function_prefix.function_name) as produced by
+# PluginManager._normalize_specs (see bot/plugin_manager.py:664).
+#
+# Only read-only tools and the planner loop itself belong here. Mutating skill
+# operations (activate/deactivate/update_progress/record_reflection) are
+# execution-tools and must go through the planner first.
+INFORMATION_ONLY_TOOLS: frozenset[str] = frozenset({
+    "skills.list_skills",
+    "skills.get_skill",
+    "skills.get_skill_reference",
+    "skills.get_skill_resource",
+    "skills.get_skill_status",
+    "skills.list_active_skills",
+    "skills.find_installable_skills",
+    "agent_tools.ask_telegram_user",
+    "agent_tools.cancel_pending_question",
+    "agent_tools.manage_plan_tasks",
+})
+_SKILLS_AGENT_MODE_KEY = "skills_agent"
+
 
 def _choice_message_text(choice) -> str:
     message = getattr(choice, "message", None)
@@ -207,6 +230,10 @@ class OpenAIHelper:
         self._background_tasks: set[asyncio.Task] = set()
         self._chat_request_models: dict[int, str] = {}
         self._chat_request_extra_tokens: dict[int, int] = {}
+        # skills_agent first-turn planner gate: per-state flag tracking whether the
+        # forced-retry already fired this request. Cleared at the start of each
+        # locked dispatcher (see _get_chat_response_locked / _get_chat_response_stream_locked).
+        self._gate_fired: dict = {}
         # T4: per-state message-count snapshot at the time of the last successful
         # summarisation; used by ``_should_summarize_now`` to throttle reruns.
         self._last_summary_at: dict = {}
@@ -573,6 +600,9 @@ class OpenAIHelper:
     ):
         try:
             state_key = self._chat_state_key(chat_id)
+            # Reset per-request skills_agent gate flag so it doesn't persist
+            # across user-initiated requests.
+            self._gate_fired.pop(state_key, None)
             # Add the last image file ID to the context if available
             if chat_id in self.last_image_file_ids:
                 # The model can now access this through the function calls
@@ -780,6 +810,9 @@ class OpenAIHelper:
         request_context,
     ):
         state_key = self._chat_state_key(chat_id)
+        # Reset per-request skills_agent gate flag so it doesn't persist
+        # across user-initiated requests.
+        self._gate_fired.pop(state_key, None)
         plugins_used = ()
         try:
             logger.info(f'Starting chat response stream for chat_id={chat_id}')
@@ -1192,8 +1225,54 @@ class OpenAIHelper:
                 for key, value in common_args.items()
             }
             logger.info(f"common_args = {json.dumps(log_args, ensure_ascii=False)}")
+
+            # skills_agent first-turn planner gate. Only runs on non-streaming
+            # first turns; the streaming dispatch path is expected to route to
+            # non-streaming via OpenAIHelper.should_force_non_stream_first_turn
+            # before reaching here. Excluded model families (O_MODELS, Google,
+            # Perplexity) don't get function calling above and are skipped here too.
+            # The gate is gated by the mode's ``force_non_stream_first_turn`` flag
+            # in chat_modes.yml — this keeps the entire feature opt-in per-mode and
+            # avoids surprising tests/users that rely on the legacy direct path.
+            gate_supported_model = model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY)
+            gate_active = (
+                not common_args.get('stream')
+                and self.config.get('enable_functions', True)
+                and bool(common_args.get('tools'))
+                and gate_supported_model
+                and self._is_skills_agent_mode(chat_id)
+                and self._skills_agent_gate_enabled_for_mode()
+                and not self._skills_agent_has_plan(chat_id, memory_user_id)
+            )
+            gate_fired = self._gate_fired.get(state_key, False)
+
             response = await self.client.chat.completions.create(**common_args)
-            
+
+            if gate_active and not gate_fired:
+                try:
+                    first_choice = response.choices[0] if response.choices else None
+                    message = getattr(first_choice, "message", None) if first_choice else None
+                    raw_tool_calls = getattr(message, "tool_calls", None) or []
+                    tool_calls_normalized = [
+                        {"name": getattr(getattr(tc, "function", None), "name", None)}
+                        for tc in raw_tool_calls
+                    ]
+                except Exception:
+                    logger.debug("skills_agent gate: failed to read tool_calls", exc_info=True)
+                    tool_calls_normalized = []
+                if self._skills_agent_gate_should_fire(tool_calls_normalized):
+                    logger.info(
+                        "skills_agent gate firing for chat_id=%s: forcing manage_plan_tasks "
+                        "(execution-tool calls without prior plan)",
+                        chat_id,
+                    )
+                    retry_args = dict(common_args)
+                    retry_args['tool_choice'] = self._build_force_planner_tool_choice(
+                        retry_args.get('tools') or []
+                    )
+                    self._gate_fired[state_key] = True
+                    response = await self.client.chat.completions.create(**retry_args)
+
             if stream:
                 # For streaming responses, return the stream directly
                 return response
@@ -1297,6 +1376,111 @@ class OpenAIHelper:
         system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
         current_mode = self._mode_from_system_message(system_message)
         return bool(current_mode and current_mode.get("defer_direct_results"))
+
+    def _is_skills_agent_mode(self, chat_id: int) -> bool:
+        """Return True iff the current system message identifies the skills_agent mode.
+
+        Identity check uses ChatModesRegistry.get_mode_by_key — both lookups read
+        from the same internal _data dict, so on a single request they return the
+        same object. As a defensive fallback, also compare the system message's
+        explicit ``mode_key`` field when present.
+        """
+        messages = self.conversations.get(self._chat_state_key(chat_id), [])
+        system_message = next((msg for msg in messages if msg.get("role") == "system"), None)
+        if not system_message:
+            return False
+        if system_message.get("mode_key") == _SKILLS_AGENT_MODE_KEY:
+            return True
+        current_mode = self._mode_from_system_message(system_message)
+        if not current_mode:
+            return False
+        target = self.chat_modes_registry.get_mode_by_key(_SKILLS_AGENT_MODE_KEY)
+        return target is not None and current_mode is target
+
+    def _skills_agent_has_plan(self, chat_id: int, user_id: int | None) -> bool:
+        """Return True if the planner plugin has at least one plan task for scope.
+
+        Fail-open: returns False on any error (plugin missing, storage failure,
+        unexpected signature) — we never want a storage glitch to block delivery.
+        """
+        try:
+            plugin = self.plugin_manager.get_plugin("agent_tools")
+            if plugin is None:
+                return False
+            tasks = plugin.get_plan_tasks(chat_id=chat_id, user_id=user_id)
+            return bool(tasks)
+        except Exception:
+            logger.debug("skills_agent gate: get_plan_tasks failed", exc_info=True)
+            return False
+
+    def _skills_agent_gate_should_fire(self, tool_calls: list[dict]) -> bool:
+        """True iff at least one tool call is an execution-tool (not in the
+        information-only allowlist). Empty list returns False."""
+        if not tool_calls:
+            return False
+        for call in tool_calls:
+            name = call.get("name") if isinstance(call, dict) else None
+            if not name:
+                continue
+            if name not in INFORMATION_ONLY_TOOLS:
+                return True
+        return False
+
+    def _build_force_planner_tool_choice(self, tools: list) -> dict | str:
+        """Build a tool_choice dict that pins the model to manage_plan_tasks.
+
+        Scans the actual tool specs for a function whose name ends with
+        ``manage_plan_tasks`` (defensive: handles both bare and namespaced names).
+        Returns ``"auto"`` as a no-op fallback if no planner function is found.
+        """
+        if not tools:
+            return "auto"
+        for entry in tools:
+            if not isinstance(entry, dict):
+                continue
+            function = entry.get("function") if "function" in entry else entry
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if isinstance(name, str) and name.endswith("manage_plan_tasks"):
+                return {"type": "function", "function": {"name": name}}
+        return "auto"
+
+    def _skills_agent_gate_enabled_for_mode(self) -> bool:
+        """True iff chat_modes.yml declares ``force_non_stream_first_turn: true``
+        for the skills_agent mode. This is the master switch for the gate."""
+        mode = self.chat_modes_registry.get_mode_by_key(_SKILLS_AGENT_MODE_KEY) or {}
+        return bool(mode.get("force_non_stream_first_turn"))
+
+    def should_force_non_stream_first_turn(self, chat_id: int, user_id: int | None) -> bool:
+        """Whether the dispatcher should route this request through non-streaming
+        get_chat_response to give the skills_agent planner gate a chance to fire.
+
+        Returns True iff: (1) current mode is skills_agent, (2) the mode has the
+        ``force_non_stream_first_turn`` flag, (3) the active model belongs to a
+        family that supports tool_choice (i.e. not O_MODELS / GOOGLE / PERPLEXITY —
+        those skip tools above and would never fire the gate anyway), and (4) no
+        plan exists yet for the scope. If any condition is False, the dispatcher
+        streams as usual.
+        """
+        if not self._is_skills_agent_mode(chat_id):
+            return False
+        if not self._skills_agent_gate_enabled_for_mode():
+            return False
+        try:
+            session_owner = user_id if user_id is not None else chat_id
+            model_to_use = self.get_current_model(session_owner)
+        except Exception:
+            logger.debug("skills_agent gate: get_current_model failed", exc_info=True)
+            # Fall back to the configured default model so a future expansion of
+            # the excluded-family lists still skips streaming overrides cleanly.
+            try:
+                model_to_use = self.config.get("model", "") or ""
+            except Exception:
+                model_to_use = ""
+        if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
+            return False
+        return not self._skills_agent_has_plan(chat_id, user_id)
 
     def _add_function_call_to_history(
         self,

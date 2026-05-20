@@ -23,6 +23,7 @@ from .tool_result import (
     direct_result_payload as _normalized_direct_result_payload,
     normalize_tool_result,
 )
+from .utils import compute_scope_key
 
 logger = logging.getLogger(__name__)
 
@@ -882,6 +883,26 @@ async def handle_function_call(
                 logger.error(f"Invalid arguments for {tool_name}: {exc}")
                 errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
+        # Snapshot the in_progress task BEFORE running the batch. If the batch
+        # itself contains manage_plan_tasks (which can flip the in_progress task),
+        # we want re-plan bookkeeping to attribute the failures to the task that
+        # was active when the batch started, not the one chosen mid-batch.
+        replan_pre_snapshot: tuple[str | None, str | None] | None = None
+        agent_plugin_snapshot = None
+        try:
+            agent_plugin_snapshot = helper.plugin_manager.get_plugin("agent_tools")
+            if agent_plugin_snapshot is not None:
+                snapshot_scope = compute_scope_key(chat_id, user_id)
+                pre_task_id = await asyncio.to_thread(
+                    agent_plugin_snapshot._current_in_progress_task_id,
+                    snapshot_scope,
+                )
+                replan_pre_snapshot = (snapshot_scope, pre_task_id)
+        except Exception:
+            logger.debug(
+                "agent_tools re-plan pre-snapshot failed", exc_info=True
+            )
+
         semaphore = _tool_call_semaphore(helper)
         tasks = [
             _call_function_bounded(helper, name, args, request_context, semaphore)
@@ -891,6 +912,8 @@ async def handle_function_call(
 
         direct_results_collected: list = []
         failed_calls: list[tuple[str, str]] = []
+        # Per-batch outcome log for re-plan trigger bookkeeping. (tool_name, success).
+        tool_outcomes: list[tuple[str, bool]] = []
         seen_artifact_paths = {
             entry.get("path") for entry in artifact_manifest if isinstance(entry, dict)
         }
@@ -910,6 +933,7 @@ async def handle_function_call(
             )
             if tool_result.success:
                 final_delivery_required = True
+            tool_outcomes.append((tool_name, bool(tool_result.success)))
             for entry in tool_result.artifacts:
                 before = len(artifact_manifest)
                 _append_artifact_entry(artifact_manifest, seen_artifact_paths, entry)
@@ -950,6 +974,43 @@ async def handle_function_call(
             failed_calls.append(
                 (tool_name, err_tr.error or err_tr.content[:200])
             )
+            tool_outcomes.append((tool_name, False))
+
+        # Re-plan trigger bookkeeping. agent_tools tracks consecutive tool
+        # failures per in_progress task and schedules a system-message inject
+        # on the next chat request via on_before_chat_request. Wrapped in
+        # try/except — this bookkeeping must never break the tool loop.
+        #
+        # Policy: collapse the whole batch to a single outcome, attributed to
+        # the task that was in_progress BEFORE the batch started (taken from
+        # replan_pre_snapshot). The planner's own ``agent_tools.manage_plan_tasks``
+        # call is ignored — its job is to update the plan, not to count toward
+        # exec-tool failure streaks. If every non-planner call succeeded, the
+        # batch is a success (streak resets). Any non-planner failure makes
+        # the whole batch a failure (streak increments by 1, not by N).
+        try:
+            agent_plugin = agent_plugin_snapshot if replan_pre_snapshot is not None else None
+            if agent_plugin is not None and tool_outcomes:
+                replan_scope, in_progress_task_id = replan_pre_snapshot
+                exec_outcomes = [
+                    (name, success)
+                    for name, success in tool_outcomes
+                    if name != "agent_tools.manage_plan_tasks"
+                ]
+                if exec_outcomes:
+                    batch_success = all(success for _, success in exec_outcomes)
+                    representative_name = next(
+                        (name for name, success in exec_outcomes if not success),
+                        exec_outcomes[0][0],
+                    )
+                    await agent_plugin._record_tool_outcome(
+                        replan_scope,
+                        in_progress_task_id,
+                        batch_success,
+                        representative_name,
+                    )
+        except Exception:
+            logger.debug("agent_tools re-plan bookkeeping failed", exc_info=True)
 
         if failed_calls and not direct_results_collected:
             _conversation_messages(helper, chat_id).append({

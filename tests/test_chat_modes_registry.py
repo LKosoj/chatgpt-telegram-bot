@@ -64,6 +64,16 @@ def test_skills_agent_mode_is_registered():
     assert "не повторяйте тот же вызов" in mode["prompt_start"]
 
 
+def test_skills_agent_has_force_non_stream_first_turn_flag():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    mode = registry.get_mode_by_key("skills_agent")
+
+    assert mode is not None
+    assert mode.get("force_non_stream_first_turn") is True
+
+
 def test_skills_agent_mode_is_detected_by_prompt_markers():
     yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
     registry = ChatModesRegistry(str(yaml_path))

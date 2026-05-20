@@ -3596,7 +3596,17 @@ class ChatGPTTelegramBot:
                 user_id=user_id,
             )
                 
-            if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
+            _force_non_stream_helper = getattr(
+                self.openai, "should_force_non_stream_first_turn", None
+            )
+            force_non_stream = bool(
+                _force_non_stream_helper and _force_non_stream_helper(chat_id, user_id)
+            )
+            if (
+                self.config['stream']
+                and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY)
+                and not force_non_stream
+            ):
 
                 await update.effective_message.reply_chat_action(
                     action=constants.ChatAction.TYPING,
@@ -3996,7 +4006,18 @@ class ChatGPTTelegramBot:
                 )
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                if self.config['stream'] and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY):
+                _inline_force_non_stream_helper = getattr(
+                    self.openai, "should_force_non_stream_first_turn", None
+                )
+                inline_force_non_stream = bool(
+                    _inline_force_non_stream_helper
+                    and _inline_force_non_stream_helper(user_id, user_id)
+                )
+                if (
+                    self.config['stream']
+                    and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY)
+                    and not inline_force_non_stream
+                ):
                     stream_response = self.openai.get_chat_response_stream(
                         chat_id=user_id,
                         query=query,

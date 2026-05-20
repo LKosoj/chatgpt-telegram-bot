@@ -53,12 +53,30 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
         "UI: callback action literal 'skills' in the {'skills','skill_page'} set + settings menu reader (has_plugin + get_plugin).",
     ),
     ("bot/openai_tool_handler.py", "agent_tools"): (
-        3,
-        "Strategy Z delivery contract: skills_agent final delivery is routed through agent_tools.deliver_to_user.",
+        7,
+        "Strategy Z delivery contract: skills_agent final delivery is routed through agent_tools.deliver_to_user (3). "
+        "Re-plan trigger bookkeeping: single get_plugin('agent_tools') call (pre-batch in_progress snapshot, reused in post-batch outcome write), "
+        "the 'agent_tools.manage_plan_tasks' skip filter, plus 'agent_tools re-plan pre-snapshot failed' and "
+        "'agent_tools re-plan bookkeeping failed' debug log messages (4).",
     ),
     ("bot/openai_helper.py", "hindsight_memory"): (
         1,
         "Strategy Z (4B): helper persists plugin-injected memory marker via plugin.is_hindsight_memory_message; documented compromise.",
+    ),
+    ("bot/openai_helper.py", "agent_tools"): (
+        4,
+        "skills_agent first-turn planner gate: 3 entries in INFORMATION_ONLY_TOOLS "
+        "(agent_tools.{ask_telegram_user,cancel_pending_question,manage_plan_tasks}) "
+        "+ 1 get_plugin('agent_tools') call in _skills_agent_has_plan. The gate is "
+        "intentionally coupled to agent_tools' planner contract.",
+    ),
+    ("bot/openai_helper.py", "skills"): (
+        7,
+        "skills_agent first-turn planner gate: 7 read-only entries in "
+        "INFORMATION_ONLY_TOOLS (skills.{list_skills,get_skill,get_skill_reference,"
+        "get_skill_resource,get_skill_status,list_active_skills,find_installable_skills}). "
+        "Mutating skill tools (activate/deactivate/update_progress/record_reflection) "
+        "are intentionally execution-tools and must go through the planner first.",
     ),
     ("bot/skill_script_routing.py", "skills"): (
         9,
