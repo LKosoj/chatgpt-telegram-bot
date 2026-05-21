@@ -3559,7 +3559,13 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _describe, constants.ChatAction.TYPING)
                 return
 
-        if await self._try_handle_plugin_prompt(prompt, update, context, user_id):
+        if await self._try_handle_plugin_prompt(
+            prompt, update, context, user_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            request_started_at=request_started_at,
+            session_id=session_id,
+        ):
             return
 
         replied_file_context = None
@@ -3852,6 +3858,11 @@ class ChatGPTTelegramBot:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int,
+        *,
+        chat_id: int,
+        request_id: str,
+        request_started_at: float | None,
+        session_id: str | None,
     ) -> bool:
         plugin_manager = getattr(self.openai, 'plugin_manager', None)
         get_prompt_handlers = getattr(plugin_manager, 'get_prompt_handlers', None)
@@ -3866,7 +3877,9 @@ class ChatGPTTelegramBot:
             if not callable(handler):
                 continue
 
-            async def _run_handler(h=handler):
+            handler_state: dict = {}
+
+            async def _run_handler(h=handler, state=handler_state):
                 result = h(
                     prompt=prompt,
                     update=update,
@@ -3876,6 +3889,7 @@ class ChatGPTTelegramBot:
                 )
                 if asyncio.iscoroutine(result):
                     result = await result
+                state["result"] = result
                 return await self._handle_plugin_prompt_result(result, update)
 
             chat_action = handler_config.get("chat_action")
@@ -3884,8 +3898,111 @@ class ChatGPTTelegramBot:
             else:
                 handled = await _run_handler()
             if handled:
+                if handler_config.get("mirror_in_session", True):
+                    await self._mirror_plugin_exchange(
+                        plugin_name=plugin_name,
+                        result=handler_state.get("result"),
+                        prompt=prompt,
+                        update=update,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        request_id=request_id,
+                        request_started_at=request_started_at,
+                        session_id=session_id,
+                    )
                 return True
         return False
+
+    def _plugin_result_assistant_text(self, result) -> str | None:
+        """Best-effort extraction of an assistant-style text from a plugin's
+        prompt-handler result, suitable for mirroring into the session.
+
+        Returns None when no meaningful text is available (binary artifacts,
+        plain True, error payloads) — in those cases the exchange is not
+        mirrored to avoid poisoning conversation history.
+        """
+        if result is None or result is False or result is True:
+            return None
+        if is_direct_result(result):
+            direct = result.get("direct_result") if isinstance(result, dict) else None
+            if isinstance(direct, dict):
+                kind = direct.get("kind")
+                if kind == "text":
+                    value = direct.get("add_value") or direct.get("value")
+                    if isinstance(value, str) and value.strip():
+                        return value
+                elif kind == "final":
+                    text = direct.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return text
+            return None
+        if isinstance(result, dict):
+            return None
+        if isinstance(result, str) and result.strip():
+            return result
+        return None
+
+    async def _mirror_plugin_exchange(
+        self,
+        *,
+        plugin_name: str | None,
+        result,
+        prompt: str,
+        update: Update,
+        chat_id: int,
+        user_id: int,
+        request_id: str,
+        request_started_at: float | None,
+        session_id: str | None,
+    ) -> None:
+        """Mirror a plugin-handled exchange back into the session and emit the
+        standard observer hooks, so prompt-handler plugins (RAG, etc.) do not
+        leave conversation context blind to what just happened.
+        """
+        assistant_text = self._plugin_result_assistant_text(result)
+        if not assistant_text:
+            return
+        record = getattr(self.openai, "record_plugin_exchange", None)
+        if not callable(record):
+            return
+        ts = request_started_at if request_started_at is not None else time.time()
+        try:
+            await self.openai.plugin_manager.dispatch_observe(
+                "on_user_message",
+                UserMessagePayload(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    text=prompt,
+                    has_image=False,
+                    has_voice=False,
+                    is_command=bool(
+                        update.message.text and update.message.text.startswith("/")
+                    ),
+                    ts=ts,
+                ),
+                user_id=user_id,
+            )
+            await record(
+                chat_id=chat_id,
+                user_text=prompt,
+                assistant_text=assistant_text,
+                session_id=session_id,
+            )
+            await self._dispatch_assistant_response_observer(
+                chat_id=chat_id,
+                user_id=user_id,
+                request_id=request_id,
+                text=assistant_text,
+                tokens=0,
+                model=self.openai.get_current_model(chat_id, session_id=session_id),
+                ts=ts,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to mirror plugin '%s' exchange into session for chat_id=%s: %s",
+                plugin_name, chat_id, exc,
+            )
 
     async def _handle_plugin_prompt_result(self, result, update: Update) -> bool:
         if result is False or result is None:

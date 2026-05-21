@@ -156,6 +156,7 @@ class FakeOpenAI:
         self.chunks = chunks
         self.plugin_manager = FakePluginManager(agent_tools, text_document_qa, plugin_help_texts)
         self.stream_requests = []
+        self.plugin_exchanges = []
 
     def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
@@ -168,6 +169,14 @@ class FakeOpenAI:
                 yield chunk
 
         return stream()
+
+    async def record_plugin_exchange(self, *, chat_id, user_text, assistant_text, session_id=None):
+        self.plugin_exchanges.append({
+            "chat_id": chat_id,
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+            "session_id": session_id,
+        })
 
 
 class FakeOpenAINonStream(FakeOpenAI):
@@ -446,6 +455,73 @@ async def test_process_message_routes_to_rag_when_enabled(monkeypatch):
     ]
     assert bot.openai.stream_requests == []
     assert message.reply_text_calls[0]["text"] == "RAG answer"
+
+    assert bot.openai.plugin_exchanges == [{
+        "chat_id": message.chat_id,
+        "user_text": "What is in the docs?",
+        "assistant_text": "RAG answer",
+        "session_id": None,
+    }]
+    observed_events = [name for name, _payload, _uid in bot.openai.plugin_manager.observer_events]
+    assert "on_user_message" in observed_events
+    assert "on_assistant_response" in observed_events
+
+
+@pytest.mark.asyncio
+async def test_process_message_skips_mirror_when_handler_opts_out(monkeypatch):
+    """Plugins may set ``mirror_in_session: False`` on a handler config to
+    keep the exchange out of conversation_context (e.g. menu-style replies).
+    """
+    async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_indicator)
+    rag_plugin = FakeRagPlugin()
+    rag_plugin.get_prompt_handlers = lambda: [{
+        "handler": rag_plugin.handle_prompt,
+        "plugin_name": "text_document_qa",
+        "chat_action": "typing",
+        "mirror_in_session": False,
+    }]
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+    message = FakeMessage()
+
+    await bot.process_message("anything", FakeUpdate(message), _make_context())
+
+    assert message.reply_text_calls[0]["text"] == "RAG answer"
+    assert bot.openai.plugin_exchanges == []
+    observed_events = [name for name, _payload, _uid in bot.openai.plugin_manager.observer_events]
+    assert "on_user_message" not in observed_events
+    assert "on_assistant_response" not in observed_events
+
+
+@pytest.mark.asyncio
+async def test_process_message_does_not_mirror_when_handler_returns_bare_true(monkeypatch):
+    """When a prompt-handler does its own reply and returns plain ``True``,
+    there is no extractable assistant text — mirroring must be skipped.
+    """
+    async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_indicator)
+    rag_plugin = FakeRagPlugin(result=True)
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+    message = FakeMessage()
+
+    await bot.process_message("hi", FakeUpdate(message), _make_context())
+
+    assert bot.openai.plugin_exchanges == []
+    observed_events = [name for name, _payload, _uid in bot.openai.plugin_manager.observer_events]
+    assert "on_user_message" not in observed_events
+    assert "on_assistant_response" not in observed_events
 
 
 @pytest.mark.asyncio

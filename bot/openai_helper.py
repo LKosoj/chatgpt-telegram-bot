@@ -2787,10 +2787,59 @@ class OpenAIHelper:
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
         await self._save_conversation_context(
-            chat_id, 
+            chat_id,
             {'messages': self.conversations[state_key]},
-            parse_mode, 
-            temperature, 
+            parse_mode,
+            temperature,
+            max_tokens_percent,
+            session_id,
+        )
+
+    async def record_plugin_exchange(
+        self,
+        chat_id: int,
+        user_text: str,
+        assistant_text: str,
+        session_id: str | None = None,
+    ) -> None:
+        """Mirror a plugin-handled user/assistant pair into the active session.
+
+        Used by prompt-handler plugins (RAG mode, etc.) that bypass the normal
+        chat-completion path. Without this, their exchanges never reach
+        ``conversation_context`` and the next regular turn sees nothing.
+        Appends both messages and persists once.
+        """
+        state_key = self._chat_state_key(chat_id)
+        saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
+            self.db.get_conversation_context(chat_id, session_id)
+        )
+        loaded_session_id = self.loaded_conversation_sessions.get(state_key)
+        session_changed = (
+            state_key in self.loaded_conversation_sessions
+            and loaded_session_id != session_id
+        )
+        if (
+            state_key not in self.conversations
+            or self.__max_age_reached(state_key)
+            or session_changed
+        ):
+            if saved_context and 'messages' in saved_context:
+                self.conversations[state_key] = self._messages_without_image_payloads(
+                    saved_context['messages']
+                )
+            else:
+                await self.reset_chat_history(chat_id, session_id=session_id)
+            self.loaded_conversation_sessions[state_key] = session_id
+
+        self.last_updated[state_key] = datetime.datetime.now()
+        self.conversations[state_key].append({"role": "user", "content": user_text})
+        self.conversations[state_key].append({"role": "assistant", "content": assistant_text})
+
+        await self._save_conversation_context(
+            chat_id,
+            {'messages': self.conversations[state_key]},
+            parse_mode,
+            temperature,
             max_tokens_percent,
             session_id,
         )
