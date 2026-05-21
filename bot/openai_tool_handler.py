@@ -153,6 +153,21 @@ DELIVERY_REPAIR_PROMPT = (
     "artifacts if any, and a concise verification_summary or blocked_reason. If previous tool "
     "results created local files, use their paths as artifacts."
 )
+DELIVERY_REPAIR_ESCALATED_PROMPT = (
+    "You repeated narrative text instead of calling a tool. Previously you wrote:\n"
+    "«{narrative}»\n"
+    "That text was treated as internal progress and never reached the user. "
+    "Plain text is not a valid response. Choose exactly one path now:\n"
+    "1) If you can perform what you described, call the appropriate tool right now. Do not narrate.\n"
+    "2) If you cannot perform it, call agent_tools.deliver_to_user with status=\"blocked\" and put "
+    "the concrete reason into blocked_reason (e.g. wrong path, missing data, tool unavailable, "
+    "ambiguous request)."
+)
+DELIVERY_REPAIR_ESCALATED_FALLBACK_PROMPT = (
+    "You repeated a non-tool response again. Plain text is not a valid response. "
+    "Choose exactly one path now: call the appropriate tool, or call agent_tools.deliver_to_user "
+    "with status=\"blocked\" and put the concrete reason into blocked_reason."
+)
 REFLECTION_NOTE_MAX_TOOLS = 5
 REFLECTION_NOTE_PREFIX = "Tool error(s) in last batch: "
 REFLECTION_NOTE_INSTRUCTION = (
@@ -488,17 +503,25 @@ async def _retry_missing_delivery_tool(
         return _delivery_contract_error(helper), tools_used
 
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
+    if delivery_repair_attempts >= 1:
+        repair_content = (
+            DELIVERY_REPAIR_ESCALATED_PROMPT.format(narrative=plain_text_preview)
+            if plain_text_preview
+            else DELIVERY_REPAIR_ESCALATED_FALLBACK_PROMPT
+        )
+    else:
+        repair_content = (
+            f"{DELIVERY_REPAIR_PROMPT}\n\nUndelivered assistant text: {plain_text_preview}"
+            if plain_text_preview
+            else DELIVERY_REPAIR_PROMPT
+        )
     _conversation_messages(helper, chat_id).append({
         "role": "user",
-        "content": (
-            DELIVERY_REPAIR_PROMPT
-            if not plain_text_preview
-            else f"{DELIVERY_REPAIR_PROMPT}\n\nUndelivered assistant text: {plain_text_preview}"
-        ),
+        "content": repair_content,
     })
     logger.warning(
-        "Retrying final response because skills_agent returned plain text instead of %s",
-        DELIVERY_TOOL_NAME,
+        "Retrying final response (attempt=%d) because skills_agent returned plain text instead of %s",
+        delivery_repair_attempts + 1, DELIVERY_TOOL_NAME,
     )
 
     session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)

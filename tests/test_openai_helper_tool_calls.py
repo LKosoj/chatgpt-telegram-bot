@@ -1704,6 +1704,79 @@ async def test_prompt_perfect_suppression_survives_delivery_repair():
     assert out["direct_result"]["text"] == "Готово"
 
 
+@pytest.mark.asyncio
+async def test_delivery_repair_escalates_on_second_attempt():
+    """Second retry must quote the model's narrative and force an explicit binary choice.
+
+    First retry (delivery_repair_attempts=0) uses DELIVERY_REPAIR_PROMPT with an
+    "Undelivered assistant text:" suffix.  Second retry (delivery_repair_attempts=1)
+    switches to DELIVERY_REPAIR_ESCALATED_PROMPT, which quotes the offending narrative
+    and instructs the model to either call a tool now or call deliver_to_user with
+    status=blocked.
+    """
+    responses = {
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    second_narrative = "Запускаю QA-обёртку для проверки результата."
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(content=second_narrative),
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({"text": "Готово"}),
+                ),
+            ]),
+        ]),
+    )
+    helper.conversations[1] = [
+        {"role": "system", "content": "agent-mode", "mode_key": "skills_agent"},
+    ]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {"defer_direct_results": True} if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    first_narrative = "Plain text — should trigger first repair."
+    response = FakeResponse(content=first_narrative)
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    user_messages = [
+        message["content"]
+        for message in helper.conversations[1]
+        if message.get("role") == "user"
+    ]
+    assert len(user_messages) >= 2, f"expected at least 2 repair messages, got {user_messages}"
+    first_repair, second_repair = user_messages[0], user_messages[1]
+
+    assert "Undelivered assistant text:" in first_repair
+    assert first_narrative in first_repair
+    assert "You repeated narrative text" not in first_repair
+
+    assert "You repeated narrative text" in second_repair
+    assert second_narrative in second_repair
+    assert "blocked_reason" in second_repair
+    assert "agent_tools.deliver_to_user" in second_repair
+
+    assert out["direct_result"]["text"] == "Готово"
+    assert "agent_tools.deliver_to_user" in tools_used
+
+
 def test_tool_suppression_filters_google_function_declarations():
     tools = {
         "function_declarations": [

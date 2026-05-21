@@ -437,6 +437,47 @@ async def test_hindsight_plugin_recall_uses_user_bank():
     assert "User prefers concise answers." in result["summary"]
 
 
+@pytest.mark.asyncio
+async def test_hindsight_recall_truncates_long_query():
+    """Queries longer than ``hindsight_recall_query_max_tokens`` must be
+    capped before being sent to the upstream service. Otherwise the server
+    rejects the request with HTTP 400 "Query too long".
+    """
+    plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={
+        'hindsight_base_url': 'http://x',
+        'hindsight_api_token': 't',
+        'hindsight_recall_query_max_tokens': 50,
+    })
+    fake = FakeHindsight()
+    plugin.client = fake
+
+    long_query = "слово " * 500
+    await plugin._recall_memory_text(user_id=123, query=long_query, max_tokens=1024)
+
+    sent_query = fake.recall_calls[0][1]
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+    assert len(enc.encode(sent_query)) <= 50
+    assert len(sent_query) < len(long_query)
+
+
+@pytest.mark.asyncio
+async def test_hindsight_recall_passes_short_query_unchanged():
+    plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={
+        'hindsight_base_url': 'http://x',
+        'hindsight_api_token': 't',
+        'hindsight_recall_query_max_tokens': 4000,
+    })
+    fake = FakeHindsight()
+    plugin.client = fake
+
+    await plugin._recall_memory_text(user_id=123, query="short question", max_tokens=1024)
+
+    assert fake.recall_calls[0][1] == "short question"
+
+
 def test_format_recall_results_returns_compact_bullets():
     formatted = format_recall_results({
         "results": [{

@@ -328,6 +328,7 @@ class HindsightMemoryPlugin(Plugin):
         self.config.setdefault('hindsight_auto_save', env.get('HINDSIGHT_AUTO_SAVE', 'true').lower() == 'true')
         self.config.setdefault('hindsight_recall_budget', env.get('HINDSIGHT_RECALL_BUDGET', 'mid'))
         self.config.setdefault('hindsight_recall_max_tokens', int(env.get('HINDSIGHT_RECALL_MAX_TOKENS', '4096')))
+        self.config.setdefault('hindsight_recall_query_max_tokens', int(env.get('HINDSIGHT_RECALL_QUERY_MAX_TOKENS', '4000')))
         self.config.setdefault('hindsight_memory_types', env.get('HINDSIGHT_MEMORY_TYPES', 'world,experience'))
         self.config.setdefault('hindsight_async_store', env.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true')
         self.config.setdefault('hindsight_timeout', float(env.get('HINDSIGHT_TIMEOUT', '30')))
@@ -348,6 +349,7 @@ class HindsightMemoryPlugin(Plugin):
                 'hindsight_enabled', 'hindsight_auto_recall', 'hindsight_auto_save',
                 'hindsight_namespace', 'hindsight_bank_prefix',
                 'hindsight_recall_budget', 'hindsight_recall_max_tokens',
+                'hindsight_recall_query_max_tokens',
                 'hindsight_memory_types', 'hindsight_async_store',
                 'hindsight_timeout', 'hindsight_max_auto_save_items',
                 'hindsight_dream_enabled', 'hindsight_dream_interval_seconds',
@@ -1671,7 +1673,41 @@ class HindsightMemoryPlugin(Plugin):
 
         return new_messages if changed else None
 
+    def _truncate_query_for_recall(self, query: str) -> str:
+        """Cap the recall query at ``hindsight_recall_query_max_tokens`` so we
+        do not trip the upstream server limit (which currently rejects queries
+        longer than its own configured maximum). Uses ``cl100k_base`` for
+        counting; falls back to a char-based estimate if tiktoken is missing.
+        """
+        if not isinstance(query, str) or not query:
+            return query
+        max_tokens = int(self.config.get('hindsight_recall_query_max_tokens', 4000))
+        if max_tokens <= 0:
+            return query
+        try:
+            import tiktoken
+            encoding = tiktoken.get_encoding("cl100k_base")
+            tokens = encoding.encode(query)
+            if len(tokens) <= max_tokens:
+                return query
+            truncated = encoding.decode(tokens[:max_tokens])
+            logger.info(
+                "Hindsight recall query truncated from %d to %d tokens",
+                len(tokens), max_tokens,
+            )
+            return truncated
+        except Exception as exc:  # noqa: BLE001
+            char_budget = max_tokens * 4
+            if len(query) <= char_budget:
+                return query
+            logger.info(
+                "Hindsight recall query truncated to ~%d chars (tiktoken unavailable: %s)",
+                char_budget, exc,
+            )
+            return query[:char_budget]
+
     async def _recall_memory_text(self, user_id: int, query: str, *, max_tokens: int) -> str:
+        query = self._truncate_query_for_recall(query)
         try:
             data = await self.client.recall(
                 self.bank_id_for(user_id),
@@ -1815,7 +1851,7 @@ class HindsightMemoryPlugin(Plugin):
         if function_name == "recall":
             data = await client.recall(
                 bank_id,
-                str(kwargs["query"]),
+                self._truncate_query_for_recall(str(kwargs["query"])),
                 budget=str(kwargs.get("budget") or self.config.get('hindsight_recall_budget', 'mid')),
                 max_tokens=int(kwargs.get("max_tokens") or self.config.get('hindsight_recall_max_tokens', 4096)),
                 memory_types=self.memory_types,
@@ -2210,7 +2246,7 @@ class HindsightMemoryPlugin(Plugin):
         try:
             data = await self.client.recall(
                 bank_id,
-                query,
+                self._truncate_query_for_recall(query),
                 budget=self.config.get('hindsight_recall_budget', 'mid'),
                 max_tokens=int(self.config.get('hindsight_recall_max_tokens', 4096)),
                 memory_types=self.memory_types,
