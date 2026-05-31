@@ -32,6 +32,7 @@ _install_module_if_missing("markdown2", _markdown2)
 
 from bot.openai_tool_handler import (  # noqa: E402
     REFLECTION_NOTE_PREFIX,
+    REPEATED_FAILURE_NOTE_PREFIX,
     handle_function_call,
 )
 
@@ -98,6 +99,19 @@ class FakeClient:
         return FakeResponse(content="done")
 
 
+class RepeatingFailureClient:
+    def __init__(self, tool_call):
+        self.tool_call = tool_call
+        self.calls = 0
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    async def _create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return FakeResponse(tool_calls=[self.tool_call])
+        return FakeResponse(content="done")
+
+
 class FakeHelper:
     def __init__(self, plugin_manager):
         self.plugin_manager = plugin_manager
@@ -130,6 +144,16 @@ def _reflection_messages(helper):
         and m.get("role") == "user"
         and isinstance(m.get("content"), str)
         and m["content"].startswith(REFLECTION_NOTE_PREFIX)
+    ]
+
+
+def _repeated_failure_messages(helper):
+    return [
+        m for m in helper.conversations[1234]
+        if isinstance(m, dict)
+        and m.get("role") == "user"
+        and isinstance(m.get("content"), str)
+        and m["content"].startswith(REPEATED_FAILURE_NOTE_PREFIX)
     ]
 
 
@@ -210,3 +234,50 @@ async def test_reflection_only_for_failed_in_batch():
     assert "alpha.broken" in content
     for ok_name in ("alpha.ok1", "alpha.ok2", "alpha.ok3", "alpha.ok4"):
         assert ok_name not in content
+
+
+async def test_repeated_identical_failed_tool_adds_escalation_note():
+    tool_call = FakeToolCall("alpha.fail", {"query": "same"})
+    pm = ScriptedPluginManager({"alpha.fail": {"error": "boom"}})
+    helper = FakeHelper(pm)
+    helper.config["functions_max_consecutive_calls"] = 2
+    helper.client = RepeatingFailureClient(tool_call)
+
+    await _run(helper, [tool_call])
+
+    notes = _repeated_failure_messages(helper)
+    assert len(notes) == 1
+    assert "alpha.fail" in notes[0]["content"]
+    assert "same arguments" in notes[0]["content"]
+
+
+async def test_same_batch_duplicate_failed_tools_do_not_add_escalation_note():
+    pm = ScriptedPluginManager({"alpha.fail": {"error": "boom"}})
+    helper = FakeHelper(pm)
+
+    await _run(
+        helper,
+        [
+            FakeToolCall("alpha.fail", {"query": "same"}, call_id="call_1"),
+            FakeToolCall("alpha.fail", {"query": "same"}, call_id="call_2"),
+        ],
+    )
+
+    assert _repeated_failure_messages(helper) == []
+
+
+async def test_repeated_failure_note_in_skills_agent_mentions_plan_update():
+    tool_call = FakeToolCall("alpha.fail", {"query": "same"})
+    pm = ScriptedPluginManager({"alpha.fail": {"error": "boom"}})
+    helper = FakeHelper(pm)
+    helper.config["functions_max_consecutive_calls"] = 2
+    helper.client = RepeatingFailureClient(tool_call)
+    helper.conversations[1234] = [
+        {"role": "system", "content": "skills agent", "mode_key": "skills_agent"}
+    ]
+
+    await _run(helper, [tool_call])
+
+    notes = _repeated_failure_messages(helper)
+    assert len(notes) == 1
+    assert "active plan" in notes[0]["content"]

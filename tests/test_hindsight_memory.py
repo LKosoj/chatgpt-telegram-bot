@@ -438,6 +438,32 @@ async def test_hindsight_plugin_recall_uses_user_bank():
 
 
 @pytest.mark.asyncio
+async def test_hindsight_plugin_recall_filters_candidate_lessons():
+    class CandidateHindsight(FakeHindsight):
+        async def recall(self, bank_id, query, **kwargs):
+            self.recall_calls.append((bank_id, query, kwargs))
+            return {
+                "results": [
+                    {"id": "candidate", "text": "Unapproved lesson", "type": "lesson_candidate"},
+                    {"id": "verified", "text": "Approved lesson", "type": "lesson_verified"},
+                ]
+            }
+
+    plugin = HindsightMemoryPlugin()
+    plugin.initialize(plugin_config={
+        'hindsight_base_url': 'http://x',
+        'hindsight_api_token': 't',
+    })
+    plugin.client = CandidateHindsight()
+
+    result = await plugin.execute("recall", types.SimpleNamespace(), user_id=123, query="preferences")
+
+    assert result["results"] == [{"id": "verified", "text": "Approved lesson", "type": "lesson_verified"}]
+    assert "Approved lesson" in result["summary"]
+    assert "Unapproved lesson" not in result["summary"]
+
+
+@pytest.mark.asyncio
 async def test_hindsight_recall_truncates_long_query():
     """Queries longer than ``hindsight_recall_query_max_tokens`` must be
     capped before being sent to the upstream service. Otherwise the server

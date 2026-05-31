@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bot.plugins.hindsight_memory import HindsightClient, HindsightMemoryPlugin
+from bot.plugins.hindsight_memory import HindsightClient, HindsightMemoryPlugin, LESSON_TYPE_VERIFIED
 
 
 def test_initialize_sets_defaults_for_all_13_keys():
@@ -18,7 +18,7 @@ def test_initialize_sets_defaults_for_all_13_keys():
     assert plugin.config['hindsight_bank_prefix'] == 'telegram-'
     assert plugin.config['hindsight_recall_budget'] == 'mid'
     assert plugin.config['hindsight_recall_max_tokens'] == 4096
-    assert plugin.config['hindsight_memory_types'] == 'world,experience'
+    assert plugin.config['hindsight_memory_types'] == f'world,experience,{LESSON_TYPE_VERIFIED}'
     assert plugin.config['hindsight_async_store'] is True
     assert plugin.config['hindsight_timeout'] == 30.0
     assert plugin.config['hindsight_max_auto_save_items'] == 5
@@ -89,4 +89,8 @@ def test_memory_types_parses_string_list_and_fallback():
 
     plugin_fallback = HindsightMemoryPlugin()
     plugin_fallback.initialize(plugin_config={'hindsight_memory_types': 123})
-    assert plugin_fallback.memory_types == ['world', 'experience']
+    assert plugin_fallback.memory_types == ['world', 'experience', LESSON_TYPE_VERIFIED]
+
+    plugin_candidates_only = HindsightMemoryPlugin()
+    plugin_candidates_only.initialize(plugin_config={'hindsight_memory_types': 'lesson_candidate'})
+    assert plugin_candidates_only.memory_types == ['world', 'experience', LESSON_TYPE_VERIFIED]

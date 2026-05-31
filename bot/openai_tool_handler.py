@@ -124,6 +124,7 @@ async def _reentry_session(helper, chat_id, user_id, request_context):
 
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
+MANAGE_PLAN_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "manage_plan_tasks"
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 SUPPRESS_REENTRY_TOOLS_KEY = "suppress_reentry_tools"
@@ -174,6 +175,16 @@ REFLECTION_NOTE_INSTRUCTION = (
     " Перед следующим действием объясни в одной фразе, что пошло не так и почему. "
     "Только после этого продолжай."
 )
+REPEATED_FAILURE_NOTE_PREFIX = "Repeated tool failure detected: "
+REPEATED_FAILURE_NOTE_INSTRUCTION = (
+    "Do not retry the same tool with the same arguments unchanged. "
+    "Choose a different approach, change the arguments, or report the blocker."
+)
+REPEATED_FAILURE_SKILLS_AGENT_INSTRUCTION = (
+    " In skills_agent mode, first update the active plan with "
+    f"{MANAGE_PLAN_TOOL_NAME}(action=\"update\") or finish through "
+    f"{DELIVERY_TOOL_NAME}(status=\"blocked\", blocked_reason=...)."
+)
 
 
 def _format_reflection_note(failed_calls: list[tuple[str, str]]) -> str:
@@ -192,6 +203,60 @@ def _format_reflection_note(failed_calls: list[tuple[str, str]]) -> str:
     if omitted > 0:
         names_part = f"{names_part} (+{omitted} more)"
     return f"{REFLECTION_NOTE_PREFIX}{names_part}.{REFLECTION_NOTE_INSTRUCTION}"
+
+
+def _canonical_tool_arguments(arguments: str) -> str:
+    try:
+        parsed = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return str(arguments or "").strip()
+    if not isinstance(parsed, dict):
+        return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _normalized_failure_text(error: str) -> str:
+    return re.sub(r"\s+", " ", str(error or "").strip())[:240]
+
+
+def _tool_failure_fingerprint(tool_name: str, canonical_arguments: str, error: str) -> tuple[str, str, str]:
+    return (
+        str(tool_name or ""),
+        canonical_arguments,
+        _normalized_failure_text(error),
+    )
+
+
+def _record_repeated_tool_failure(
+    state: dict,
+    prior_seen: set,
+    tool_name: str,
+    canonical_arguments: str,
+    error: str,
+) -> bool:
+    fingerprint = _tool_failure_fingerprint(tool_name, canonical_arguments, error)
+    escalated = state.setdefault("escalated", set())
+    if fingerprint in prior_seen:
+        if fingerprint in escalated:
+            return False
+        escalated.add(fingerprint)
+        logger.warning("Repeated tool failure detected tool=%s", tool_name)
+        return True
+    return False
+
+
+def _format_repeated_failure_note(repeated_calls: list[tuple[str, str]], *, skills_agent: bool) -> str:
+    seen: list[str] = []
+    for name, _err in repeated_calls:
+        if name and name not in seen:
+            seen.append(name)
+    names_part = ", ".join(seen[:REFLECTION_NOTE_MAX_TOOLS])
+    if len(seen) > REFLECTION_NOTE_MAX_TOOLS:
+        names_part = f"{names_part} (+{len(seen) - REFLECTION_NOTE_MAX_TOOLS} more)"
+    instruction = REPEATED_FAILURE_NOTE_INSTRUCTION
+    if skills_agent:
+        instruction += REPEATED_FAILURE_SKILLS_AGENT_INSTRUCTION
+    return f"{REPEATED_FAILURE_NOTE_PREFIX}{names_part}. {instruction}"
 
 
 async def _prepend_stream_item(first_item, response):
@@ -497,6 +562,7 @@ async def _retry_missing_delivery_tool(
     artifact_manifest=None,
     suppressed_reentry_tools=None,
     token_accumulator=None,
+    failure_escalation_state=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -565,6 +631,7 @@ async def _retry_missing_delivery_tool(
         artifact_manifest=artifact_manifest,
         suppressed_reentry_tools=suppressed_reentry_tools,
         token_accumulator=token_accumulator,
+        failure_escalation_state=failure_escalation_state,
     )
 
 
@@ -583,6 +650,7 @@ async def _retry_plain_text_tool_intent(
     suppressed_reentry_tools=None,
     tool_intent_repair_attempts=0,
     token_accumulator=None,
+    failure_escalation_state=None,
 ):
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
     _conversation_messages(helper, chat_id).append({
@@ -636,6 +704,7 @@ async def _retry_plain_text_tool_intent(
         retry_plain_text_tool_intent=True,
         tool_intent_repair_attempts=tool_intent_repair_attempts + 1,
         token_accumulator=token_accumulator,
+        failure_escalation_state=failure_escalation_state,
     )
 
 
@@ -657,6 +726,7 @@ async def handle_function_call(
     retry_plain_text_tool_intent=False,
     tool_intent_repair_attempts=0,
     token_accumulator=None,
+    failure_escalation_state=None,
 ):
     tool_calls = []
     try:
@@ -666,6 +736,8 @@ async def handle_function_call(
                 token_accumulator.append(tokens)
         artifact_manifest = list(artifact_manifest or [])
         suppressed_reentry_tools = set(suppressed_reentry_tools or ())
+        if failure_escalation_state is None:
+            failure_escalation_state = {"seen": set(), "escalated": set()}
         if request_context is not None:
             chat_id = request_context.chat_id
             user_id = request_context.user_id
@@ -700,6 +772,7 @@ async def handle_function_call(
                 artifact_manifest,
                 suppressed_reentry_tools,
                 token_accumulator,
+                failure_escalation_state,
             )
 
         async def retry_plain_text_tool_intent_if_needed(plain_text=None):
@@ -724,6 +797,7 @@ async def handle_function_call(
                 suppressed_reentry_tools,
                 tool_intent_repair_attempts,
                 token_accumulator,
+                failure_escalation_state,
             )
 
         async def retry_stream_plain_text_tool_intent_or_replay(first_item):
@@ -870,11 +944,12 @@ async def handle_function_call(
             tool_call_id = call.get("id")
             tool_name = call["name"]
             arguments = call["arguments"]
+            canonical_arguments = _canonical_tool_arguments(arguments)
             logger.info(f'Calling tool {tool_name} with arguments {arguments}')
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
                 logger.warning(error)
-                errors.append((tool_name, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
+                errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
             try:
                 args = json.loads(arguments)
@@ -893,18 +968,19 @@ async def handle_function_call(
                     logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)
                     errors.append((
                         tool_name,
+                        _canonical_tool_arguments(json.dumps(args, ensure_ascii=False)),
                         tool_call_id,
                         json.dumps(routing_error, ensure_ascii=False),
                     ))
                     continue
                 arguments = json.dumps(args, ensure_ascii=False)
-                prepared.append((tool_name, arguments, tool_call_id))
+                prepared.append((tool_name, arguments, _canonical_tool_arguments(arguments), tool_call_id))
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse arguments JSON: {arguments}")
-                errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
+                errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
             except TypeError as exc:
                 logger.error(f"Invalid arguments for {tool_name}: {exc}")
-                errors.append((tool_name, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
+                errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
         # Snapshot the in_progress task BEFORE running the batch. If the batch
         # itself contains manage_plan_tasks (which can flip the in_progress task),
@@ -913,7 +989,7 @@ async def handle_function_call(
         replan_pre_snapshot: tuple[str | None, str | None] | None = None
         agent_plugin_snapshot = None
         try:
-            agent_plugin_snapshot = helper.plugin_manager.get_plugin("agent_tools")
+            agent_plugin_snapshot = helper.plugin_manager.get_plugin(DELIVERY_PLUGIN_PREFIX[:-1])
             if agent_plugin_snapshot is not None:
                 snapshot_scope = compute_scope_key(chat_id, user_id)
                 pre_task_id = await asyncio.to_thread(
@@ -929,7 +1005,7 @@ async def handle_function_call(
         semaphore = _tool_call_semaphore(helper)
         tasks = [
             _call_function_bounded(helper, name, args, request_context, semaphore)
-            for name, args, _ in prepared
+            for name, args, _, _ in prepared
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -942,7 +1018,10 @@ async def handle_function_call(
         }
         seen_artifact_paths.discard(None)
         batch_artifact_count = 0
-        for (tool_name, _, tool_call_id), tool_response in zip(prepared, results):
+        repeated_failures: list[tuple[str, str]] = []
+        prior_failure_fingerprints = set(failure_escalation_state.get("seen") or set())
+        batch_failure_fingerprints: set[tuple[str, str, str]] = set()
+        for (tool_name, _, canonical_arguments, tool_call_id), tool_response in zip(prepared, results):
             if isinstance(tool_response, Exception):
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             tool_result = normalize_tool_result(tool_response, tool_name=tool_name)
@@ -985,19 +1064,49 @@ async def handle_function_call(
                 else:
                     add_tool_result(tool_name, tool_result.content, tool_call_id)
                     if not tool_result.success:
+                        if _record_repeated_tool_failure(
+                            failure_escalation_state,
+                            prior_failure_fingerprints,
+                            tool_name,
+                            canonical_arguments,
+                            tool_result.error or tool_result.content[:200],
+                        ):
+                            repeated_failures.append(
+                                (tool_name, tool_result.error or tool_result.content[:200])
+                            )
+                        batch_failure_fingerprints.add(_tool_failure_fingerprint(
+                            tool_name,
+                            canonical_arguments,
+                            tool_result.error or tool_result.content[:200],
+                        ))
                         failed_calls.append(
                             (tool_name, tool_result.error or tool_result.content[:200])
                         )
 
-        for tool_name, tool_call_id, tool_response in errors:
+        for tool_name, canonical_arguments, tool_call_id, tool_response in errors:
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             add_tool_result(tool_name, tool_response, tool_call_id)
             err_tr = normalize_tool_result(tool_response, tool_name=tool_name)
+            if _record_repeated_tool_failure(
+                failure_escalation_state,
+                prior_failure_fingerprints,
+                tool_name,
+                canonical_arguments,
+                err_tr.error or err_tr.content[:200],
+            ):
+                repeated_failures.append((tool_name, err_tr.error or err_tr.content[:200]))
+            batch_failure_fingerprints.add(_tool_failure_fingerprint(
+                tool_name,
+                canonical_arguments,
+                err_tr.error or err_tr.content[:200],
+            ))
             failed_calls.append(
                 (tool_name, err_tr.error or err_tr.content[:200])
             )
             tool_outcomes.append((tool_name, False))
+
+        failure_escalation_state.setdefault("seen", set()).update(batch_failure_fingerprints)
 
         # Re-plan trigger bookkeeping. agent_tools tracks consecutive tool
         # failures per in_progress task and schedules a system-message inject
@@ -1018,7 +1127,7 @@ async def handle_function_call(
                 exec_outcomes = [
                     (name, success)
                     for name, success in tool_outcomes
-                    if name != "agent_tools.manage_plan_tasks"
+                    if name != MANAGE_PLAN_TOOL_NAME
                 ]
                 if exec_outcomes:
                     batch_success = all(success for _, success in exec_outcomes)
@@ -1034,6 +1143,18 @@ async def handle_function_call(
                     )
         except Exception:
             logger.debug("agent_tools re-plan bookkeeping failed", exc_info=True)
+
+        if repeated_failures and not direct_results_collected:
+            skills_agent_mode = _is_skills_agent_mode(helper, chat_id)
+            _conversation_messages(helper, chat_id).append({
+                "role": "user",
+                "content": _format_repeated_failure_note(
+                    repeated_failures,
+                    skills_agent=skills_agent_mode,
+                ),
+            })
+            if skills_agent_mode:
+                final_delivery_required = True
 
         if failed_calls and not direct_results_collected:
             _conversation_messages(helper, chat_id).append({
@@ -1101,6 +1222,7 @@ async def handle_function_call(
             retry_plain_text_tool_intent,
             tool_intent_repair_attempts,
             token_accumulator,
+            failure_escalation_state,
         )
     except Exception:
         logger.error('Error in function call handling', exc_info=True)

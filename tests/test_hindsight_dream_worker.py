@@ -88,6 +88,29 @@ async def test_dream_tick_writes_candidate_and_advances_watermark(plugin):
     assert run["status"] == "completed"
 
 
+async def test_dream_tick_writes_lesson_as_candidate_only(plugin):
+    plugin.openai.content = json.dumps({
+        "documents": [{
+            "path": "tools/pytest.md",
+            "kind": "lesson",
+            "content": "Use focused pytest commands for touched plugin behavior.",
+        }]
+    })
+    await _seed_user_events(plugin)
+
+    await plugin._dream_tick(application=None)
+
+    doc = await plugin.db_handle.fetch_one(
+        "SELECT path, kind, status, lesson_type, verified_at FROM hindsight_memory_documents"
+    )
+
+    assert doc["path"] == "tools/pytest.md"
+    assert doc["kind"] == "lesson"
+    assert doc["status"] == "candidate"
+    assert doc["lesson_type"] == "lesson_candidate"
+    assert doc["verified_at"] is None
+
+
 async def test_dream_tick_leaves_watermark_when_model_output_is_invalid(plugin):
     plugin.openai.content = "not json"
     await _seed_user_events(plugin)

@@ -42,8 +42,8 @@ def _fake_async_client(
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url):
-            calls.append(url)
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
             if delay:
                 await asyncio.sleep(delay)
             if error:
@@ -327,4 +327,37 @@ async def test_slow_http_does_not_block_parallel_async_task(
     await task
 
     assert events == ["parallel", "plugin_done"]
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_iplocation_rejects_invalid_ip_without_network(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, iplocation_module, calls, payload={})
+
+    result = await IpLocationPlugin().execute("iplocation", helper=None, ip="not an ip")
+
+    _assert_controlled_error(result, "Invalid IP address")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_iplocation_handles_unexpected_payload_shape(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, iplocation_module, calls, payload=["unexpected"])
+
+    result = await IpLocationPlugin().execute("iplocation", helper=None, ip="8.8.8.8")
+
+    _assert_controlled_error(result, "Unexpected IP location response shape")
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_iplocation_handles_unexpected_nested_data_shape(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, iplocation_module, calls, payload={"data": []})
+
+    result = await IpLocationPlugin().execute("iplocation", helper=None, ip="8.8.8.8")
+
+    _assert_controlled_error(result, "Unexpected IP location response shape")
     assert len(calls) == 1

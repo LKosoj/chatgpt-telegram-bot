@@ -30,12 +30,13 @@ PLAN_CONTRACT = {
 @pytest.fixture()
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._instance = None
+    Database._reset_singleton()
     db = Database()
     with db.get_connection() as conn:
         for stmt in AgentToolsPlugin().register_schema():
             conn.execute(stmt)
-    return db
+    yield db
+    Database._reset_singleton()
 
 
 def _make_plugin(tmp_path, db):
@@ -80,6 +81,34 @@ async def test_on_session_reset_clears_all_tasks(tmp_path, agent_db):
     )
     assert listed["plan_tasks"]["tasks"] == []
     assert listed["plan_tasks"]["definition_of_done"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_session_reset_clears_standalone_working_checkpoint(tmp_path, agent_db):
+    plugin, helper = _make_plugin(tmp_path, agent_db)
+    updated = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="update",
+        summary="Only checkpoint exists",
+        next_step="Continue",
+    )
+    assert updated["success"] is True
+
+    await plugin.on_session_reset(SessionResetPayload(
+        chat_id=10, user_id=42, reason="request_start", terminal_only=False,
+    ))
+
+    listed = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    assert listed["working_checkpoint"]["checkpoint"] is None
 
 
 @pytest.mark.asyncio

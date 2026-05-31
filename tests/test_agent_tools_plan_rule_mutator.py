@@ -7,7 +7,10 @@ from bot.plugins.agent_tools import (
     AgentToolsPlugin,
     _PLAN_RULE_MARKER,
     _PLAN_RULE_TEXT,
+    _WORKING_CHECKPOINT_MARKER,
 )
+from bot.database import Database
+from bot.plugins.db_handle import DbHandle
 from bot.plugins.hooks import BeforeChatRequestPayload
 
 
@@ -27,6 +30,18 @@ def _make_plugin(allowed) -> AgentToolsPlugin:
     plugin = AgentToolsPlugin()
     plugin.openai = FakeHelper(allowed)
     return plugin
+
+
+@pytest.fixture()
+def agent_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
+    Database._reset_singleton()
+    db = Database()
+    with db.get_connection() as conn:
+        for stmt in AgentToolsPlugin().register_schema():
+            conn.execute(stmt)
+    yield db
+    Database._reset_singleton()
 
 
 def _payload(chat_id=1, user_id=42) -> BeforeChatRequestPayload:
@@ -80,6 +95,56 @@ async def test_rule_absent_when_agent_tools_not_allowed():
     ]
 
     new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is None
+
+
+async def test_working_checkpoint_injected_when_agent_tools_allowed(tmp_path, agent_db):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(openai=FakeHelper(["agent_tools"]), storage_root=str(tmp_path), db=DbHandle(agent_db))
+    await plugin.execute(
+        "update_working_checkpoint",
+        plugin.openai,
+        chat_id=1,
+        user_id=42,
+        action="update",
+        summary="Inspected source",
+        next_step="Run tests",
+    )
+    messages = [
+        {"role": "system", "content": "mode prompt"},
+        {"role": "user", "content": "q"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    checkpoint_messages = [
+        message for message in new
+        if isinstance(message.get("content"), str)
+        and message["content"].startswith(_WORKING_CHECKPOINT_MARKER)
+    ]
+    assert len(checkpoint_messages) == 1
+    assert "Inspected source" in checkpoint_messages[0]["content"]
+    assert "Run tests" in checkpoint_messages[0]["content"]
+
+
+async def test_working_checkpoint_skipped_when_agent_tools_not_allowed(tmp_path, agent_db):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(openai=FakeHelper(["skills"]), storage_root=str(tmp_path), db=DbHandle(agent_db))
+    await plugin.execute(
+        "update_working_checkpoint",
+        plugin.openai,
+        chat_id=1,
+        user_id=42,
+        action="update",
+        summary="Should stay hidden",
+    )
+
+    new = await plugin.on_before_chat_request(
+        [{"role": "user", "content": "q"}],
+        _payload(),
+    )
 
     assert new is None
 

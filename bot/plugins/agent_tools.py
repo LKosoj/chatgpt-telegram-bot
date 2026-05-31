@@ -18,12 +18,25 @@ from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..utils import compute_scope_key, get_thread_id, message_text
 from .hooks import BeforeChatRequestPayload
+from .background import BackgroundTask
 from .plugin import Plugin
 
 
 CLOSED_STATUSES = {"completed", "cancelled"}
 TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled", "blocked"}
 BACKGROUND_CLOSED_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
+GOAL_RUN_CLOSED_STATUSES = {
+    "completed",
+    "blocked",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "budget_exhausted",
+}
+GOAL_RUN_DEFAULT_LIMITS = {
+    "max_runtime_seconds": 1800,
+}
+GOAL_RUN_MAX_CONCURRENCY = 2
 DELIVERY_ACTION_WORDS = (
     "attach",
     "deliver",
@@ -56,10 +69,12 @@ SUBAGENT_CONSECUTIVE_REPEAT_LIMIT = 3
 SUBAGENT_TOTAL_REPEAT_LIMIT = 5
 SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.manage_plan_tasks",
+    "agent_tools.update_working_checkpoint",
     "agent_tools.ask_telegram_user",
     "agent_tools.cancel_pending_question",
     "agent_tools.deliver_to_user",
     "agent_tools.run_subagents",
+    "agent_tools.manage_goal_runs",
     "skills.find_installable_skills",
     "skills.install_skill",
     "skills.create_skill",
@@ -76,6 +91,7 @@ _REPLAN_TRIGGER_MARKER = "[re-plan trigger-v1] "
 _REPLAN_ERROR_THRESHOLD = 2
 
 _PLAN_RULE_MARKER = "[plan-rule-v1] "
+_WORKING_CHECKPOINT_MARKER = "[working-checkpoint-v1] "
 _PLAN_RULE_TEXT = (
     "Если для выполнения запроса понадобятся 3+ tool-вызова или последовательная координация "
     "шагов (несколько разных тулов, проверка промежуточных результатов, исправление ошибок) — "
@@ -83,6 +99,9 @@ _PLAN_RULE_TEXT = (
     "зафиксируй план. Для тривиальных запросов (быстрый ответ из знаний, один очевидный тул, "
     "перевод/время/факт) план НЕ создавай."
 )
+_CHECKPOINT_MAX_TEXT_CHARS = 1600
+_CHECKPOINT_MAX_LIST_ITEMS = 8
+_MAP_REDUCE_STRATEGIES = {"synthesize", "compare", "rank", "deduplicate"}
 
 
 def _load_subagent_system_prompt() -> str:
@@ -134,6 +153,7 @@ class AgentToolsPlugin(Plugin):
         self.pending_by_chat: Dict[int, str] = {}
         self.background_jobs: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._background_job_tasks: Dict[str, asyncio.Task] = {}
+        self._goal_run_tasks: Dict[str, asyncio.Task] = {}
         self._orphaned_pending: List[Dict[str, Any]] = []
         self._recent_deliveries: Dict[str, float] = {}
         self._background_subagent_tasks: set[asyncio.Task] = set()
@@ -149,7 +169,11 @@ class AgentToolsPlugin(Plugin):
     def initialize(self, openai=None, bot=None, storage_root: str | None = None,
                    db=None, plugin_config=None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
-        runtime_db = getattr(openai, "db", None) or getattr(bot, "db", None)
+        runtime_db = (
+            getattr(openai, "db", None)
+            or getattr(bot, "db", None)
+            or getattr(db, "database", None)
+        )
         self.db_handle = db  # async DbHandle facade from Stage 0 shim (may be None)
         self.db = None
         if storage_root:
@@ -188,6 +212,26 @@ class AgentToolsPlugin(Plugin):
         for task in list(self._background_job_tasks.values()):
             task.cancel()
         self._background_job_tasks.clear()
+        for task in list(self._goal_run_tasks.values()):
+            task.cancel()
+        self._goal_run_tasks.clear()
+
+    async def close_async(self) -> None:
+        tasks = [task for task in self._goal_run_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._goal_run_tasks.clear()
+
+    def get_background_tasks(self) -> List[BackgroundTask]:
+        return [
+            BackgroundTask(
+                name="goal_runs",
+                interval_seconds=1.0,
+                coroutine_factory=self._goal_runs_tick,
+            )
+        ]
 
     @staticmethod
     async def _clear_question_markup(bot, chat_id: int, message_id: int) -> None:
@@ -246,12 +290,16 @@ class AgentToolsPlugin(Plugin):
         # of every chat request, so short-circuit before touching the DB
         # whenever possible.
         plan_rule_present = False
+        checkpoint_present = False
         for msg in messages:
             if not isinstance(msg, dict) or msg.get("role") != "system":
                 continue
             content = msg.get("content")
             if isinstance(content, str) and content.startswith(_PLAN_RULE_MARKER):
                 plan_rule_present = True
+            if isinstance(content, str) and content.startswith(_WORKING_CHECKPOINT_MARKER):
+                checkpoint_present = True
+            if plan_rule_present and checkpoint_present:
                 break
 
         mode_prompt_covers_rule = False
@@ -266,7 +314,9 @@ class AgentToolsPlugin(Plugin):
                 mode_prompt_covers_rule = True
 
         inject_plan_rule = not (plan_rule_present or mode_prompt_covers_rule)
-        if inject_plan_rule:
+        allowed = None
+        agent_tools_allowed = False
+        if inject_plan_rule or (self.db is not None and not checkpoint_present):
             try:
                 allowed = await helper.resolve_allowed_plugins(
                     chat_id, session_id=None, user_id=user_id,
@@ -280,10 +330,19 @@ class AgentToolsPlugin(Plugin):
                 inject_plan_rule = False
             if allowed is not None:
                 plugin_id = self.get_plugin_id()
-                if allowed != ['All'] and plugin_id not in (allowed or []):
+                agent_tools_allowed = allowed == ['All'] or plugin_id in (allowed or [])
+                if not agent_tools_allowed:
                     inject_plan_rule = False
 
-        if not inject_plan_rule and not pending:
+        checkpoint = None
+        if agent_tools_allowed and self.db is not None and not checkpoint_present:
+            try:
+                checkpoint = await asyncio.to_thread(self._db_get_checkpoint, scope)
+            except Exception:
+                logging.debug("agent_tools: checkpoint read failed", exc_info=True)
+                checkpoint = None
+
+        if not inject_plan_rule and not pending and not checkpoint:
             return None
 
         new_messages = list(messages)
@@ -298,6 +357,12 @@ class AgentToolsPlugin(Plugin):
             new_messages.insert(insert_at, {
                 "role": "system",
                 "content": _PLAN_RULE_MARKER + _PLAN_RULE_TEXT,
+            })
+            injected += 1
+        if checkpoint:
+            new_messages.insert(insert_at + injected, {
+                "role": "system",
+                "content": _WORKING_CHECKPOINT_MARKER + self._format_working_checkpoint(checkpoint),
             })
             injected += 1
         if pending:
@@ -422,6 +487,57 @@ class AgentToolsPlugin(Plugin):
                 },
             },
             {
+                "name": "update_working_checkpoint",
+                "description": (
+                    "Store, inspect, or clear a short working checkpoint for the current agent task. "
+                    "Use it after meaningful progress, verified findings, or a change of next step. "
+                    "This is operational scratch state, not long-term memory; do not store secrets, "
+                    "credentials, or unverified user-private data."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["update", "list", "clear"],
+                            "description": "Update, list, or clear the working checkpoint.",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Short current-state summary based on verified progress.",
+                        },
+                        "current_task_id": {
+                            "type": "string",
+                            "description": "Optional current durable plan task id, for example T2.",
+                        },
+                        "next_step": {
+                            "type": "string",
+                            "description": "Concrete next action to take.",
+                        },
+                        "evidence": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Short evidence pointers such as file:line, command results, or tool outputs.",
+                        },
+                        "blockers": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Known blockers or risks that affect the next turn.",
+                        },
+                        "files_touched": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Local files changed or inspected for this task.",
+                        },
+                        "verification_status": {
+                            "type": "string",
+                            "description": "Concise status of verification already done or still needed.",
+                        },
+                    },
+                    "required": ["action"],
+                },
+            },
+            {
                 "name": "cancel_pending_question",
                 "description": (
                     "Cancel the currently pending ask_telegram_user question in this Telegram chat and "
@@ -529,6 +645,39 @@ class AgentToolsPlugin(Plugin):
                             ),
                             "default": False,
                         },
+                        "map_reduce": {
+                            "type": "object",
+                            "description": (
+                                "Optional map-reduce contract. Use when subagents are parallel map workers "
+                                "and the parent will synthesize, compare, rank, or deduplicate their findings."
+                            ),
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "description": "Set false to explicitly disable the contract.",
+                                },
+                                "reduce_goal": {
+                                    "type": "string",
+                                    "description": "Question or objective the parent reducer must answer from worker findings.",
+                                },
+                                "merge_strategy": {
+                                    "type": "string",
+                                    "enum": ["synthesize", "compare", "rank", "deduplicate"],
+                                },
+                                "worker_output_contract": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {"type": "string"},
+                                        "required_sections": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
+                                        "evidence_required": {"type": "boolean"},
+                                        "risk_required": {"type": "boolean"},
+                                    },
+                                },
+                            },
+                        },
                         "subagents": {
                             "type": "array",
                             "description": "Subagents to run in parallel.",
@@ -552,6 +701,14 @@ class AgentToolsPlugin(Plugin):
                                     "context": {
                                         "type": "string",
                                         "description": "Optional extra context for this subagent only.",
+                                    },
+                                    "map_key": {
+                                        "type": "string",
+                                        "description": "Optional stable key for this worker's map partition.",
+                                    },
+                                    "expected_output": {
+                                        "type": "string",
+                                        "description": "Optional worker-specific output format or required sections.",
                                     },
                                     "temperature": {
                                         "type": "number",
@@ -582,6 +739,59 @@ class AgentToolsPlugin(Plugin):
                         },
                     },
                     "required": ["subagents"],
+                },
+            },
+            {
+                "name": "manage_goal_runs",
+                "description": (
+                    "Start, list, inspect, or cancel controlled background goal runs for this Telegram chat. "
+                    "Use for long-running objectives that should continue outside the current request. "
+                    "Runs are DB-backed, scoped to the chat/user, and have explicit runtime/token limits."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "list", "status", "cancel", "clear"],
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Goal prompt for action=start.",
+                        },
+                        "definition_of_done": {
+                            "type": "object",
+                            "properties": {
+                                "goal": {"type": "string"},
+                                "success_criteria": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 1,
+                                },
+                                "verification": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 1,
+                                },
+                                "constraints": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                        },
+                        "limits": {
+                            "type": "object",
+                            "properties": {
+                                "max_runtime_seconds": {"type": "integer"},
+                                "token_budget": {"type": "integer"},
+                            },
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "description": "Run id for status/cancel.",
+                        },
+                    },
+                    "required": ["action"],
                 },
             },
         ]
@@ -856,6 +1066,418 @@ class AgentToolsPlugin(Plugin):
                 return str(text or "")[:300]
         return str(response or "")[:300]
 
+    @staticmethod
+    def _goal_status_from_response(response: Any) -> str:
+        if isinstance(response, dict):
+            payload = response.get("direct_result")
+            if isinstance(payload, dict):
+                status = str(payload.get("status") or "").strip().lower()
+                if status in {"completed", "blocked"}:
+                    return status
+        return "completed"
+
+    @staticmethod
+    def _normalize_goal_limits(value: Any) -> Dict[str, int]:
+        raw = value if isinstance(value, dict) else {}
+
+        def bounded_int(name: str, default: int, lower: int, upper: int) -> int:
+            try:
+                requested = int(raw.get(name, default))
+            except (TypeError, ValueError):
+                requested = default
+            return max(lower, min(requested, upper))
+
+        limits = {
+            "max_runtime_seconds": bounded_int(
+                "max_runtime_seconds",
+                GOAL_RUN_DEFAULT_LIMITS["max_runtime_seconds"],
+                60,
+                14400,
+            ),
+        }
+        if raw.get("token_budget") is not None:
+            try:
+                limits["token_budget"] = max(1, int(raw.get("token_budget")))
+            except (TypeError, ValueError):
+                pass
+        return limits
+
+    @staticmethod
+    def _goal_run_prompt(prompt: str, definition_of_done: Dict[str, Any] | None, limits: Dict[str, int]) -> str:
+        dod_text = (
+            json.dumps(definition_of_done, ensure_ascii=False, sort_keys=True)
+            if definition_of_done else "{}"
+        )
+        return (
+            "Controlled background goal run.\n"
+            f"Objective:\n{prompt}\n\n"
+            f"Definition of done:\n{dod_text}\n\n"
+            "Limits to respect:\n"
+            f"- max_runtime_seconds: {limits.get('max_runtime_seconds')}\n"
+            f"- token_budget: {limits.get('token_budget', 'not set')}\n\n"
+            "Use tools only when needed. Finish through agent_tools.deliver_to_user with "
+            "status=completed or status=blocked and include verification_summary or blocked_reason."
+        )
+
+    async def _manage_goal_runs(self, helper, *, request_context=None, **kwargs) -> Dict[str, Any]:
+        if self.db_handle is None:
+            return {"success": False, "error": "agent_tools goal runs require database"}
+        action = str(kwargs.get("action") or "").strip().lower()
+        chat_id = kwargs.get("chat_id")
+        user_id = kwargs.get("user_id")
+        if request_context is not None:
+            chat_id = getattr(request_context, "plugin_chat_id", None) or chat_id
+            user_id = getattr(request_context, "user_id", None) or user_id
+        scope = self._background_scope(chat_id, user_id)
+        if action == "start":
+            prompt = str(kwargs.get("prompt") or "").strip()
+            if not prompt:
+                return {"success": False, "error": "manage_goal_runs start requires prompt"}
+            definition = self._normalize_existing_contract(kwargs.get("definition_of_done"))
+            if definition is None:
+                return {
+                    "success": False,
+                    "error": "manage_goal_runs start requires definition_of_done with goal, success_criteria, and verification",
+                }
+            validation_error = self._contract_validation_error(definition)
+            if validation_error:
+                return {"success": False, "error": validation_error}
+            limits = self._normalize_goal_limits(kwargs.get("limits"))
+            run_id = time.strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+            now = int(time.time())
+            await self.db_handle.execute(
+                """
+                INSERT INTO agent_goal_runs
+                (run_id, scope, chat_id, user_id, reply_to_message_id, message_thread_id,
+                 prompt, definition_of_done, status, limits, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    scope,
+                    int(chat_id),
+                    int(user_id if user_id is not None else chat_id),
+                    kwargs.get("message_id"),
+                    getattr(request_context, "message_thread_id", None) if request_context is not None else None,
+                    prompt,
+                    json.dumps(definition, ensure_ascii=False),
+                    json.dumps(limits, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            await self._append_goal_event(run_id, "queued", "Goal run queued", {"limits": limits})
+            return {
+                "success": True,
+                "goal_run": {
+                    "run_id": run_id,
+                    "status": "queued",
+                    "limits": limits,
+                    "definition_of_done": definition,
+                },
+                "output": f"Goal run `{run_id}` queued.",
+            }
+        if action == "list":
+            rows = await self._list_goal_runs(scope)
+            return {"success": True, "goal_runs": rows, "output": self._format_goal_run_list(rows)}
+        if action == "status":
+            run_id = str(kwargs.get("run_id") or "").strip()
+            row = await self._get_goal_run(scope, run_id)
+            if not row:
+                return {"success": False, "error": "Goal run not found"}
+            return {"success": True, "goal_run": row, "output": self._format_goal_run_status(row)}
+        if action == "cancel":
+            run_id = str(kwargs.get("run_id") or "").strip()
+            row = await self._get_goal_run(scope, run_id)
+            if not row:
+                return {"success": False, "error": "Goal run not found"}
+            if row.get("status") in GOAL_RUN_CLOSED_STATUSES:
+                return {"success": True, "goal_run": row, "output": f"Goal run `{run_id}` is already {row.get('status')}."}
+            now = int(time.time())
+            if row.get("status") == "queued":
+                cancelled = await self.db_handle.fetch_one(
+                    """
+                    UPDATE agent_goal_runs
+                    SET cancel_requested = 1, status = 'cancelled', finished_at = ?, updated_at = ?
+                    WHERE scope = ? AND run_id = ? AND status = 'queued'
+                    RETURNING *
+                    """,
+                    (now, now, scope, run_id),
+                )
+                if cancelled:
+                    await self._append_goal_event(run_id, "cancelled", "Queued goal run cancelled", {})
+                    return {"success": True, "run_id": run_id, "output": f"Goal run `{run_id}` cancelled."}
+                row = await self._get_goal_run(scope, run_id)
+                if not row:
+                    return {"success": False, "error": "Goal run not found"}
+                if row.get("status") in GOAL_RUN_CLOSED_STATUSES:
+                    return {"success": True, "goal_run": row, "output": f"Goal run `{run_id}` is already {row.get('status')}."}
+            if row.get("status") == "cancelling":
+                return {"success": True, "run_id": run_id, "output": f"Goal run `{run_id}` cancellation already requested."}
+            cancelling = await self.db_handle.fetch_one(
+                """
+                UPDATE agent_goal_runs
+                SET cancel_requested = 1, status = 'cancelling', updated_at = ?
+                WHERE scope = ? AND run_id = ? AND status = 'running'
+                RETURNING *
+                """,
+                (now, scope, run_id),
+            )
+            if not cancelling:
+                row = await self._get_goal_run(scope, run_id)
+                if row and row.get("status") in GOAL_RUN_CLOSED_STATUSES:
+                    return {"success": True, "goal_run": row, "output": f"Goal run `{run_id}` is already {row.get('status')}."}
+                return {"success": False, "error": "Goal run could not be cancelled from its current state"}
+            task = self._goal_run_tasks.get(run_id)
+            if task and not task.done():
+                task.cancel()
+            await self._append_goal_event(run_id, "cancel_requested", "Goal run cancellation requested", {})
+            return {"success": True, "run_id": run_id, "output": f"Goal run `{run_id}` cancellation requested."}
+        if action == "clear":
+            rows = await self.db_handle.fetch_all(
+                f"SELECT run_id FROM agent_goal_runs WHERE scope = ? AND status IN ({','.join('?' for _ in GOAL_RUN_CLOSED_STATUSES)})",
+                (scope, *sorted(GOAL_RUN_CLOSED_STATUSES)),
+            )
+            run_ids = [str(row["run_id"]) for row in rows]
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                async with self.db_handle.transaction() as tx:
+                    await tx.execute(f"DELETE FROM agent_goal_run_events WHERE run_id IN ({placeholders})", tuple(run_ids))
+                    await tx.execute(f"DELETE FROM agent_goal_runs WHERE run_id IN ({placeholders})", tuple(run_ids))
+            return {"success": True, "cleared": len(run_ids), "output": f"Removed {len(run_ids)} closed goal run(s)."}
+        return {"success": False, "error": f"Unknown goal run action: {action}"}
+
+    async def _list_goal_runs(self, scope: str) -> List[Dict[str, Any]]:
+        rows = await self.db_handle.fetch_all(
+            """
+            SELECT run_id, status, prompt, turns_used, tool_calls_used, tokens_used,
+                   result_preview, error, created_at, updated_at, finished_at
+            FROM agent_goal_runs
+            WHERE scope = ?
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            (scope,),
+        )
+        return rows
+
+    async def _get_goal_run(self, scope: str, run_id: str) -> Dict[str, Any] | None:
+        if not run_id:
+            return None
+        return await self.db_handle.fetch_one(
+            """
+            SELECT *
+            FROM agent_goal_runs
+            WHERE scope = ? AND run_id = ?
+            """,
+            (scope, run_id),
+        )
+
+    async def _append_goal_event(self, run_id: str, event_type: str, message: str, payload: Any) -> None:
+        if self.db_handle is None:
+            return
+        await self.db_handle.execute(
+            """
+            INSERT INTO agent_goal_run_events (run_id, event_type, message, payload, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                event_type,
+                message,
+                json.dumps(payload or {}, ensure_ascii=False),
+                int(time.time()),
+            ),
+        )
+
+    @staticmethod
+    def _format_goal_run_list(rows: List[Dict[str, Any]]) -> str:
+        if not rows:
+            return "No goal runs yet."
+        lines = ["Goal runs:"]
+        for row in rows:
+            prompt = str(row.get("prompt") or "").replace("\n", " ")
+            if len(prompt) > 80:
+                prompt = prompt[:77] + "..."
+            lines.append(f"- `{row.get('run_id')}` {row.get('status')}: {prompt}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_goal_run_status(row: Dict[str, Any]) -> str:
+        lines = [
+            f"Goal run `{row.get('run_id')}`",
+            f"Status: {row.get('status')}",
+            f"Prompt: {row.get('prompt')}",
+        ]
+        if row.get("tokens_used") is not None:
+            lines.append(f"Tokens: {row.get('tokens_used')}")
+        if row.get("result_preview"):
+            lines.append(f"Result preview: {row.get('result_preview')}")
+        if row.get("error"):
+            lines.append(f"Error: {row.get('error')}")
+        return "\n".join(lines)
+
+    async def _goal_runs_tick(self, *, application=None) -> None:
+        if self.db_handle is None:
+            return
+        active = {run_id: task for run_id, task in self._goal_run_tasks.items() if not task.done()}
+        self._goal_run_tasks = active
+        await self._interrupt_orphaned_goal_runs(set(active))
+        if len(active) >= GOAL_RUN_MAX_CONCURRENCY:
+            return
+        rows = await self.db_handle.fetch_all(
+            """
+            SELECT run_id
+            FROM agent_goal_runs
+            WHERE status = 'queued'
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (GOAL_RUN_MAX_CONCURRENCY - len(active),),
+        )
+        for row in rows:
+            run_id = str(row.get("run_id") or "")
+            if not run_id or run_id in self._goal_run_tasks:
+                continue
+            task = asyncio.create_task(self._run_goal_run(application, run_id))
+            self._goal_run_tasks[run_id] = task
+            task.add_done_callback(lambda _task, rid=run_id: self._goal_run_tasks.pop(rid, None))
+
+    async def _interrupt_orphaned_goal_runs(self, active_run_ids: set[str]) -> None:
+        rows = await self.db_handle.fetch_all(
+            "SELECT run_id FROM agent_goal_runs WHERE status IN ('running', 'cancelling')",
+            (),
+        )
+        now = int(time.time())
+        for row in rows:
+            run_id = str(row.get("run_id") or "")
+            if not run_id or run_id in active_run_ids:
+                continue
+            interrupted = await self.db_handle.fetch_one(
+                """
+                UPDATE agent_goal_runs
+                SET status = 'interrupted',
+                    error = COALESCE(error, 'Goal run interrupted before completion'),
+                    finished_at = COALESCE(finished_at, ?),
+                    updated_at = ?
+                WHERE run_id = ? AND status IN ('running', 'cancelling')
+                RETURNING run_id
+                """,
+                (now, now, run_id),
+            )
+            if interrupted:
+                await self._append_goal_event(
+                    run_id,
+                    "interrupted",
+                    "Goal run interrupted before completion",
+                    {},
+                )
+
+    async def _run_goal_run(self, application, run_id: str) -> None:
+        now = int(time.time())
+        row = await self.db_handle.fetch_one(
+            """
+            UPDATE agent_goal_runs
+            SET status = 'running', started_at = ?, updated_at = ?
+            WHERE run_id = ? AND status = 'queued' AND cancel_requested = 0
+            RETURNING *
+            """,
+            (now, now, run_id),
+        )
+        if not row:
+            return
+        await self._append_goal_event(run_id, "started", "Goal run started", {})
+        try:
+            helper = getattr(self, "openai", None)
+            if not helper or not hasattr(helper, "get_chat_response"):
+                raise RuntimeError("OpenAI helper is not available for goal runs")
+            limits = json.loads(row.get("limits") or "{}")
+            definition = json.loads(row.get("definition_of_done") or "{}")
+            prompt = self._goal_run_prompt(str(row.get("prompt") or ""), definition, limits)
+            bot = getattr(application, "bot", None) if application is not None else None
+            request_context = RequestContext(
+                chat_id=int(row["chat_id"]),
+                user_id=int(row["user_id"]),
+                message_id=row.get("reply_to_message_id"),
+                request_id=f"goal_{run_id}",
+            )
+            response, total_tokens = await asyncio.wait_for(
+                helper.get_chat_response(
+                    chat_id=int(row["chat_id"]),
+                    query=prompt,
+                    request_id=f"goal_{run_id}",
+                    user_id=int(row["user_id"]),
+                    request_context=request_context,
+                ),
+                timeout=int(limits.get("max_runtime_seconds") or GOAL_RUN_DEFAULT_LIMITS["max_runtime_seconds"]),
+            )
+            current = await self.db_handle.fetch_one("SELECT cancel_requested FROM agent_goal_runs WHERE run_id = ?", (run_id,))
+            if current and int(current.get("cancel_requested") or 0):
+                await self._finish_goal_run(run_id, "cancelled", tokens_used=total_tokens)
+                return
+            status = self._goal_status_from_response(response)
+            if limits.get("token_budget") and total_tokens and int(total_tokens) > int(limits["token_budget"]):
+                status = "budget_exhausted"
+            preview = self._background_result_preview(response)
+            await self._finish_goal_run(
+                run_id,
+                status,
+                tokens_used=total_tokens,
+                result_preview=preview,
+                final_result=response,
+            )
+            if bot is not None:
+                await send_agent_response(
+                    bot,
+                    chat_id=int(row["chat_id"]),
+                    response=response,
+                    reply_to_message_id=row.get("reply_to_message_id"),
+                    message_thread_id=row.get("message_thread_id"),
+                    title=f"Goal run `{run_id}` {status}.",
+                )
+        except asyncio.TimeoutError:
+            await self._finish_goal_run(run_id, "budget_exhausted", error="Goal run exceeded max_runtime_seconds")
+        except asyncio.CancelledError:
+            await self._finish_goal_run(run_id, "cancelled")
+            raise
+        except Exception as exc:
+            logging.exception("Goal run %s failed", run_id)
+            await self._finish_goal_run(run_id, "failed", error=str(exc))
+
+    async def _finish_goal_run(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        tokens_used: int | None = None,
+        result_preview: str | None = None,
+        final_result: Any = None,
+        error: str | None = None,
+    ) -> None:
+        now = int(time.time())
+        await self.db_handle.execute(
+            """
+            UPDATE agent_goal_runs
+            SET status = ?, tokens_used = COALESCE(?, tokens_used),
+                result_preview = COALESCE(?, result_preview),
+                final_result = COALESCE(?, final_result),
+                error = COALESCE(?, error),
+                finished_at = ?, updated_at = ?
+            WHERE run_id = ?
+            """,
+            (
+                status,
+                tokens_used,
+                result_preview,
+                json.dumps(final_result, ensure_ascii=False, default=str) if final_result is not None else None,
+                error,
+                now,
+                now,
+                run_id,
+            ),
+        )
+        await self._append_goal_event(run_id, status, f"Goal run {status}", {"error": error} if error else {})
+
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         request_context = kwargs.pop("request_context", None)
         if function_name == "manage_plan_tasks":
@@ -863,6 +1485,8 @@ class AgentToolsPlugin(Plugin):
             # (_db_get_plan / _db_save_plan / _db_clear_plan). На event loop это
             # давало блокирующий write под WAL-busy. to_thread снимает блокировку.
             return await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
+        if function_name == "update_working_checkpoint":
+            return await asyncio.to_thread(self._manage_working_checkpoint, helper, **kwargs)
         if function_name == "ask_telegram_user":
             return await self._ask_telegram_user(helper, **kwargs)
         if function_name == "cancel_pending_question":
@@ -871,6 +1495,8 @@ class AgentToolsPlugin(Plugin):
             return await self._run_subagents(helper, request_context=request_context, **kwargs)
         if function_name == "deliver_to_user":
             return await self._deliver_to_user(helper, request_context=request_context, **kwargs)
+        if function_name == "manage_goal_runs":
+            return await self._manage_goal_runs(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
 
     def register_schema(self) -> List[str]:
@@ -899,6 +1525,61 @@ class AgentToolsPlugin(Plugin):
             '''
                 CREATE INDEX IF NOT EXISTS idx_agent_plan_tasks_scope_position
                 ON agent_plan_tasks(scope, position)
+            ''',
+            '''
+                CREATE TABLE IF NOT EXISTS agent_working_checkpoints (
+                    scope TEXT PRIMARY KEY,
+                    checkpoint TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            ''',
+            '''
+                CREATE TABLE IF NOT EXISTS agent_goal_runs (
+                    run_id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    reply_to_message_id INTEGER,
+                    message_thread_id INTEGER,
+                    prompt TEXT NOT NULL,
+                    definition_of_done TEXT,
+                    status TEXT NOT NULL,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    limits TEXT NOT NULL,
+                    turns_used INTEGER NOT NULL DEFAULT 0,
+                    tool_calls_used INTEGER NOT NULL DEFAULT 0,
+                    tokens_used INTEGER,
+                    result_preview TEXT,
+                    final_result TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    started_at INTEGER,
+                    updated_at INTEGER NOT NULL,
+                    finished_at INTEGER
+                )
+            ''',
+            '''
+                CREATE INDEX IF NOT EXISTS idx_agent_goal_runs_scope_created
+                ON agent_goal_runs(scope, created_at)
+            ''',
+            '''
+                CREATE INDEX IF NOT EXISTS idx_agent_goal_runs_status_updated
+                ON agent_goal_runs(status, updated_at)
+            ''',
+            '''
+                CREATE TABLE IF NOT EXISTS agent_goal_run_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    payload TEXT,
+                    created_at INTEGER NOT NULL
+                )
+            ''',
+            '''
+                CREATE INDEX IF NOT EXISTS idx_agent_goal_run_events_run_id_id
+                ON agent_goal_run_events(run_id, id)
             ''',
         ]
 
@@ -1015,6 +1696,65 @@ class AgentToolsPlugin(Plugin):
             logging.error(f'Error pruning agent plans: {e}', exc_info=True)
             raise
 
+    def _db_get_checkpoint(self, scope: str) -> Dict[str, Any] | None:
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT checkpoint FROM agent_working_checkpoints WHERE scope = ?",
+                    (scope,),
+                )
+                row = cursor.fetchone()
+            if not row:
+                return None
+            raw = row["checkpoint"] if hasattr(row, "keys") else row[0]
+            loaded = json.loads(raw)
+            return loaded if isinstance(loaded, dict) else None
+        except Exception as e:
+            logging.error(f"Error getting agent checkpoint: {e}", exc_info=True)
+            raise
+
+    def _db_save_checkpoint(self, scope: str, checkpoint: Dict[str, Any]) -> None:
+        now = int(time.time())
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO agent_working_checkpoints (scope, checkpoint, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(scope) DO UPDATE SET
+                    checkpoint = excluded.checkpoint,
+                    updated_at = excluded.updated_at
+                    """,
+                    (scope, json.dumps(checkpoint, ensure_ascii=False), now, now),
+                )
+        except Exception as e:
+            logging.error(f"Error saving agent checkpoint: {e}", exc_info=True)
+            raise
+
+    def _db_clear_checkpoint(self, scope: str) -> bool:
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM agent_working_checkpoints WHERE scope = ?",
+                    (scope,),
+                )
+                return bool(cursor.rowcount)
+        except Exception as e:
+            logging.error(f"Error clearing agent checkpoint: {e}", exc_info=True)
+            raise
+
+    def _db_prune_checkpoints(self, cutoff_timestamp: int) -> int:
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM agent_working_checkpoints WHERE updated_at < ?",
+                    (int(cutoff_timestamp),),
+                )
+                return int(cursor.rowcount or 0)
+        except Exception as e:
+            logging.error(f"Error pruning agent checkpoints: {e}", exc_info=True)
+            raise
+
     async def _db_clear_terminal_tasks_async(self, scope: str) -> bool:
         """Remove all tasks under scope IFF every task is in a closed status. Returns True if cleared."""
         rows = await self.db_handle.fetch_all(
@@ -1030,6 +1770,7 @@ class AgentToolsPlugin(Plugin):
         async with self.db_handle.transaction() as tx:
             await tx.execute("DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,))
             await tx.execute("DELETE FROM agent_plan_contracts WHERE scope = ?", (scope,))
+            await tx.execute("DELETE FROM agent_working_checkpoints WHERE scope = ?", (scope,))
         return True
 
     async def _db_clear_all_tasks_async(self, scope: str) -> bool:
@@ -1038,15 +1779,18 @@ class AgentToolsPlugin(Plugin):
             SELECT 1 AS one FROM agent_plan_tasks WHERE scope = ?
             UNION ALL
             SELECT 1 AS one FROM agent_plan_contracts WHERE scope = ?
+            UNION ALL
+            SELECT 1 AS one FROM agent_working_checkpoints WHERE scope = ?
             LIMIT 1
             """,
-            (scope, scope),
+            (scope, scope, scope),
         )
         if not rows:
             return False
         async with self.db_handle.transaction() as tx:
             await tx.execute("DELETE FROM agent_plan_tasks WHERE scope = ?", (scope,))
             await tx.execute("DELETE FROM agent_plan_contracts WHERE scope = ?", (scope,))
+            await tx.execute("DELETE FROM agent_working_checkpoints WHERE scope = ?", (scope,))
         return True
 
     async def on_session_reset(self, payload) -> None:
@@ -1056,6 +1800,11 @@ class AgentToolsPlugin(Plugin):
         try:
             if payload.terminal_only:
                 cleared = await self._db_clear_terminal_tasks_async(scope)
+                if cleared:
+                    await self.db_handle.execute(
+                        "DELETE FROM agent_working_checkpoints WHERE scope = ?",
+                        (scope,),
+                    )
             else:
                 cleared = await self._db_clear_all_tasks_async(scope)
             if cleared:
@@ -1078,7 +1827,9 @@ class AgentToolsPlugin(Plugin):
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
         if self.db is not None:
             try:
-                return bool(self._db_prune_plans(cutoff))
+                deleted_plans = self._db_prune_plans(cutoff)
+                deleted_checkpoints = self._db_prune_checkpoints(cutoff)
+                return bool(deleted_plans or deleted_checkpoints)
             except Exception:
                 logging.exception("Failed to prune stale agent plans from database")
                 return False
@@ -1488,6 +2239,99 @@ class AgentToolsPlugin(Plugin):
             if cycle:
                 return cycle
         return None
+
+    @staticmethod
+    def _trim_text(value: Any, limit: int = _CHECKPOINT_MAX_TEXT_CHARS) -> str:
+        text = str(value or "").strip()
+        if len(text) > limit:
+            return text[:limit].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _trim_list(value: Any) -> List[str]:
+        return [
+            AgentToolsPlugin._trim_text(item, 320)
+            for item in AgentToolsPlugin._normalize_string_list(value)[:_CHECKPOINT_MAX_LIST_ITEMS]
+        ]
+
+    @staticmethod
+    def _normalize_checkpoint(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        checkpoint = {
+            "summary": AgentToolsPlugin._trim_text(kwargs.get("summary")),
+            "current_task_id": AgentToolsPlugin._trim_text(kwargs.get("current_task_id"), 80),
+            "next_step": AgentToolsPlugin._trim_text(kwargs.get("next_step"), 800),
+            "evidence": AgentToolsPlugin._trim_list(kwargs.get("evidence")),
+            "blockers": AgentToolsPlugin._trim_list(kwargs.get("blockers")),
+            "files_touched": AgentToolsPlugin._trim_list(kwargs.get("files_touched")),
+            "verification_status": AgentToolsPlugin._trim_text(kwargs.get("verification_status"), 800),
+        }
+        normalized = {key: value for key, value in checkpoint.items() if value not in ("", [], None)}
+        if normalized:
+            normalized["updated_at"] = int(time.time())
+        return normalized
+
+    @staticmethod
+    def _format_working_checkpoint(checkpoint: Dict[str, Any]) -> str:
+        lines = ["Working checkpoint for this agent task:"]
+        for key, label in (
+            ("summary", "Summary"),
+            ("current_task_id", "Current task"),
+            ("next_step", "Next step"),
+            ("verification_status", "Verification"),
+        ):
+            value = checkpoint.get(key)
+            if value:
+                lines.append(f"- {label}: {value}")
+        for key, label in (
+            ("evidence", "Evidence"),
+            ("blockers", "Blockers"),
+            ("files_touched", "Files touched"),
+        ):
+            values = checkpoint.get(key)
+            if values:
+                rendered = "; ".join(str(item) for item in values)
+                lines.append(f"- {label}: {rendered}")
+        lines.append("Treat this as operational scratch state; current user input and tool results take precedence.")
+        return "\n".join(lines)
+
+    def _checkpoint_response(
+        self,
+        action: str,
+        checkpoint: Dict[str, Any] | None,
+        *,
+        changed: bool,
+    ) -> Dict[str, Any]:
+        if checkpoint:
+            output = self._format_working_checkpoint(checkpoint)
+        else:
+            output = "No working checkpoint."
+        return {
+            "success": True,
+            "output": output,
+            "working_checkpoint": {
+                "action": action,
+                "changed": changed,
+                "checkpoint": checkpoint,
+            },
+        }
+
+    def _manage_working_checkpoint(self, helper, **kwargs) -> Dict[str, Any]:
+        if self.db is None:
+            return {"success": False, "error": "agent_tools checkpoint storage requires database"}
+        action = str(kwargs.get("action") or "").strip().lower()
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        if action == "list":
+            return self._checkpoint_response(action, self._db_get_checkpoint(scope), changed=False)
+        if action == "clear":
+            changed = self._db_clear_checkpoint(scope)
+            return self._checkpoint_response(action, None, changed=changed)
+        if action == "update":
+            checkpoint = self._normalize_checkpoint(kwargs)
+            if not checkpoint:
+                return {"success": False, "error": "checkpoint update requires at least one content field"}
+            self._db_save_checkpoint(scope, checkpoint)
+            return self._checkpoint_response(action, checkpoint, changed=True)
+        return {"success": False, "error": f"Unknown checkpoint action: {action}"}
 
     def _manage_plan_tasks(self, helper, **kwargs) -> Dict:
         if self.db is None:
@@ -1923,6 +2767,9 @@ class AgentToolsPlugin(Plugin):
             return {"success": False, "error": f"At most {MAX_SUBAGENTS} subagents can run at once"}
 
         shared_context = str(kwargs.get("shared_context") or "").strip()
+        map_reduce_contract, contract_error = self._normalize_map_reduce_contract(kwargs.get("map_reduce"))
+        if contract_error:
+            return {"success": False, "error": contract_error}
         inherited_skill_context = self._active_skill_context_for_subagents(helper, kwargs)
         if inherited_skill_context:
             shared_context = "\n\n".join(
@@ -1935,6 +2782,7 @@ class AgentToolsPlugin(Plugin):
                 helper, item, shared_context, kwargs, parent_max_rounds,
                 request_context=request_context,
                 parent_allowed_plugins=parent_allowed_plugins,
+                map_reduce_contract=map_reduce_contract,
             )
             for item in subagents
         ]
@@ -1954,6 +2802,10 @@ class AgentToolsPlugin(Plugin):
                 "background": True,
                 "scheduled": len(scheduled),
                 "subagents": scheduled,
+                **(
+                    {"map_reduce": self._map_reduce_summary(map_reduce_contract, [])}
+                    if map_reduce_contract else {}
+                ),
             }
         results = await asyncio.gather(*tasks, return_exceptions=True)
         normalized_results = []
@@ -1970,9 +2822,63 @@ class AgentToolsPlugin(Plugin):
             else:
                 normalized_results.append(result)
 
-        return {
+        response = {
             "success": True,
             "subagents": normalized_results,
+        }
+        if map_reduce_contract:
+            response["map_reduce"] = self._map_reduce_summary(map_reduce_contract, normalized_results)
+        return response
+
+    @staticmethod
+    def _normalize_map_reduce_contract(value: Any) -> tuple[Dict[str, Any] | None, str | None]:
+        if value is None:
+            return None, None
+        if not isinstance(value, dict):
+            return None, "map_reduce must be an object"
+        if value.get("enabled") is False:
+            return None, None
+        reduce_goal = str(value.get("reduce_goal") or "").strip()
+        if not reduce_goal:
+            return None, "map_reduce.reduce_goal is required when map_reduce is provided"
+        merge_strategy = str(value.get("merge_strategy") or "synthesize").strip() or "synthesize"
+        if merge_strategy not in _MAP_REDUCE_STRATEGIES:
+            return None, f"map_reduce.merge_strategy must be one of: {', '.join(sorted(_MAP_REDUCE_STRATEGIES))}"
+        worker_contract_raw = value.get("worker_output_contract")
+        worker_contract: Dict[str, Any] = {}
+        if isinstance(worker_contract_raw, dict):
+            summary = str(worker_contract_raw.get("summary") or "").strip()
+            if summary:
+                worker_contract["summary"] = summary
+            sections = AgentToolsPlugin._normalize_string_list(
+                worker_contract_raw.get("required_sections")
+            )
+            if sections:
+                worker_contract["required_sections"] = sections
+            for key in ("evidence_required", "risk_required"):
+                if key in worker_contract_raw:
+                    worker_contract[key] = AgentToolsPlugin._bool_arg(worker_contract_raw.get(key))
+        return {
+            "enabled": True,
+            "reduce_goal": reduce_goal,
+            "merge_strategy": merge_strategy,
+            "worker_output_contract": worker_contract,
+        }, None
+
+    @staticmethod
+    def _map_reduce_summary(
+        contract: Dict[str, Any],
+        results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        completed = sum(1 for item in results if item.get("status") == "completed")
+        errored = sum(1 for item in results if item.get("status") == "error")
+        return {
+            "enabled": True,
+            "reduce_goal": contract.get("reduce_goal"),
+            "merge_strategy": contract.get("merge_strategy", "synthesize"),
+            "worker_count": len(results),
+            "completed": completed,
+            "errored": errored,
         }
 
     @staticmethod
@@ -2081,11 +2987,14 @@ class AgentToolsPlugin(Plugin):
         *,
         request_context=None,
         parent_allowed_plugins: List[str] | None = None,
+        map_reduce_contract: Dict[str, Any] | None = None,
     ) -> Dict:
         subagent_id = str(item.get("id") or "").strip()
         role = str(item.get("role") or "").strip()
         task = str(item.get("task") or "").strip()
         context = str(item.get("context") or "").strip()
+        map_key = str(item.get("map_key") or subagent_id or "subagent").strip()
+        expected_output = str(item.get("expected_output") or "").strip()
         if not subagent_id or not role or not task:
             return {
                 "id": subagent_id or "subagent",
@@ -2127,6 +3036,33 @@ class AgentToolsPlugin(Plugin):
         )
         started = time.monotonic()
 
+        task_prompt = (
+            f"Subagent id: {subagent_id}\n"
+            f"Role: {role}\n"
+            f"Task: {task}\n\n"
+            f"Shared context:\n{shared_context or '(none)'}\n\n"
+            f"Subagent-specific context:\n{context or '(none)'}"
+        )
+        if map_reduce_contract:
+            worker_contract = map_reduce_contract.get("worker_output_contract") or {}
+            contract_lines = [
+                "",
+                "Map-reduce contract:",
+                "- You are a map worker, not the reducer.",
+                f"- Map key: {map_key}",
+                f"- Reduce goal: {map_reduce_contract.get('reduce_goal')}",
+                f"- Merge strategy: {map_reduce_contract.get('merge_strategy', 'synthesize')}",
+                "- Return findings for the parent reducer. Do not synthesize other workers.",
+            ]
+            if expected_output:
+                contract_lines.append(f"- Worker-specific expected output: {expected_output}")
+            if worker_contract:
+                contract_lines.append(
+                    "- Worker output contract: "
+                    + json.dumps(worker_contract, ensure_ascii=False, sort_keys=True)
+                )
+            task_prompt += "\n".join(contract_lines)
+
         messages = [
             {
                 "role": "system",
@@ -2134,13 +3070,7 @@ class AgentToolsPlugin(Plugin):
             },
             {
                 "role": "user",
-                "content": (
-                    f"Subagent id: {subagent_id}\n"
-                    f"Role: {role}\n"
-                    f"Task: {task}\n\n"
-                    f"Shared context:\n{shared_context or '(none)'}\n\n"
-                    f"Subagent-specific context:\n{context or '(none)'}"
-                ),
+                "content": task_prompt,
             },
         ]
         status = "error"
@@ -2152,13 +3082,16 @@ class AgentToolsPlugin(Plugin):
                 parent_allowed_plugins=parent_allowed_plugins,
             )
             status = "completed"
-            return {
+            result = {
                 "id": subagent_id,
                 "role": role,
                 "status": status,
                 "result": result_text,
                 "published": published,
             }
+            if map_reduce_contract or item.get("map_key"):
+                result["map_key"] = map_key
+            return result
         finally:
             duration_ms = int((time.monotonic() - started) * 1000)
             logging.info(

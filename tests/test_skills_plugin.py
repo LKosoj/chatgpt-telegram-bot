@@ -174,6 +174,41 @@ def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeyp
     assert plugin.available_skills["workflow"]["metadata"]["allow_scripts"] is False
 
 
+def test_external_project_capability_extraction_example_skill_scans(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "skills"
+        / "external-project-capability-extraction"
+    )
+    target = skills_dir / "external-project-capability-extraction"
+    shutil.copytree(source, target)
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    info = plugin.available_skills["external-project-capability-extraction"]
+    assert "Read-only by default" in info["description"]
+    assert {
+        reference["reference_path"] for reference in info["references"]
+    } == {
+        "references/extraction-protocol.md",
+        "references/output-schema.md",
+        "references/security-checklist.md",
+    }
+    assert info["agents"] == [{
+        "id": "openai",
+        "file": "agents/openai.yaml",
+        "display_name": "Capability Extractor",
+        "short_description": "Extract reusable skills from projects",
+        "default_prompt": "Use $external-project-capability-extraction to inspect an external project read-only and propose a local skill or SOP.",
+    }]
+
+
 @pytest.mark.asyncio
 async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, monkeypatch):
     skills_dir = tmp_path / "skills"

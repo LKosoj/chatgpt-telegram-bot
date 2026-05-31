@@ -16,6 +16,7 @@ Skill usage:
 
 Output:
 - Return concise findings for the parent agent to synthesize.
+- If a map-reduce contract is present, follow its worker output contract and do not perform the reduce step.
 - Use this structure unless the assigned task explicitly asks for another format:
   - Summary: what you concluded.
   - Evidence checked: files, commands, sources, or tool results you actually inspected.

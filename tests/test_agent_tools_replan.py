@@ -45,12 +45,13 @@ PLAN_CONTRACT = {
 @pytest.fixture()
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._instance = None
+    Database._reset_singleton()
     db = Database()
     with db.get_connection() as conn:
         for stmt in AgentToolsPlugin().register_schema():
             conn.execute(stmt)
-    return db
+    yield db
+    Database._reset_singleton()
 
 
 class FakeHelper:

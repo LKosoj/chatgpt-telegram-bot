@@ -256,6 +256,18 @@ class FakeBackgroundHelper(FakeLLMHelper):
         return "background done", 11
 
 
+class FakeGoalRunHelper:
+    def __init__(self, db, response):
+        self.db = db
+        self.user_id = 42
+        self.response = response
+        self.requests = []
+
+    async def get_chat_response(self, **kwargs):
+        self.requests.append(kwargs)
+        return self.response, 7
+
+
 class ParallelToolPluginManager(FakePluginManager):
     def __init__(self):
         super().__init__()
@@ -336,13 +348,14 @@ class FakeMessage:
 @pytest.fixture()
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._instance = None
+    Database._reset_singleton()
     db = Database()
     # Stage 3: agent_plan_* DDLs live in the plugin now.
     with db.get_connection() as conn:
         for stmt in AgentToolsPlugin().register_schema():
             conn.execute(stmt)
-    return db
+    yield db
+    Database._reset_singleton()
 
 
 def _db_backed_agent_plugin(tmp_path, db):
@@ -360,10 +373,12 @@ def test_agent_tools_registers_specs_and_handlers():
     names = {spec["function"]["name"] for spec in specs}
     assert names == {
         "agent_tools.manage_plan_tasks",
+        "agent_tools.update_working_checkpoint",
         "agent_tools.ask_telegram_user",
         "agent_tools.cancel_pending_question",
         "agent_tools.run_subagents",
         "agent_tools.deliver_to_user",
+        "agent_tools.manage_goal_runs",
     }
     ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.ask_telegram_user")
     assert ask_spec["parameters"]["required"] == ["question", "options"]
@@ -381,6 +396,17 @@ def test_agent_tools_registers_specs_and_handlers():
     assert deliver_props["status"]["enum"] == ["completed", "blocked"]
     assert "verification_summary" in deliver_props
     assert "blocked_reason" in deliver_props
+    checkpoint_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.update_working_checkpoint")
+    assert checkpoint_spec["parameters"]["properties"]["action"]["enum"] == ["update", "list", "clear"]
+    goal_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.manage_goal_runs")
+    assert goal_spec["parameters"]["properties"]["action"]["enum"] == ["start", "list", "status", "cancel", "clear"]
+    limit_props = goal_spec["parameters"]["properties"]["limits"]["properties"]
+    assert set(limit_props) == {"max_runtime_seconds", "token_budget"}
+    run_subagents_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.run_subagents")
+    assert "map_reduce" in run_subagents_spec["parameters"]["properties"]
+    worker_props = run_subagents_spec["parameters"]["properties"]["subagents"]["items"]["properties"]
+    assert "map_key" in worker_props
+    assert "expected_output" in worker_props
 
     commands = pm.get_plugin_commands()
     assert any(command.get("command") == "background" for command in commands)
@@ -450,6 +476,266 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
     cleared = await plugin.execute("manage_plan_tasks", helper, chat_id=10, action="clear")
     assert cleared["success"] is True
     assert cleared["plan_tasks"]["tasks"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_working_checkpoint_persists_lists_and_clears(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    updated = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="update",
+        summary="Inspected implementation",
+        current_task_id="T1",
+        next_step="Run focused tests",
+        evidence=["bot/plugins/agent_tools.py:1"],
+        blockers=["none"],
+        files_touched=["bot/plugins/agent_tools.py"],
+        verification_status="pending pytest",
+    )
+
+    assert updated["success"] is True
+    checkpoint = updated["working_checkpoint"]["checkpoint"]
+    assert checkpoint["summary"] == "Inspected implementation"
+    assert checkpoint["evidence"] == ["bot/plugins/agent_tools.py:1"]
+
+    listed = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    assert listed["working_checkpoint"]["checkpoint"]["next_step"] == "Run focused tests"
+
+    cleared = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="clear",
+    )
+    assert cleared["working_checkpoint"]["changed"] is True
+    assert cleared["working_checkpoint"]["checkpoint"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_working_checkpoint_rejects_empty_update(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    result = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="update",
+    )
+
+    assert result["success"] is False
+    assert "requires at least one content field" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_manage_goal_runs_starts_lists_and_cancels(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    started = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="start",
+        prompt="Investigate a long task",
+        definition_of_done={
+            "goal": "Investigate",
+            "success_criteria": ["Result is recorded"],
+            "verification": ["Status can be listed"],
+        },
+        limits={"max_runtime_seconds": 120, "token_budget": 1000},
+    )
+
+    assert started["success"] is True
+    run_id = started["goal_run"]["run_id"]
+    assert started["goal_run"]["limits"]["max_runtime_seconds"] == 120
+
+    listed = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    assert listed["goal_runs"][0]["run_id"] == run_id
+
+    cancelled = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="cancel",
+        run_id=run_id,
+    )
+    assert cancelled["success"] is True
+    status = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="status",
+        run_id=run_id,
+    )
+    assert status["goal_run"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_goal_run_preserves_blocked_direct_result_status(tmp_path, agent_db):
+    plugin, _helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    helper = FakeGoalRunHelper(
+        agent_db,
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "status": "blocked",
+                "value": "Blocked on missing input.",
+            }
+        },
+    )
+    plugin.openai = helper
+    started = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="start",
+        prompt="Investigate a long task",
+        definition_of_done={
+            "goal": "Investigate",
+            "success_criteria": ["Result is recorded"],
+            "verification": ["Status can be listed"],
+        },
+    )
+
+    await plugin._run_goal_run(SimpleNamespace(bot=None), started["goal_run"]["run_id"])
+
+    status = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="status",
+        run_id=started["goal_run"]["run_id"],
+    )
+    assert status["goal_run"]["status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_goal_run_is_claimed_once_under_concurrent_workers(tmp_path, agent_db):
+    plugin, _helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    helper = FakeGoalRunHelper(agent_db, "goal done")
+    plugin.openai = helper
+    started = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="start",
+        prompt="Investigate a long task",
+        definition_of_done={
+            "goal": "Investigate",
+            "success_criteria": ["Result is recorded"],
+            "verification": ["Status can be listed"],
+        },
+    )
+
+    await asyncio.gather(
+        plugin._run_goal_run(SimpleNamespace(bot=None), started["goal_run"]["run_id"]),
+        plugin._run_goal_run(SimpleNamespace(bot=None), started["goal_run"]["run_id"]),
+    )
+
+    assert len(helper.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_goal_run_cancel_running_does_not_report_queued_cancelled(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    started = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="start",
+        prompt="Investigate a long task",
+        definition_of_done={
+            "goal": "Investigate",
+            "success_criteria": ["Result is recorded"],
+            "verification": ["Status can be listed"],
+        },
+    )
+    run_id = started["goal_run"]["run_id"]
+    await plugin.db_handle.execute(
+        "UPDATE agent_goal_runs SET status = 'running' WHERE run_id = ?",
+        (run_id,),
+    )
+
+    cancelled = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="cancel",
+        run_id=run_id,
+    )
+
+    status = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="status",
+        run_id=run_id,
+    )
+    assert cancelled["success"] is True
+    assert "cancellation requested" in cancelled["output"]
+    assert status["goal_run"]["status"] == "cancelling"
+
+
+@pytest.mark.asyncio
+async def test_goal_runs_tick_marks_orphaned_running_runs_interrupted(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    started = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="start",
+        prompt="Investigate a long task",
+        definition_of_done={
+            "goal": "Investigate",
+            "success_criteria": ["Result is recorded"],
+            "verification": ["Status can be listed"],
+        },
+    )
+    run_id = started["goal_run"]["run_id"]
+    await plugin.db_handle.execute(
+        "UPDATE agent_goal_runs SET status = 'running' WHERE run_id = ?",
+        (run_id,),
+    )
+
+    await plugin._goal_runs_tick(application=None)
+
+    status = await plugin.execute(
+        "manage_goal_runs",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="status",
+        run_id=run_id,
+    )
+    assert status["goal_run"]["status"] == "interrupted"
 
 
 @pytest.mark.asyncio
@@ -831,6 +1117,70 @@ async def test_run_subagents_inherits_active_skill_context(tmp_path):
     assert "powerpoint (PowerPoint)" in user_messages[0]
     assert "current_step=2" in user_messages[0]
     assert "quarterly review" in user_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_passes_map_reduce_contract_to_workers(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper()
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        map_reduce={
+            "reduce_goal": "Compare implementation risks",
+            "merge_strategy": "compare",
+            "worker_output_contract": {
+                "summary": "Risk slice",
+                "required_sections": ["evidence", "risks"],
+                "evidence_required": True,
+            },
+        },
+        subagents=[
+            {
+                "id": "security",
+                "role": "reviewer",
+                "task": "Review security risk",
+                "map_key": "security",
+                "expected_output": "Return top risks with evidence.",
+            }
+        ],
+    )
+
+    assert result["success"] is True
+    assert result["map_reduce"]["worker_count"] == 1
+    assert result["map_reduce"]["completed"] == 1
+    assert result["subagents"][0]["map_key"] == "security"
+    user_message = next(
+        message["content"]
+        for message in helper.completions.calls[0]["messages"]
+        if message.get("role") == "user"
+    )
+    assert "Map-reduce contract:" in user_message
+    assert "Reduce goal: Compare implementation risks" in user_message
+    assert "Worker-specific expected output: Return top risks with evidence." in user_message
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_rejects_invalid_map_reduce_contract(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper()
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        map_reduce={"enabled": True},
+        subagents=[{"id": "a1", "role": "worker", "task": "Do work"}],
+    )
+
+    assert result["success"] is False
+    assert "map_reduce.reduce_goal" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -1620,7 +1970,12 @@ async def test_deliver_to_user_rejects_missing_or_empty_files(tmp_path):
 def test_deliver_to_user_blocked_for_subagents():
     from bot.plugins.agent_tools import SUBAGENT_BLOCKED_FUNCTIONS
 
+    assert "agent_tools.manage_plan_tasks" in SUBAGENT_BLOCKED_FUNCTIONS
+    assert "agent_tools.update_working_checkpoint" in SUBAGENT_BLOCKED_FUNCTIONS
+    assert "agent_tools.ask_telegram_user" in SUBAGENT_BLOCKED_FUNCTIONS
     assert "agent_tools.deliver_to_user" in SUBAGENT_BLOCKED_FUNCTIONS
+    assert "agent_tools.run_subagents" in SUBAGENT_BLOCKED_FUNCTIONS
+    assert "agent_tools.manage_goal_runs" in SUBAGENT_BLOCKED_FUNCTIONS
 
 
 def test_question_markup_renders_selected_marks(tmp_path):

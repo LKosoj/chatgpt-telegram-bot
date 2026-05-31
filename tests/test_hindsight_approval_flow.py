@@ -74,14 +74,19 @@ def plugin(tmp_path, monkeypatch):
     Database._reset_singleton()
 
 
-async def _insert_candidate(plugin, user_id=42, path="profile/preferences.md"):
+async def _insert_candidate(
+    plugin,
+    user_id=42,
+    path="profile/preferences.md",
+    content="User prefers concise answers.",
+):
     await plugin.db_handle.execute(
         '''
         INSERT INTO hindsight_memory_documents
         (user_id, path, kind, status, content, content_hash, version)
-        VALUES (?, ?, 'profile', 'candidate', 'User prefers concise answers.', 'hash', 1)
+        VALUES (?, ?, 'profile', 'candidate', ?, 'hash', 1)
         ''',
-        (user_id, path),
+        (user_id, path, content),
     )
     row = await plugin.db_handle.fetch_one(
         "SELECT id FROM hindsight_memory_documents WHERE user_id = ?", (user_id,)
@@ -137,6 +142,41 @@ async def test_approval_rejects_candidate_for_other_user(plugin):
     assert message == "Memory candidate not found."
     assert row["status"] == "candidate"
     assert plugin.client.retained == []
+
+
+async def test_approval_does_not_finalize_when_retention_drops_document(plugin):
+    document_id = await _insert_candidate(
+        plugin,
+        content="password=super-secret",
+    )
+
+    message = await plugin._approve_candidate_document(42, document_id)
+
+    row = await plugin.db_handle.fetch_one(
+        "SELECT status FROM hindsight_memory_documents WHERE id = ?",
+        (document_id,),
+    )
+    assert message == "Approve failed: memory document was not retained."
+    assert row["status"] == "candidate"
+    assert plugin.client.retained == []
+
+
+async def test_approval_allows_safe_content_when_path_contains_sensitive_word(plugin):
+    document_id = await _insert_candidate(
+        plugin,
+        path="tools/token-budget.md",
+        content="Use a small budget for lightweight review tasks.",
+    )
+
+    message = await plugin._approve_candidate_document(42, document_id)
+
+    row = await plugin.db_handle.fetch_one(
+        "SELECT status FROM hindsight_memory_documents WHERE id = ?",
+        (document_id,),
+    )
+    assert message == f"Approved memory candidate {document_id}."
+    assert row["status"] == "approved"
+    assert plugin.client.retained[0][1][0]["context"] == "Approved dream memory document."
 
 
 async def test_clear_memory_deletes_local_memory_artifacts(plugin):

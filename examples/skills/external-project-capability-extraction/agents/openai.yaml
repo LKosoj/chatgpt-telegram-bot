@@ -1,0 +1,6 @@
+interface:
+  display_name: "Capability Extractor"
+  short_description: "Extract reusable skills from projects"
+  default_prompt: "Use $external-project-capability-extraction to inspect an external project read-only and propose a local skill or SOP."
+policy:
+  allow_implicit_invocation: true
