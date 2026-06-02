@@ -169,7 +169,7 @@ class LLMGatewayClient:
                 "language": language,
                 "format": "markdown",
             },
-            timeout=1800.0,
+            timeout=2500.0,
         )
 
     async def image_edit(
