@@ -47,6 +47,15 @@ class FakeHelper:
         return await self.client.chat.completions.create(**kwargs)
 
 
+def _assert_user_message_mentions_json(messages):
+    """OpenAI Responses API requires the literal word 'json' in the input
+    messages when json_object format is requested; the system prompt becomes
+    ``instructions`` and is not counted, so it must be in a user message."""
+    user_messages = [m for m in messages if m["role"] == "user"]
+    assert user_messages, "no user message sent"
+    assert any("json" in m["content"].lower() for m in user_messages)
+
+
 def test_llmgateway_models_are_the_only_chat_models():
     assert GPT_ALL_MODELS == (
         LLMGATEWAY_HIGH_MODEL,
@@ -63,6 +72,7 @@ async def test_web_research_uses_light_model_then_regular_research():
     assert helper.client.calls[0]["model"] == LLMGATEWAY_LIGHT_MODEL
     assert helper.gateway_client.calls[0][0] == "research"
     assert result["result"]["output"] == "regular"
+    _assert_user_message_mentions_json(helper.client.calls[0]["messages"])
 
 
 @pytest.mark.asyncio
@@ -88,6 +98,7 @@ async def test_reply_intent_classifier_uses_light_model():
     assert helper.client.calls[0]["model"] == LLMGATEWAY_LIGHT_MODEL
     assert helper.client.calls[0]["response_format"] == {"type": "json_object"}
     assert helper.client.calls[0]["max_tokens"] == 1000
+    _assert_user_message_mentions_json(helper.client.calls[0]["messages"])
 
 
 @pytest.mark.asyncio

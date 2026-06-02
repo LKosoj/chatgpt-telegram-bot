@@ -86,6 +86,8 @@ async def test_dream_tick_writes_candidate_and_advances_watermark(plugin):
     assert "concise" in doc["content"]
     assert state["last_event_id"] == 2
     assert run["status"] == "completed"
+    dream_user_messages = [m for m in plugin.openai.calls[0]["messages"] if m["role"] == "user"]
+    assert any("json" in m["content"].lower() for m in dream_user_messages)
 
 
 async def test_dream_tick_writes_lesson_as_candidate_only(plugin):

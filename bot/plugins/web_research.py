@@ -67,7 +67,7 @@ class WebResearchPlugin(Plugin):
                         "сравнение многих источников, due diligence или широкое исследование."
                     )
                 },
-                {"role": "user", "content": query}
+                {"role": "user", "content": f"{query}\n\nВерни ответ строго в формате JSON."}
             ],
             temperature=0,
             max_tokens=1000,

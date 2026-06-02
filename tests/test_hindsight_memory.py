@@ -357,6 +357,10 @@ async def test_finalize_hindsight_session_memory_saves_extracted_items():
     assert saved_count == 1
     assert helper.fake_completions.calls[0]["response_format"] == {"type": "json_object"}
     assert helper.fake_completions.calls[0]["max_tokens"] == 4000
+    extractor_user_messages = [
+        m for m in helper.fake_completions.calls[0]["messages"] if m["role"] == "user"
+    ]
+    assert any("json" in m["content"].lower() for m in extractor_user_messages)
     assert fake.retained[0][0] == "telegram-123"
     item = fake.retained[0][1][0]
     assert item["content"] == "User prefers concise Python examples."

@@ -1336,7 +1336,8 @@ class HindsightMemoryPlugin(Plugin):
                         "</existing_memory_documents>\n\n"
                         "<new_events>\n"
                         f"{rendered_events}\n"
-                        "</new_events>"
+                        "</new_events>\n\n"
+                        "Return the result as JSON."
                     ),
                 },
             ],
@@ -1628,7 +1629,8 @@ class HindsightMemoryPlugin(Plugin):
                 "content": (
                     "<session_transcript>\n"
                     f"{transcript}\n"
-                    "</session_transcript>"
+                    "</session_transcript>\n\n"
+                    "Return the result as JSON."
                 ),
             },
         ]

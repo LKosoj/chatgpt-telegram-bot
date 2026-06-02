@@ -281,7 +281,8 @@ class OpenAIHelper:
                         "user_reply": user_text,
                     },
                     ensure_ascii=False,
-                ),
+                )
+                + "\n\nReturn the classification as JSON.",
             },
         ]
         response = await self.client.chat.completions.create(
