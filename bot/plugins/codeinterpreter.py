@@ -234,7 +234,7 @@ class CodeInterpreterPlugin(Plugin):
                     {"role": "user", "content": enhanced_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=70000,
+                max_tokens=self.openai.get_output_max_tokens(),
             )
             return response.choices[0].message.content
         except Exception as e:

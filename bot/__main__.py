@@ -11,6 +11,7 @@ from .model_constants import (
     LLMGATEWAY_LIGHT_MODEL,
     LLMGATEWAY_TRANSCRIPTION_MODEL,
     LLMGATEWAY_TTS_MODEL,
+    MAX_OUTPUT_TOKENS,
 )
 from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
@@ -103,6 +104,7 @@ def main():
         'max_conversation_age_minutes': int(os.environ.get('MAX_CONVERSATION_AGE_MINUTES', 180)),
         'assistant_prompt': os.environ.get('ASSISTANT_PROMPT', 'You are a helpful assistant.'),
         'max_tokens': int(os.environ.get('MAX_TOKENS', max_tokens_default)),
+        'output_max_tokens': int(os.environ.get('OUTPUT_MAX_TOKENS', MAX_OUTPUT_TOKENS)),
         'n_choices': int(os.environ.get('N_CHOICES', 1)),
         'temperature': float(os.environ.get('TEMPERATURE', 1.0)),
         'image_model': os.environ.get('IMAGE_MODEL', LLMGATEWAY_IMAGE_GENERATION_MODEL),

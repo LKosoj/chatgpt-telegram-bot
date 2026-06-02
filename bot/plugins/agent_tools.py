@@ -3157,6 +3157,7 @@ class AgentToolsPlugin(Plugin):
                 "model": model_to_use,
                 "messages": messages,
                 "temperature": temperature,
+                "max_tokens": helper.get_output_max_tokens(),
                 "stream": False,
             }
             if tools:

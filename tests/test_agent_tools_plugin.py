@@ -18,6 +18,7 @@ if importlib.util.find_spec("markdown2") is None:
 from bot.plugin_manager import PluginManager
 from bot.i18n import localized_text
 from bot.database import Database
+from bot.model_constants import MAX_OUTPUT_TOKENS
 from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.request_context import RequestContext
 
@@ -241,6 +242,9 @@ class FakeLLMHelper:
 
     def get_current_model(self, user_id, session_id=None):
         return self.model_name
+
+    def get_output_max_tokens(self):
+        return MAX_OUTPUT_TOKENS
 
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)
@@ -1068,7 +1072,7 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
     assert [item["status"] for item in result["subagents"]] == ["completed", "completed"]
     assert len(helper.completions.calls) == 4
     assert all(call["model"] == "llmgateway/high" for call in helper.completions.calls)
-    assert all("max_tokens" not in call for call in helper.completions.calls)
+    assert all(call["max_tokens"] == MAX_OUTPUT_TOKENS for call in helper.completions.calls)
     tool_names = {
         tool["function"]["name"]
         for call in helper.completions.calls
@@ -1508,6 +1512,9 @@ class _DeepAnalysisHelper:
 
     def get_current_model(self, user_id, session_id=None):
         return "llmgateway/high"
+
+    def get_output_max_tokens(self):
+        return MAX_OUTPUT_TOKENS
 
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)

@@ -35,6 +35,7 @@ from .model_constants import (
     LLMGATEWAY_HIGH_MODEL,
     LLMGATEWAY_IMAGE_GENERATION_MODEL,
     LLMGATEWAY_LIGHT_MODEL,
+    MAX_OUTPUT_TOKENS,
     LLMGATEWAY_TRANSCRIPTION_MODEL,
     LLMGATEWAY_TTS_MODEL,
     GPT_4_VISION_MODELS,
@@ -3322,6 +3323,11 @@ class OpenAIHelper:
         logger.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
     
+    def get_output_max_tokens(self) -> int:
+        """Лимит max_tokens для одного запроса генерации: из конфига
+        (``output_max_tokens``), иначе фолбэк ``MAX_OUTPUT_TOKENS``."""
+        return int(self.config.get('output_max_tokens') or MAX_OUTPUT_TOKENS)
+
     def get_max_tokens(self, model_to_use, max_tokens_percent, chat_id):
         # Получаем максимальное количество токенов для модели
         total_max_tokens = default_max_tokens(model_to_use)
@@ -3352,6 +3358,9 @@ class OpenAIHelper:
         
         if model_to_use in GPT_4O_MODELS:
             max_generation_tokens = 32768
+
+        # Жёсткая верхняя граница на запрос генерации (из конфига, иначе фолбэк)
+        max_generation_tokens = min(max_generation_tokens, self.get_output_max_tokens())
 
         logger.info(f"""
         Токены для модели {model_to_use}:
