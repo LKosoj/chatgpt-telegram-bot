@@ -142,6 +142,8 @@ def main():
         'summary_min_messages_between_runs': _parse_numeric_env('SUMMARY_MIN_MESSAGES_BETWEEN_RUNS', 6, int),
         'summary_target_keep_ratio': _parse_numeric_env('SUMMARY_TARGET_KEEP_RATIO', 0.5, float),
         # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
+        'session_log_enabled': os.environ.get('SESSION_LOG_ENABLED', 'false').lower() == 'true',
+        'session_log_dir': os.environ.get('SESSION_LOG_DIR', './log'),
     }
 
     if openai_config['enable_functions'] and not functions_available:

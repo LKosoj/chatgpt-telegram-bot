@@ -312,6 +312,8 @@ by the runtime. **Bold** rows are required.
 | `MAX_SESSIONS` | `5` | int | Max named sessions per user. Older sessions are pruned via `delete_oldest_session()`. |
 | `BOT_LANGUAGE` | `en` | string | Bot UI language (`en`, `ru`, …). |
 | `AUTO_CHAT_MODES` | `false` | bool | Suggest a chat mode automatically based on the first user message. |
+| `SESSION_LOG_ENABLED` | `false` | bool | Write structured per-turn diagnostic events (turn/LLM/tool timings) to disk. Off by default. |
+| `SESSION_LOG_DIR` | `./log` | path | Base directory for session logs; one subdirectory per `user_id`, session events as JSONL plus a `summary.json`. |
 
 ### Budgets And Pricing
 

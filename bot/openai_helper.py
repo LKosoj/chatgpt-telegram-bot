@@ -63,6 +63,7 @@ from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
 from .i18n import get_current_language, language_name, localized_text
 from .request_context import RequestContext
+from .session_logger import SessionLogger, set_trace, get_trace, clear_trace
 from .user_settings import (
     USER_TTS_MODEL_SETTING,
     USER_TTS_VOICE_SETTING,
@@ -79,6 +80,7 @@ RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNOR
 TTS_OPTIONS_CACHE_SECONDS = 300
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
+_TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
 
 # skills_agent first-turn planner gate: information-only tools that are safe to
 # call BEFORE the model has called manage_plan_tasks. Anything not in this set is
@@ -267,6 +269,9 @@ class OpenAIHelper:
         self.config.setdefault('summary_timeout_seconds', 20.0)
         self.config.setdefault('summary_min_messages_between_runs', 6)
         self.config.setdefault('summary_target_keep_ratio', 0.5)
+        self.config.setdefault('session_log_enabled', False)
+        self.config.setdefault('session_log_dir', './log')
+        self.session_logger = SessionLogger(self.config['session_log_enabled'], self.config['session_log_dir'])
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -286,7 +291,8 @@ class OpenAIHelper:
                 + "\n\nReturn the classification as JSON.",
             },
         ]
-        response = await self.client.chat.completions.create(
+        response = await self._timed_create(
+            kind='reply_intent',
             model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
             messages=messages,
             temperature=0.0,
@@ -384,7 +390,48 @@ class OpenAIHelper:
         )
         if extra:
             kwargs.update(extra)
-        return await self.client.chat.completions.create(**kwargs)
+        return await self._timed_create(kind='chat_completion', **kwargs)
+
+    async def _timed_create(self, *, kind, **kwargs):
+        """Wrapper around client.chat.completions.create: measures duration,
+        writes an llm_call event to session_logger (when a trace is active),
+        and updates per-turn aggregates. For stream=True duration = TTFB,
+        usage is unavailable."""
+        start = time.monotonic()
+        response = await self.client.chat.completions.create(**kwargs)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        stats = _TURN_STATS.get()
+        if stats is not None:
+            stats['round_trips'] += 1
+            stats['llm_ms'] += duration_ms
+        slog = getattr(self, 'session_logger', None)
+        if slog is not None and get_trace() is not None:
+            is_stream = bool(kwargs.get('stream'))
+            event = {
+                'type': 'llm_call', 'kind': kind,
+                'model': kwargs.get('model'),
+                'duration_ms': duration_ms, 'stream': is_stream,
+                'prompt_tokens': None, 'completion_tokens': None, 'total_tokens': None,
+                'finish_reason': None, 'tools_count': len(kwargs.get('tools') or []),
+                'tool_calls_returned': None,
+            }
+            if not is_stream:
+                try:
+                    usage = getattr(response, 'usage', None)
+                    if usage is not None:
+                        event['prompt_tokens'] = getattr(usage, 'prompt_tokens', None)
+                        event['completion_tokens'] = getattr(usage, 'completion_tokens', None)
+                        event['total_tokens'] = getattr(usage, 'total_tokens', None)
+                    choices = getattr(response, 'choices', None) or []
+                    if choices:
+                        event['finish_reason'] = getattr(choices[0], 'finish_reason', None)
+                        msg = getattr(choices[0], 'message', None)
+                        tcs = getattr(msg, 'tool_calls', None) if msg is not None else None
+                        event['tool_calls_returned'] = len(tcs) if tcs else 0
+                except Exception:
+                    pass
+            slog.record(event)
+        return response
 
     async def _save_conversation_context(
         self,
@@ -564,23 +611,15 @@ class OpenAIHelper:
 
         state_key = conversation_state_key or self._chat_state_key(chat_id)
         token = _CHAT_STATE_KEY.set(state_key)
-        if self._chat_lock_bypass_enabled(chat_id):
-            try:
-                return await self._get_chat_response_locked(
-                    chat_id=chat_id,
-                    query=query,
-                    session_id=session_id,
-                    user_id=user_id,
-                    request_context=request_context,
-                    **kwargs,
-                )
-            finally:
-                _CHAT_STATE_KEY.reset(token)
-
+        turn_id = request_id or uuid.uuid4().hex
+        trace_token = set_trace(user_id, session_id, turn_id)
+        stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0, 'mutator_ms': 0, 'start': time.monotonic()})
+        slog = getattr(self, 'session_logger', None)
+        if slog is not None and get_trace() is not None:
+            slog.record({'type': 'turn_start', 'user_message': query, 'model_requested': self.config.get('model'), 'chat_id': chat_id})
         try:
-            lock = await self._chat_lock(state_key)
-            async with lock:
-                return await self._get_chat_response_locked(
+            if self._chat_lock_bypass_enabled(chat_id):
+                result = await self._get_chat_response_locked(
                     chat_id=chat_id,
                     query=query,
                     session_id=session_id,
@@ -588,7 +627,24 @@ class OpenAIHelper:
                     request_context=request_context,
                     **kwargs,
                 )
+            else:
+                lock = await self._chat_lock(state_key)
+                async with lock:
+                    result = await self._get_chat_response_locked(
+                        chat_id=chat_id,
+                        query=query,
+                        session_id=session_id,
+                        user_id=user_id,
+                        request_context=request_context,
+                        **kwargs,
+                    )
+            answer = result[0] if isinstance(result, tuple) else result
+            if slog is not None and isinstance(answer, str) and get_trace() is not None:
+                slog.record({'type': 'assistant_response', 'text': answer})
+            return result
         finally:
+            self._emit_turn_end(stats_token, user_id, session_id)
+            clear_trace(trace_token)
             _CHAT_STATE_KEY.reset(token)
 
     async def _get_chat_response_locked(
@@ -775,23 +831,15 @@ class OpenAIHelper:
 
         state_key = conversation_state_key or self._chat_state_key(chat_id)
         token = _CHAT_STATE_KEY.set(state_key)
-        if self._chat_lock_bypass_enabled(chat_id):
-            try:
-                async for chunk in self._get_chat_response_stream_locked(
-                    chat_id=chat_id,
-                    query=query,
-                    session_id=session_id,
-                    user_id=user_id,
-                    request_context=request_context,
-                ):
-                    yield chunk
-                return
-            finally:
-                _CHAT_STATE_KEY.reset(token)
-
+        turn_id = request_id or uuid.uuid4().hex
+        trace_token = set_trace(user_id, session_id, turn_id)
+        stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0, 'mutator_ms': 0, 'start': time.monotonic()})
+        slog = getattr(self, 'session_logger', None)
+        if slog is not None and get_trace() is not None:
+            slog.record({'type': 'turn_start', 'user_message': query, 'model_requested': self.config.get('model'), 'chat_id': chat_id})
+        final_answer = None
         try:
-            lock = await self._chat_lock(state_key)
-            async with lock:
+            if self._chat_lock_bypass_enabled(chat_id):
                 async for chunk in self._get_chat_response_stream_locked(
                     chat_id=chat_id,
                     query=query,
@@ -799,8 +847,27 @@ class OpenAIHelper:
                     user_id=user_id,
                     request_context=request_context,
                 ):
+                    if isinstance(chunk, tuple) and chunk and isinstance(chunk[0], str):
+                        final_answer = chunk[0]
                     yield chunk
+            else:
+                lock = await self._chat_lock(state_key)
+                async with lock:
+                    async for chunk in self._get_chat_response_stream_locked(
+                        chat_id=chat_id,
+                        query=query,
+                        session_id=session_id,
+                        user_id=user_id,
+                        request_context=request_context,
+                    ):
+                        if isinstance(chunk, tuple) and chunk and isinstance(chunk[0], str):
+                            final_answer = chunk[0]
+                        yield chunk
         finally:
+            if slog is not None and isinstance(final_answer, str) and get_trace() is not None:
+                slog.record({'type': 'assistant_response', 'text': final_answer})
+            self._emit_turn_end(stats_token, user_id, session_id)
+            clear_trace(trace_token)
             _CHAT_STATE_KEY.reset(token)
 
     async def _get_chat_response_stream_locked(
@@ -1248,7 +1315,7 @@ class OpenAIHelper:
             )
             gate_fired = self._gate_fired.get(state_key, False)
 
-            response = await self.client.chat.completions.create(**common_args)
+            response = await self._timed_create(kind='main', **common_args)
 
             if gate_active and not gate_fired:
                 try:
@@ -1273,7 +1340,7 @@ class OpenAIHelper:
                         retry_args.get('tools') or []
                     )
                     self._gate_fired[state_key] = True
-                    response = await self.client.chat.completions.create(**retry_args)
+                    response = await self._timed_create(kind='planner_gate_retry', **retry_args)
 
             if stream:
                 # For streaming responses, return the stream directly
@@ -1627,7 +1694,7 @@ class OpenAIHelper:
             kwargs.get('max_tokens') or kwargs.get('max_completion_tokens'),
             bool(kwargs.get('tools')),
         )
-        response = await self.client.chat.completions.create(**kwargs)
+        response = await self._timed_create(kind='empty_retry', **kwargs)
         logger.warning(
             "Empty response retry request finished kind=%s choices=%s",
             retry_kind,
@@ -1936,7 +2003,7 @@ class OpenAIHelper:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
             
-            return await self.client.chat.completions.create(**common_args)
+            return await self._timed_create(kind='vision', **common_args)
 
         except openai.RateLimitError as e:
             raise e
@@ -2381,12 +2448,20 @@ class OpenAIHelper:
             chat_id=chat_id, user_id=user_id, request_id=request_id,
             allow_dynamic_recall=persist,
         )
+        _mut_start = time.monotonic()
         mutated = await self.plugin_manager.apply_mutators(
             'on_before_chat_request',
             payload,
             base,
             user_id=user_id,
         )
+        _mut_ms = int((time.monotonic() - _mut_start) * 1000)
+        _stats = _TURN_STATS.get()
+        if _stats is not None:
+            _stats['mutator_ms'] += _mut_ms
+        _slog = getattr(self, 'session_logger', None)
+        if _slog is not None and get_trace() is not None:
+            _slog.record({'type': 'mutators', 'duration_ms': _mut_ms, 'injected_count': max(0, len(mutated) - len(base))})
         if not persist:
             return mutated
 
@@ -2537,6 +2612,27 @@ class OpenAIHelper:
             yield
         finally:
             _CHAT_STATE_KEY.reset(token)
+
+    def _emit_turn_end(self, stats_token, user_id, session_id):
+        stats = _TURN_STATS.get()
+        slog = getattr(self, 'session_logger', None)
+        try:
+            if slog is not None and stats is not None:
+                wall_ms = int((time.monotonic() - stats['start']) * 1000)
+                slog.record({'type': 'turn_end', 'round_trips': stats['round_trips'],
+                             'llm_ms_total': stats['llm_ms'], 'mutator_ms_total': stats['mutator_ms'],
+                             'wall_ms': wall_ms})
+                try:
+                    task = asyncio.create_task(slog.flush_summary(user_id, session_id))
+                    slog._bg_tasks.add(task)
+                    task.add_done_callback(slog._bg_tasks.discard)
+                except RuntimeError:
+                    pass
+        finally:
+            try:
+                _TURN_STATS.reset(stats_token)
+            except Exception:
+                pass
 
     def _chat_lock_bypass_enabled(self, chat_id) -> bool:
         bypass_chat_id = _CHAT_LOCK_BYPASS_CHAT_ID.get()
@@ -2989,7 +3085,8 @@ class OpenAIHelper:
         rendered = self._serialize_messages_for_summary(messages_to_summarize)
         summary_model = self.config.get('summary_model') or self.config.get('light_model') or self.config.get('model')
         max_tokens = int(self.config.get('summary_max_tokens', 400) or 400)
-        response = await self.client.chat.completions.create(
+        response = await self._timed_create(
+            kind='summary',
             model=summary_model,
             messages=[
                 {"role": "system", "content": self.SUMMARY_WINDOW_PROMPT},

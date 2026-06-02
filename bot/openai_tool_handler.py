@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import openai
 
@@ -23,6 +24,7 @@ from .tool_result import (
     direct_result_payload as _normalized_direct_result_payload,
     normalize_tool_result,
 )
+from .session_logger import get_trace
 from .utils import compute_scope_key
 
 logger = logging.getLogger(__name__)
@@ -67,14 +69,28 @@ async def _call_function_bounded(helper, name, args, request_context, semaphore)
                     tool_chat_id = tool_args.get("chat_id")
             except (TypeError, json.JSONDecodeError):
                 tool_chat_id = None
-        if callable(without_chat_lock) and tool_chat_id is not None:
-            with without_chat_lock(tool_chat_id):
-                return await helper.plugin_manager.call_function(
-                    name, helper, args, request_context=request_context
-                )
-        return await helper.plugin_manager.call_function(
-            name, helper, args, request_context=request_context
-        )
+        slog = getattr(helper, "session_logger", None)
+        start = time.monotonic()
+        ok = True
+        error = None
+        try:
+            if callable(without_chat_lock) and tool_chat_id is not None:
+                with without_chat_lock(tool_chat_id):
+                    return await helper.plugin_manager.call_function(
+                        name, helper, args, request_context=request_context
+                    )
+            return await helper.plugin_manager.call_function(
+                name, helper, args, request_context=request_context
+            )
+        except Exception as exc:
+            ok = False
+            error = str(exc)
+            raise
+        finally:
+            if slog is not None and get_trace() is not None:
+                duration_ms = int((time.monotonic() - start) * 1000)
+                slog.record({'type': 'tool_exec', 'name': name,
+                             'duration_ms': duration_ms, 'ok': ok, 'error': error})
 
 
 async def _list_user_sessions(db, user_id, *, is_active: int = 0):
