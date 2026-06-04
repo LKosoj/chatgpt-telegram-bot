@@ -30,7 +30,7 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     get_reply_to_message_id, record_chat_tokens, record_image_request, record_vision_tokens, record_tts_request, \
     record_transcription_seconds, make_usage_tracker, error_handler, \
     is_direct_result, handle_direct_result, cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, \
-    direct_result_inline_fallback_text, should_send_text_as_file
+    direct_result_inline_fallback_text, should_send_text_as_file, render_markdown_message_entities
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
@@ -2776,12 +2776,14 @@ class ChatGPTTelegramBot:
                                 return
 
                             try:
-                                await update.effective_message.reply_text(
-                                    message_thread_id=get_thread_id(update),
-                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                    text=interpretation,
-                                    parse_mode=constants.ParseMode.MARKDOWN
-                                )
+                                for index, (text, entities) in enumerate(render_markdown_message_entities(interpretation)):
+                                    await update.effective_message.reply_text(
+                                        message_thread_id=get_thread_id(update),
+                                        reply_to_message_id=get_reply_to_message_id(self.config, update) if index == 0 else None,
+                                        text=text,
+                                        parse_mode=None,
+                                        entities=entities,
+                                    )
                             except BadRequest:
                                 try:
                                     await update.effective_message.reply_text(
@@ -3709,15 +3711,18 @@ class ChatGPTTelegramBot:
                             if sent_message is not None:
                                 await context.bot.delete_message(chat_id=sent_message.chat_id,
                                                                 message_id=sent_message.message_id)
-                            _, parse_mode, _, _, _ = self.db.get_conversation_context(chat_id) or (
-                                None, None, None, None, None
-                            )
-                            parse_mode = parse_mode or constants.ParseMode.HTML
+                            initial_text = content
+                            initial_entities = None
+                            if tokens != 'not_finished':
+                                parts = render_markdown_message_entities(content)
+                                if parts:
+                                    initial_text, initial_entities = parts[0]
                             sent_message = await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
-                                text=content,
-                                parse_mode=parse_mode
+                                text=initial_text,
+                                parse_mode=None,
+                                entities=initial_entities,
                             )
                         except Exception:
                             logger.error("Failed to send initial streaming message", exc_info=True)
@@ -3802,14 +3807,15 @@ class ChatGPTTelegramBot:
 
                             await send_long_response_as_file(self.config, update, response, session_name)
                         else:
-                            for index, chunk in enumerate(chunks):
+                            for index, (text, entities) in enumerate(render_markdown_message_entities(response)):
                                 try:
                                     await update.effective_message.reply_text(
                                         message_thread_id=get_thread_id(update),
                                         reply_to_message_id=get_reply_to_message_id(self.config,
                                                                                     update) if index == 0 else None,
-                                        text=chunk,
-                                        parse_mode=constants.ParseMode.MARKDOWN
+                                        text=text,
+                                        parse_mode=None,
+                                        entities=entities,
                                     )
                                 except Exception:
                                     try:
@@ -3817,7 +3823,7 @@ class ChatGPTTelegramBot:
                                             message_thread_id=get_thread_id(update),
                                             reply_to_message_id=get_reply_to_message_id(self.config,
                                                                                         update) if index == 0 else None,
-                                            text=chunk
+                                            text=text
                                         )
                                     except Exception as exception:
                                         raise exception

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram import constants
+from telegram import MessageEntity
 from telegram.constants import ReactionEmoji
 
 
@@ -22,7 +22,12 @@ _markdown2 = types.ModuleType("markdown2")
 _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
-from bot.utils import direct_result_inline_fallback_text, handle_direct_result, is_direct_result, should_send_text_as_file
+from bot.utils import (
+    direct_result_inline_fallback_text,
+    handle_direct_result,
+    is_direct_result,
+    should_send_text_as_file,
+)
 from bot.plugins.reaction import ReactionPlugin
 
 for _module_name in _INSERTED_MODULES:
@@ -100,7 +105,7 @@ async def test_handle_direct_result_reaction_without_reply_target_sends_fallback
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_text_branch_still_replies_with_markdown():
+async def test_handle_direct_result_text_branch_replies_with_entities():
     message = FakeMessage()
 
     sent_messages = await handle_direct_result(
@@ -110,17 +115,17 @@ async def test_handle_direct_result_text_branch_still_replies_with_markdown():
             "direct_result": {
                 "kind": "text",
                 "format": "markdown",
-                "value": "hello",
+                "value": "**hello** with [link](https://example.com)",
             }
         },
     )
 
-    message.reply_text.assert_awaited_once_with(
-        message_thread_id=None,
-        reply_to_message_id=None,
-        text="hello",
-        parse_mode=constants.ParseMode.MARKDOWN,
-    )
+    message.reply_text.assert_awaited_once()
+    kwargs = message.reply_text.await_args.kwargs
+    assert kwargs["text"] == "hello with link"
+    assert kwargs["parse_mode"] is None
+    assert all(isinstance(entity, MessageEntity) for entity in kwargs["entities"])
+    assert {entity.type for entity in kwargs["entities"]} >= {"bold", "text_link"}
     assert sent_messages == [message.reply_text.return_value]
 
 

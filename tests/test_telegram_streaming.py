@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telegram import MessageEntity
 
 
 _INSERTED_MODULES = []
@@ -667,6 +668,35 @@ async def test_process_message_does_not_show_stale_plan_in_busy_status(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_nonstream_response_uses_entities_without_parse_mode(monkeypatch):
+    async def direct_wrap(_update, _context, coroutine, _chat_action, is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", direct_wrap)
+
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["stream"] = False
+    bot.openai = FakeOpenAINonStream("**Bold** and [link](https://example.com)")
+    update = FakeUpdate(FakeMessage())
+
+    await bot.process_message("hello", update, _make_context())
+
+    replies = [
+        call
+        for call in update.effective_message.reply_text_calls
+        if call["text"] == "Bold and link"
+    ]
+    assert len(replies) == 1
+    reply = replies[0]
+    assert reply["parse_mode"] is None
+    assert all(isinstance(entity, MessageEntity) for entity in reply["entities"])
+    assert {entity.type for entity in reply["entities"]} >= {"bold", "text_link"}
+
+
+@pytest.mark.asyncio
 async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
     agent_tools = FakeAgentTools()
     bot = object.__new__(ChatGPTTelegramBot)
@@ -777,10 +807,10 @@ async def test_streaming_unpacks_conversation_context_5_tuple(monkeypatch):
 
     await bot.process_message("hello", update, _make_context())
 
-    assert bot.db.calls == [1234]
+    assert bot.db.calls == []
     assert len(update.effective_message.reply_text_calls) == 1
     assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
-    assert update.effective_message.reply_text_calls[0]["parse_mode"] == "HTML"
+    assert update.effective_message.reply_text_calls[0]["parse_mode"] is None
     request_context = bot.openai.stream_requests[0]["request_context"]
     assert isinstance(request_context, RequestContext)
     assert request_context.chat_id == 1234
@@ -857,7 +887,7 @@ async def test_memory_observers_use_message_admission_timestamp(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_streaming_falls_back_to_html_when_parse_mode_is_none(monkeypatch):
+async def test_streaming_initial_reply_uses_plain_text_without_parse_mode(monkeypatch):
     edit_message = AsyncMock()
     monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
 
@@ -872,10 +902,7 @@ async def test_streaming_falls_back_to_html_when_parse_mode_is_none(monkeypatch)
     await bot.process_message("hello", update, _make_context())
 
     assert len(update.effective_message.reply_text_calls) == 1
-    assert (
-        update.effective_message.reply_text_calls[0]["parse_mode"]
-        == telegram_bot.constants.ParseMode.HTML
-    )
+    assert update.effective_message.reply_text_calls[0]["parse_mode"] is None
     edit_message.assert_not_awaited()
 
 

@@ -13,6 +13,7 @@ from PIL import Image
 import uuid
 
 import telegram
+import telegramify_markdown
 from telegram import Message, MessageEntity, Update, ChatMember, constants
 from telegram.ext import CallbackContext, ContextTypes
 from .i18n import localized_text
@@ -306,6 +307,18 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     return chunks
 
 
+def render_markdown_message_entities(markdown_text: str, max_utf16_len: int = 4096) -> list[tuple[str, list[MessageEntity]]]:
+    """
+    Converts Markdown to Telegram text/entities chunks without parse_mode.
+    """
+    text, raw_entities = telegramify_markdown.convert(markdown_text)
+    chunks = telegramify_markdown.split_entities(text, raw_entities, max_utf16_len)
+    return [
+        (chunk_text, [MessageEntity(**entity.to_dict()) for entity in chunk_entities])
+        for chunk_text, chunk_entities in chunks
+    ]
+
+
 def looks_like_markdown_table(text: str) -> bool:
     lines = [line.strip() for line in str(text or "").splitlines()]
     for index in range(len(lines) - 1):
@@ -372,17 +385,25 @@ async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: i
     :param chat_id: The chat id to edit the message in
     :param message_id: The message id to edit
     :param text: The text to edit the message with
-    :param markdown: Whether to use markdown parse mode
+    :param markdown: Whether to render Markdown formatting
     :param is_inline: Whether the message to edit is an inline message
     :return: None
     """
     try:
+        entities = None
+        text_to_send = text
+        if markdown:
+            parts = render_markdown_message_entities(text)
+            if parts:
+                text_to_send, entities = parts[0]
+
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=int(message_id) if not is_inline else None,
             inline_message_id=message_id if is_inline else None,
-            text=text,
-            parse_mode=constants.ParseMode.MARKDOWN if markdown else None,
+            text=text_to_send,
+            parse_mode=None,
+            entities=entities,
         )
     except telegram.error.BadRequest as e:
         if str(e).startswith("Message is not modified"):
@@ -930,9 +951,9 @@ async def handle_direct_result(config, update: Update, response: any):
         text = add_value if add_value else value
         chunks = split_into_chunks(text)
         if result_format == 'markdown':
-            parse_mode = constants.ParseMode.MARKDOWN
+            message_parts = render_markdown_message_entities(text)
         else:
-            parse_mode = None
+            message_parts = [(chunk, None) for chunk in chunks]
 
         # Отправляем как файл если: 
         # - ответ больше 3х частей ИЛИ 
@@ -949,7 +970,7 @@ async def handle_direct_result(config, update: Update, response: any):
             if sent_message:
                 sent_messages.append(sent_message)
         else:
-            for i, chunk in enumerate(chunks):
+            for i, (chunk, entities) in enumerate(message_parts):
                 # Only reply to original message for first chunk
                 reply_to = get_reply_to_message_id(config, update) if i == 0 else None
                 try:
@@ -957,29 +978,18 @@ async def handle_direct_result(config, update: Update, response: any):
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=reply_to,
                         text=chunk,
-                        parse_mode=parse_mode
+                        parse_mode=None,
+                        entities=entities,
                     ))
                 except telegram.error.BadRequest as e:
                     if "can't parse entities" in str(e).lower():
-                        logging.warning(f"Markdown parsing error in handle_direct_result: {e}. Retrying without markdown formatting.")
-                        # Убираем проблемные символы и пытаемся снова
-                        try:
-                            # Экранируем специальные символы для markdown
-                            escaped_chunk = escape_markdown(chunk, exclude_code_blocks=False)
-                            sent_messages.append(await message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=reply_to,
-                                text=escaped_chunk,
-                                parse_mode=parse_mode
-                            ))
-                        except Exception:
-                            # Если все еще не получается, отправляем без форматирования
-                            sent_messages.append(await message.reply_text(
-                                message_thread_id=get_thread_id(update),
-                                reply_to_message_id=reply_to,
-                                text=chunk,
-                                parse_mode=None
-                            ))
+                        logging.warning(f"Telegram entities error in handle_direct_result: {e}. Retrying without formatting.")
+                        sent_messages.append(await message.reply_text(
+                            message_thread_id=get_thread_id(update),
+                            reply_to_message_id=reply_to,
+                            text=chunk,
+                            parse_mode=None
+                        ))
                     else:
                         # Для других BadRequest ошибок просто убираем форматирование
                         sent_messages.append(await message.reply_text(
