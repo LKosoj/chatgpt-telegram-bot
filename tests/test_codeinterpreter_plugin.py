@@ -1,7 +1,9 @@
 import importlib.util
 import sys
 import types
+from pathlib import Path
 
+from bs4 import BeautifulSoup
 import pytest
 
 
@@ -51,6 +53,11 @@ def _plugin(tmp_path):
     plugin.python_alias_dir = str(tmp_path / "bin")
     plugin.data = None
     return plugin
+
+
+def _style_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    return "\n".join(style.get_text() for style in soup.find_all("style"))
 
 
 @pytest.mark.asyncio
@@ -171,3 +178,22 @@ async def test_deep_analysis_direct_file_result_also_includes_text_result(tmp_pa
 
     assert result["result"] == "STDOUT text"
     assert result["direct_result"]["kind"] == "file"
+
+
+def test_advanced_visualization_generates_mobile_responsive_shell(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    plugin.advanced_visualization("stdout with a very_long_unbroken_result_value", "mobiletest")
+
+    html = Path("output/interactive_plots_mobiletest.html").read_text(encoding="utf-8")
+    soup = BeautifulSoup(html, "html.parser")
+    viewport = soup.find("meta", attrs={"name": "viewport"})
+
+    assert viewport is not None
+    assert viewport["content"] == "width=device-width, initial-scale=1"
+
+    css = _style_text(html)
+    assert "@media (max-width: 640px)" in css
+    assert ".result-container" in css
+    assert "overflow-x: auto" in css
