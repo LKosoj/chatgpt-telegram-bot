@@ -70,6 +70,7 @@ RESOURCE_REFERENCE_RE = re.compile(
     r"((?:\.\./|[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9][A-Za-z0-9_.-]*)"
     r"(?![A-Za-z0-9_./-])"
 )
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 ARCHIVE_SUFFIXES = (
     ".tar.gz",
     ".tar.bz2",
@@ -393,9 +394,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "get_skill",
                 "description": (
-                    "Return the full SKILL.md instruction body and metadata (scripts, agents, references, "
-                    "resources) for one local skill. Call before activating a skill or before fetching its "
-                    "reference/resource files, to read the workflow and discover available paths."
+                    "Return the full SKILL.md instruction body and metadata (path, scripts, agents, "
+                    "references, resources) for one local skill. Call before activating a skill or before "
+                    "fetching its reference/resource files, to read the workflow and discover available paths."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1258,13 +1259,32 @@ class SkillsPlugin(Plugin):
     def _referenced_file_paths(self, content: str) -> List[str]:
         paths: List[str] = []
         seen: set[str] = set()
-        for match in RESOURCE_REFERENCE_RE.finditer(content or ""):
-            file_path = match.group(1)
+        for file_path in self._markdown_link_paths(content):
             if file_path in seen:
                 continue
             seen.add(file_path)
             paths.append(file_path)
+        for match in RESOURCE_REFERENCE_RE.finditer(content or ""):
+            file_path = self._normalize_referenced_file_path(match.group(1))
+            if not file_path or file_path in seen:
+                continue
+            seen.add(file_path)
+            paths.append(file_path)
         return paths
+
+    def _markdown_link_paths(self, content: str) -> List[str]:
+        paths: List[str] = []
+        for match in MARKDOWN_LINK_RE.finditer(content or ""):
+            file_path = self._normalize_referenced_file_path(match.group(1))
+            if file_path:
+                paths.append(file_path)
+        return paths
+
+    def _normalize_referenced_file_path(self, file_path: str) -> str:
+        normalized = str(file_path or "").strip().strip("<>").split("#", 1)[0].split("?", 1)[0]
+        if not normalized or normalized.startswith("#") or "://" in normalized or ":" in normalized:
+            return ""
+        return normalized
 
     def _resolve_skill_reference_path(
         self,
@@ -2699,6 +2719,7 @@ class SkillsPlugin(Plugin):
                 "description": info["description"],
                 "metadata": info["metadata"],
                 "body": info["body"],
+                "path": info["path"],
                 "scripts": info["scripts"],
                 "agents": info.get("agents", []),
                 "references": info.get("references", []),

@@ -94,6 +94,25 @@ async def _call_function_bounded(helper, name, args, request_context, semaphore)
                              'ok': ok, 'error': error})
 
 
+async def _execute_prepared_tool_calls(helper, prepared, request_context, semaphore):
+    results = [None] * len(prepared)
+    phases = [
+        [(idx, item) for idx, item in enumerate(prepared) if item[0] != DELIVERY_TOOL_NAME],
+        [(idx, item) for idx, item in enumerate(prepared) if item[0] == DELIVERY_TOOL_NAME],
+    ]
+    for phase in phases:
+        if not phase:
+            continue
+        tasks = [
+            _call_function_bounded(helper, name, args, request_context, semaphore)
+            for _idx, (name, args, _canonical_args, _tool_call_id) in phase
+        ]
+        phase_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for (idx, _item), result in zip(phase, phase_results):
+            results[idx] = result
+    return results
+
+
 async def _list_user_sessions(db, user_id, *, is_active: int = 0):
     """Use the async DB API when available, fall back to sync for test doubles."""
     fn = getattr(db, "list_user_sessions_async", None)
@@ -1127,11 +1146,7 @@ async def handle_function_call(
             )
 
         semaphore = _tool_call_semaphore(helper)
-        tasks = [
-            _call_function_bounded(helper, name, args, request_context, semaphore)
-            for name, args, _, _ in prepared
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await _execute_prepared_tool_calls(helper, prepared, request_context, semaphore)
 
         direct_results_collected: list = []
         failed_calls: list[tuple[str, str]] = []

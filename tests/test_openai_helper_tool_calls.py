@@ -2220,6 +2220,46 @@ async def test_skills_agent_plain_status_after_tools_can_resume_tool_work():
 
 
 @pytest.mark.asyncio
+async def test_delivery_tool_runs_after_plan_updates_in_same_batch():
+    responses = {
+        "agent_tools.manage_plan_tasks": {"success": True, "plan_tasks": {"tasks": []}},
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
+    }
+    helper = _make_helper(DummyPluginManager(responses))
+    response = FakeResponse(tool_calls=[
+        FakeToolCall(
+            "agent_tools.deliver_to_user",
+            json.dumps({"status": "completed", "text": "Готово"}),
+            id="call-final",
+        ),
+        FakeToolCall(
+            "agent_tools.manage_plan_tasks",
+            json.dumps({"action": "update", "tasks": [{"id": "T6", "status": "completed"}]}),
+            id="call-plan",
+        ),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert [name for name, _args in helper.plugin_manager.calls] == [
+        "agent_tools.manage_plan_tasks",
+        "agent_tools.deliver_to_user",
+    ]
+    assert out["direct_result"]["kind"] == "final"
+    assert set(tools_used) == {"agent_tools.manage_plan_tasks", "agent_tools.deliver_to_user"}
+
+
+@pytest.mark.asyncio
 async def test_skills_agent_retries_initial_plain_text_response_through_delivery_tool():
     responses = {
         "agent_tools.deliver_to_user": {

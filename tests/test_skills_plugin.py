@@ -365,6 +365,52 @@ async def test_skill_scan_discovers_nested_meta_skills_and_references(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_skill_scan_lists_root_markdown_guides_from_links(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    skill_dir = skills_dir / "demo"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "name: demo\n"
+            "description: Demo skill\n"
+            "---\n"
+            "Read [Planning](deck-planning.md), [Runtime](pptxgenjs.md), "
+            "and [Checklist](references/checklist.md).\n"
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "deck-planning.md").write_text("# Planning\n", encoding="utf-8")
+    (skill_dir / "pptxgenjs.md").write_text("# Runtime\n", encoding="utf-8")
+    (skill_dir / "references" / "checklist.md").write_text("# Checklist\n", encoding="utf-8")
+    monkeypatch.setenv("SKILLS_DIR", str(skills_dir))
+
+    plugin = SkillsPlugin()
+    plugin.initialize(storage_root=str(storage_dir))
+
+    details = await plugin.execute("get_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    assert details["skill"]["path"] == str(skill_dir)
+    assert details["skill"]["references"] == [
+        {"reference_path": "deck-planning.md", "path": "demo/deck-planning.md"},
+        {"reference_path": "pptxgenjs.md", "path": "demo/pptxgenjs.md"},
+        {"reference_path": "references/checklist.md", "path": "demo/references/checklist.md"},
+    ]
+    reference = await plugin.execute(
+        "get_skill_reference",
+        helper=None,
+        skill_name="demo",
+        reference_path="deck-planning.md",
+        chat_id=10,
+        user_id=42,
+    )
+    assert reference["success"] is True
+    assert reference["content"] == "# Planning\n"
+
+
+@pytest.mark.asyncio
 async def test_skill_reference_rejects_unlisted_paths(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)
 
