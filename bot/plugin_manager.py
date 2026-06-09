@@ -4,9 +4,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 import importlib
 import inspect
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -26,6 +28,7 @@ from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
 FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id"}
+MODEL_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass
@@ -60,6 +63,8 @@ class PluginManager:
         if not self.storage_root:
             self.storage_root = str((Path(__file__).resolve().parent.parent / "data").resolve())
         os.makedirs(self.storage_root, exist_ok=True)
+        self._model_tool_name_to_canonical: dict[str, str] = {}
+        self._canonical_tool_name_to_model: dict[str, str] = {}
 
         current_dir = Path(__file__).parent
         self.plugins_directory = current_dir / plugins_directory
@@ -330,21 +335,66 @@ class PluginManager:
 
         return self._format_specs_for_model(all_specs, model_to_use)
 
-    @staticmethod
-    def _format_specs_for_model(specs, model_to_use):
+    def _format_specs_for_model(self, specs, model_to_use):
         """
         Wrap function specs in the envelope expected by the target provider.
         Google models use {"function_declarations": [...]}, OpenAI-compatible
         models use the [{"type": "function", "function": {...}}] form.
         """
+        model_specs = [self._spec_for_model(spec) for spec in specs]
         if model_to_use in GOOGLE_MODELS:
-            return {"function_declarations": specs}
-        return [{"type": "function", "function": spec} for spec in specs]
+            return {"function_declarations": model_specs}
+        return [{"type": "function", "function": spec} for spec in model_specs]
+
+    def _spec_for_model(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        model_spec = dict(spec)
+        name = str(model_spec.get("name") or "")
+        if name:
+            model_spec["name"] = self.to_model_function_name(name)
+        return model_spec
+
+    def to_model_function_name(self, function_name: str) -> str:
+        canonical = str(function_name or "")
+        if not canonical:
+            return canonical
+        if not hasattr(self, "_model_tool_name_to_canonical"):
+            self._model_tool_name_to_canonical = {}
+        if not hasattr(self, "_canonical_tool_name_to_model"):
+            self._canonical_tool_name_to_model = {}
+        cached = self._canonical_tool_name_to_model.get(canonical)
+        if cached:
+            return cached
+
+        candidate = canonical if MODEL_FUNCTION_NAME_RE.fullmatch(canonical) else re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            canonical,
+        ).strip("_")
+        if not candidate:
+            candidate = "tool"
+
+        existing = self._model_tool_name_to_canonical.get(candidate)
+        if existing and existing != canonical:
+            digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:8]
+            candidate = f"{candidate}_{digest}"
+
+        self._model_tool_name_to_canonical[candidate] = canonical
+        self._canonical_tool_name_to_model[canonical] = candidate
+        return candidate
+
+    def to_canonical_function_name(self, function_name: str) -> str:
+        name = str(function_name or "")
+        if not hasattr(self, "_model_tool_name_to_canonical"):
+            self._model_tool_name_to_canonical = {}
+        if not hasattr(self, "_canonical_tool_name_to_model"):
+            self._canonical_tool_name_to_model = {}
+        return self._model_tool_name_to_canonical.get(name, name)
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
         """
         Call a function based on the name and parameters provided
         """
+        function_name = self.to_canonical_function_name(function_name)
         started = time.monotonic()
         parsed_args: Dict[str, Any] = {}
         status = "error"
@@ -505,16 +555,20 @@ class PluginManager:
         return plugin.get_source_name()
 
     def get_spec_by_function_name(self, function_name):
+        function_name = self.to_canonical_function_name(function_name)
         plugin = self.__get_plugin_by_function_name(function_name)
         if not plugin:
             return None
         specs = self._normalize_specs(plugin.get_spec(), plugin)
         for spec in specs:
-            if spec.get("name") == function_name:
+            name = spec.get("name")
+            if name == function_name or self.to_model_function_name(name) == function_name:
                 return spec
         return None
 
     def get_plugin_name_by_function_name(self, function_name):
+        requested_name = str(function_name or "")
+        function_name = self.to_canonical_function_name(requested_name)
         for plugin_name in self.plugins.keys():
             try:
                 plugin_instance = self.get_plugin(plugin_name)
@@ -522,7 +576,11 @@ class PluginManager:
                     continue
 
                 specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-                if any(spec.get('name') == function_name for spec in specs):
+                if any(
+                    spec.get('name') == function_name
+                    or self.to_model_function_name(spec.get('name')) == requested_name
+                    for spec in specs
+                ):
                     return plugin_name
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -536,6 +594,7 @@ class PluginManager:
         return None
 
     def is_function_allowed(self, function_name, allowed_plugins):
+        function_name = self.to_canonical_function_name(function_name)
         if allowed_plugins == ['All']:
             return True
         if not allowed_plugins or allowed_plugins == ['None']:
@@ -564,10 +623,11 @@ class PluginManager:
         for tool in specs or []:
             function_spec = tool.get("function") or {}
             name = function_spec.get("name")
-            if not name or name in blocked:
+            canonical_name = self.to_canonical_function_name(name)
+            if not name or canonical_name in blocked:
                 continue
             filtered.append(tool)
-            allowed_function_names.add(name)
+            allowed_function_names.add(canonical_name)
         return filtered, allowed_function_names
 
     def is_subagent_function_allowed(
@@ -576,6 +636,7 @@ class PluginManager:
         parent_allowed_plugins=None,
         blocked_function_names=None,
     ):
+        function_name = self.to_canonical_function_name(function_name)
         if blocked_function_names and function_name in blocked_function_names:
             return False
         return self.is_function_allowed(function_name, parent_allowed_plugins or ['All'])

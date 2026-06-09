@@ -67,6 +67,8 @@ MAX_SUBAGENT_TOOL_ROUNDS = 50
 DEFAULT_SUBAGENT_TEMPERATURE = 0.2
 SUBAGENT_CONSECUTIVE_REPEAT_LIMIT = 3
 SUBAGENT_TOTAL_REPEAT_LIMIT = 5
+INTERNAL_PUBLISH_TOOL = "agent_tools.internal_publish"
+INTERNAL_PUBLISH_MODEL_TOOL = "agent_tools_internal_publish"
 SUBAGENT_BLOCKED_FUNCTIONS = {
     "agent_tools.manage_plan_tasks",
     "agent_tools.update_working_checkpoint",
@@ -3166,7 +3168,7 @@ class AgentToolsPlugin(Plugin):
 
             response = await helper.chat_completion(**request_kwargs)
             choice = response.choices[0]
-            tool_calls = self._extract_tool_calls(choice)
+            tool_calls = self._extract_tool_calls(choice, helper)
             if tool_calls and not is_final_round:
                 messages.append(self._assistant_tool_calls_message(choice, tool_calls))
                 tool_responses: List[str | None] = [None] * len(tool_calls)
@@ -3299,7 +3301,7 @@ class AgentToolsPlugin(Plugin):
         filtered_tools = list(filtered_tools)
         filtered_tools.append(self._internal_publish_tool_spec())
         allowed_function_names = set(allowed_function_names)
-        allowed_function_names.add("agent_tools.internal_publish")
+        allowed_function_names.add(INTERNAL_PUBLISH_TOOL)
         return filtered_tools, allowed_function_names
 
     @staticmethod
@@ -3307,7 +3309,7 @@ class AgentToolsPlugin(Plugin):
         return {
             "type": "function",
             "function": {
-                "name": "agent_tools.internal_publish",
+                "name": INTERNAL_PUBLISH_MODEL_TOOL,
                 "description": (
                     "Subagent-only: hand a finding or local artifact path back to the parent agent "
                     "without delivering anything to the Telegram user. The parent receives all "
@@ -3335,18 +3337,28 @@ class AgentToolsPlugin(Plugin):
             },
         }
 
-    def _extract_tool_calls(self, choice) -> List[Dict[str, str]]:
+    def _extract_tool_calls(self, choice, helper=None) -> List[Dict[str, str]]:
         message = getattr(choice, "message", None)
         raw_tool_calls = getattr(message, "tool_calls", None) or []
         tool_calls = []
         for index, tool_call in enumerate(raw_tool_calls):
             function = getattr(tool_call, "function", None)
-            name = getattr(function, "name", "") if function else ""
-            if not name:
+            model_name = getattr(function, "name", "") if function else ""
+            if not model_name:
                 continue
+            if model_name == INTERNAL_PUBLISH_MODEL_TOOL:
+                name = INTERNAL_PUBLISH_TOOL
+            else:
+                plugin_manager = getattr(helper, "plugin_manager", None) if helper is not None else None
+                name = (
+                    plugin_manager.to_canonical_function_name(model_name)
+                    if plugin_manager is not None and hasattr(plugin_manager, "to_canonical_function_name")
+                    else model_name
+                )
             tool_calls.append({
                 "id": getattr(tool_call, "id", None) or f"sub_call_{index}",
                 "name": name,
+                "model_name": model_name,
                 "arguments": getattr(function, "arguments", "{}") or "{}",
             })
         return tool_calls
@@ -3372,7 +3384,7 @@ class AgentToolsPlugin(Plugin):
                     "id": call["id"],
                     "type": "function",
                     "function": {
-                        "name": call["name"],
+                        "name": call.get("model_name") or call["name"],
                         "arguments": call.get("arguments") or "{}",
                     },
                 }
@@ -3391,7 +3403,13 @@ class AgentToolsPlugin(Plugin):
         request_context=None,
     ) -> str:
         tool_name = call["name"]
-        if tool_name == "agent_tools.internal_publish":
+        if tool_name == INTERNAL_PUBLISH_MODEL_TOOL:
+            tool_name = INTERNAL_PUBLISH_TOOL
+        else:
+            plugin_manager = getattr(helper, "plugin_manager", None)
+            if plugin_manager is not None and hasattr(plugin_manager, "to_canonical_function_name"):
+                tool_name = plugin_manager.to_canonical_function_name(tool_name)
+        if tool_name == INTERNAL_PUBLISH_TOOL:
             try:
                 args = json.loads(call.get("arguments") or "{}")
             except json.JSONDecodeError:
@@ -3405,7 +3423,7 @@ class AgentToolsPlugin(Plugin):
         except json.JSONDecodeError:
             return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
 
-        if tool_name == "agent_tools.internal_publish":
+        if tool_name == INTERNAL_PUBLISH_TOOL:
             return self._handle_internal_publish(args, published)
 
         if kwargs.get("chat_id") is not None:

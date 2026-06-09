@@ -244,7 +244,7 @@ def test_model_visible_required_args_exclude_internal_chat_id(tmp_path):
     analyze_spec = next(
         item["function"]
         for item in specs
-        if item["function"]["name"] == "conversation_analytics.analyze_conversation"
+        if item["function"]["name"] == "conversation_analytics_analyze_conversation"
     )
 
     required = analyze_spec["parameters"].get("required", [])

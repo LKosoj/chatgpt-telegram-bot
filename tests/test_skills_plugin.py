@@ -130,22 +130,23 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
     names = {spec["function"]["name"] for spec in specs}
 
     assert names == {
-        "skills.list_skills",
-        "skills.get_skill",
-        "skills.get_skill_reference",
-        "skills.get_skill_resource",
-        "skills.find_installable_skills",
-        "skills.install_skill",
-        "skills.create_skill",
-        "skills.activate_skill",
-        "skills.get_skill_status",
-        "skills.list_active_skills",
-        "skills.update_skill_progress",
-        "skills.deactivate_skill",
-        "skills.run_skill_script",
-        "skills.run_skill_agent",
-        "skills.record_skill_reflection",
+        "skills_list_skills",
+        "skills_get_skill",
+        "skills_get_skill_reference",
+        "skills_get_skill_resource",
+        "skills_find_installable_skills",
+        "skills_install_skill",
+        "skills_create_skill",
+        "skills_activate_skill",
+        "skills_get_skill_status",
+        "skills_list_active_skills",
+        "skills_update_skill_progress",
+        "skills_deactivate_skill",
+        "skills_run_skill_script",
+        "skills_run_skill_agent",
+        "skills_record_skill_reflection",
     }
+    assert pm.to_canonical_function_name("skills_run_skill_agent") == "skills.run_skill_agent"
 
 
 def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeypatch):
@@ -522,14 +523,19 @@ async def test_run_skill_agent_delegates_to_agent_tools(tmp_path, monkeypatch):
     plugin.available_skills = plugin._scan_skills()
     agent_tools = FakeAgentTools()
     helper = SimpleNamespace(plugin_manager=FakePluginManager(agent_tools))
+    plugin._activate_skill(
+        "demo",
+        {"delegation": {"chapter": "Draft chapter one.", "style": "Keep it concise."}},
+        chat_id=10,
+        user_id=42,
+    )
 
     result = await plugin.execute(
         "run_skill_agent",
         helper=helper,
         skill_name="demo",
         agent_name="openai",
-        task="Draft chapter one.",
-        context="Keep it concise.",
+        context_ref="delegation",
         chat_id=10,
         user_id=42,
     )
@@ -544,8 +550,30 @@ async def test_run_skill_agent_delegates_to_agent_tools(tmp_path, monkeypatch):
     assert subagent["id"] == "demo_openai"
     assert subagent["role"] == "Novel Writing"
     assert "Use $novel-writing" in subagent["task"]
-    assert "Draft chapter one." in subagent["task"]
+    assert "Complete the delegated subtask" in subagent["task"]
+    assert "Draft chapter one." in subagent["context"]
     assert "Keep it concise." in subagent["context"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_agent_rejects_inline_task_payload(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    _write_skill_agent(tmp_path / "skills" / "demo")
+    plugin.available_skills = plugin._scan_skills()
+    helper = SimpleNamespace(plugin_manager=FakePluginManager(FakeAgentTools()))
+
+    result = await plugin.execute(
+        "run_skill_agent",
+        helper=helper,
+        skill_name="demo",
+        agent_name="openai",
+        task="Draft chapter one.",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "no longer accepts task/context" in result["error"]
 
 
 @pytest.mark.asyncio

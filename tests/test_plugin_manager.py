@@ -123,8 +123,10 @@ def test_namespacing_and_collision(tmp_path):
     pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
     specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
     names = [s["function"]["name"] for s in specs]
-    assert "deepl.translate" in names
-    assert "ddg_translate.translate" in names
+    assert "deepl_translate" in names
+    assert "ddg_translate_translate" in names
+    assert pm.to_canonical_function_name("deepl_translate") == "deepl.translate"
+    assert pm.to_canonical_function_name("ddg_translate_translate") == "ddg_translate.translate"
 
 
 @pytest.mark.asyncio
@@ -137,6 +139,21 @@ async def test_call_function_lookup_skips_unrelated_broken_plugin(tmp_path):
     pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
 
     result = await pm.call_function("good.do", None, "{}")
+
+    assert json.loads(result) == {"result": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_call_function_accepts_model_safe_function_name(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "good.py", "GoodPlugin", "do")
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
+    assert specs[0]["function"]["name"] == "good_do"
+
+    result = await pm.call_function("good_do", None, "{}")
 
     assert json.loads(result) == {"result": "ok"}
 

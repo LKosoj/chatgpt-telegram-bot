@@ -327,9 +327,23 @@ def _tool_spec_name(spec) -> str | None:
     return spec.get("name")
 
 
-def _filter_tools_by_name(tools, suppressed_names: set[str]):
+def _to_canonical_tool_name(plugin_manager, name: str | None) -> str:
+    if not name:
+        return ""
+    mapper = getattr(plugin_manager, "to_canonical_function_name", None)
+    return mapper(name) if callable(mapper) else name
+
+
+def _filter_tools_by_name(tools, suppressed_names: set[str], plugin_manager=None):
     if not suppressed_names:
         return tools
+
+    def is_suppressed(name: str | None) -> bool:
+        if not name:
+            return False
+        canonical = _to_canonical_tool_name(plugin_manager, name)
+        return canonical in suppressed_names
+
     if isinstance(tools, dict):
         declarations = tools.get("function_declarations")
         if not isinstance(declarations, list):
@@ -338,13 +352,13 @@ def _filter_tools_by_name(tools, suppressed_names: set[str]):
             **tools,
             "function_declarations": [
                 spec for spec in declarations
-                if _tool_spec_name(spec) not in suppressed_names
+                if not is_suppressed(_tool_spec_name(spec))
             ],
         }
     if isinstance(tools, list):
         return [
             spec for spec in tools
-            if _tool_spec_name(spec) not in suppressed_names
+            if not is_suppressed(_tool_spec_name(spec))
         ]
     return tools
 
@@ -613,7 +627,7 @@ async def _retry_missing_delivery_tool(
     )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
-    tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+    tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
     tool_choice = "auto" if _has_tool_specs(tools) else "none"
 
     messages = await helper._apply_before_chat_request_mutators(
@@ -686,7 +700,7 @@ async def _retry_plain_text_tool_intent(
     )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
-    tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+    tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
     tool_choice = "auto" if _has_tool_specs(tools) else "none"
 
     messages = await helper._apply_before_chat_request_mutators(
@@ -849,15 +863,19 @@ async def handle_function_call(
                             logger.info("found tool calls")
                             for tc in first_choice.delta.tool_calls:
                                 idx = getattr(tc, "index", 0)
-                                entry = tool_call_parts.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                                entry = tool_call_parts.setdefault(
+                                    idx,
+                                    {"id": "", "model_name": "", "name": "", "arguments": ""},
+                                )
                                 # id/name приходят одним куском в первой дельте;
                                 # дублирующие чанки (reconnect/quirks провайдера)
                                 # при `+=` склеивались бы в "call_abc1call_abc1"
                                 # и ломали tool_call_id matching на стороне OpenAI.
                                 if getattr(tc, "id", None) and not entry["id"]:
                                     entry["id"] = tc.id
-                                if tc.function.name and not entry["name"]:
-                                    entry["name"] = tc.function.name
+                                if tc.function.name and not entry["model_name"]:
+                                    entry["model_name"] = tc.function.name
+                                    entry["name"] = _to_canonical_tool_name(helper.plugin_manager, tc.function.name)
                                 if tc.function.arguments:
                                     entry["arguments"] += tc.function.arguments
                         elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':
@@ -880,6 +898,10 @@ async def handle_function_call(
                 return response, tools_used
             for idx, entry in sorted(tool_call_parts.items(), key=lambda x: x[0]):
                 entry["id"] = entry["id"] or f"call_{idx}"
+                entry["name"] = _to_canonical_tool_name(
+                    helper.plugin_manager,
+                    entry.get("model_name") or entry["name"],
+                )
                 tool_calls.append(entry)
         else:
             if len(response.choices) > 0:
@@ -890,7 +912,8 @@ async def handle_function_call(
                     for tc in first_choice.message.tool_calls:
                         tool_calls.append({
                             "id": getattr(tc, "id", None) or f"call_{len(tool_calls)}",
-                            "name": tc.function.name or "",
+                            "model_name": tc.function.name or "",
+                            "name": _to_canonical_tool_name(helper.plugin_manager, tc.function.name or ""),
                             "arguments": tc.function.arguments or "",
                         })
                 else:
@@ -1198,7 +1221,7 @@ async def handle_function_call(
         )
 
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
-        tools = _filter_tools_by_name(tools, suppressed_reentry_tools)
+        tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
         tool_choice = (
             'auto'
             if _has_tool_specs(tools) and times < helper.config['functions_max_consecutive_calls']

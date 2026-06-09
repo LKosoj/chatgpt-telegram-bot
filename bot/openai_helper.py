@@ -1322,8 +1322,15 @@ class OpenAIHelper:
                     first_choice = response.choices[0] if response.choices else None
                     message = getattr(first_choice, "message", None) if first_choice else None
                     raw_tool_calls = getattr(message, "tool_calls", None) or []
+                    to_canonical_name = getattr(self.plugin_manager, "to_canonical_function_name", None)
                     tool_calls_normalized = [
-                        {"name": getattr(getattr(tc, "function", None), "name", None)}
+                        {
+                            "name": (
+                                to_canonical_name(getattr(getattr(tc, "function", None), "name", None))
+                                if callable(to_canonical_name)
+                                else getattr(getattr(tc, "function", None), "name", None)
+                            )
+                        }
                         for tc in raw_tool_calls
                     ]
                 except Exception:
@@ -1406,6 +1413,7 @@ class OpenAIHelper:
 
     def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -> None:
         state_key = self._chat_state_key(chat_id)
+        to_model_name = getattr(self.plugin_manager, "to_model_function_name", None)
         self.conversations[state_key].append({
             "role": "assistant",
             "content": None,
@@ -1414,7 +1422,8 @@ class OpenAIHelper:
                     "id": call["id"],
                     "type": "function",
                     "function": {
-                        "name": call["name"],
+                        "name": call.get("model_name")
+                        or (to_model_name(call["name"]) if callable(to_model_name) else call["name"]),
                         "arguments": call.get("arguments") or "{}",
                     },
                 }
@@ -2837,6 +2846,10 @@ class OpenAIHelper:
         state_key = self._chat_state_key(chat_id)
         model_to_use = self._chat_request_models.get(state_key) or self.get_current_model(chat_id)
         content = self._tool_result_content(content)
+        to_model_name = getattr(self.plugin_manager, "to_model_function_name", None)
+        model_function_name = (
+            to_model_name(function_name) if callable(to_model_name) else function_name
+        )
 
         if tool_call_id and self._uses_structured_tool_history(model_to_use):
             self.conversations[state_key].append({
@@ -2853,7 +2866,11 @@ class OpenAIHelper:
             self.conversations[state_key].append({"role": "user", "content": function_result})
         elif model_to_use in (MISTRALAI + MOONSHOTAI):
             # Mistral и Moonshot используют роль "tool" вместо "function"
-            self.conversations[state_key].append({"role": "tool", "name": function_name, "content": content})
+            self.conversations[state_key].append({
+                "role": "tool",
+                "name": model_function_name,
+                "content": content,
+            })
         elif model_to_use in (O_MODELS + GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS):
             # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
             # The 'function' role is no longer supported in OpenAI API as of 2025
@@ -2861,7 +2878,11 @@ class OpenAIHelper:
             self.conversations[state_key].append({"role": "assistant", "content": function_result})
         else:
             # For OpenAI-style models, use the function role
-            self.conversations[state_key].append({"role": "function", "name": function_name, "content": content})
+            self.conversations[state_key].append({
+                "role": "function",
+                "name": model_function_name,
+                "content": content,
+            })
 
     async def __add_to_history(self, chat_id, role, content, session_id=None):
         """

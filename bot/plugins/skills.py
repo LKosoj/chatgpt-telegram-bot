@@ -660,8 +660,10 @@ class SkillsPlugin(Plugin):
                 "name": "run_skill_agent",
                 "description": (
                     "Run a tool-capable subagent declared by an active skill under its agents/*.yaml "
-                    "profile, with a concrete bounded task. Call when the skill exposes a specialist "
-                    "agent profile that fits the current subtask better than running the work inline. "
+                    "profile, using the active skill's stored context as the subtask brief. Call when "
+                    "the skill exposes a specialist agent profile that fits the current subtask better "
+                    "than running the work inline. Store the detailed brief first with activate_skill "
+                    "or update_skill_progress; do not pass long task text in this call. "
                     "Fails with a clear error if the subagent runtime is unavailable in the current chat mode."
                 ),
                 "parameters": {
@@ -675,13 +677,12 @@ class SkillsPlugin(Plugin):
                             "type": "string",
                             "description": "Agent id from the skill's agents directory, for example openai.",
                         },
-                        "task": {
+                        "context_ref": {
                             "type": "string",
-                            "description": "Concrete bounded task for this skill agent.",
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": "Optional task-specific context to pass to the skill agent.",
+                            "description": (
+                                "Optional dot-separated key path inside the active skill context to use "
+                                "as the subtask brief, for example planning or delegation.deck_generator."
+                            ),
                         },
                         "max_rounds": {
                             "type": "integer",
@@ -696,7 +697,7 @@ class SkillsPlugin(Plugin):
                             "description": "Optional subagent temperature.",
                         },
                     },
-                    "required": ["skill_name", "agent_name", "task"],
+                    "required": ["skill_name", "agent_name"],
                 },
             },
             {
@@ -873,14 +874,22 @@ class SkillsPlugin(Plugin):
             if disabled_error:
                 return disabled_error
             agent_name = str(call_kwargs.pop("agent_name", "") or "")
-            task = str(call_kwargs.pop("task", "") or "")
-            context = call_kwargs.pop("context", None)
+            if "task" in call_kwargs or "context" in call_kwargs:
+                return {
+                    "success": False,
+                    "error": (
+                        "run_skill_agent no longer accepts task/context payloads. "
+                        "Store the detailed brief with skills.activate_skill or "
+                        "skills.update_skill_progress, then call run_skill_agent with "
+                        "skill_name, agent_name, and optional context_ref."
+                    ),
+                }
+            context_ref = str(call_kwargs.pop("context_ref", "") or "")
             return await self._run_skill_agent(
                 helper,
                 skill_name,
                 agent_name,
-                task,
-                context=context,
+                context_ref=context_ref,
                 request_context=request_context,
                 **call_kwargs,
             )
@@ -2877,17 +2886,14 @@ class SkillsPlugin(Plugin):
         helper,
         skill_name: str,
         agent_name: str,
-        task: str,
         *,
-        context: Any = None,
+        context_ref: str = "",
         request_context=None,
         **kwargs,
     ) -> Dict[str, Any]:
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
-        if not task.strip():
-            return {"success": False, "error": "task must be a non-empty string"}
 
         info = self.available_skills[skill_id]
         agent = self._resolve_skill_agent(info, agent_name)
@@ -2896,6 +2902,40 @@ class SkillsPlugin(Plugin):
                 "success": False,
                 "error": f"Agent '{agent_name}' not found in skill '{skill_id}'",
                 "available_agents": [item["id"] for item in info.get("agents", [])],
+            }
+
+        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        with self._state_lock:
+            active_state = dict(self.active_skills.get(scope, {}).get(skill_id) or {})
+            active_context = active_state.get("context") or {}
+        if not active_state:
+            return {
+                "success": False,
+                "error": (
+                    f"Skill '{skill_name}' is not active in this scope. "
+                    "Call skills.activate_skill first and store the task context there."
+                ),
+                "scope": scope,
+            }
+        selected_context = active_context
+        if context_ref.strip():
+            found, selected_context = self._select_context_ref(active_context, context_ref)
+            if not found:
+                return {
+                    "success": False,
+                    "error": f"context_ref '{context_ref}' was not found in active skill context",
+                    "scope": scope,
+                    "available_context_keys": sorted(active_context.keys()) if isinstance(active_context, dict) else [],
+                }
+        if selected_context in ({}, [], "", None):
+            return {
+                "success": False,
+                "error": (
+                    "run_skill_agent needs stored active skill context. "
+                    "Call skills.update_skill_progress with the detailed brief first, "
+                    "then call run_skill_agent with optional context_ref."
+                ),
+                "scope": scope,
             }
 
         plugin_manager = getattr(helper, "plugin_manager", None) if helper is not None else None
@@ -2923,7 +2963,14 @@ class SkillsPlugin(Plugin):
                 "error": "agent_tools plugin is required for skills.run_skill_agent.",
             }
 
-        subagent = self._skill_agent_subagent_spec(skill_id, info, agent, task, context, kwargs)
+        subagent = self._skill_agent_subagent_spec(
+            skill_id,
+            info,
+            agent,
+            selected_context,
+            context_ref.strip(),
+            kwargs,
+        )
         result = await agent_tools.execute(
             "run_subagents",
             helper,
@@ -2967,8 +3014,8 @@ class SkillsPlugin(Plugin):
         skill_id: str,
         info: Dict[str, Any],
         agent: Dict[str, Any],
-        task: str,
-        context: Any,
+        selected_context: Any,
+        context_ref: str,
         kwargs: Dict[str, Any],
     ) -> Dict[str, Any]:
         agent_id = str(agent.get("id") or "agent")
@@ -2984,7 +3031,7 @@ class SkillsPlugin(Plugin):
         if default_prompt:
             task_parts.append(f"Agent default prompt:\n{default_prompt}")
         task_parts.extend([
-            f"Parent task:\n{task.strip()}",
+            "Parent task:\nComplete the delegated subtask described by the active skill context.",
             f"Skill instructions:\n{self._truncate(str(info.get('body') or ''))}",
         ])
         references = info.get("references") or []
@@ -3012,8 +3059,12 @@ class SkillsPlugin(Plugin):
             f"Skill path: {info.get('path')}",
             f"Agent definition: {agent.get('file')}",
         ]
-        if context is not None:
-            context_parts.append(f"Task context:\n{context}")
+        if context_ref:
+            context_parts.append(f"Active skill context ref: {context_ref}")
+        context_parts.append(
+            "Active skill context:\n"
+            + self._truncate(json.dumps(selected_context, ensure_ascii=False, indent=2, default=str))
+        )
 
         subagent: Dict[str, Any] = {
             "id": self._safe_subagent_id(f"{skill_id}_{agent_id}"),
@@ -3025,6 +3076,21 @@ class SkillsPlugin(Plugin):
             if kwargs.get(optional) is not None:
                 subagent[optional] = kwargs[optional]
         return subagent
+
+    @staticmethod
+    def _select_context_ref(context: Any, context_ref: str) -> tuple[bool, Any]:
+        current = context
+        for part in [item for item in str(context_ref or "").split(".") if item]:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                continue
+            if isinstance(current, list) and part.isdigit():
+                index = int(part)
+                if 0 <= index < len(current):
+                    current = current[index]
+                    continue
+            return False, None
+        return True, current
 
     @staticmethod
     def _safe_subagent_id(value: str) -> str:

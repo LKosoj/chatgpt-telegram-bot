@@ -51,7 +51,8 @@ def test_plugin_manager_exposes_namespaced_pravo_tool():
     )
 
     names = [spec["function"]["name"] for spec in specs]
-    assert names == ["pravo_gov_ru_api.search_documents"]
+    assert names == ["pravo_gov_ru_api_search_documents"]
+    assert manager.to_canonical_function_name("pravo_gov_ru_api_search_documents") == "pravo_gov_ru_api.search_documents"
 
 
 @pytest.mark.asyncio

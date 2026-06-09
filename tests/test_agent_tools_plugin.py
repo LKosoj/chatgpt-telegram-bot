@@ -376,18 +376,19 @@ def test_agent_tools_registers_specs_and_handlers():
     specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["agent_tools"])
     names = {spec["function"]["name"] for spec in specs}
     assert names == {
-        "agent_tools.manage_plan_tasks",
-        "agent_tools.update_working_checkpoint",
-        "agent_tools.ask_telegram_user",
-        "agent_tools.cancel_pending_question",
-        "agent_tools.run_subagents",
-        "agent_tools.deliver_to_user",
-        "agent_tools.manage_goal_runs",
+        "agent_tools_manage_plan_tasks",
+        "agent_tools_update_working_checkpoint",
+        "agent_tools_ask_telegram_user",
+        "agent_tools_cancel_pending_question",
+        "agent_tools_run_subagents",
+        "agent_tools_deliver_to_user",
+        "agent_tools_manage_goal_runs",
     }
-    ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.ask_telegram_user")
+    assert pm.to_canonical_function_name("agent_tools_manage_plan_tasks") == "agent_tools.manage_plan_tasks"
+    ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_ask_telegram_user")
     assert ask_spec["parameters"]["required"] == ["question", "options"]
     assert ask_spec["parameters"]["properties"]["options"]["minItems"] == 1
-    plan_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.manage_plan_tasks")
+    plan_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_manage_plan_tasks")
     assert "more than two steps" in plan_spec["description"]
     task_props = plan_spec["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "depends_on" in task_props
@@ -395,18 +396,18 @@ def test_agent_tools_registers_specs_and_handlers():
     assert definition_spec["required"] == ["goal", "success_criteria", "verification"]
     assert definition_spec["properties"]["success_criteria"]["minItems"] == 1
     assert definition_spec["properties"]["verification"]["minItems"] == 1
-    deliver_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.deliver_to_user")
+    deliver_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_deliver_to_user")
     deliver_props = deliver_spec["parameters"]["properties"]
     assert deliver_props["status"]["enum"] == ["completed", "blocked"]
     assert "verification_summary" in deliver_props
     assert "blocked_reason" in deliver_props
-    checkpoint_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.update_working_checkpoint")
+    checkpoint_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_update_working_checkpoint")
     assert checkpoint_spec["parameters"]["properties"]["action"]["enum"] == ["update", "list", "clear"]
-    goal_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.manage_goal_runs")
+    goal_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_manage_goal_runs")
     assert goal_spec["parameters"]["properties"]["action"]["enum"] == ["start", "list", "status", "cancel", "clear"]
     limit_props = goal_spec["parameters"]["properties"]["limits"]["properties"]
     assert set(limit_props) == {"max_runtime_seconds", "token_budget"}
-    run_subagents_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools.run_subagents")
+    run_subagents_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_run_subagents")
     assert "map_reduce" in run_subagents_spec["parameters"]["properties"]
     worker_props = run_subagents_spec["parameters"]["properties"]["subagents"]["items"]["properties"]
     assert "map_key" in worker_props
