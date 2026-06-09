@@ -507,6 +507,8 @@ class ChatGPTTelegramBot:
         if not sent_messages:
             logger.warning("handle_direct_result returned no messages; nothing was delivered to user")
             return
+        if self._is_delivery_contract_error_result(response):
+            return
         chat = getattr(update, "effective_chat", None)
         user = getattr(update, "effective_user", None)
         await self.openai.plugin_manager.dispatch_observe(
@@ -518,6 +520,18 @@ class ChatGPTTelegramBot:
                 terminal_only=False,
             ),
             user_id=getattr(user, "id", None),
+        )
+
+    @staticmethod
+    def _is_delivery_contract_error_result(response) -> bool:
+        try:
+            payload = response if isinstance(response, dict) else json.loads(response)
+        except Exception:
+            return False
+        direct_result = payload.get("direct_result") if isinstance(payload, dict) else None
+        return (
+            isinstance(direct_result, dict)
+            and direct_result.get("internal_error") == "delivery_contract_error"
         )
 
     @staticmethod

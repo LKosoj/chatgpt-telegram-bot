@@ -719,6 +719,38 @@ async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
     assert agent_tools.clear_calls == [(1234, 42)]
 
 
+@pytest.mark.asyncio
+async def test_handle_direct_result_keeps_plan_after_delivery_contract_error(monkeypatch):
+    agent_tools = FakeAgentTools()
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.config = {"bot_language": "en"}
+    plugin_manager = FakePluginManager(agent_tools)
+    bot.openai = SimpleNamespace(plugin_manager=plugin_manager)
+    bot._remember_sent_image_messages = Mock()
+    bot._run_post_delivery_cleanup = AsyncMock()
+    sent_messages = [SimpleNamespace(message_id=200)]
+    monkeypatch.setattr(
+        telegram_bot,
+        "handle_direct_result",
+        AsyncMock(return_value=sent_messages),
+    )
+
+    await bot._handle_direct_result(
+        FakeUpdate(FakeMessage()),
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "text",
+                "value": "Could not finish the task.",
+                "internal_error": "delivery_contract_error",
+            }
+        },
+    )
+
+    assert agent_tools.clear_calls == []
+    assert plugin_manager.observer_events == []
+
+
 def test_direct_result_observer_text_does_not_use_non_text_value():
     response = {
         "direct_result": {

@@ -633,8 +633,17 @@ def _delivery_contract_error(helper) -> dict:
             "kind": "text",
             "format": "text",
             "value": localized_text("delivery_contract_error", bot_language),
+            "internal_error": "delivery_contract_error",
         }
     }
+
+
+def _reentry_tool_choice(tools, *, times: int, max_consecutive_calls: int, final_delivery_required: bool) -> str:
+    if not _has_tool_specs(tools):
+        return "none"
+    if final_delivery_required:
+        return "auto"
+    return "auto" if times < max_consecutive_calls else "none"
 
 
 async def _retry_missing_delivery_tool(
@@ -1322,10 +1331,11 @@ async def handle_function_call(
 
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
         tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
-        tool_choice = (
-            'auto'
-            if _has_tool_specs(tools) and times < helper.config['functions_max_consecutive_calls']
-            else 'none'
+        tool_choice = _reentry_tool_choice(
+            tools,
+            times=times,
+            max_consecutive_calls=helper.config['functions_max_consecutive_calls'],
+            final_delivery_required=final_delivery_required,
         )
 
         messages = await helper._apply_before_chat_request_mutators(

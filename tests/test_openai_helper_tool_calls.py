@@ -2220,6 +2220,64 @@ async def test_skills_agent_plain_status_after_tools_can_resume_tool_work():
 
 
 @pytest.mark.asyncio
+async def test_final_delivery_reentry_keeps_tools_after_consecutive_call_limit():
+    responses = {
+        "terminal.terminal": {
+            "success": True,
+            "stdout": "draft created\n",
+            "stderr": "",
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/deck.pptx"}],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "terminal.terminal"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({
+                        "text": "Готово",
+                        "artifacts": [{"file_path": "/tmp/deck.pptx"}],
+                    }),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("terminal.terminal", json.dumps({"command": "node create_pptx.cjs"}), id="call-build"),
+    ])
+
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=response,
+        stream=False,
+        times=1,
+        allowed_plugins=["All"],
+        user_id=1,
+        final_delivery_required=True,
+    )
+
+    assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
+    assert set(tools_used) == {"terminal.terminal", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["kind"] == "final"
+
+
+@pytest.mark.asyncio
 async def test_delivery_tool_runs_after_plan_updates_in_same_batch():
     responses = {
         "agent_tools.manage_plan_tasks": {"success": True, "plan_tasks": {"tasks": []}},
