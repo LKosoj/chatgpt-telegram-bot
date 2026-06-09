@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Dict, List
@@ -27,6 +28,34 @@ def _output_byte_limit() -> int:
 
 
 OUTPUT_BYTE_LIMIT = _output_byte_limit()
+
+PIP_BREAK_SYSTEM_PACKAGES_RE = re.compile(
+    r"(?:^|[;&(]\s*)(?:sudo\s+)?"
+    r"(?:(?:\S*/)?pip(?:\d+(?:\.\d+)?)?|(?:\S*/)?python(?:\d+(?:\.\d+)?)?\s+-m\s+pip|uv\s+pip)"
+    r"\b[^|;&\n]*\binstall\b[^|;&\n]*--break-system-packages\b"
+)
+INSTALL_COMMAND_RE = re.compile(
+    r"(?:^|[;&(]\s*)(?:sudo\s+)?"
+    r"(?:"
+    r"(?:\S*/)?pip(?:\d+(?:\.\d+)?)?\s+install\b|"
+    r"(?:\S*/)?python(?:\d+(?:\.\d+)?)?\s+-m\s+pip\s+install\b|"
+    r"uv\s+pip\s+install\b|"
+    r"(?:\S*/)?npm\s+(?:install|i|ci)\b|"
+    r"(?:\S*/)?apt(?:-get)?\s+(?:install|upgrade|dist-upgrade)\b|"
+    r"(?:\S*/)?dnf\s+install\b|"
+    r"(?:\S*/)?yum\s+install\b"
+    r")"
+)
+TAIL_COMMAND_RE = re.compile(r"^\s*(?:\S*/)?tail\b")
+
+PIP_BREAK_SYSTEM_PACKAGES_ERROR = (
+    "Refusing to run pip install with --break-system-packages from terminal. "
+    "Install runtime dependencies through the bot environment/setup flow instead of mutating system Python."
+)
+INSTALL_PIPE_TAIL_ERROR = (
+    "Refusing to pipe an install command directly into tail because it hides the installer exit code. "
+    "Use: cmd >log 2>&1; rc=$?; tail -30 log; exit $rc"
+)
 
 
 class TerminalPlugin(Plugin):
@@ -84,6 +113,14 @@ class TerminalPlugin(Plugin):
         command = kwargs.get("command")
         if not isinstance(command, str) or not command.strip():
             return {"error": "command must be a non-empty string"}
+
+        guard_error = self._guard_command(command)
+        if guard_error:
+            return {
+                "success": False,
+                "error": guard_error,
+                "guard": "terminal_command_guard",
+            }
 
         shell = bool(kwargs.get("shell", True))
         cwd = kwargs.get("cwd") or DEFAULT_CWD
@@ -195,3 +232,50 @@ class TerminalPlugin(Plugin):
     @staticmethod
     def _truncate(text: str) -> str:
         return TerminalPlugin._truncate_output(text)[0]
+
+    @staticmethod
+    def _guard_command(command: str) -> str | None:
+        if PIP_BREAK_SYSTEM_PACKAGES_RE.search(command):
+            return PIP_BREAK_SYSTEM_PACKAGES_ERROR
+
+        pipe_segments = TerminalPlugin._split_unquoted_pipes(command)
+        for index, segment in enumerate(pipe_segments[:-1]):
+            if not INSTALL_COMMAND_RE.search(segment):
+                continue
+            if any(TAIL_COMMAND_RE.search(next_segment) for next_segment in pipe_segments[index + 1:]):
+                return INSTALL_PIPE_TAIL_ERROR
+        return None
+
+    @staticmethod
+    def _split_unquoted_pipes(command: str) -> list[str]:
+        parts: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        escaped = False
+
+        for char in command:
+            if escaped:
+                current.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                current.append(char)
+                escaped = True
+                continue
+            if quote:
+                current.append(char)
+                if char == quote:
+                    quote = None
+                continue
+            if char in {"'", '"'}:
+                current.append(char)
+                quote = char
+                continue
+            if char == "|":
+                parts.append("".join(current))
+                current = []
+                continue
+            current.append(char)
+
+        parts.append("".join(current))
+        return parts
