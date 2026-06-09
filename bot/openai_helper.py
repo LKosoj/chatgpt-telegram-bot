@@ -82,6 +82,10 @@ _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id",
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 _TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
 
+
+def _json_for_log(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
 # skills_agent first-turn planner gate: information-only tools that are safe to
 # call BEFORE the model has called manage_plan_tasks. Anything not in this set is
 # an "execution-tool" and triggers a forced retry routed through manage_plan_tasks.
@@ -398,7 +402,22 @@ class OpenAIHelper:
         and updates per-turn aggregates. For stream=True duration = TTFB,
         usage is unavailable."""
         start = time.monotonic()
-        response = await self.client.chat.completions.create(**kwargs)
+        logger.info(
+            "LLM request payload kind=%s payload=%s",
+            kind,
+            _json_for_log(kwargs),
+        )
+        try:
+            response = await self.client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            logger.error(
+                "LLM request failed kind=%s error=%s payload=%s",
+                kind,
+                exc,
+                _json_for_log(kwargs),
+                exc_info=True,
+            )
+            raise
         duration_ms = int((time.monotonic() - start) * 1000)
         stats = _TURN_STATS.get()
         if stats is not None:
@@ -1414,20 +1433,36 @@ class OpenAIHelper:
     def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -> None:
         state_key = self._chat_state_key(chat_id)
         to_model_name = getattr(self.plugin_manager, "to_model_function_name", None)
+        history_tool_calls = [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {
+                    "name": call.get("model_name")
+                    or (to_model_name(call["name"]) if callable(to_model_name) else call["name"]),
+                    "arguments": call.get("arguments") or "{}",
+                },
+                "canonical_name": call.get("name"),
+            }
+            for call in tool_calls
+        ]
+        logger.info(
+            "Appending assistant tool calls to history chat_id=%s state_key=%s count=%d payload=%s",
+            chat_id,
+            state_key,
+            len(history_tool_calls),
+            _json_for_log(history_tool_calls),
+        )
         self.conversations[state_key].append({
             "role": "assistant",
             "content": None,
             "tool_calls": [
                 {
                     "id": call["id"],
-                    "type": "function",
-                    "function": {
-                        "name": call.get("model_name")
-                        or (to_model_name(call["name"]) if callable(to_model_name) else call["name"]),
-                        "arguments": call.get("arguments") or "{}",
-                    },
+                    "type": call["type"],
+                    "function": call["function"],
                 }
-                for call in tool_calls
+                for call in history_tool_calls
             ],
         })
 

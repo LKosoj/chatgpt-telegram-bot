@@ -3,6 +3,7 @@ import base64
 import io
 import importlib.util
 import json
+import logging
 import sys
 import types
 
@@ -1220,6 +1221,41 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
         and message["content"].startswith("Function skills.get_skill_status returned")
         for message in helper.conversations[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    bad_arguments = '{"skill_name":"powerpoint","agent_name":"deck_generator","task":"full brief"'
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills_run_skill_agent", bad_arguments, id="call-debug-1"),
+    ])
+
+    caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
+    caplog.set_level(logging.INFO, logger="bot.openai_helper")
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1,
+        response=response,
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=1,
+        model_to_use="llmgateway/high",
+    )
+
+    log_text = caplog.text
+    assert out.choices[0].message.content == "done"
+    assert set(tools_used) == {"skills_run_skill_agent"}
+    assert "Model tool calls received" in log_text
+    assert "Appending assistant tool calls to history" in log_text
+    assert "Failed to parse tool arguments JSON" in log_text
+    assert "LLM request payload kind=chat_completion" in log_text
+    assert "call-debug-1" in log_text
+    assert "skills_run_skill_agent" in log_text
+    assert bad_arguments in log_text
 
 
 def test_repair_tool_call_history_emits_synthetic_tool_result():

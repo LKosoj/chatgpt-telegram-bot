@@ -363,6 +363,36 @@ def _filter_tools_by_name(tools, suppressed_names: set[str], plugin_manager=None
     return tools
 
 
+def _json_for_log(value) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _log_model_tool_calls(
+    *,
+    chat_id,
+    model_to_use: str | None,
+    stream: bool,
+    tool_calls: list[dict],
+) -> None:
+    payload = [
+        {
+            "tool_call_id": call.get("id"),
+            "model_name": call.get("model_name"),
+            "canonical_name": call.get("name"),
+            "arguments": call.get("arguments"),
+        }
+        for call in tool_calls
+    ]
+    logger.info(
+        "Model tool calls received chat_id=%s model=%s stream=%s count=%d payload=%s",
+        chat_id,
+        model_to_use,
+        stream,
+        len(tool_calls),
+        _json_for_log(payload),
+    )
+
+
 def _has_tool_specs(tools) -> bool:
     if isinstance(tools, dict):
         return bool(tools.get("function_declarations"))
@@ -942,6 +972,12 @@ async def handle_function_call(
             _model_owner(chat_id, user_id, request_session_id),
             session_id=request_session_id,
         )
+        _log_model_tool_calls(
+            chat_id=chat_id,
+            model_to_use=model_to_use,
+            stream=stream,
+            tool_calls=tool_calls,
+        )
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
         add_assistant_tool_calls_to_history = getattr(helper, "_add_assistant_tool_calls_to_history", None)
         structured_tool_history = (
@@ -982,12 +1018,27 @@ async def handle_function_call(
         for call in tool_calls:
             tool_call_id = call.get("id")
             tool_name = call["name"]
+            model_tool_name = call.get("model_name") or tool_name
             arguments = call["arguments"]
             canonical_arguments = _canonical_tool_arguments(arguments)
-            logger.info(f'Calling tool {tool_name} with arguments {arguments}')
+            logger.info(
+                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments=%s",
+                chat_id,
+                tool_call_id,
+                model_tool_name,
+                tool_name,
+                arguments,
+            )
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
-                logger.warning(error)
+                logger.warning(
+                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments=%s",
+                    error,
+                    chat_id,
+                    tool_call_id,
+                    model_tool_name,
+                    arguments,
+                )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
             try:
@@ -1014,11 +1065,27 @@ async def handle_function_call(
                     continue
                 arguments = json.dumps(args, ensure_ascii=False)
                 prepared.append((tool_name, arguments, _canonical_tool_arguments(arguments), tool_call_id))
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse arguments JSON: {arguments}")
+            except json.JSONDecodeError as exc:
+                logger.error(
+                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    chat_id,
+                    tool_call_id,
+                    model_tool_name,
+                    tool_name,
+                    exc,
+                    arguments,
+                )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
             except TypeError as exc:
-                logger.error(f"Invalid arguments for {tool_name}: {exc}")
+                logger.error(
+                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    chat_id,
+                    tool_call_id,
+                    model_tool_name,
+                    tool_name,
+                    exc,
+                    arguments,
+                )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
         # Snapshot the in_progress task BEFORE running the batch. If the batch
