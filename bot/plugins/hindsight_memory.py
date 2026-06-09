@@ -1518,15 +1518,36 @@ class HindsightMemoryPlugin(Plugin):
             items = await self._extract_hindsight_memory_items(transcript)
             if not items:
                 return 0
-            await self._retain_hindsight_items(
-                user_id=user_id,
-                chat_id=user_id,
-                session_id=session_id,
-                items=items,
-                mode="session_close",
-                document_id=f"telegram-{user_id}-{session_id}-final",
-                async_store=async_store,
-            )
+            document_id = f"telegram-{user_id}-{session_id}-final"
+            try:
+                await self._retain_hindsight_items(
+                    user_id=user_id,
+                    chat_id=user_id,
+                    session_id=session_id,
+                    items=items,
+                    mode="session_close",
+                    document_id=document_id,
+                    async_store=async_store,
+                )
+            except HindsightError as e:
+                if not self._is_duplicate_document_id_error(e):
+                    raise
+                retry_session_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
+                retry_document_id = f"telegram-{user_id}-{retry_session_id}-final"
+                logger.warning(
+                    "Retrying Hindsight session finalize with new session_id after duplicate document_id "
+                    "for user_id=%s session_id=%s retry_session_id=%s",
+                    user_id, session_id, retry_session_id,
+                )
+                await self._retain_hindsight_items(
+                    user_id=user_id,
+                    chat_id=user_id,
+                    session_id=retry_session_id,
+                    items=items,
+                    mode="session_close",
+                    document_id=retry_document_id,
+                    async_store=async_store,
+                )
             return len(items)
         except Exception as e:
             logger.warning(
@@ -1536,6 +1557,10 @@ class HindsightMemoryPlugin(Plugin):
             if raise_on_error:
                 raise
             return 0
+
+    @staticmethod
+    def _is_duplicate_document_id_error(error: Exception) -> bool:
+        return "duplicate document_id" in str(error).lower()
 
     def _session_transcript_for_hindsight(self, messages: list[dict[str, Any]]) -> str:
         lines = []
@@ -1592,7 +1617,6 @@ class HindsightMemoryPlugin(Plugin):
             retained_item = {
                 "content": content_text,
                 "context": context_text,
-                "document_id": document_id or f"telegram-{user_id}-{session_id or chat_id}-{uuid.uuid4().hex}",
                 "timestamp": now,
                 "tags": tags,
                 "metadata": {
@@ -1606,10 +1630,17 @@ class HindsightMemoryPlugin(Plugin):
             memory_type = str(item.get("type") or "").strip()
             if memory_type and memory_type != LESSON_TYPE_CANDIDATE:
                 retained_item["type"] = memory_type
+            if document_id is None:
+                retained_item["document_id"] = f"telegram-{user_id}-{session_id or chat_id}-{uuid.uuid4().hex}"
             normalized.append(retained_item)
 
         if not normalized:
             return 0
+        if document_id is not None:
+            for index, retained_item in enumerate(normalized, start=1):
+                retained_item["document_id"] = (
+                    document_id if len(normalized) == 1 else f"{document_id}-{index}"
+                )
 
         await self.client.retain_memories(
             bank_id,

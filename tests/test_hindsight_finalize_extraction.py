@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.plugins.hindsight_memory import HindsightMemoryPlugin, HINDSIGHT_EXTRACTOR_PROMPT
+from bot.plugins.hindsight_memory import HindsightError, HindsightMemoryPlugin, HINDSIGHT_EXTRACTOR_PROMPT
 
 
 def _build_plugin(**config_overrides) -> HindsightMemoryPlugin:
@@ -34,6 +34,24 @@ def _build_plugin(**config_overrides) -> HindsightMemoryPlugin:
         },
     )
     return plugin
+
+
+class RecordingHindsightClient:
+    enabled = True
+
+    def __init__(self, *, fail_first_with_duplicate: bool = False):
+        self.calls = []
+        self.fail_first_with_duplicate = fail_first_with_duplicate
+
+    async def retain_memories(self, bank_id, items, **kwargs):
+        self.calls.append((bank_id, items, kwargs))
+        if self.fail_first_with_duplicate and len(self.calls) == 1:
+            raise HindsightError(
+                "Hindsight request failed: 500 {\"detail\":\"Batch contains duplicate document_ids: "
+                "['telegram-123-sess-1-final']. Each content item in a batch must have a unique "
+                "document_id to avoid race conditions.\"}"
+            )
+        return {"success": True, "items_count": len(items)}
 
 
 def test_session_transcript_skips_system_and_empty():
@@ -111,6 +129,55 @@ async def test_finalize_session_memory_happy_path():
     saved = await plugin.finalize_session_memory(123, "sess-1", messages)
     assert saved == 1
     plugin._retain_hindsight_items.assert_awaited_once()
+
+
+async def test_finalize_session_memory_uses_unique_document_ids_for_batch_items():
+    plugin = _build_plugin()
+    plugin.client = RecordingHindsightClient()
+    plugin._extract_hindsight_memory_items = AsyncMock(
+        return_value=[
+            {"content": "fact a", "context": ""},
+            {"content": "fact b", "context": ""},
+        ]
+    )
+    messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+
+    saved = await plugin.finalize_session_memory(123, "sess-1", messages)
+
+    assert saved == 2
+    retained_items = plugin.client.calls[0][1]
+    assert [item["document_id"] for item in retained_items] == [
+        "telegram-123-sess-1-final-1",
+        "telegram-123-sess-1-final-2",
+    ]
+    assert {item["metadata"]["session_id"] for item in retained_items} == {"sess-1"}
+
+
+async def test_finalize_session_memory_retries_duplicate_document_ids_with_new_session_id():
+    plugin = _build_plugin()
+    plugin.client = RecordingHindsightClient(fail_first_with_duplicate=True)
+    plugin._extract_hindsight_memory_items = AsyncMock(
+        return_value=[
+            {"content": "fact a", "context": ""},
+            {"content": "fact b", "context": ""},
+        ]
+    )
+    messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+
+    saved = await plugin.finalize_session_memory(123, "sess-1", messages, raise_on_error=True)
+
+    assert saved == 2
+    assert len(plugin.client.calls) == 2
+    retained_items = plugin.client.calls[1][1]
+    retry_session_ids = {item["metadata"]["session_id"] for item in retained_items}
+    assert len(retry_session_ids) == 1
+    retry_session_id = retry_session_ids.pop()
+    assert retry_session_id.startswith("sess-1-")
+    assert retry_session_id != "sess-1"
+    assert [item["document_id"] for item in retained_items] == [
+        f"telegram-123-{retry_session_id}-final-1",
+        f"telegram-123-{retry_session_id}-final-2",
+    ]
 
 
 async def test_finalize_session_memory_returns_zero_when_inactive():
