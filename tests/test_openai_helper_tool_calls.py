@@ -1225,10 +1225,20 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
 
 @pytest.mark.asyncio
 async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
+    from bot.session_logger import clear_trace, set_trace
+
+    class CaptureSessionLogger:
+        def __init__(self):
+            self.events = []
+
+        def record(self, event):
+            self.events.append(event)
+
     helper = _make_helper(
         DummyPluginManager({}),
         client=DummyClient([FakeResponse(content="done")]),
     )
+    helper.session_logger = CaptureSessionLogger()
     bad_arguments = '{"skill_name":"powerpoint","agent_name":"deck_generator","task":"full brief"'
     response = FakeResponse(tool_calls=[
         FakeToolCall("skills_run_skill_agent", bad_arguments, id="call-debug-1"),
@@ -1237,14 +1247,18 @@ async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
     caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
     caplog.set_level(logging.INFO, logger="bot.openai_helper")
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
-        chat_id=1,
-        response=response,
-        stream=False,
-        allowed_plugins=["All"],
-        user_id=1,
-        model_to_use="llmgateway/high",
-    )
+    token = set_trace(1, "session-debug", "turn-debug")
+    try:
+        out, tools_used = await helper._OpenAIHelper__handle_function_call(
+            chat_id=1,
+            response=response,
+            stream=False,
+            allowed_plugins=["All"],
+            user_id=1,
+            model_to_use="llmgateway/high",
+        )
+    finally:
+        clear_trace(token)
 
     log_text = caplog.text
     assert out.choices[0].message.content == "done"
@@ -1256,6 +1270,21 @@ async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
     assert "call-debug-1" in log_text
     assert "skills_run_skill_agent" in log_text
     assert bad_arguments in log_text
+    assert any(
+        event.get("type") == "tool_calls_received"
+        and event["tool_calls"][0]["tool_call_id"] == "call-debug-1"
+        and event["tool_calls"][0]["arguments"] == bad_arguments
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event.get("type") == "llm_request"
+        and any(
+            message.get("tool_calls", [{}])[0].get("function", {}).get("arguments") == bad_arguments
+            for message in event["payload"]["messages"]
+            if message.get("tool_calls")
+        )
+        for event in helper.session_logger.events
+    )
 
 
 def test_repair_tool_call_history_emits_synthetic_tool_result():

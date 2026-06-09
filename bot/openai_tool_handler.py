@@ -90,7 +90,8 @@ async def _call_function_bounded(helper, name, args, request_context, semaphore)
             if slog is not None and get_trace() is not None:
                 duration_ms = int((time.monotonic() - start) * 1000)
                 slog.record({'type': 'tool_exec', 'name': name,
-                             'duration_ms': duration_ms, 'ok': ok, 'error': error})
+                             'arguments': args, 'duration_ms': duration_ms,
+                             'ok': ok, 'error': error})
 
 
 async def _list_user_sessions(db, user_id, *, is_active: int = 0):
@@ -367,14 +368,8 @@ def _json_for_log(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-def _log_model_tool_calls(
-    *,
-    chat_id,
-    model_to_use: str | None,
-    stream: bool,
-    tool_calls: list[dict],
-) -> None:
-    payload = [
+def _tool_calls_payload(tool_calls: list[dict]) -> list[dict]:
+    return [
         {
             "tool_call_id": call.get("id"),
             "model_name": call.get("model_name"),
@@ -383,6 +378,22 @@ def _log_model_tool_calls(
         }
         for call in tool_calls
     ]
+
+
+def _record_session_event(helper, event: dict) -> None:
+    slog = getattr(helper, "session_logger", None)
+    if slog is not None and get_trace() is not None:
+        slog.record(event)
+
+
+def _log_model_tool_calls(
+    *,
+    chat_id,
+    model_to_use: str | None,
+    stream: bool,
+    tool_calls: list[dict],
+) -> None:
+    payload = _tool_calls_payload(tool_calls)
     logger.info(
         "Model tool calls received chat_id=%s model=%s stream=%s count=%d payload=%s",
         chat_id,
@@ -978,6 +989,13 @@ async def handle_function_call(
             stream=stream,
             tool_calls=tool_calls,
         )
+        _record_session_event(helper, {
+            "type": "tool_calls_received",
+            "chat_id": chat_id,
+            "model": model_to_use,
+            "stream": stream,
+            "tool_calls": _tool_calls_payload(tool_calls),
+        })
         uses_structured_tool_history = getattr(helper, "_uses_structured_tool_history", lambda _model: False)
         add_assistant_tool_calls_to_history = getattr(helper, "_add_assistant_tool_calls_to_history", None)
         structured_tool_history = (

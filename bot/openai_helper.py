@@ -402,6 +402,14 @@ class OpenAIHelper:
         and updates per-turn aggregates. For stream=True duration = TTFB,
         usage is unavailable."""
         start = time.monotonic()
+        slog = getattr(self, 'session_logger', None)
+        if slog is not None and get_trace() is not None:
+            slog.record({
+                'type': 'llm_request',
+                'kind': kind,
+                'model': kwargs.get('model'),
+                'payload': kwargs,
+            })
         logger.info(
             "LLM request payload kind=%s payload=%s",
             kind,
@@ -417,13 +425,20 @@ class OpenAIHelper:
                 _json_for_log(kwargs),
                 exc_info=True,
             )
+            if slog is not None and get_trace() is not None:
+                slog.record({
+                    'type': 'llm_error',
+                    'kind': kind,
+                    'model': kwargs.get('model'),
+                    'error': str(exc),
+                    'payload': kwargs,
+                })
             raise
         duration_ms = int((time.monotonic() - start) * 1000)
         stats = _TURN_STATS.get()
         if stats is not None:
             stats['round_trips'] += 1
             stats['llm_ms'] += duration_ms
-        slog = getattr(self, 'session_logger', None)
         if slog is not None and get_trace() is not None:
             is_stream = bool(kwargs.get('stream'))
             event = {
@@ -433,6 +448,7 @@ class OpenAIHelper:
                 'prompt_tokens': None, 'completion_tokens': None, 'total_tokens': None,
                 'finish_reason': None, 'tools_count': len(kwargs.get('tools') or []),
                 'tool_calls_returned': None,
+                'response_tool_calls': None,
             }
             if not is_stream:
                 try:
@@ -447,6 +463,14 @@ class OpenAIHelper:
                         msg = getattr(choices[0], 'message', None)
                         tcs = getattr(msg, 'tool_calls', None) if msg is not None else None
                         event['tool_calls_returned'] = len(tcs) if tcs else 0
+                        event['response_tool_calls'] = [
+                            {
+                                'tool_call_id': getattr(tc, 'id', None),
+                                'name': getattr(getattr(tc, 'function', None), 'name', None),
+                                'arguments': getattr(getattr(tc, 'function', None), 'arguments', None),
+                            }
+                            for tc in (tcs or [])
+                        ] if tcs else []
                 except Exception:
                     pass
             slog.record(event)
