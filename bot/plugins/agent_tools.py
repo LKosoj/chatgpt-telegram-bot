@@ -64,6 +64,26 @@ DELIVERY_TARGET_WORDS = (
 MAX_SUBAGENTS = 5
 MIN_SUBAGENT_TOOL_ROUNDS = 10
 MAX_SUBAGENT_TOOL_ROUNDS = 50
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using %s", name, raw, default)
+        return default
+    return max(minimum, min(value, maximum))
+
+
+SUBAGENT_DEFAULT_TOOL_ROUNDS = _int_env(
+    "SUBAGENT_DEFAULT_TOOL_ROUNDS",
+    20,
+    minimum=MIN_SUBAGENT_TOOL_ROUNDS,
+    maximum=MAX_SUBAGENT_TOOL_ROUNDS,
+)
 DEFAULT_SUBAGENT_TEMPERATURE = 0.2
 SUBAGENT_CONSECUTIVE_REPEAT_LIMIT = 3
 SUBAGENT_TOTAL_REPEAT_LIMIT = 5
@@ -635,7 +655,8 @@ class AgentToolsPlugin(Plugin):
                             "type": "integer",
                             "description": (
                                 f"Optional per-subagent tool-call rounds budget. "
-                                f"Floor and default is {MIN_SUBAGENT_TOOL_ROUNDS}; pass a higher value "
+                                f"Default is {SUBAGENT_DEFAULT_TOOL_ROUNDS}; floor is "
+                                f"{MIN_SUBAGENT_TOOL_ROUNDS}; pass a higher value "
                                 "for harder tasks. Each round is one model call followed by parallel tool execution."
                             ),
                         },
@@ -3103,7 +3124,7 @@ class AgentToolsPlugin(Plugin):
 
     @staticmethod
     def _normalize_max_rounds(value: Any, default: int | None = None) -> int:
-        baseline = default if default is not None else MIN_SUBAGENT_TOOL_ROUNDS
+        baseline = default if default is not None else SUBAGENT_DEFAULT_TOOL_ROUNDS
         if value is None:
             return baseline
         try:

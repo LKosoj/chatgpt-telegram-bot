@@ -1385,15 +1385,34 @@ async def test_background_job_runs_and_delivers_to_chat(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_subagents_floors_max_rounds_to_minimum(tmp_path):
-    from bot.plugins.agent_tools import MIN_SUBAGENT_TOOL_ROUNDS, AgentToolsPlugin as _Plugin
+    from bot.plugins.agent_tools import (
+        MIN_SUBAGENT_TOOL_ROUNDS,
+        SUBAGENT_DEFAULT_TOOL_ROUNDS,
+        AgentToolsPlugin as _Plugin,
+    )
 
     assert _Plugin._normalize_max_rounds(1) == MIN_SUBAGENT_TOOL_ROUNDS
-    assert _Plugin._normalize_max_rounds(None) == MIN_SUBAGENT_TOOL_ROUNDS
+    assert _Plugin._normalize_max_rounds(None) == SUBAGENT_DEFAULT_TOOL_ROUNDS
+    assert _Plugin._normalize_max_rounds("garbage") == SUBAGENT_DEFAULT_TOOL_ROUNDS
     assert _Plugin._normalize_max_rounds(MIN_SUBAGENT_TOOL_ROUNDS + 5) == MIN_SUBAGENT_TOOL_ROUNDS + 5
-    assert _Plugin._normalize_max_rounds("garbage") == MIN_SUBAGENT_TOOL_ROUNDS
     assert _Plugin._normalize_max_rounds(None, default=15) == 15
     assert _Plugin._normalize_max_rounds(5, default=15) == MIN_SUBAGENT_TOOL_ROUNDS
     assert _Plugin._normalize_max_rounds(20, default=15) == 20
+
+
+def test_subagent_default_tool_rounds_reads_env(monkeypatch):
+    import bot.plugins.agent_tools as agent_tools
+
+    monkeypatch.setenv("SUBAGENT_DEFAULT_TOOL_ROUNDS", "25")
+    reloaded = importlib.reload(agent_tools)
+    try:
+        assert reloaded.SUBAGENT_DEFAULT_TOOL_ROUNDS == 25
+        assert reloaded.AgentToolsPlugin._normalize_max_rounds(None) == 25
+        assert reloaded.AgentToolsPlugin._normalize_max_rounds("garbage") == 25
+        assert reloaded.AgentToolsPlugin._normalize_max_rounds(5) == reloaded.MIN_SUBAGENT_TOOL_ROUNDS
+    finally:
+        monkeypatch.delenv("SUBAGENT_DEFAULT_TOOL_ROUNDS", raising=False)
+        importlib.reload(agent_tools)
 
 
 @pytest.mark.asyncio
