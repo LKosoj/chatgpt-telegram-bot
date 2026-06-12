@@ -1,4 +1,6 @@
 import asyncio
+import concurrent.futures
+import contextvars
 import sqlite3
 from typing import Dict, Any, Optional, List, ContextManager, Generator
 from contextlib import contextmanager
@@ -26,8 +28,9 @@ class Database:
 
     # Текущая целевая версия схемы. Миграция 1 — переход с legacy-таблицы
     # `conversation_context` без session_id на новую схему с сессиями.
-    TARGET_SCHEMA_VERSION = 1
-    
+    # Миграция 2 — добавление колонки version (монотонный счётчик ревизий).
+    TARGET_SCHEMA_VERSION = 2
+
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
@@ -36,6 +39,7 @@ class Database:
                 current_dir = os.path.dirname(os.path.abspath(__file__))
                 instance.db_path = os.getenv("DB_PATH") or os.path.join(current_dir, 'user_data.db')
                 instance._op_lock = threading.RLock()
+                instance._executor = None
                 cls._instance = instance
                 instance.init_db()
             return cls._instance
@@ -49,6 +53,7 @@ class Database:
         """Reset the cached singleton (intended for tests)."""
         with cls._lock:
             if cls._instance is not None:
+                cls._instance.shutdown()
                 local_conn = getattr(cls._local, 'connection', None)
                 if local_conn is not None:
                     try:
@@ -133,6 +138,10 @@ class Database:
 
     def __del__(self):
         """Закрываем соединение текущего треда при сборке объекта."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass
         local = getattr(self, '_local', None)
         if local is None:
             return
@@ -147,7 +156,62 @@ class Database:
             del local.connection
         except AttributeError:
             pass
-        
+
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Лениво создаёт и возвращает ThreadPoolExecutor с одним воркером.
+
+        max_workers=1 гарантирует ровно одно thread-local соединение воркера
+        и сериализацию async-операций БД без дополнительных локов.
+        """
+        with self._op_lock:
+            if self._executor is None:
+                self._executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="db-worker"
+                )
+        return self._executor
+
+    def _close_db_thread_connection(self) -> None:
+        """Закрывает thread-local соединение текущего потока (вызывается из воркера)."""
+        conn = getattr(self._local, 'connection', None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                del self._local.connection
+            except AttributeError:
+                pass
+
+    def shutdown(self) -> None:
+        """Закрывает воркер-соединение и останавливает executor (best-effort)."""
+        try:
+            with self._op_lock:
+                executor = self._executor
+                if executor is None:
+                    return
+                self._executor = None
+            try:
+                future = executor.submit(self._close_db_thread_connection)
+                future.result(timeout=5)
+            except Exception:
+                pass
+            try:
+                executor.shutdown(wait=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    async def _run_in_db_thread(self, func, *args):
+        """Запускает sync-функцию в единственном db-worker потоке."""
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(
+            self._get_executor(),
+            lambda: ctx.run(func, *args),
+        )
+
     def init_db(self):
         """Инициализация базы данных и создание необходимых таблиц"""
         try:
@@ -221,6 +285,7 @@ class Database:
                         session_name TEXT DEFAULT NULL,
                         is_active INTEGER DEFAULT 0,
                         message_count INTEGER DEFAULT 0,
+                        version INTEGER NOT NULL DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (user_id, session_id)
@@ -250,19 +315,33 @@ class Database:
 
                 cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
                 current_version = cursor.fetchone()[0]
-                if current_version < self.TARGET_SCHEMA_VERSION:
+                if current_version < 1:
                     cursor.execute("PRAGMA table_info(conversation_context)")
                     columns = [column[1] for column in cursor.fetchall()]
                     if 'session_id' not in columns:
                         logger.warning('Performing database migration for conversation_context')
                         self.migrate_conversation_context()
                     else:
-                        # Схема уже соответствует целевой версии (БД создана с
-                        # нуля), но запись о version отсутствовала — фиксируем.
+                        # Схема уже содержит session_id (создана с нуля),
+                        # фиксируем версию 1.
                         cursor.execute(
-                            'INSERT OR IGNORE INTO schema_version (version) VALUES (?)',
-                            (self.TARGET_SCHEMA_VERSION,),
+                            'INSERT OR IGNORE INTO schema_version (version) VALUES (1)',
                         )
+
+                # Миграция < 2: добавляем колонку version для CAS.
+                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
+                current_version = cursor.fetchone()[0]
+                if current_version < 2:
+                    cursor.execute("PRAGMA table_info(conversation_context)")
+                    existing_cols = [row[1] for row in cursor.fetchall()]
+                    if 'version' not in existing_cols:
+                        logger.info('Migration < 2: adding version column to conversation_context')
+                        cursor.execute(
+                            'ALTER TABLE conversation_context ADD COLUMN version INTEGER NOT NULL DEFAULT 0'
+                        )
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO schema_version (version) VALUES (2)',
+                    )
 
                 # Индекс для быстрого поиска сессий (создаем после миграции)
                 cursor.execute('''
@@ -307,6 +386,21 @@ class Database:
                 'Refusing to drop conversation_context_old: new table lacks session_id, '
                 'manual intervention required.'
             )
+            return
+        # Compare row counts: if _old has more rows than new, the migration was partial
+        # and data is safer in _old — restore it rather than losing rows.
+        cursor.execute('SELECT COUNT(*) FROM conversation_context_old')
+        old_count = cursor.fetchone()[0]
+        cursor.execute('SELECT COUNT(*) FROM conversation_context')
+        new_count = cursor.fetchone()[0]
+        if old_count > new_count:
+            logger.warning(
+                'conversation_context_old has more rows (%d) than new table (%d); '
+                'migration was partial — dropping incomplete new table and restoring _old',
+                old_count, new_count,
+            )
+            cursor.execute('DROP TABLE conversation_context')
+            cursor.execute('ALTER TABLE conversation_context_old RENAME TO conversation_context')
             return
         logger.warning('Dropping stale conversation_context_old leftover')
         cursor.execute('DROP TABLE conversation_context_old')
@@ -539,18 +633,31 @@ class Database:
                 cursor = conn.cursor()
                 self._ensure_user(cursor, user_id)
 
-                cursor.execute('''
-                    UPDATE conversation_context
-                    SET context = ?,
-                        parse_mode = ?,
-                        temperature = ?,
-                        max_tokens_percent = ?,
-                        message_count = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND session_id = ?
-                ''', (context_json, parse_mode, temperature, max_tokens_percent, message_count, user_id, session_id))
+                # transaction() уже держит write-lock (BEGIN IMMEDIATE), поэтому
+                # SELECT существования и UPDATE атомарны относительно других
+                # писателей — отдельный CAS-retry не нужен. version поднимаем
+                # монотонно как счётчик ревизий записи.
+                cursor.execute(
+                    'SELECT 1 FROM conversation_context WHERE user_id = ? AND session_id = ?',
+                    (user_id, session_id),
+                )
+                row = cursor.fetchone()
 
-                if cursor.rowcount == 0:
+                if row is not None:
+                    cursor.execute('''
+                        UPDATE conversation_context
+                        SET context = ?,
+                            parse_mode = ?,
+                            temperature = ?,
+                            max_tokens_percent = ?,
+                            message_count = ?,
+                            version = version + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND session_id = ?
+                    ''', (context_json, parse_mode, temperature, max_tokens_percent,
+                          message_count, user_id, session_id))
+                else:
+                    # Строки нет — обычная вставка с version=0.
                     logger.info(f"Создаем новую запись для сессии {session_id}")
                     model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
                     cursor.execute('''
@@ -560,9 +667,11 @@ class Database:
                     ''', (user_id,))
                     cursor.execute('''
                         INSERT INTO conversation_context
-                        (user_id, session_id, context, model, parse_mode, temperature, max_tokens_percent, is_active, message_count)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-                    ''', (user_id, session_id, context_json, model, parse_mode, temperature, max_tokens_percent, message_count))
+                        (user_id, session_id, context, model, parse_mode, temperature,
+                         max_tokens_percent, is_active, message_count, version)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 0)
+                    ''', (user_id, session_id, context_json, model, parse_mode, temperature,
+                          max_tokens_percent, message_count))
 
                 cursor.execute('''
                     SELECT session_name FROM conversation_context WHERE user_id = ? AND session_id = ?
@@ -576,7 +685,7 @@ class Database:
                     self.set_session_name(user_id, session_id, session_name)
 
             return session_id
-                                    
+
         except Exception as e:
             logger.error(f'Ошибка сохранения контекста сессии: {e}', exc_info=True)
             raise
@@ -611,7 +720,7 @@ class Database:
         session_id: str = None,
         openai_helper = None,
     ) -> str:
-        saved_session_id = await asyncio.to_thread(
+        saved_session_id = await self._run_in_db_thread(
             self.save_conversation_context,
             user_id,
             context,
@@ -643,7 +752,7 @@ class Database:
         """
         if not session_id:
             return
-        session = await asyncio.to_thread(self.get_session_details, user_id, session_id)
+        session = await self._run_in_db_thread(self.get_session_details, user_id, session_id)
         if not session or session.get("session_name") != "...":
             return
         user_message = next(
@@ -655,7 +764,7 @@ class Database:
         if not user_message:
             return
         if len(user_message) <= 20:
-            await asyncio.to_thread(self.set_session_name, user_id, session_id, user_message[:20])
+            await self._run_in_db_thread(self.set_session_name, user_id, session_id, user_message[:20])
             return
         # Для длинных сообщений имя осталось "..." — OpenAIHelper.\
         # ensure_session_name_with_llm в фоне сгенерирует осмысленное имя
@@ -946,10 +1055,10 @@ class Database:
             return None
 
     def create_session(
-        self, 
-        user_id: int, 
-        session_name: str = None, 
-        max_sessions: int = 5,
+        self,
+        user_id: int,
+        session_name: str = None,
+        max_sessions: Optional[int] = None,
         first_message: str = None,
         openai_helper = None,
         prune_old_sessions: bool = True,
@@ -1082,7 +1191,7 @@ class Database:
 
     async def list_user_sessions_async(self, user_id: int, is_active: int = 0) -> List[Dict[str, Any]]:
         """Async-обёртка над list_user_sessions для вызова из event loop."""
-        return await asyncio.to_thread(self.list_user_sessions, user_id, is_active)
+        return await self._run_in_db_thread(self.list_user_sessions, user_id, is_active)
 
     def switch_active_session(self, user_id: int, session_id: str) -> bool:
         """Переключение активной сессии"""
@@ -1193,6 +1302,7 @@ class Database:
                             session_name TEXT DEFAULT NULL,
                             is_active INTEGER DEFAULT 0,
                             message_count INTEGER DEFAULT 0,
+                            version INTEGER NOT NULL DEFAULT 0,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             PRIMARY KEY (user_id, session_id)

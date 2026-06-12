@@ -2399,3 +2399,91 @@ async def test_on_before_chat_request_does_not_mutate_input(tmp_path, monkeypatc
     assert new_messages is not None
     assert new_messages is not messages
     assert len(messages) == original_len  # input list untouched
+
+
+@pytest.mark.asyncio
+async def test_skill_script_timeout_kills_process_group(tmp_path, monkeypatch):
+    """Timeout must kill the entire process group, not just the direct child."""
+    import os
+    import signal
+
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="*")
+    plugin.script_timeout = 2
+
+    scripts_dir = tmp_path / "skills" / "demo" / "scripts"
+    # Script spawns a child that writes its own PID to a file, then sleeps.
+    # We capture the child PID file path so we can verify it was killed.
+    child_pid_file = tmp_path / "child.pid"
+    (scripts_dir / "fork_sleep.py").write_text(
+        "import os, time, sys\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        f"    open({str(child_pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "    time.sleep(30)\n"
+        "    sys.exit(0)\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="fork_sleep.py",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+
+    # Give the kernel a moment to reap, then verify the child process is gone.
+    import asyncio as _asyncio
+    await _asyncio.sleep(0.3)
+
+    if child_pid_file.exists():
+        child_pid = int(child_pid_file.read_text().strip())
+        try:
+            os.kill(child_pid, 0)
+            # If we reach here, the process still exists — that's a failure.
+            assert False, f"Child process {child_pid} is still alive after timeout kill"
+        except ProcessLookupError:
+            pass  # process is gone — expected
+
+
+@pytest.mark.asyncio
+async def test_skill_script_large_output_is_capped_and_does_not_hang(tmp_path, monkeypatch):
+    """A script producing more output than the byte cap must complete without OOM."""
+    plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="*")
+    # Set a small cap so the test runs fast.
+    plugin.output_max_chars = 1000
+
+    scripts_dir = tmp_path / "skills" / "demo" / "scripts"
+    (scripts_dir / "big_output.py").write_text(
+        # Write ~200 KB to stdout — well above the 1000-char (4000-byte) cap.
+        "import sys\n"
+        "line = 'x' * 1000\n"
+        "for _ in range(200):\n"
+        "    print(line)\n",
+        encoding="utf-8",
+    )
+    plugin.available_skills = plugin._scan_skills()
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    result = await plugin.execute(
+        "run_skill_script",
+        helper=None,
+        skill_name="demo",
+        script_name="big_output.py",
+        chat_id=10,
+        user_id=42,
+    )
+
+    assert result["success"] is True
+    # Output should be capped (truncated notice appended by _truncate).
+    assert "truncated" in result["stdout"]
+    # The captured bytes must not exceed cap * 4 bytes decoded to chars, with the
+    # truncation suffix; verify it's far shorter than the raw 200 KB.
+    assert len(result["stdout"]) < 10000

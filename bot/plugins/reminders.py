@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 from .plugin import Plugin
 from .background import BackgroundTask
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,6 +12,8 @@ class RemindersPlugin(Plugin):
     """
     Плагин для управления напоминаниями и интеграциями
     """
+    _MAX_SEND_ATTEMPTS = 3
+
     def __init__(self):
         self.reminders = {}
         self.reminders_file = os.path.join(os.path.dirname(__file__), "reminders.json")
@@ -205,10 +207,15 @@ class RemindersPlugin(Plugin):
             self.reminders = {}
 
     def save_reminders(self) -> None:
-        """Сохраняет напоминания в файл хранения"""
+        """Сохраняет напоминания в файл хранения (атомарно через tmp+replace)"""
         try:
-            with open(self.reminders_file, 'w', encoding='utf-8') as f:
+            reminders_dir = os.path.dirname(self.reminders_file)
+            if reminders_dir:
+                os.makedirs(reminders_dir, exist_ok=True)
+            tmp_path = f"{self.reminders_file}.tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(self.reminders, f, ensure_ascii=False)
+            os.replace(tmp_path, self.reminders_file)
         except Exception as e:
             logging.exception(f"Ошибка при сохранении напоминаний: {e}")
 
@@ -228,29 +235,67 @@ class RemindersPlugin(Plugin):
         """
         Проверка и отправка напоминаний
         """
-        current_time = datetime.now()
-        processed_reminders = False
+        # Текущее время для legacy-записей (наивное серверное)
+        current_time_naive = datetime.now()
+        # Текущее UTC без tzinfo для сравнения с fire_at_utc
+        current_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        dirty = False
 
         self.load_reminders()
 
         for user_id, user_reminders in list(self.reminders.items()):
             for reminder_id, reminder in list(user_reminders.items()):
-                # Convert reminder time from ISO format string to datetime
-                reminder_time = datetime.fromisoformat(reminder['time'])
-                
-                # Check if reminder time is in the past
-                if current_time >= reminder_time:
+                # Если есть fire_at_utc — используем UTC-сравнение
+                fire_at_utc_str = reminder.get("fire_at_utc")
+                if fire_at_utc_str:
+                    try:
+                        fire_at_utc = datetime.fromisoformat(fire_at_utc_str)
+                    except ValueError as exc:
+                        logging.error(
+                            "Reminders: invalid fire_at_utc in reminder %s for user %s, skipping: %s",
+                            reminder_id, user_id, exc,
+                        )
+                        continue
+                    if current_utc < fire_at_utc:
+                        continue
+                else:
+                    # Legacy: наивное серверное время по полю 'time'
+                    try:
+                        reminder_time = datetime.fromisoformat(reminder['time'])
+                    except (ValueError, KeyError) as exc:
+                        logging.error(
+                            "Reminders: invalid time in reminder %s for user %s, skipping: %s",
+                            reminder_id, user_id, exc,
+                        )
+                        continue
+                    if current_time_naive < reminder_time:
+                        continue
+
+                try:
                     await self.send_reminder(reminder, helper)
                     del self.reminders[user_id][reminder_id]
-                    
-                    # Remove user dict if no reminders left
                     if not self.reminders[user_id]:
                         del self.reminders[user_id]
-        
-                    # Save changes if any reminders were processed
-                    processed_reminders = True
+                    dirty = True
+                except Exception as exc:
+                    attempts = reminder.get('send_attempts', 0) + 1
+                    if attempts >= self._MAX_SEND_ATTEMPTS:
+                        logging.error(
+                            "Reminders: giving up on reminder %s for user %s after %d attempts: %s",
+                            reminder_id, user_id, attempts, exc,
+                        )
+                        del self.reminders[user_id][reminder_id]
+                        if not self.reminders[user_id]:
+                            del self.reminders[user_id]
+                    else:
+                        logging.warning(
+                            "Reminders: send failed for reminder %s (attempt %d/%d): %s",
+                            reminder_id, attempts, self._MAX_SEND_ATTEMPTS, exc,
+                        )
+                        reminder['send_attempts'] = attempts
+                    dirty = True
 
-        if processed_reminders:
+        if dirty:
             self.save_reminders()
 
     async def send_reminder(self, reminder: Dict, helper) -> None:
@@ -258,8 +303,11 @@ class RemindersPlugin(Plugin):
         Отправка напоминания через выбранную интеграцию
         """
         if reminder["integration"] == "telegram":
+            # target_chat_id — куда слать (группа или личка);
+            # fallback на user_id для старых записей без target_chat_id
+            chat_id = reminder.get("target_chat_id") or reminder.get("user_id")
             await helper.send_message(
-                chat_id=reminder["user_id"],
+                chat_id=chat_id,
                 text=self.t("reminders_notification", message=reminder['message']),
                 reply_to_message_id=reminder.get("reply_to_message_id")
             )
@@ -275,26 +323,44 @@ class RemindersPlugin(Plugin):
         """
         Выполнение функций плагина
         """
-        user_id = str(kwargs.get('chat_id'))
+        # owner_id — кто создал (from_user.id), используется как ключ верхнего уровня.
+        # В группах chat_id != user_id; берём user_id если он есть, иначе chat_id.
+        owner_id = str(kwargs.get('user_id') or kwargs.get('chat_id'))
         self.load_reminders()
         if function_name == "set_reminder":
             self.load_reminders()
-            reminder_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{user_id}'
+            reminder_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{owner_id}'
             # Convert datetime to ISO format string
             reminder_time = datetime.strptime(kwargs["time"], "%Y-%m-%d %H:%M")
-            
+
+            # Вычислить fire_at_utc из current_time если передан (исправление TZ)
+            fire_at_utc = None
+            current_time_str = kwargs.get("current_time")
+            if current_time_str:
+                try:
+                    parsed_local_now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M")
+                    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    offset = parsed_local_now - utc_now
+                    fire_at_utc = (reminder_time - offset).isoformat()
+                except (ValueError, TypeError):
+                    pass  # деградируем к legacy-сравнению по серверному времени
+
             reminder = {
                 "id": reminder_id,
-                "user_id": user_id,
+                # user_id = owner_id: для обратной совместимости (send_reminder читает user_id)
+                "user_id": owner_id,
+                # target_chat_id: куда фактически отправлять (в группах != user_id)
+                "target_chat_id": str(kwargs.get('chat_id') or owner_id),
                 "time": reminder_time.isoformat(),
+                "fire_at_utc": fire_at_utc,
                 "message": kwargs["message"],
                 "integration": kwargs["integration"],
                 "reply_to_message_id": self._get_reply_to_message_id(kwargs)
             }
 
-            if user_id not in self.reminders:
-                self.reminders[user_id] = {}
-            self.reminders[user_id][reminder_id] = reminder
+            if owner_id not in self.reminders:
+                self.reminders[owner_id] = {}
+            self.reminders[owner_id][reminder_id] = reminder
             self.save_reminders()
             
             return {
@@ -306,7 +372,7 @@ class RemindersPlugin(Plugin):
             }
 
         elif function_name == "list_reminders":
-            user_reminders = self.reminders.get(user_id, {})
+            user_reminders = self.reminders.get(owner_id, {})
             if not user_reminders:
                 value = self.t("reminders_none")
             else:
@@ -328,14 +394,14 @@ class RemindersPlugin(Plugin):
         elif function_name == "delete_reminder":
             self.load_reminders()
             reminder_id = kwargs.get("reminder_id") or kwargs.get("query")
-            logging.info(f"Список напоминаний для пользователя {user_id}: {self.reminders}")
+            logging.info(f"Список напоминаний для пользователя {owner_id}: {self.reminders}")
             logging.info(f"kwargs: {kwargs}")
             logging.info(f"reminder_id: {reminder_id}")
 
-            if user_id in self.reminders and reminder_id in self.reminders[user_id]:
-                del self.reminders[user_id][reminder_id]
-                if not self.reminders[user_id]:
-                    del self.reminders[user_id]
+            if owner_id in self.reminders and reminder_id in self.reminders[owner_id]:
+                del self.reminders[owner_id][reminder_id]
+                if not self.reminders[owner_id]:
+                    del self.reminders[owner_id]
                 self.save_reminders()
                 return {
                     "direct_result": {

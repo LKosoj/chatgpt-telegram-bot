@@ -125,3 +125,60 @@ async def test_handle_uses_provided_database_instance(db, handle):
     other = DbHandle(db)
     row = await other.fetch_one("SELECT name FROM kv WHERE id = 1")
     assert row == {"name": "shared"}
+
+
+# ---------------------------------------------------------------------------
+# Новые тесты: WP-A — проверяем что DbHandle ходит через _run_in_db_thread
+# ---------------------------------------------------------------------------
+
+async def test_handle_routes_through_db_worker(db, handle):
+    """execute/fetch_one/fetch_all/transaction используют единственный воркер-поток."""
+    worker_threads: set[int] = set()
+
+    import threading
+
+    original = db._run_in_db_thread
+
+    async def patched(func, *args):
+        # Запоминаем tid потока, в котором выполняется func.
+        result_holder: list = []
+
+        def wrapper():
+            worker_threads.add(threading.current_thread().ident)
+            return func(*args)
+
+        import asyncio
+        loop = asyncio.get_running_loop()
+        import contextvars
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(
+            db._get_executor(),
+            lambda: ctx.run(wrapper),
+        )
+
+    db._run_in_db_thread = patched
+
+    try:
+        await _create_kv_table(handle)
+        await handle.execute("INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (10, "x", 1))
+        await handle.fetch_one("SELECT id FROM kv WHERE id = ?", (10,))
+        await handle.fetch_all("SELECT id FROM kv ORDER BY id")
+        async with handle.transaction() as tx:
+            await tx.execute("INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (11, "y", 2))
+    finally:
+        db._run_in_db_thread = original
+
+    # Все операции шли через один воркер-поток.
+    assert len(worker_threads) == 1
+
+
+async def test_transaction_uses_db_worker(db, handle):
+    """Батч из transaction() доставляется через _run_in_db_thread."""
+    await _create_kv_table(handle)
+
+    async with handle.transaction() as tx:
+        await tx.execute("INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (1, "a", 10))
+        await tx.execute("INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (2, "b", 20))
+
+    rows = await handle.fetch_all("SELECT id FROM kv ORDER BY id")
+    assert [r["id"] for r in rows] == [1, 2]

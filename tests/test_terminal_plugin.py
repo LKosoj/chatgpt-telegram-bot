@@ -96,3 +96,68 @@ def test_terminal_spec_tells_model_to_keep_output_bounded():
 
     assert "Keep output bounded" in spec["description"]
     assert "exact known paths" in spec["description"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_timeout_kills_child_processes():
+    """Timeout must kill the whole process group, including grandchildren."""
+    plugin = TerminalPlugin()
+
+    # Parent shell spawns a child sleep; parent sleeps too.  Timeout fires
+    # before either finishes.  If only the shell is killed the child survives
+    # and process.wait() would block forever — the test itself times out then.
+    result = await plugin.execute(
+        "terminal",
+        helper=None,
+        command="sleep 60 & sleep 60",
+        shell=True,
+        timeout=0.5,
+    )
+
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_large_output_truncated_by_bounded_reader(monkeypatch):
+    """Bounded reader stops after OUTPUT_BYTE_LIMIT bytes and sets truncated flags."""
+    monkeypatch.setattr(terminal_module, "OUTPUT_BYTE_LIMIT", 64)
+    plugin = TerminalPlugin()
+
+    # yes produces an infinite stream of 'y\n'; the bounded reader must stop it.
+    result = await plugin.execute(
+        "terminal",
+        helper=None,
+        command="yes",
+        shell=True,
+        timeout=5.0,
+    )
+
+    assert result["output_truncated"] is True
+    assert result["stdout_truncated"] is True
+    assert result["stdout"].endswith("\n... [truncated]")
+    assert result["output_limit_bytes"] == 64
+    # stdout_bytes reflects bytes read, not total written — must be <= limit
+    assert result["stdout_bytes"] <= 64
+
+
+@pytest.mark.asyncio
+async def test_terminal_output_exactly_at_limit_not_truncated(monkeypatch):
+    """Output whose byte length exactly equals OUTPUT_BYTE_LIMIT must not be truncated."""
+    limit = 32
+    monkeypatch.setattr(terminal_module, "OUTPUT_BYTE_LIMIT", limit)
+    plugin = TerminalPlugin()
+
+    # printf produces exactly 32 bytes, no newline
+    payload = "A" * limit
+    result = await plugin.execute(
+        "terminal",
+        helper=None,
+        command=f"printf '%s' '{payload}'",
+        shell=True,
+    )
+
+    assert result["success"] is True
+    assert result.get("output_truncated") is not True
+    assert result.get("stdout_truncated") is not True
+    assert result["stdout"] == payload

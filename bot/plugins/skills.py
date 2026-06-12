@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -2526,16 +2527,25 @@ class SkillsPlugin(Plugin):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
         except Exception as exc:
             return {"success": False, "returncode": None, "stdout": "", "stderr": f"Failed to start skills CLI: {exc}"}
 
+        byte_limit = self.output_max_chars * 4
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                asyncio.gather(
+                    self._read_capped(process.stdout, byte_limit),
+                    self._read_capped(process.stderr, byte_limit),
+                ),
+                timeout=timeout,
+            )
+            await process.wait()
         except asyncio.TimeoutError:
+            self._kill_process_group(process)
             try:
-                process.kill()
-                await process.wait()
+                await asyncio.wait_for(process.wait(), 5.0)
             except Exception:
                 pass
             return {
@@ -3261,6 +3271,7 @@ class SkillsPlugin(Plugin):
         workdir = self._ensure_skill_workdir(skill_id, scope)
         chat_id = kwargs.get("chat_id")
         interim_task = self._spawn_interim_notice(chat_id, skill_id, script_name)
+        byte_limit = self.output_max_chars * 4
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -3269,15 +3280,20 @@ class SkillsPlugin(Plugin):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._script_env(skill_id=skill_id, scope=scope, workdir=workdir),
+                start_new_session=True,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
+                asyncio.gather(
+                    self._read_capped(process.stdout, byte_limit),
+                    self._read_capped(process.stderr, byte_limit),
+                ),
                 timeout=self.script_timeout,
             )
+            await process.wait()
         except asyncio.TimeoutError:
+            self._kill_process_group(process)
             try:
-                process.kill()
-                await process.wait()
+                await asyncio.wait_for(process.wait(), 5.0)
             except Exception:
                 pass
             self._audit(
@@ -3800,6 +3816,32 @@ class SkillsPlugin(Plugin):
                     fh.write(line + "\n")
         except Exception:
             logger.debug("Failed to append skills audit entry", exc_info=True)
+
+    def _kill_process_group(self, process: asyncio.subprocess.Process) -> None:
+        """Send SIGKILL to the entire process group; fall back to process.kill()."""
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    async def _read_capped(self, stream: asyncio.StreamReader, byte_limit: int) -> bytes:
+        """Read up to byte_limit bytes from stream; drain (but discard) the rest."""
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            if total < byte_limit:
+                take = min(len(chunk), byte_limit - total)
+                chunks.append(chunk[:take])
+                total += take
+            # Discard excess bytes to prevent subprocess blocking on full pipe
+        return b"".join(chunks)
 
     def _truncate(self, value: str) -> str:
         if len(value) <= self.output_max_chars:

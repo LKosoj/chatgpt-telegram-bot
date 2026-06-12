@@ -430,8 +430,8 @@ async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_pat
 
     await asyncio.gather(first, second)
 
-    first_reminder = next(iter(plugin.reminders[str(first_context.plugin_chat_id)].values()))
-    second_reminder = next(iter(plugin.reminders[str(second_context.plugin_chat_id)].values()))
+    first_reminder = next(iter(plugin.reminders[str(first_context.user_id)].values()))
+    second_reminder = next(iter(plugin.reminders[str(second_context.user_id)].values()))
     assert first_reminder["reply_to_message_id"] == first_context.message_id
     assert second_reminder["reply_to_message_id"] == second_context.message_id
 

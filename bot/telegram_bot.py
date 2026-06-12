@@ -10,8 +10,10 @@ import json
 import sys
 import yaml
 import re
+import weakref
+from collections import OrderedDict
 from typing import Dict
-from functools import lru_cache 
+from functools import lru_cache
 import httpx
 
 from uuid import uuid4
@@ -68,6 +70,32 @@ def _load_yaml_file(path: str):
         return yaml.safe_load(f)
 
 
+class _BoundedLRU(OrderedDict):
+    """Словарь с ограниченным размером и LRU-вытеснением.
+
+    Запись и чтение через ``get`` помечают ключ как недавно использованный
+    (move_to_end), поэтому при переполнении вытесняется именно давно не
+    использованная запись, а не просто самая старая по вставке.
+    """
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        if key in self:
+            super().__delitem__(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            super().__delitem__(next(iter(self)))
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+
 class ChatGPTTelegramBot:
     """
     Class representing a ChatGPT Telegram Bot.
@@ -95,7 +123,7 @@ class ChatGPTTelegramBot:
         self.media_group_buffer = {}
         self.media_group_lock = asyncio.Lock()
         self.media_group_timeout = float(self.config.get('media_group_timeout', self.buffer_timeout))
-        self._user_language_cache = {}
+        self._user_language_cache = _BoundedLRU(4096)
         # Tests construct the bot without going through __main__, so re-wire
         # PluginManager here too. Both setters are idempotent.
         self.openai.plugin_manager.set_db(self.db)
@@ -125,16 +153,17 @@ class ChatGPTTelegramBot:
             command='chat', description=localized_text('chat_description', bot_language)
         )] + self.commands
         self.usage = {}
-        self.last_message = {}
+        self.last_message = _BoundedLRU(1024)
         self.inline_queries_cache = {}
         self._inline_cache_cleanup_time = 0  # Время последней очистки кеша
         self.buffer_lock = asyncio.Lock()  # Добавьте блокировку для потокобезопасности
-        self._conversation_locks = {}
+        self._conversation_locks = weakref.WeakValueDictionary()
         self._conversation_locks_guard = asyncio.Lock()
         self.application = None
         # Убираем повторную инициализацию Database
         self.plugin_command_index = {}
         self.plugin_menu_entries = []
+        self._user_plugin_menu_entries: dict = {}
         self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
         self._background_tasks = []
         self._transient_tasks: set[asyncio.Task] = set()
@@ -857,10 +886,11 @@ class ChatGPTTelegramBot:
         # Формируем текст о текущей сессии
         text_current_session = ""
         if active_session:
+            from .utils import escape_markdown
             text_current_session = (
                 localized_text('stats_active_session', bot_language) + "\n"
                 + localized_text('stats_session_name', bot_language).format(
-                    session_name=active_session['session_name']
+                    session_name=escape_markdown(str(active_session.get('session_name') or ''))
                 ) + "\n"
                 + localized_text('stats_session_messages', bot_language).format(
                     message_count=active_session['message_count']
@@ -1909,8 +1939,21 @@ class ChatGPTTelegramBot:
                     
                     mode_data = chat_modes[mode]
                     # Получаем текущий контекст сессии
-                    current_context = self.openai.conversations.get(conversation_key, [])
-                    
+                    current_context = self.openai.conversations.get(conversation_key)
+                    if current_context is None:
+                        # Cold cache — load from DB to avoid wiping existing history
+                        saved_ctx, _, _, _, _ = self.db.get_conversation_context(conversation_key, session_id)
+                        if saved_ctx and 'messages' in saved_ctx:
+                            strip_images = getattr(self.openai, '_messages_without_image_payloads', None)
+                            if callable(strip_images):
+                                current_context = strip_images(saved_ctx['messages'])
+                            else:
+                                current_context = list(saved_ctx['messages'])
+                            self.openai.conversations[conversation_key] = current_context
+                            self.openai.loaded_conversation_sessions[conversation_key] = session_id
+                        else:
+                            current_context = []
+
                     # Добавляем системное сообщение в начало контекста
                     reset_content = mode_data.get('prompt_start', '')
                     system_message = {"role": "system", "content": reset_content, "mode_key": mode}
@@ -1937,13 +1980,14 @@ class ChatGPTTelegramBot:
                             session_id,
                         )
                     else:
-                        self.db.save_conversation_context(
+                        await asyncio.to_thread(
+                            self.db.save_conversation_context,
                             conversation_key,
                             {'messages': current_context},
                             mode_data.get('parse_mode', 'HTML'),
                             mode_data.get('temperature', self.openai.config['temperature']),
                             mode_data.get('max_tokens_percent', 80),
-                            session_id
+                            session_id,
                         )
                     
                     # Возвращаемся в главное меню сессий
@@ -2131,7 +2175,11 @@ class ChatGPTTelegramBot:
             logger.info('Transcription coming from group chat, ignoring...')
             return
 
+        if update.edited_message or not update.message:
+            return
+
         chat_id = update.effective_chat.id
+        conversation_key = get_conversation_key(update)
         user_id = update.message.from_user.id
         filename = update.message.effective_attachment.file_unique_id
         file_unique_id = filename
@@ -2186,8 +2234,10 @@ class ChatGPTTelegramBot:
                         return
 
             try:
-                audio_track = AudioSegment.from_file(file_path)
-                audio_track.export(file_path_mp3, format="mp3")
+                def _convert_audio():
+                    track = AudioSegment.from_file(file_path)
+                    track.export(file_path_mp3, format="mp3")
+                await asyncio.to_thread(_convert_audio)
                 logger.info(f'New transcribe request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
 
@@ -2306,7 +2356,14 @@ class ChatGPTTelegramBot:
                 if os.path.exists(file_path_mp3):
                     os.remove(file_path_mp3)
 
-        await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+        conversation_lock = await self._get_conversation_lock(conversation_key)
+        async with conversation_lock:
+            session_id = self._pinned_session_id(conversation_key, None)
+            self._remember_inflight_session(conversation_key, session_id)
+            try:
+                await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+            finally:
+                self._forget_inflight_session(conversation_key, session_id)
 
     async def _queue_vision_media_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message
@@ -2440,8 +2497,10 @@ class ChatGPTTelegramBot:
                     media_file = await telegram_api.get_file(item["file_id"])
                     temp_file = io.BytesIO(await media_file.download_as_bytearray())
                     temp_file_png = io.BytesIO()
-                    original_image = Image.open(temp_file)
-                    original_image.save(temp_file_png, format='PNG')
+                    def _convert_media_group_image(_src=temp_file, _dst=temp_file_png):
+                        img = Image.open(_src)
+                        img.save(_dst, format='PNG')
+                    await asyncio.to_thread(_convert_media_group_image)
                     fileobjs.append(temp_file_png)
                     image_file_ids.append(item["file_id"])
             except Exception as e:
@@ -2521,6 +2580,9 @@ class ChatGPTTelegramBot:
         """
         if not (self.config['enable_vision'] or self.config['enable_image_generation']) \
                 or not await self.check_allowed_and_within_budget(update, context):
+            return
+
+        if update.edited_message or not update.message:
             return
 
         chat_id = update.effective_chat.id
@@ -2635,9 +2697,10 @@ class ChatGPTTelegramBot:
                 temp_file_png = io.BytesIO()
 
                 try:
-                    original_image = Image.open(temp_file)
-
-                    original_image.save(temp_file_png, format='PNG')
+                    def _convert_image():
+                        img = Image.open(temp_file)
+                        img.save(temp_file_png, format='PNG')
+                    await asyncio.to_thread(_convert_image)
                     logger.info(f'New vision request received from user {update.message.from_user.name} '
                                 f'(id: {update.message.from_user.id})')
 
@@ -2836,11 +2899,13 @@ class ChatGPTTelegramBot:
                 finally:
                     await busy_status.stop()
 
-            self._remember_inflight_session(conversation_key, session_id)
-            try:
-                await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
-            finally:
-                self._forget_inflight_session(conversation_key, session_id)
+            conversation_lock = await self._get_conversation_lock(conversation_key)
+            async with conversation_lock:
+                self._remember_inflight_session(conversation_key, session_id)
+                try:
+                    await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
+                finally:
+                    self._forget_inflight_session(conversation_key, session_id)
         else:
             # If no caption, just acknowledge receipt of image
                             await update.effective_message.reply_text(
@@ -2921,8 +2986,22 @@ class ChatGPTTelegramBot:
                 reply_markup=reply_markup,
             )
 
+    def _prune_idle_message_buffers(self) -> None:
+        """Удаляет записи буфера, которые не активны: нет сообщений, не обрабатываются, таймер завершён.
+        Вызывается оппортунистически при создании новой записи буфера."""
+        idle_keys = [
+            key for key, data in list(self.message_buffer.items())
+            if not data.get('messages')
+            and not data.get('processing')
+            and (data.get('timer') is None or data['timer'].done())
+        ]
+        for key in idle_keys:
+            del self.message_buffer[key]
+
     def _ensure_message_buffer(self, chat_id: int) -> dict:
         if chat_id not in self.message_buffer:
+            # Оппортунистически очищаем неактивные записи перед добавлением новой
+            self._prune_idle_message_buffers()
             self.message_buffer[chat_id] = {
                 'messages': [],
                 'processing': False,
@@ -3471,7 +3550,7 @@ class ChatGPTTelegramBot:
 
     async def _get_conversation_lock(self, conversation_key) -> asyncio.Lock:
         if not hasattr(self, '_conversation_locks'):
-            self._conversation_locks = {}
+            self._conversation_locks = weakref.WeakValueDictionary()
         if not hasattr(self, '_conversation_locks_guard'):
             self._conversation_locks_guard = asyncio.Lock()
 
@@ -4673,11 +4752,13 @@ class ChatGPTTelegramBot:
             and cmd.get("plugin_name") not in disabled_plugins
         ]
         self.plugin_menu_entries = menu_entries
-        if not self.plugin_menu_entries:
+        if user_id is not None:
+            self._user_plugin_menu_entries[user_id] = menu_entries
+        if not self._resolve_menu_entries(user_id):
             await update.message.reply_text(localized_text('plugins_menu_no_plugins', bot_language))
             return
 
-        reply_markup = self._build_plugins_menu(page=0, plugin=None)
+        reply_markup = self._build_plugins_menu(page=0, plugin=None, user_id=user_id)
         await update.message.reply_text(
             localized_text('plugins_menu_plugins_title', bot_language),
             reply_markup=reply_markup
@@ -4693,6 +4774,7 @@ class ChatGPTTelegramBot:
             )
             return
 
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
         data = query.data.split(":")
         if len(data) < 2:
             return
@@ -4710,13 +4792,13 @@ class ChatGPTTelegramBot:
             except ValueError:
                 return
             if scope == "root":
-                reply_markup = self._build_plugins_menu(page=page, plugin=None)
+                reply_markup = self._build_plugins_menu(page=page, plugin=None, user_id=user_id)
                 await query.edit_message_text(
                     localized_text('plugins_menu_plugins_title', bot_language),
                     reply_markup=reply_markup
                 )
             else:
-                reply_markup = self._build_plugins_menu(page=page, plugin=scope)
+                reply_markup = self._build_plugins_menu(page=page, plugin=scope, user_id=user_id)
                 await query.edit_message_text(
                     localized_text('plugins_menu_plugin_title', bot_language).format(
                         plugin=self._format_plugin_title(scope)
@@ -4727,7 +4809,7 @@ class ChatGPTTelegramBot:
 
         if action == "plugin" and len(data) == 3:
             plugin_name = data[2]
-            reply_markup = self._build_plugins_menu(page=0, plugin=plugin_name)
+            reply_markup = self._build_plugins_menu(page=0, plugin=plugin_name, user_id=user_id)
             await query.edit_message_text(
                 localized_text('plugins_menu_plugin_title', bot_language).format(
                     plugin=self._format_plugin_title(plugin_name)
@@ -4739,13 +4821,12 @@ class ChatGPTTelegramBot:
         if action == "input" and len(data) == 4:
             plugin_name = data[2]
             cmd_id = data[3]
-            cmd = self._get_plugin_command(plugin_name, cmd_id)
+            cmd = self._get_plugin_command(plugin_name, cmd_id, user_id=user_id)
             if not cmd:
                 await query.edit_message_text(
                     localized_text('plugins_menu_command_unavailable', bot_language)
                 )
                 return
-            user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
             if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
                 await query.edit_message_text(
                     localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
@@ -4769,13 +4850,12 @@ class ChatGPTTelegramBot:
             return
         plugin_name = data[2]
         cmd_id = data[3]
-        cmd = self._get_plugin_command(plugin_name, cmd_id)
+        cmd = self._get_plugin_command(plugin_name, cmd_id, user_id=user_id)
         if not cmd:
             await query.edit_message_text(
                 localized_text('plugins_menu_command_unavailable', bot_language)
             )
             return
-        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
         if self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
             await query.edit_message_text(
                 localized_text('settings_plugin_disabled', bot_language).format(plugin=plugin_name)
@@ -4842,7 +4922,8 @@ class ChatGPTTelegramBot:
             return
 
         plugin_name = pending.get("plugin")
-        cmd = self._get_plugin_command(plugin_name, pending.get("cmd_id")) if plugin_name else None
+        reply_user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        cmd = self._get_plugin_command(plugin_name, pending.get("cmd_id"), user_id=reply_user_id) if plugin_name else None
         if not cmd:
             await update.effective_message.reply_text(
                 localized_text('plugins_menu_command_unavailable', self.config['bot_language'])
@@ -4854,11 +4935,11 @@ class ChatGPTTelegramBot:
         context.user_data.pop("plugin_menu_pending", None)
         await self.handle_plugin_command(update, context, cmd)
 
-    def _build_plugins_menu(self, page: int = 0, plugin: str | None = None) -> InlineKeyboardMarkup:
+    def _build_plugins_menu(self, page: int = 0, plugin: str | None = None, user_id=None) -> InlineKeyboardMarkup:
         if plugin is None:
-            items = list(self._get_plugins_list())
+            items = list(self._get_plugins_list(user_id=user_id))
         else:
-            items = list(self._get_plugin_commands(plugin))
+            items = list(self._get_plugin_commands(plugin, user_id=user_id))
         page_size = max(1, self.plugin_menu_page_size)
         total_pages = (len(items) + page_size - 1) // page_size
         page = max(0, min(page, total_pages - 1))
@@ -4908,23 +4989,26 @@ class ChatGPTTelegramBot:
         ])
         return InlineKeyboardMarkup(keyboard)
 
-    def _get_plugins_list(self) -> list[str]:
-        return sorted({cmd.get("plugin_name") for cmd in self.plugin_menu_entries if cmd.get("plugin_name")})
+    def _get_plugins_list(self, user_id=None) -> list[str]:
+        entries = self._resolve_menu_entries(user_id)
+        return sorted({cmd.get("plugin_name") for cmd in entries if cmd.get("plugin_name")})
 
-    def _get_plugin_commands(self, plugin_name: str) -> list[tuple[str, dict]]:
+    def _get_plugin_commands(self, plugin_name: str, user_id=None) -> list[tuple[str, dict]]:
+        entries = self._resolve_menu_entries(user_id)
         commands = [
-            cmd for cmd in self.plugin_menu_entries
+            cmd for cmd in entries
             if cmd.get("plugin_name") == plugin_name
         ]
         return [(str(i), cmd) for i, cmd in enumerate(commands)]
 
-    def _get_plugin_command(self, plugin_name: str, cmd_id: str) -> dict | None:
+    def _get_plugin_command(self, plugin_name: str, cmd_id: str, user_id=None) -> dict | None:
         try:
             idx = int(cmd_id)
         except ValueError:
             return None
+        entries = self._resolve_menu_entries(user_id)
         commands = [
-            cmd for cmd in self.plugin_menu_entries
+            cmd for cmd in entries
             if cmd.get("plugin_name") == plugin_name
         ]
         if 0 <= idx < len(commands):
@@ -4941,6 +5025,13 @@ class ChatGPTTelegramBot:
             return 0
         page_size = max(1, self.plugin_menu_page_size)
         return idx // page_size
+
+    def _resolve_menu_entries(self, user_id) -> list:
+        """Return per-user menu entries when available, else fall back to global default."""
+        per_user = getattr(self, '_user_plugin_menu_entries', {})
+        if user_id is not None and user_id in per_user:
+            return per_user[user_id]
+        return self.plugin_menu_entries
 
     async def cleanup(self):
         """
@@ -5104,11 +5195,18 @@ class ChatGPTTelegramBot:
                 session_name=session['session_name']
             ) + "\n\n"
             for msg in context_messages:
-                role = "🤖" if msg['role'] == 'assistant' or msg['role'] == 'system' else "👤"
-                if len(msg['content']) > 200:
-                    preview_text += f"{role} {msg['content'][:200]}...\n"
+                role = "🤖" if msg.get('role') == 'assistant' or msg.get('role') == 'system' else "👤"
+                content = msg.get('content')
+                if content is None:
+                    continue
+                if isinstance(content, list):
+                    content = ' '.join(
+                        part.get('text', '') for part in content if part.get('type') == 'text'
+                    )
+                if len(content) > 200:
+                    preview_text += f"{role} {content[:200]}...\n"
                 else:
-                    preview_text += f"{role} {msg['content']}\n"
+                    preview_text += f"{role} {content}\n"
 
             preview_text += "\n" + localized_text(
                 'session_preview_total_messages', self.config['bot_language']

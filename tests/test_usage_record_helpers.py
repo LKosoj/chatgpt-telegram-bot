@@ -172,6 +172,30 @@ def test_record_tts_and_transcription_reject_negative_and_bool(tmp_path):
     assert transcription_user.usage["usage_history"]["transcription_seconds"] == {}
 
 
+def test_add_image_request_dalle3_wide_size(tmp_path):
+    tracker = UsageTracker(42, "user", logs_dir=str(tmp_path), image_prices=[1.0, 2.0, 3.0])
+    tracker.add_image_request("1792x1024")
+    assert tracker.usage["current_cost"]["day"] == 3.0
+
+
+def test_add_image_request_dalle3_tall_size(tmp_path):
+    tracker = UsageTracker(42, "user", logs_dir=str(tmp_path), image_prices=[1.0, 2.0, 3.0])
+    tracker.add_image_request("1024x1792")
+    assert tracker.usage["current_cost"]["day"] == 3.0
+
+
+def test_add_image_request_unknown_size_uses_max_price(tmp_path):
+    tracker = UsageTracker(42, "user", logs_dir=str(tmp_path), image_prices=[1.0, 2.0, 3.0])
+    tracker.add_image_request("9999x9999")
+    assert tracker.usage["current_cost"]["day"] == 3.0
+
+
+def test_add_image_request_empty_prices_does_not_raise(tmp_path):
+    tracker = UsageTracker(42, "user", logs_dir=str(tmp_path), image_prices=[])
+    tracker.add_image_request("1024x1024")
+    assert tracker.usage["current_cost"]["day"] == 0.0
+
+
 def test_make_usage_tracker_threads_config_prices(tmp_path):
     config = _make_config()
     config["token_price"] = 0.123

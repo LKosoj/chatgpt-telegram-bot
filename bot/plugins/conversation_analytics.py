@@ -1,5 +1,6 @@
 #conversation_analytics.py
 import asyncio
+import threading
 import json
 import os
 import logging
@@ -18,6 +19,7 @@ class ConversationAnalyticsPlugin(Plugin):
         os.makedirs(self.analytics_dir, exist_ok=True)
         self.analytics_file = os.path.join(self.analytics_dir, 'conversation_stats.json')
         self.conversation_stats = self.load_stats()
+        self._stats_lock = threading.Lock()
 
     def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
@@ -126,48 +128,51 @@ class ConversationAnalyticsPlugin(Plugin):
         return defaultdict(create_default_stats)
 
     def save_stats(self):
-        """Save analytics data to file"""
+        """Save analytics data to file (atomic write via .tmp)"""
+        tmp_file = self.analytics_file + ".tmp"
         try:
-            with open(self.analytics_file, 'w', encoding='utf-8') as f:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(self.conversation_stats, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, self.analytics_file)
         except Exception as e:
             logging.error(f"Failed to save conversation stats: {e}")
 
     def update_stats(self, chat_id, message_data: Dict):
         """Update conversation statistics with new message data"""
-        chat_id = str(chat_id)
-        # Initialize stats for new chat_id if it doesn't exist
-        if chat_id not in self.conversation_stats:
-            self.conversation_stats[chat_id] = {
-                'messages': [],
-                'token_usage': defaultdict(int),
-                'topics': defaultdict(int),
-                'sentiment_scores': [],
-                'active_hours': {str(hour): 0 for hour in range(24)}
-            }
-        
-        stats = self.conversation_stats[chat_id]
-        
-        # Add message to history
-        message_data['timestamp'] = datetime.now().isoformat()
-        stats['messages'].append(message_data)
-        
-        # Update token usage
-        if 'tokens' in message_data:
-            stats['token_usage'][datetime.now().strftime('%Y-%m-%d')] += message_data['tokens']
-        
-        # Update active hours
-        hour = datetime.now().hour
-        stats['active_hours'][str(hour)] += 1
+        with self._stats_lock:
+            chat_id = str(chat_id)
+            # Initialize stats for new chat_id if it doesn't exist
+            if chat_id not in self.conversation_stats:
+                self.conversation_stats[chat_id] = {
+                    'messages': [],
+                    'token_usage': defaultdict(int),
+                    'topics': defaultdict(int),
+                    'sentiment_scores': [],
+                    'active_hours': {str(hour): 0 for hour in range(24)}
+                }
 
-        # Cleanup old data (keep last 30 days)
-        cutoff_date = (datetime.now() - timedelta(days=30)).isoformat()
-        stats['messages'] = [
-            msg for msg in stats['messages'] 
-            if msg['timestamp'] > cutoff_date
-        ]
+            stats = self.conversation_stats[chat_id]
 
-        self.save_stats()
+            # Add message to history
+            message_data['timestamp'] = datetime.now().isoformat()
+            stats['messages'].append(message_data)
+
+            # Update token usage
+            if 'tokens' in message_data:
+                stats['token_usage'][datetime.now().strftime('%Y-%m-%d')] += message_data['tokens']
+
+            # Update active hours
+            hour = datetime.now().hour
+            stats['active_hours'][str(hour)] += 1
+
+            # Cleanup old data (keep last 30 days)
+            cutoff_date = (datetime.now() - timedelta(days=30)).isoformat()
+            stats['messages'] = [
+                msg for msg in stats['messages']
+                if msg['timestamp'] > cutoff_date
+            ]
+
+            self.save_stats()
 
     async def on_user_message(self, payload) -> None:
         message_data = {

@@ -1,4 +1,5 @@
 """Tests for bot/session_logger.py (T1 — session-logging foundation)."""
+import asyncio
 import json
 import os
 
@@ -203,3 +204,55 @@ async def test_drain_waits_for_writes(tmp_path):
     path = tmp_path / 'u2' / 's2.jsonl'
     lines = [l for l in path.read_text(encoding='utf-8').splitlines() if l.strip()]
     assert len(lines) == 5
+
+
+# ---------------------------------------------------------------------------
+# WP-D: _stats не растёт — pop после успешного flush_summary
+# ---------------------------------------------------------------------------
+
+async def test_stats_key_removed_after_flush_summary(tmp_path):
+    """После успешного flush_summary ключ удаляется из _stats."""
+    logger = SessionLogger(enabled=True, base_dir=str(tmp_path))
+    logger.record({'type': 'llm_call', 'user_id': 'u3', 'session_id': 's3',
+                   'kind': 'chat', 'duration_ms': 50})
+    key = ('u3', 's3')
+    assert key in logger._stats
+    await logger.flush_summary('u3', 's3')
+    assert key not in logger._stats
+
+
+async def test_concurrent_record_during_flush_not_lost(tmp_path):
+    """record(), пришедший во время записи summary, не теряется (pop до await).
+
+    flush_summary извлекает агрегатор синхронно (pop до await), поэтому на
+    момент записи summary ключ уже отсутствует в _stats, а конкурентный
+    record() создаёт свежий агрегатор, который не будет затёрт.
+    """
+    import unittest.mock as mock
+    from bot import session_logger as sl
+
+    logger = SessionLogger(enabled=True, base_dir=str(tmp_path))
+    logger.record({'type': 'llm_call', 'user_id': 'u6', 'session_id': 's6',
+                   'kind': 'chat', 'duration_ms': 10})
+    key = ('u6', 's6')
+
+    def fake_write(path, summary):
+        # Эмулируем record() во время записи summary: ключ уже извлечён
+        # flush'ем (pop до await), значит создаётся свежий агрегатор.
+        assert key not in logger._stats
+        logger._stats.setdefault(key, sl._SessionStats()).llm_total += 1
+
+    with mock.patch.object(sl, '_write_summary', side_effect=fake_write):
+        await logger.flush_summary('u6', 's6')
+
+    # «Параллельный» инкремент сохранился под свежим агрегатором.
+    assert key in logger._stats
+    assert logger._stats[key].llm_total == 1
+
+
+async def test_flush_summary_no_prior_record_is_noop(tmp_path):
+    """flush_summary для ключа без событий не падает (no-op)."""
+    logger = SessionLogger(enabled=True, base_dir=str(tmp_path))
+    # Нет предварительных record() — ключ отсутствует в _stats
+    await logger.flush_summary('u5', 's5')
+    assert ('u5', 's5') not in logger._stats

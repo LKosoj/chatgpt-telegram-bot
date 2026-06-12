@@ -120,12 +120,100 @@ async def test_dream_tick_leaves_watermark_when_model_output_is_invalid(plugin):
     await plugin._dream_tick(application=None)
 
     state = await plugin.db_handle.fetch_one(
-        "SELECT last_event_id FROM hindsight_dream_state WHERE user_id = ?", (42,)
+        "SELECT last_event_id, fail_count, retry_after FROM hindsight_dream_state WHERE user_id = ?", (42,)
     )
     run = await plugin.db_handle.fetch_one("SELECT status, error FROM hindsight_dream_runs")
     docs = await plugin.db_handle.fetch_all("SELECT * FROM hindsight_memory_documents")
 
-    assert state is None
+    # State is now created on failure: watermark stays at 0, fail_count incremented.
+    assert state is not None
+    assert state["last_event_id"] == 0
+    assert state["fail_count"] == 1
     assert run["status"] == "failed"
     assert "no JSON" in run["error"]
     assert docs == []
+
+
+async def test_dream_tick_backoff_after_failure(plugin):
+    """After one failure, retry_after is set and a second tick does not call LLM."""
+    plugin.openai.content = "not json"
+    await _seed_user_events(plugin)
+
+    await plugin._dream_tick(application=None)
+
+    state = await plugin.db_handle.fetch_one(
+        "SELECT fail_count, retry_after FROM hindsight_dream_state WHERE user_id = ?", (42,)
+    )
+    assert state["fail_count"] == 1
+    assert state["retry_after"] is not None
+
+    calls_before = len(plugin.openai.calls)
+    await plugin._dream_tick(application=None)
+    # No new LLM call because user is in backoff.
+    assert len(plugin.openai.calls) == calls_before
+
+
+async def test_dream_tick_advances_watermark_after_max_attempts(plugin):
+    """After MAX_ATTEMPTS failures the watermark is advanced past the failing events."""
+    from bot.plugins.hindsight_memory import HINDSIGHT_DREAM_MAX_ATTEMPTS
+    plugin.openai.content = "not json"
+    await _seed_user_events(plugin)
+
+    # Force fail_count up to one below the limit, simulating prior failures
+    # by directly writing state (last_event_id=0 so events are still pending).
+    await plugin.db_handle.execute(
+        '''
+        INSERT INTO hindsight_dream_state(user_id, last_event_id, fail_count, retry_after, updated_at)
+        VALUES (42, 0, ?, NULL, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            fail_count = excluded.fail_count,
+            retry_after = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        ''',
+        (HINDSIGHT_DREAM_MAX_ATTEMPTS - 1,),
+    )
+
+    await plugin._dream_tick(application=None)
+
+    state = await plugin.db_handle.fetch_one(
+        "SELECT last_event_id, fail_count, retry_after FROM hindsight_dream_state WHERE user_id = ?", (42,)
+    )
+    # Watermark advanced past the 2 seeded events; fail_count reset.
+    assert state["last_event_id"] == 2
+    assert state["fail_count"] == 0
+    assert state["retry_after"] is None
+
+
+async def test_dream_tick_resets_fail_count_on_success(plugin):
+    """A successful run resets fail_count and retry_after to 0/NULL."""
+    from bot.plugins.hindsight_memory import HINDSIGHT_DREAM_MAX_ATTEMPTS
+    plugin.openai.content = json.dumps({
+        "documents": [{
+            "path": "profile/pref.md",
+            "kind": "profile",
+            "content": "Concise.",
+        }]
+    })
+    await _seed_user_events(plugin)
+
+    # Pre-seed a non-zero fail_count.
+    await plugin.db_handle.execute(
+        '''
+        INSERT INTO hindsight_dream_state(user_id, last_event_id, fail_count, retry_after, updated_at)
+        VALUES (42, 0, 2, NULL, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            fail_count = excluded.fail_count,
+            retry_after = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        ''',
+        (),
+    )
+
+    await plugin._dream_tick(application=None)
+
+    state = await plugin.db_handle.fetch_one(
+        "SELECT last_event_id, fail_count, retry_after FROM hindsight_dream_state WHERE user_id = ?", (42,)
+    )
+    assert state["last_event_id"] == 2
+    assert state["fail_count"] == 0
+    assert state["retry_after"] is None

@@ -190,7 +190,14 @@ class SessionLogger:
         safe_uid = _sanitize_id(user_id)
         safe_sid = _sanitize_id(session_id)
         key = (safe_uid, safe_sid)
-        stats = self._stats.get(key, _SessionStats())
+        # Снимаем агрегатор синхронно (pop до await): между to_dict() и await
+        # конкурентный record() мог бы дописать инкременты в тот же объект
+        # in-place, а последующий pop их потерял бы (lost update). Извлекая
+        # объект сейчас, мы фиксируем снапшот; параллельный record() создаст
+        # свежий агрегатор под этим ключом и попадёт в следующий summary.
+        stats = self._stats.pop(key, None)
+        if stats is None:
+            stats = _SessionStats()
         summary = stats.to_dict(user_id, session_id)
         path = os.path.join(self.base_dir, safe_uid, f'{safe_sid}.summary.json')
         await asyncio.to_thread(_write_summary, path, summary)

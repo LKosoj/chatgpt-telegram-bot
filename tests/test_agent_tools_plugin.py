@@ -2070,3 +2070,235 @@ async def test_pending_question_persisted_and_recovered_on_startup(tmp_path):
     notice = next((m for m in bot.messages if orphaned_notice == m.get("text")), None)
     assert notice is not None
     assert not pending_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# 4d+4e: _db_prune_plans correctness
+# ---------------------------------------------------------------------------
+
+def test_db_prune_plans_deletes_scope_only_when_all_tasks_stale(tmp_path, agent_db):
+    """4e: a scope with a recent task must not be pruned even if another task is old."""
+    plugin, _ = _db_backed_agent_plugin(tmp_path, agent_db)
+    old_ts = 1_000_000        # epoch far in the past
+    recent_ts = int(__import__("time").time())
+    cutoff = recent_ts - 10   # 10 s ago
+
+    # Scope A: both tasks old → should be deleted
+    with agent_db.get_connection() as conn:
+        for tid in ("A1", "A2"):
+            conn.execute(
+                "INSERT INTO agent_plan_tasks "
+                "(scope, task_id, position, content, status, depends_on, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("scope_A", tid, 0, "x", "pending", "[]", old_ts, old_ts),
+            )
+
+    # Scope B: T1 old, T2 recent, T2 depends_on T1 → must NOT be pruned
+    with agent_db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO agent_plan_tasks "
+            "(scope, task_id, position, content, status, depends_on, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("scope_B", "B1", 0, "x", "completed", "[]", old_ts, old_ts),
+        )
+        conn.execute(
+            "INSERT INTO agent_plan_tasks "
+            "(scope, task_id, position, content, status, depends_on, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("scope_B", "B2", 1, "y", "pending", '["B1"]', old_ts, recent_ts),
+        )
+
+    deleted = plugin._db_prune_plans(cutoff)
+
+    with agent_db.get_connection() as conn:
+        remaining_scopes = {
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT scope FROM agent_plan_tasks"
+            ).fetchall()
+        }
+
+    assert deleted == 2                      # scope_A's two rows
+    assert "scope_A" not in remaining_scopes # fully pruned
+    assert "scope_B" in remaining_scopes     # not pruned — has a recent task
+
+
+def test_db_prune_plans_contract_gc_uses_cast(tmp_path, agent_db):
+    """4d: contract GC actually removes stale orphaned contracts (CAST fix)."""
+    plugin, _ = _db_backed_agent_plugin(tmp_path, agent_db)
+    cutoff = int(__import__("time").time()) + 100  # future cutoff → everything is stale
+
+    # Insert a contract that has no matching tasks (already orphaned).
+    # The DEFAULT CURRENT_TIMESTAMP means updated_at is a text timestamp; the
+    # CAST(strftime('%s', ...) AS INTEGER) comparison must fire for this to be deleted.
+    with agent_db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO agent_plan_contracts (scope, contract) VALUES (?, ?)",
+            ("orphaned_scope", '{"goal": "test"}'),
+        )
+
+    # Confirm the row exists before pruning.
+    with agent_db.get_connection() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM agent_plan_contracts WHERE scope = ?",
+            ("orphaned_scope",),
+        ).fetchone()[0]
+    assert before == 1
+
+    plugin._db_prune_plans(cutoff)
+
+    with agent_db.get_connection() as conn:
+        after = conn.execute(
+            "SELECT COUNT(*) FROM agent_plan_contracts WHERE scope = ?",
+            ("orphaned_scope",),
+        ).fetchone()[0]
+    assert after == 0  # CAST fix: text timestamp compared correctly, row deleted
+
+
+# ---------------------------------------------------------------------------
+# 3e: _save_background_jobs atomic write (no leftover .tmp)
+# ---------------------------------------------------------------------------
+
+def test_save_background_jobs_no_leftover_tmp(tmp_path):
+    """3e: successful save must not leave a .tmp file behind."""
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    plugin.background_jobs = {"scope_x": {"job1": {"id": "job1", "status": "queued"}}}
+
+    plugin._save_background_jobs()
+
+    jobs_file = tmp_path / "agent_background_jobs.json"
+    tmp_file = tmp_path / "agent_background_jobs.json.tmp"
+    assert jobs_file.exists()
+    assert not tmp_file.exists()
+    data = json.loads(jobs_file.read_text())
+    assert data["scope_x"]["job1"]["status"] == "queued"
+
+
+# ---------------------------------------------------------------------------
+# 3d: per-scope lock prevents lost update in manage_plan_tasks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_parallel_same_scope_no_lost_update(tmp_path, agent_db):
+    """3d: two concurrent manage_plan_tasks calls for the same scope must both persist."""
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    # Seed the plan with T1 and T2 so subsequent concurrent "update" calls have
+    # existing tasks to modify (add requires definition_of_done; update does not).
+    seed = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="add",
+        definition_of_done=PLAN_CONTRACT,
+        tasks=[
+            {"id": "T1", "content": "task one", "status": "pending"},
+            {"id": "T2", "content": "task two", "status": "pending"},
+        ],
+    )
+    assert seed["success"] is True
+
+    # Two concurrent "update" calls, each marking a different task in_progress.
+    # Without the per-scope lock, the second write clobbers the first.
+    r1, r2 = await asyncio.gather(
+        plugin.execute(
+            "manage_plan_tasks",
+            helper,
+            chat_id=10,
+            user_id=42,
+            action="update",
+            tasks=[{"id": "T1", "status": "completed"}],
+        ),
+        plugin.execute(
+            "manage_plan_tasks",
+            helper,
+            chat_id=10,
+            user_id=42,
+            action="update",
+            tasks=[{"id": "T2", "status": "completed"}],
+        ),
+    )
+
+    assert r1["success"] is True
+    assert r2["success"] is True
+
+    # After serialisation both T1 and T2 must be completed — no lost update.
+    final = await plugin.execute(
+        "manage_plan_tasks", helper, chat_id=10, user_id=42, action="list"
+    )
+    by_id = {t["id"]: t for t in final["plan_tasks"]["tasks"]}
+    assert by_id["T1"]["status"] == "completed", f"T1 status={by_id['T1']['status']}"
+    assert by_id["T2"]["status"] == "completed", f"T2 status={by_id['T2']['status']}"
+
+
+# ---------------------------------------------------------------------------
+# _evict_stale_deliveries
+# ---------------------------------------------------------------------------
+
+class TestEvictStaleDeliveries:
+    """Тесты TTL-эвикции словаря _recent_deliveries."""
+
+    def _make_plugin(self):
+        plugin = AgentToolsPlugin.__new__(AgentToolsPlugin)
+        plugin._recent_deliveries = {}
+        return plugin
+
+    def test_fresh_entry_survives(self):
+        """Запись в пределах окна не удаляется."""
+        plugin = self._make_plugin()
+        now = 1000.0
+        window = AgentToolsPlugin.DELIVERY_DEDUP_WINDOW_SECONDS
+        plugin._recent_deliveries = {"key:1": now - window + 1}
+        plugin._evict_stale_deliveries(now)
+        assert "key:1" in plugin._recent_deliveries
+
+    def test_stale_entry_removed(self):
+        """Запись старше окна удаляется при следующем вызове эвикции."""
+        plugin = self._make_plugin()
+        window = AgentToolsPlugin.DELIVERY_DEDUP_WINDOW_SECONDS
+        now = 1000.0
+        plugin._recent_deliveries = {"key:1": now - window - 1}
+        plugin._evict_stale_deliveries(now)
+        assert "key:1" not in plugin._recent_deliveries
+
+    def test_boundary_exact_window_survives(self):
+        """Запись ровно на границе окна (now - ts == window) сохраняется."""
+        plugin = self._make_plugin()
+        window = AgentToolsPlugin.DELIVERY_DEDUP_WINDOW_SECONDS
+        now = 1000.0
+        plugin._recent_deliveries = {"key:1": now - window}
+        plugin._evict_stale_deliveries(now)
+        assert "key:1" in plugin._recent_deliveries
+
+    def test_dict_does_not_grow_unbounded(self):
+        """После многих доставок с разнесёнными таймстемпами остаются только свежие записи."""
+        plugin = self._make_plugin()
+        window = AgentToolsPlugin.DELIVERY_DEDUP_WINDOW_SECONDS
+        now = 10000.0
+        # 50 старых записей (вне окна)
+        stale = {f"req:old:{i}": now - window - i - 1 for i in range(50)}
+        # 10 свежих записей (в пределах окна)
+        fresh = {f"req:new:{i}": now - i for i in range(10)}
+        plugin._recent_deliveries = {**stale, **fresh}
+
+        plugin._evict_stale_deliveries(now)
+
+        assert len(plugin._recent_deliveries) == 10
+        for k in fresh:
+            assert k in plugin._recent_deliveries
+        for k in stale:
+            assert k not in plugin._recent_deliveries
+
+    def test_fresh_entry_triggers_dedup(self):
+        """Свежая запись в словаре по-прежнему вызывает дедуп при следующем вызове эвикции."""
+        plugin = self._make_plugin()
+        window = AgentToolsPlugin.DELIVERY_DEDUP_WINDOW_SECONDS
+        now = 1000.0
+        plugin._recent_deliveries = {"key:1": now - 1}  # 1 секунда назад — свежая
+        # После эвикции запись остаётся
+        plugin._evict_stale_deliveries(now)
+        assert "key:1" in plugin._recent_deliveries
+        # Дедуп-проверка: elapsed < window → должен сработать
+        ts = plugin._recent_deliveries["key:1"]
+        assert (now - ts) < window

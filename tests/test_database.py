@@ -167,8 +167,11 @@ def test_create_session_copies_active_mode_before_pruning_oldest(db):
     new_session = db.create_session(1, max_sessions=3, openai_helper=helper)
     context, parse_mode, temperature, max_tokens_percent, _ = db.get_conversation_context(1, new_session)
 
-    assert first not in {session["session_id"] for session in db.list_user_sessions(1)}
-    assert {session["session_id"] for session in db.list_user_sessions(1)} == {second, third, new_session}
+    remaining = {session["session_id"] for session in db.list_user_sessions(1)}
+    # Активная (она же старейшая) сессия first вытесняется при прюнинге, но её
+    # режим успевает скопироваться в новую сессию (см. ассерты ниже).
+    assert first not in remaining
+    assert remaining == {second, third, new_session}
     assert context["messages"] == [{"role": "system", "content": "mode prompt", "mode_key": "mode"}]
     assert parse_mode == "Markdown"
     assert temperature == 0.2
@@ -282,3 +285,203 @@ def test_save_image_creates_missing_user_settings(db):
     assert db.get_user_settings(42) == {}
     images = db.get_user_images(42, 42, limit=1)
     assert images[0]["file_id"] == "telegram-file-id"
+
+
+# ---------------------------------------------------------------------------
+# Новые тесты: WP-A executor, CAS-locking, migration < 2
+# ---------------------------------------------------------------------------
+
+def test_version_column_increments_on_save(db):
+    """version инкрементируется при каждом save_conversation_context."""
+    helper = DummyOpenAI()
+    context = {"messages": [{"role": "user", "content": "hello"}]}
+    session_id = db.create_session(1, openai_helper=helper)
+
+    db.save_conversation_context(1, context, "HTML", 0.8, 80, session_id=session_id)
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, session_id),
+        ).fetchone()
+    assert row[0] == 1
+
+    db.save_conversation_context(1, context, "HTML", 0.8, 80, session_id=session_id)
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, session_id),
+        ).fetchone()
+    assert row[0] == 2
+
+
+def test_save_bumps_version_regardless_of_existing_value(db):
+    """save_conversation_context всегда успешно пишет и поднимает version на 1,
+    каким бы ни было текущее значение version. Отдельный CAS-retry не нужен —
+    атомарность обеспечивает write-lock транзакции (BEGIN IMMEDIATE)."""
+    helper = DummyOpenAI()
+    context_a = {"messages": [{"role": "user", "content": "initial"}]}
+    session_id = db.create_session(1, openai_helper=helper)
+
+    # Первый save — version становится 1.
+    db.save_conversation_context(1, context_a, "HTML", 0.8, 80, session_id=session_id)
+
+    # Вручную выставляем произвольную version.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_context SET version = ? WHERE user_id = ? AND session_id = ?",
+            (42, 1, session_id),
+        )
+
+    context_b = {"messages": [{"role": "user", "content": "updated"}]}
+    db.save_conversation_context(1, context_b, "HTML", 0.8, 80, session_id=session_id)
+
+    # Данные актуальны, version поднялась ровно на 1.
+    details = db.get_session_details(1, session_id)
+    assert details["context"]["messages"][0]["content"] == "updated"
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, session_id),
+        ).fetchone()
+    assert row[0] == 43
+
+
+def test_migration_adds_version_column_to_legacy_db(tmp_path, monkeypatch):
+    """БД без колонки version (схема v1) получает её при init (миграция < 2)."""
+    db_path = tmp_path / "v1.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._reset_singleton()
+
+    # Создаём БД, имитирующую состояние после миграции v1:
+    # таблица есть и session_id есть, но version отсутствует.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+        conn.execute("""
+            CREATE TABLE user_settings (
+                user_id INTEGER PRIMARY KEY,
+                settings TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE conversation_context (
+                user_id INTEGER,
+                context TEXT NOT NULL,
+                model TEXT NOT NULL,
+                parse_mode TEXT NOT NULL,
+                temperature FLOAT NOT NULL,
+                max_tokens_percent INTEGER DEFAULT 100,
+                session_id TEXT,
+                session_name TEXT DEFAULT NULL,
+                is_active INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, session_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO conversation_context
+            (user_id, session_id, context, model, parse_mode, temperature, is_active)
+            VALUES (1, 'ses1', '{"messages": []}', 'llmgateway/high', 'HTML', 0.8, 1)
+        """)
+        conn.commit()
+
+    migrated = Database()
+
+    # Колонка version должна присутствовать.
+    with migrated.get_connection() as conn:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(conversation_context)").fetchall()]
+    assert "version" in cols
+
+    # Старые данные целы.
+    sessions = migrated.list_user_sessions(1)
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "ses1"
+
+    # schema_version должна содержать запись 2.
+    with migrated.get_connection() as conn:
+        ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert ver == 2
+
+
+def test_legacy_no_session_id_migration_creates_version_column(tmp_path, monkeypatch):
+    """Legacy-БД без колонки session_id мигрирует через migrate_conversation_context
+    и получает колонку version; последующий save не падает на 'no such column'."""
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._reset_singleton()
+
+    # Старая схема: conversation_context без session_id и без version.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE conversation_context (
+                user_id INTEGER PRIMARY KEY,
+                context TEXT NOT NULL,
+                model TEXT NOT NULL,
+                parse_mode TEXT NOT NULL,
+                temperature FLOAT NOT NULL,
+                max_tokens_percent INTEGER DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            INSERT INTO conversation_context
+            (user_id, context, model, parse_mode, temperature)
+            VALUES (1, '{"messages": []}', 'llmgateway/high', 'HTML', 0.8)
+        """)
+        conn.commit()
+
+    migrated = Database()
+
+    # После миграции есть и session_id, и version.
+    with migrated.get_connection() as conn:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(conversation_context)").fetchall()]
+    assert "session_id" in cols
+    assert "version" in cols
+
+    # save_conversation_context работает (не падает на отсутствующей колонке version).
+    context = {"messages": [{"role": "user", "content": "after migration"}]}
+    session_id = migrated.save_conversation_context(
+        1, context, "HTML", 0.8, 80, openai_helper=DummyOpenAI()
+    )
+    assert session_id
+    with migrated.get_connection() as conn:
+        ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert ver == 2
+
+
+def test_executor_single_worker(db):
+    """После нескольких async-операций у executor ровно один поток."""
+    import asyncio
+
+    async def _run():
+        for _ in range(5):
+            await db._run_in_db_thread(lambda: None)
+        executor = db._get_executor()
+        return executor
+
+    executor = asyncio.get_event_loop().run_until_complete(_run())
+    # ThreadPoolExecutor._max_workers — публичный (CPython).
+    assert executor._max_workers == 1
+
+
+def test_shutdown_idempotent(db):
+    """shutdown() не падает при двойном вызове."""
+    db.shutdown()
+    db.shutdown()  # не должно бросить
+
+    # После shutdown executor=None; _get_executor создаёт новый.
+    assert db._executor is None
+    new_exec = db._get_executor()
+    assert new_exec is not None
+    # Финальная очистка — чтобы не мешать fixture teardown.
+    db.shutdown()

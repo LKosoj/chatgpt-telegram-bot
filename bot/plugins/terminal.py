@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -56,6 +57,42 @@ INSTALL_PIPE_TAIL_ERROR = (
     "Refusing to pipe an install command directly into tail because it hides the installer exit code. "
     "Use: cmd >log 2>&1; rc=$?; tail -30 log; exit $rc"
 )
+
+
+def _kill_process_group(pid: int) -> None:
+    """Send SIGKILL to the entire process group of pid."""
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+async def _drain_pipe(stream: asyncio.StreamReader) -> None:
+    """Read and discard remaining pipe data until EOF."""
+    try:
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+    except Exception:
+        pass
+
+
+async def _read_bounded(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
+    """Read up to limit+1 bytes from stream; return (data[:limit], over_limit)."""
+    chunks: list[bytes] = []
+    total = 0
+    while total <= limit:
+        chunk = await stream.read(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    data = b"".join(chunks)
+    if len(data) > limit:
+        return data[:limit], True
+    return data, False
 
 
 class TerminalPlugin(Plugin):
@@ -141,6 +178,7 @@ class TerminalPlugin(Plugin):
                     cwd=str(cwd_path),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
                 )
             except Exception as exc:
                 return {"error": f"Failed to spawn shell: {exc}"}
@@ -158,6 +196,7 @@ class TerminalPlugin(Plugin):
                     cwd=str(cwd_path),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
                 )
             except FileNotFoundError as exc:
                 return {"error": f"Command not found: {exc}"}
@@ -172,13 +211,46 @@ class TerminalPlugin(Plugin):
             display,
         )
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+        limit = OUTPUT_BYTE_LIMIT
+        stdout_task = asyncio.ensure_future(_read_bounded(process.stdout, limit))
+        stderr_task = asyncio.ensure_future(_read_bounded(process.stderr, limit))
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        pending = {stdout_task, stderr_task}
+        timed_out = False
+        over_limit = False
+        while pending:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                timed_out = True
+                break
+            done, pending = await asyncio.wait(pending, timeout=remaining)
+            if not done:
+                timed_out = True
+                break
+            # If any reader hit the limit, kill the process and cancel the rest
+            for t in done:
+                if not t.cancelled() and not t.exception() and t.result()[1]:
+                    over_limit = True
+                    _kill_process_group(process.pid)
+                    for p in pending:
+                        p.cancel()
+                    pending = set()
+                    break
+
+        if timed_out:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            _kill_process_group(process.pid)
+            # Settle the cancelled readers so their StreamReader waiters are released
+            # before draining; otherwise _drain_pipe's read() would hit a pending waiter.
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            await asyncio.gather(
+                _drain_pipe(process.stdout),
+                _drain_pipe(process.stderr),
+                return_exceptions=True,
             )
-        except asyncio.TimeoutError:
             try:
-                process.kill()
                 await process.wait()
             except Exception:
                 pass
@@ -189,8 +261,41 @@ class TerminalPlugin(Plugin):
                 "shell": shell,
             }
 
-        stdout, stdout_truncated = self._truncate_output(stdout_bytes.decode("utf-8", errors="replace"))
-        stderr, stderr_truncated = self._truncate_output(stderr_bytes.decode("utf-8", errors="replace"))
+        # Settle any cancelled/pending tasks before accessing results
+        all_tasks = [t for t in (stdout_task, stderr_task) if not t.done()]
+        if all_tasks:
+            await asyncio.gather(*all_tasks, return_exceptions=True)
+
+        def _task_result(task: asyncio.Task) -> tuple[bytes, bool]:
+            if task.cancelled() or task.exception():
+                return b"", False
+            return task.result()
+
+        stdout_bytes, stdout_over = _task_result(stdout_task)
+        stderr_bytes, stderr_over = _task_result(stderr_task)
+
+        if stdout_over or stderr_over:
+            _kill_process_group(process.pid)
+            await asyncio.gather(
+                _drain_pipe(process.stdout),
+                _drain_pipe(process.stderr),
+                return_exceptions=True,
+            )
+        await process.wait()
+
+        stdout_truncated = stdout_over
+        stderr_truncated = stderr_over
+
+        if stdout_truncated:
+            stdout = stdout_bytes.decode("utf-8", errors="replace") + "\n... [truncated]"
+        else:
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+
+        if stderr_truncated:
+            stderr = stderr_bytes.decode("utf-8", errors="replace") + "\n... [truncated]"
+        else:
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+
         logger.info(
             "Terminal finished returncode=%s stdout_bytes=%s stderr_bytes=%s",
             process.returncode,
@@ -209,7 +314,7 @@ class TerminalPlugin(Plugin):
         if stdout_truncated or stderr_truncated:
             result.update({
                 "output_truncated": True,
-                "output_limit_bytes": OUTPUT_BYTE_LIMIT,
+                "output_limit_bytes": limit,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
                 "stdout_bytes": len(stdout_bytes),
@@ -217,21 +322,6 @@ class TerminalPlugin(Plugin):
                 "output_hint": BOUNDED_OUTPUT_HINT,
             })
         return result
-
-    @staticmethod
-    def _truncate_output(text: str) -> tuple[str, bool]:
-        encoded = text.encode("utf-8", errors="replace")
-        if len(encoded) <= OUTPUT_BYTE_LIMIT:
-            return text, False
-        return (
-            encoded[:OUTPUT_BYTE_LIMIT].decode("utf-8", errors="ignore")
-            + "\n... [truncated]",
-            True,
-        )
-
-    @staticmethod
-    def _truncate(text: str) -> str:
-        return TerminalPlugin._truncate_output(text)[0]
 
     @staticmethod
     def _guard_command(command: str) -> str | None:

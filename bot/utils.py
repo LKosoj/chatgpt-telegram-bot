@@ -232,57 +232,82 @@ def is_group_chat(update: Update) -> bool:
         constants.ChatType.SUPERGROUP
     ]
 
+def _utf16_len(s: str) -> int:
+    """Returns the number of UTF-16 code units in s (Telegram's character counting unit)."""
+    return len(s.encode('utf-16-le')) // 2
+
+
 def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     """
     Splits a string into chunks of a given size while preserving Markdown formatting.
-    
+
     Args:
         text: The text to split
-        chunk_size: Maximum size of each chunk
-    
+        chunk_size: Maximum size of each chunk (in UTF-16 code units)
+
     Returns:
         List of chunks with preserved Markdown formatting
     """
-    if len(text) <= chunk_size:
+    if _utf16_len(text) <= chunk_size:
         return [text]
-    
+
     # Предварительная обработка очень длинных строк
-    max_line_length = 3800  # Немного меньше чем chunk_size для обеспечения безопасности
+    max_line_utf16 = 3800  # Немного меньше чем chunk_size для обеспечения безопасности
     processed_lines = []
-    
+
     for line in text.split('\n'):
-        if len(line) > max_line_length:
-            # Разбиваем длинную строку на части с переносами
-            parts = [line[i:i+max_line_length] for i in range(0, len(line), max_line_length)]
-            processed_lines.extend(parts)
+        if _utf16_len(line) > max_line_utf16:
+            # Разбиваем длинную строку на части накоплением по UTF-16
+            part = ""
+            part_len = 0
+            for ch in line:
+                ch_len = _utf16_len(ch)
+                if part_len + ch_len > max_line_utf16:
+                    processed_lines.append(part)
+                    part = ch
+                    part_len = ch_len
+                else:
+                    part += ch
+                    part_len += ch_len
+            if part:
+                processed_lines.append(part)
         else:
             processed_lines.append(line)
-    
+
     chunks = []
     current_chunk = ""
+    current_len = 0
     markdown_stack = []  # Стек для отслеживания открытых Markdown-элементов
-    
+
     # Используем предварительно обработанные строки
     for line in processed_lines:
+        line_len = _utf16_len(line)
+        separator_len = 1 if current_chunk else 0  # '\n'
+        closing_overhead = sum(_utf16_len(md) for md in markdown_stack)
+
         # Если текущая строка с переносом превысит размер чанка
-        if len(current_chunk) + len(line) + 1 > chunk_size:
+        if current_len + separator_len + line_len + closing_overhead > chunk_size:
             # Закрываем все открытые Markdown-элементы
             for md in reversed(markdown_stack):
                 if not current_chunk.endswith(md):
                     current_chunk += md
-            
+
             chunks.append(current_chunk.strip())
             current_chunk = ""
-            
+            current_len = 0
+
             # Открываем Markdown-элементы для нового чанка
             for md in markdown_stack:
                 current_chunk += md
-        
+                current_len += _utf16_len(md)
+
         # Добавляем строку к текущему чанку
         if current_chunk:
             current_chunk += '\n'
+            current_len += 1
         current_chunk += line
-        
+        current_len += line_len
+
         # Отслеживаем Markdown-элементы в строке
         for i, char in enumerate(line):
             if char in ['*', '_', '`']:
@@ -295,7 +320,7 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
                         markdown_stack.append(char * 2)
                     else:
                         markdown_stack.append(char)
-    
+
     # Добавляем последний чанк
     if current_chunk:
         # Закрываем все открытые Markdown-элементы
@@ -303,7 +328,7 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
             if not current_chunk.endswith(md):
                 current_chunk += md
         chunks.append(current_chunk.strip())
-    
+
     return chunks
 
 
@@ -393,7 +418,23 @@ async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: i
         entities = None
         text_to_send = text
         if markdown:
-            parts = render_markdown_message_entities(text)
+            safe_text = text
+            if _utf16_len(text) > 4096:
+                logging.warning(
+                    'edit_message_with_retry: text exceeds 4096 UTF-16 units (%d), truncating',
+                    _utf16_len(text),
+                )
+                # Truncate by accumulating characters until we reach the limit
+                buf = ""
+                buf_len = 0
+                for ch in text:
+                    ch_len = _utf16_len(ch)
+                    if buf_len + ch_len > 4096:
+                        break
+                    buf += ch
+                    buf_len += ch_len
+                safe_text = buf
+            parts = render_markdown_message_entities(safe_text)
             if parts:
                 text_to_send, entities = parts[0]
 
@@ -450,16 +491,14 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
     if is_admin(config, user_id):
         return True
     name = user.name if user else "unknown"
-    allowed_user_ids = config['allowed_user_ids'].split(',')
+    allowed_user_ids = [x.strip() for x in config['allowed_user_ids'].split(',') if x.strip()]
     # Check if user is allowed
     if str(user_id) in allowed_user_ids:
         return True
     # Check if it's a group a chat with at least one authorized member
     if not is_inline and is_group_chat(update):
-        admin_user_ids = config['admin_user_ids'].split(',')
+        admin_user_ids = [x.strip() for x in config['admin_user_ids'].split(',') if x.strip()]
         for user in itertools.chain(allowed_user_ids, admin_user_ids):
-            if not user.strip():
-                continue
             if await is_user_in_group(update, context, user):
                 logging.info(f'{user} is a member. Allowing group chat message...')
                 return True
@@ -477,7 +516,7 @@ def is_admin(config, user_id: int, log_no_admin=False) -> bool:
             logging.info('No admin user defined.')
         return False
 
-    admin_user_ids = config['admin_user_ids'].split(',')
+    admin_user_ids = [x.strip() for x in config['admin_user_ids'].split(',') if x.strip()]
 
     # Check if user is in the admin user list
     if str(user_id) in admin_user_ids:
@@ -497,15 +536,15 @@ def get_user_budget(config, user_id) -> float | None:
     if is_admin(config, user_id) or config['user_budgets'] == '*':
         return float('inf')
 
-    user_budgets = config['user_budgets'].split(',')
+    user_budgets = [x.strip() for x in config['user_budgets'].split(',') if x.strip()]
     if config['allowed_user_ids'] == '*':
         # same budget for all users, use value in first position of budget list
         if len(user_budgets) > 1:
             logging.warning('multiple values for budgets set with unrestricted user list '
                             'only the first value is used as budget for everyone.')
-        return float(user_budgets[0])
+        return float(user_budgets[0]) if user_budgets else 0.0
 
-    allowed_user_ids = config['allowed_user_ids'].split(',')
+    allowed_user_ids = [x.strip() for x in config['allowed_user_ids'].split(',') if x.strip()]
     if str(user_id) in allowed_user_ids:
         user_index = allowed_user_ids.index(str(user_id))
         if len(user_budgets) <= user_index:
@@ -766,33 +805,42 @@ def escape_markdown(text: str, exclude_code_blocks: bool = True) -> str:
     :param exclude_code_blocks: Исключать ли блоки кода из экранирования
     :return: Экранированный текст
     """
+    _non_code_escape = frozenset(['_', '*', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'])
+
     if not exclude_code_blocks:
-        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        escape_chars = _non_code_escape | {'`'}
         return ''.join('\\' + char if char in escape_chars else char for char in text)
-    
+
+    # Segment-based approach: split on backtick-delimited paired runs.
+    # Find paired backtick spans; unpaired remainder is treated as plain text.
+    segments = []  # list of (text, is_code)
+    remaining = text
+    while remaining:
+        tick_pos = remaining.find('`')
+        if tick_pos == -1:
+            # No more backticks — rest is plain text
+            segments.append((remaining, False))
+            break
+        # Text before the backtick
+        if tick_pos > 0:
+            segments.append((remaining[:tick_pos], False))
+        remaining = remaining[tick_pos:]
+        # Find the closing backtick
+        close_pos = remaining.find('`', 1)
+        if close_pos == -1:
+            # Unpaired backtick — treat the rest as plain text
+            segments.append((remaining, False))
+            break
+        # Code span including both backticks
+        segments.append((remaining[:close_pos + 1], True))
+        remaining = remaining[close_pos + 1:]
+
     result = []
-    is_code = False
-    current_text = ""
-    
-    for char in text:
-        if char == '`':
-            if current_text:
-                if not is_code:
-                    # Экранируем текст вне блоков кода
-                    current_text = ''.join('\\' + c if c in ['_', '*', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'] else c for c in current_text)
-                result.append(current_text)
-                current_text = ""
-            result.append(char)
-            is_code = not is_code
+    for seg_text, is_code in segments:
+        if is_code:
+            result.append(seg_text)
         else:
-            current_text += char
-    
-    if current_text:
-        if not is_code:
-            # Экранируем оставшийся текст вне блоков кода
-            current_text = ''.join('\\' + c if c in ['_', '*', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'] else c for c in current_text)
-        result.append(current_text)
-    
+            result.append(''.join('\\' + c if c in _non_code_escape else c for c in seg_text))
     return ''.join(result)
 
 def get_image_size(image_path: str) -> tuple[int, int]:

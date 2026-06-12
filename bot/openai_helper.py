@@ -352,7 +352,12 @@ class OpenAIHelper:
         """
         state_key = self._chat_state_key(chat_id)
         if state_key not in self.conversations:
-            await self.reset_chat_history(chat_id)
+            saved_context, _, _, _, session_id = self.db.get_conversation_context(chat_id, None)
+            if saved_context and 'messages' in saved_context:
+                self.conversations[state_key] = self._messages_without_image_payloads(saved_context['messages'])
+                self.loaded_conversation_sessions[state_key] = session_id
+            else:
+                await self.reset_chat_history(chat_id)
         return len(self.conversations[state_key]), self.__count_tokens(self.conversations[state_key])
 
     async def chat_completion(
@@ -576,24 +581,31 @@ class OpenAIHelper:
         """
         Send a prompt to OpenAI and get a response.
         """
+        # When called from inside an active tool-call turn (_CHAT_STATE_KEY is set),
+        # writing user/assistant messages into the active history would corrupt the
+        # tool-call sequence (assistant(tool_calls) … tool … assistant chain).
+        # In that case we skip all history writes.
+        _in_active_turn = _CHAT_STATE_KEY.get() is not None
+
         model_to_use = model or self.get_current_model(user_id)
         try:
-            # Проверяем, инициализирован ли контекст разговора
-            if user_id not in self.conversations:
-                logger.info(f'Initializing conversation context for user_id={user_id}')
-                # Пытаемся загрузить контекст из базы данных
-                saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id, None)
+            if not _in_active_turn:
+                # Проверяем, инициализирован ли контекст разговора
+                if user_id not in self.conversations:
+                    logger.info(f'Initializing conversation context for user_id={user_id}')
+                    # Пытаемся загрузить контекст из базы данных
+                    saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id, None)
 
-                if saved_context and 'messages' in saved_context:
-                    # Если есть сохраненный контекст в БД, используем его
-                    self.conversations[user_id] = self._messages_without_image_payloads(saved_context['messages'])
-                else:
-                    # Если нет контекста в БД, начинаем новый чат
-                    await self.reset_chat_history(user_id, session_id=None)
+                    if saved_context and 'messages' in saved_context:
+                        # Если есть сохраненный контекст в БД, используем его
+                        self.conversations[user_id] = self._messages_without_image_payloads(saved_context['messages'])
+                    else:
+                        # Если нет контекста в БД, начинаем новый чат
+                        await self.reset_chat_history(user_id, session_id=None)
 
-            # Инициализируем conversations_vision для пользователя, если его нет
-            if user_id not in self.conversations_vision:
-                self.conversations_vision[user_id] = False
+                # Инициализируем conversations_vision для пользователя, если его нет
+                if user_id not in self.conversations_vision:
+                    self.conversations_vision[user_id] = False
 
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
             if assistant_prompt is None:
@@ -610,7 +622,8 @@ class OpenAIHelper:
                 {"role": "user", "content": prompt}
             ]
 
-            await self.__add_to_history(user_id, role="user", content=prompt)
+            if not _in_active_turn:
+                await self.__add_to_history(user_id, role="user", content=prompt)
             response = await self.chat_completion(
                 model=model_to_use,
                 messages=messages,
@@ -620,7 +633,8 @@ class OpenAIHelper:
                 json_mode=json_mode,
             )
             content = _required_choice_message_text(_first_choice_or_raise(response))
-            await self.__add_to_history(user_id, role="assistant", content=content)
+            if not _in_active_turn:
+                await self.__add_to_history(user_id, role="assistant", content=content)
             return content, response.usage.total_tokens
         except Exception as e:
             logger.error(f'Error in ask method: {str(e)}', exc_info=True)
@@ -1059,17 +1073,25 @@ class OpenAIHelper:
             )
 
             if not system_message:
-                logger.warning(
-                    f'System message not found in context for chat_id {chat_id}, '
-                    f'session {session_id}. Resetting session.'
+                has_user_messages = any(
+                    m.get('role') == 'user' for m in saved_context.get('messages', [])
                 )
-                await self.reset_chat_history(chat_id, '', session_id)
-                saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
-                if saved_context and 'messages' in saved_context:
-                    system_message = next(
-                        (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
-                        None
+                if has_user_messages:
+                    # Live session without a system message (e.g. auto_chat_modes=false).
+                    # Don't destroy existing user messages; return default allowed_plugins.
+                    pass
+                else:
+                    logger.warning(
+                        f'System message not found in context for chat_id {chat_id}, '
+                        f'session {session_id}. Resetting session.'
                     )
+                    await self.reset_chat_history(chat_id, '', session_id)
+                    saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+                    if saved_context and 'messages' in saved_context:
+                        system_message = next(
+                            (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
+                            None
+                        )
 
             current_mode = self._mode_from_system_message(system_message)
 
@@ -3595,6 +3617,15 @@ class OpenAIHelper:
                 task.cancel()
             await asyncio.gather(*list(bg), return_exceptions=True)
             bg.clear()
+        # дренируем хвост событий сессии до закрытия клиента
+        slog = getattr(self, "session_logger", None)
+        if slog is not None:
+            drain = getattr(slog, "drain", None)
+            if callable(drain):
+                try:
+                    await drain()
+                except Exception:
+                    logger.debug("session_logger.drain() failed during close", exc_info=True)
         try:
             if hasattr(self, 'client') and self.client:
                 await self.client.close()

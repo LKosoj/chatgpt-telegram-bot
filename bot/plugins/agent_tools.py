@@ -185,6 +185,7 @@ class AgentToolsPlugin(Plugin):
         self._tool_error_streaks: Dict[str, Dict[str, Any]] = {}
         self._pending_replan: Dict[str, Dict[str, Any]] = {}
         self._replan_lock: Optional[asyncio.Lock] = None
+        self._plan_scope_locks: Dict[str, asyncio.Lock] = {}
         self._load_orphaned_pending()
         self._load_background_jobs()
 
@@ -920,9 +921,12 @@ class AgentToolsPlugin(Plugin):
 
     def _save_background_jobs(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self.background_jobs_file), exist_ok=True)
-            with open(self.background_jobs_file, "w", encoding="utf-8") as fh:
+            jobs_dir = os.path.dirname(self.background_jobs_file) or "."
+            os.makedirs(jobs_dir, exist_ok=True)
+            tmp_path = f"{self.background_jobs_file}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(self.background_jobs, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.background_jobs_file)
         except Exception:
             logging.exception("Failed to save agent background jobs")
 
@@ -1507,7 +1511,11 @@ class AgentToolsPlugin(Plugin):
             # _manage_plan_tasks ходит в SQLite через sync get_connection
             # (_db_get_plan / _db_save_plan / _db_clear_plan). На event loop это
             # давало блокирующий write под WAL-busy. to_thread снимает блокировку.
-            return await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
+            # Per-scope lock prevents lost updates when parallel tool calls arrive
+            # for the same scope (read→modify→write must be atomic per scope).
+            scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+            async with self._get_plan_scope_lock(scope):
+                return await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
         if function_name == "update_working_checkpoint":
             return await asyncio.to_thread(self._manage_working_checkpoint, helper, **kwargs)
         if function_name == "ask_telegram_user":
@@ -1704,15 +1712,28 @@ class AgentToolsPlugin(Plugin):
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
+                # 4e: delete only scopes where ALL tasks are older than cutoff so
+                # depends_on references within a scope are never orphaned.
+                # 4d: updated_at is INTEGER (unix epoch) in agent_plan_tasks so the
+                # comparison is integer<integer — no cast needed here.
                 cursor.execute(
-                    'DELETE FROM agent_plan_tasks WHERE updated_at < ?',
+                    '''
+                    DELETE FROM agent_plan_tasks
+                    WHERE scope IN (
+                        SELECT scope FROM agent_plan_tasks
+                        GROUP BY scope
+                        HAVING MAX(updated_at) < ?
+                    )
+                    ''',
                     (int(cutoff_timestamp),),
                 )
                 deleted = cursor.rowcount
+                # 4d: agent_plan_contracts.updated_at is TIMESTAMP (text), so cast
+                # to integer before comparing with the integer cutoff parameter.
                 cursor.execute('''
                     DELETE FROM agent_plan_contracts
                     WHERE scope NOT IN (SELECT DISTINCT scope FROM agent_plan_tasks)
-                    AND strftime('%s', updated_at) < ?
+                    AND CAST(strftime('%s', updated_at) AS INTEGER) < ?
                 ''', (int(cutoff_timestamp),))
                 return deleted
         except Exception as e:
@@ -1898,6 +1919,12 @@ class AgentToolsPlugin(Plugin):
         if self._replan_lock is None:
             self._replan_lock = asyncio.Lock()
         return self._replan_lock
+
+    def _get_plan_scope_lock(self, scope: str) -> asyncio.Lock:
+        # Lazy-init per scope; same pattern as _get_replan_lock.
+        if scope not in self._plan_scope_locks:
+            self._plan_scope_locks[scope] = asyncio.Lock()
+        return self._plan_scope_locks[scope]
 
     def _current_in_progress_task_id(self, scope: str) -> Optional[str]:
         if self.db is None:
@@ -2599,6 +2626,7 @@ class AgentToolsPlugin(Plugin):
             }
 
         now = time.monotonic()
+        self._evict_stale_deliveries(now)
         dedup_key = self._delivery_dedup_key(kwargs, request_context)
         last_delivery_at = self._recent_deliveries.get(dedup_key) if dedup_key else None
         if last_delivery_at is not None and (now - last_delivery_at) < self.DELIVERY_DEDUP_WINDOW_SECONDS:
@@ -2642,6 +2670,14 @@ class AgentToolsPlugin(Plugin):
             "text_chars": len(final_text),
             "artifacts_count": len(artifact_items),
             "direct_result": direct_result,
+        }
+
+    def _evict_stale_deliveries(self, now: float) -> None:
+        # TTL-эвикция: выкидываем записи старше окна дедупликации, чтобы словарь не рос неограниченно
+        window = self.DELIVERY_DEDUP_WINDOW_SECONDS
+        self._recent_deliveries = {
+            k: ts for k, ts in self._recent_deliveries.items()
+            if now - ts <= window
         }
 
     @staticmethod

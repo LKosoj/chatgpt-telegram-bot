@@ -144,15 +144,20 @@ class UsageTracker:
     def add_image_request(self, image_size, image_prices=None):
         """Add image request to users usage history and update current costs.
 
-        :param image_size: requested image size
+        :param image_size: requested image size (DALL·E 3 sizes 1792x1024 and 1024x1792
+                           are billed at the 1024x1024 tier)
         :param image_prices: prices for images of sizes ["256x256", "512x512", "1024x1024"];
                              falls back to self.prices['image_prices']
         """
         if image_prices is None:
             image_prices = self.prices['image_prices']
-        sizes = ["256x256", "512x512", "1024x1024"]
-        requested_size = sizes.index(image_size)
-        image_cost = image_prices[requested_size]
+        size_to_price_idx = {"256x256": 0, "512x512": 1, "1024x1024": 2, "1792x1024": 2, "1024x1792": 2}
+        prices = list(image_prices)
+        if not prices:
+            return
+        max_idx = len(prices) - 1
+        requested_size = min(size_to_price_idx.get(image_size, max_idx), max_idx)
+        image_cost = prices[requested_size]
         today = date.today()
         self.add_current_costs(image_cost)
 

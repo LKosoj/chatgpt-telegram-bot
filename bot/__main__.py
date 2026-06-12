@@ -144,6 +144,7 @@ def main():
         # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
         'session_log_enabled': os.environ.get('SESSION_LOG_ENABLED', 'false').lower() == 'true',
         'session_log_dir': os.environ.get('SESSION_LOG_DIR', './log'),
+        'max_sessions': int(os.environ.get('MAX_SESSIONS', 5)),
     }
 
     if openai_config['enable_functions'] and not functions_available:

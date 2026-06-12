@@ -91,6 +91,7 @@ def _make_bot():
             "description": "Create a note",
         }
     ]
+    bot._user_plugin_menu_entries = {}
     return bot
 
 
@@ -161,3 +162,43 @@ async def test_plugin_menu_command_usage_view_has_close_button():
     close_button = reply_markup.inline_keyboard[-1][0]
     assert close_button.text == "❌ Close"
     assert close_button.callback_data == "pluginmenu:close"
+
+
+def test_resolve_menu_entries_falls_back_to_global():
+    """_resolve_menu_entries returns global entries when no per-user entry exists."""
+    bot = _make_bot()
+    assert bot._resolve_menu_entries(user_id=999) is bot.plugin_menu_entries
+    assert bot._resolve_menu_entries(user_id=None) is bot.plugin_menu_entries
+
+
+def test_resolve_menu_entries_returns_per_user():
+    """_resolve_menu_entries returns user-specific entries when available."""
+    bot = _make_bot()
+    user_entries = [{"plugin_name": "reminders", "command": "remind", "description": "Set reminder"}]
+    bot._user_plugin_menu_entries[42] = user_entries
+    assert bot._resolve_menu_entries(user_id=42) is user_entries
+    # Another user still gets global fallback
+    assert bot._resolve_menu_entries(user_id=99) is bot.plugin_menu_entries
+
+
+def test_get_plugins_list_uses_per_user_entries():
+    """_get_plugins_list scopes to the calling user's entries."""
+    bot = _make_bot()
+    # user 42 has only "reminders"
+    bot._user_plugin_menu_entries[42] = [
+        {"plugin_name": "reminders", "command": "remind", "description": "remind"}
+    ]
+    assert bot._get_plugins_list(user_id=42) == ["reminders"]
+    # user 99 falls back to global which has "notes"
+    assert bot._get_plugins_list(user_id=99) == ["notes"]
+
+
+def test_get_plugin_command_uses_per_user_entries():
+    """_get_plugin_command resolves against the correct user's entries."""
+    bot = _make_bot()
+    private_entry = {"plugin_name": "private_plugin", "command": "secret", "description": "secret cmd"}
+    bot._user_plugin_menu_entries[7] = [private_entry]
+    # user 7 can find their private command
+    assert bot._get_plugin_command("private_plugin", "0", user_id=7) is private_entry
+    # user 5 falls back to global (notes plugin), not private_plugin
+    assert bot._get_plugin_command("private_plugin", "0", user_id=5) is None

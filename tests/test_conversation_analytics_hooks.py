@@ -1,4 +1,5 @@
 """Stage 1 — observer-hook migration for conversation_analytics."""
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -110,3 +111,56 @@ async def test_is_command_flag_propagated(tmp_path):
     data = json.loads(Path(plugin.analytics_file).read_text())
     user_msg = next(m for m in data["1"]["messages"] if m.get("role") == "user")
     assert user_msg["is_command"] is True
+
+
+async def test_concurrent_writes_produce_valid_json(tmp_path):
+    """Concurrent on_user_message/on_assistant_response must not corrupt JSON."""
+    plugin = _make_plugin(tmp_path)
+
+    user_payloads = [
+        UserMessagePayload(
+            chat_id=1, user_id=i, request_id=f"u{i}", text=f"msg {i}",
+            has_image=False, has_voice=False, is_command=False, ts=float(i),
+        )
+        for i in range(20)
+    ]
+    assistant_payloads = [
+        AssistantResponsePayload(
+            chat_id=1, user_id=i, request_id=f"a{i}", text=f"reply {i}",
+            tokens=i, model="m", ts=float(i),
+        )
+        for i in range(20)
+    ]
+
+    await asyncio.gather(
+        *[plugin.on_user_message(p) for p in user_payloads],
+        *[plugin.on_assistant_response(p) for p in assistant_payloads],
+    )
+
+    stats_file = Path(plugin.analytics_file)
+    assert stats_file.exists(), "stats file must exist after concurrent writes"
+
+    raw = stats_file.read_text(encoding="utf-8")
+    data = json.loads(raw)  # raises if JSON is corrupted
+
+    assert "1" in data, "chat_id '1' must be present"
+    messages = data["1"]["messages"]
+    assert len(messages) > 0, "messages list must be non-empty"
+
+
+async def test_concurrent_writes_no_tmp_leftover(tmp_path):
+    """After concurrent writes, no .tmp file must remain on disk."""
+    plugin = _make_plugin(tmp_path)
+
+    payloads = [
+        UserMessagePayload(
+            chat_id=2, user_id=i, request_id=f"t{i}", text=f"text {i}",
+            has_image=False, has_voice=False, is_command=False, ts=float(i),
+        )
+        for i in range(15)
+    ]
+
+    await asyncio.gather(*[plugin.on_user_message(p) for p in payloads])
+
+    tmp_file = Path(plugin.analytics_file + ".tmp")
+    assert not tmp_file.exists(), ".tmp file must not remain after successful writes"

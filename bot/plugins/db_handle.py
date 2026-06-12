@@ -1,8 +1,8 @@
 """Narrow async facade over the sync ``Database`` for plugin hooks.
 
-Each ``DbHandle`` method delegates to ``asyncio.to_thread`` so coroutines never
-block the event loop. Serialization is provided by ``Database._op_lock`` (the
-same lock the rest of the codebase uses).
+Each ``DbHandle`` method delegates to ``Database._run_in_db_thread`` so
+coroutines never block the event loop. Serialization is provided by the
+single-worker executor in ``Database`` (max_workers=1).
 
 The ``transaction()`` context manager buffers operations and flushes the entire
 batch in a single worker-thread call. This keeps the SQLite lock held for the
@@ -89,7 +89,7 @@ class _Transaction:
                     else:  # executemany
                         cursor.executemany(op.sql, op.params)
 
-        await asyncio.to_thread(_flush)
+        await db._run_in_db_thread(_flush)
         return False
 
 
@@ -116,7 +116,7 @@ class DbHandle:
             with db.get_connection() as conn:
                 conn.execute(sql, params)
 
-        await asyncio.to_thread(_run)
+        await db._run_in_db_thread(_run)
 
     async def executemany(
         self, sql: str, params_seq: Sequence[Sequence[Any]]
@@ -128,7 +128,7 @@ class DbHandle:
             with db.get_connection() as conn:
                 conn.executemany(sql, params_list)
 
-        await asyncio.to_thread(_run)
+        await db._run_in_db_thread(_run)
 
     async def fetch_one(
         self, sql: str, params: Sequence[Any] = ()
@@ -144,7 +144,7 @@ class DbHandle:
                     return None
                 return _row_to_dict(row, cursor)
 
-        return await asyncio.to_thread(_run)
+        return await db._run_in_db_thread(_run)
 
     async def fetch_all(
         self, sql: str, params: Sequence[Any] = ()
@@ -158,7 +158,7 @@ class DbHandle:
                 rows = cursor.fetchall()
                 return [_row_to_dict(row, cursor) for row in rows]
 
-        return await asyncio.to_thread(_run)
+        return await db._run_in_db_thread(_run)
 
     def transaction(self) -> _Transaction:
         """Return an async context manager that batches writes and flushes atomically.

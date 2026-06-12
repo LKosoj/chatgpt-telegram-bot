@@ -215,6 +215,8 @@ HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS = 60
 HINDSIGHT_FINALIZE_JOB_LEASE_SECONDS = 900
 HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS = 30
 HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS = 600
+HINDSIGHT_DREAM_MAX_ATTEMPTS = 5
+HINDSIGHT_DREAM_RETRY_SECONDS = 300
 
 HINDSIGHT_SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
@@ -385,6 +387,7 @@ class HindsightMemoryPlugin(Plugin):
         self._memory_user_locks: "OrderedDict[int, asyncio.Lock]" = OrderedDict()
         self._memory_user_locks_max = 2048
         self._ensure_memory_document_columns()
+        self._ensure_dream_state_columns()
 
     @property
     def is_active(self) -> bool:
@@ -417,6 +420,28 @@ class HindsightMemoryPlugin(Plugin):
                     conn.execute("ALTER TABLE hindsight_memory_documents ADD COLUMN verified_at TIMESTAMP DEFAULT NULL")
         except Exception:
             logger.exception("Failed to migrate hindsight_memory_documents lesson columns")
+
+    def _ensure_dream_state_columns(self) -> None:
+        db = getattr(getattr(self, "db_handle", None), "database", None)
+        if db is None:
+            return
+        try:
+            with db.get_connection() as conn:
+                tables = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='hindsight_dream_state'"
+                ).fetchall()
+                if not tables:
+                    return
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(hindsight_dream_state)").fetchall()
+                }
+                if "fail_count" not in columns:
+                    conn.execute("ALTER TABLE hindsight_dream_state ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0")
+                if "retry_after" not in columns:
+                    conn.execute("ALTER TABLE hindsight_dream_state ADD COLUMN retry_after TIMESTAMP DEFAULT NULL")
+        except Exception:
+            logger.exception("Failed to migrate hindsight_dream_state columns")
 
     @property
     def auto_recall_enabled(self) -> bool:
@@ -898,7 +923,9 @@ class HindsightMemoryPlugin(Plugin):
             CREATE TABLE IF NOT EXISTS hindsight_dream_state (
                 user_id INTEGER PRIMARY KEY,
                 last_event_id INTEGER NOT NULL DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                retry_after TIMESTAMP DEFAULT NULL
             )
             ''',
             '''
@@ -1195,8 +1222,9 @@ class HindsightMemoryPlugin(Plugin):
 
         for user in users:
             run_id = None
+            user_id = int(user["user_id"])
+            end_event_id = int(user.get("max_event_id") or 0)
             try:
-                user_id = int(user["user_id"])
                 async with self._memory_user_lock(user_id):
                     events = await self._fetch_dream_events(
                         user_id,
@@ -1242,9 +1270,18 @@ class HindsightMemoryPlugin(Plugin):
                         )
                     except Exception:
                         logger.exception("Failed to mark Hindsight dream run as failed")
+                try:
+                    await asyncio.to_thread(
+                        self._record_dream_failure_sync,
+                        db,
+                        user_id,
+                        end_event_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to record Hindsight dream failure for user_id=%s", user_id)
                 logger.warning(
                     "Hindsight dream run failed user_id=%s run_id=%s: %s",
-                    user.get("user_id"),
+                    user_id,
                     run_id,
                     exc,
                 )
@@ -1254,10 +1291,12 @@ class HindsightMemoryPlugin(Plugin):
             '''
             SELECT e.user_id AS user_id,
                    COALESCE(s.last_event_id, 0) AS last_event_id,
+                   COALESCE(s.fail_count, 0) AS fail_count,
                    MAX(e.id) AS max_event_id
             FROM hindsight_memory_events e
             LEFT JOIN hindsight_dream_state s ON s.user_id = e.user_id
             WHERE e.id > COALESCE(s.last_event_id, 0)
+              AND (s.retry_after IS NULL OR s.retry_after <= CURRENT_TIMESTAMP)
             GROUP BY e.user_id, COALESCE(s.last_event_id, 0)
             ORDER BY max_event_id ASC
             '''
@@ -1478,10 +1517,12 @@ class HindsightMemoryPlugin(Plugin):
             )
             cursor.execute(
                 '''
-                INSERT INTO hindsight_dream_state(user_id, last_event_id, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO hindsight_dream_state(user_id, last_event_id, fail_count, retry_after, updated_at)
+                VALUES (?, ?, 0, NULL, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET
                     last_event_id = MAX(hindsight_dream_state.last_event_id, excluded.last_event_id),
+                    fail_count = 0,
+                    retry_after = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 ''',
                 (user_id, end_event_id),
@@ -1499,6 +1540,52 @@ class HindsightMemoryPlugin(Plugin):
                 ''',
                 (error, run_id),
             )
+
+    def _record_dream_failure_sync(self, db, user_id: int, end_event_id: int) -> None:
+        max_attempts = max(1, int(HINDSIGHT_DREAM_MAX_ATTEMPTS))
+        retry_seconds = max(0, int(HINDSIGHT_DREAM_RETRY_SECONDS))
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT fail_count FROM hindsight_dream_state WHERE user_id = ?',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            fail_count = (int(row["fail_count"]) if row else 0) + 1
+            if fail_count >= max_attempts:
+                # Exhausted retries: advance watermark to unblock new events,
+                # reset counters so next batch of events starts fresh.
+                logger.warning(
+                    "Hindsight dream: max attempts (%d) reached for user_id=%s;"
+                    " advancing watermark to %s",
+                    max_attempts,
+                    user_id,
+                    end_event_id,
+                )
+                cursor.execute(
+                    '''
+                    INSERT INTO hindsight_dream_state(user_id, last_event_id, fail_count, retry_after, updated_at)
+                    VALUES (?, ?, 0, NULL, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        last_event_id = MAX(hindsight_dream_state.last_event_id, excluded.last_event_id),
+                        fail_count = 0,
+                        retry_after = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    (user_id, end_event_id),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    INSERT INTO hindsight_dream_state(user_id, last_event_id, fail_count, retry_after, updated_at)
+                    VALUES (?, 0, ?, datetime(CURRENT_TIMESTAMP, ?), CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        fail_count = excluded.fail_count,
+                        retry_after = excluded.retry_after,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    (user_id, fail_count, f"+{retry_seconds} seconds"),
+                )
 
     async def finalize_session_memory(
         self,

@@ -17,17 +17,18 @@ rules from the current session.
 - Do not call external services during verification unless the task explicitly requires it.
 - Не борись с ошибками! Каждый раз, когда ты сталкиваешься с одной и той же ошибкой дважды, изучи веб и найди 3–5 возможных способов её исправления.
   Затем выбери самое эффективное решение и реализуй его.
+- Нельзя ничего коммитить и создавать ветки!
 
 ## Project Shape
 
 - Runtime is a Python Telegram bot. The process entrypoint is `bot/__main__.py`.
 - Required runtime env vars are `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY`; startup exits when
-  either is missing (`bot/__main__.py:22`).
+  either is missing (`bot/__main__.py:83`).
 - Startup creates `PluginManager`, `Database`, `OpenAIHelper`, then `ChatGPTTelegramBot`
-  (`bot/__main__.py:121`).
+  (`bot/__main__.py:211`).
 - Telegram polling is owned by `ChatGPTTelegramBot.run()` in `bot/telegram_bot.py`; the current
   builder enables concurrent updates, local Telegram Bot API mode, and
-  `http://localhost:8081/bot` as base URL (`bot/telegram_bot.py:2878`).
+  `http://localhost:8081/bot` as base URL (`bot/telegram_bot.py:5341`).
 - Main request flow:
   - Telegram update handling lives mostly in `bot/telegram_bot.py`.
   - OpenAI-compatible chat/image/audio/vision access is in `bot/openai_helper.py`.
@@ -45,26 +46,27 @@ rules from the current session.
 
 - Plugins subclass `bot.plugins.plugin.Plugin` and implement `get_source_name()`,
   `get_spec()`, and async `execute(function_name, helper, **kwargs)`
-  (`bot/plugins/plugin.py:43`).
+  (`bot/plugins/plugin.py:108`).
 - Stable plugin identity is `plugin_id`; tool namespace is `function_prefix`, defaulting to
   `plugin_id` (`bot/plugins/plugin.py:11`, `bot/plugins/plugin.py:18`).
 - `PluginManager` loads plugin modules from `bot/plugins/*.py`, excluding `__init__.py` and
   `plugin.py`; empty/unset `PLUGINS` loads all plugins, and non-empty `PLUGINS` acts as a
-  comma-separated allow-list (`bot/plugin_manager.py:140`, `bot/plugin_manager.py:152`).
+  comma-separated allow-list (`bot/plugin_manager.py:217`, `bot/plugin_manager.py:229`).
 - Function specs must be unique after namespacing. Unqualified spec names are normalized to
-  `<function_prefix>.<name>` (`bot/plugin_manager.py:279`).
+  `<function_prefix>.<name>` (`bot/plugin_manager.py:732`).
 - Duplicate function names are invalid. With `PLUGIN_STRICT_VALIDATION=true`, duplicates raise;
-  otherwise they are logged and skipped (`bot/plugin_manager.py:150`).
+  otherwise they are logged and skipped (`bot/plugin_manager.py:326`).
 - Tool arguments are JSON-decoded and validated against the function spec before plugin
-  execution (`bot/plugin_manager.py:171`, `bot/validation.py:28`).
+  execution (`bot/plugin_manager.py:420`, `bot/validation.py:33`).
 - Tool calls may arrive in batches and are executed with `asyncio.gather`; `chat_id` and
-  `user_id` are injected into arguments before execution (`bot/openai_tool_handler.py:111`,
-  `bot/openai_tool_handler.py:120`).
+  `user_id` are injected into arguments before execution (`bot/openai_tool_handler.py:110`,
+  `bot/openai_tool_handler.py:1095`).
 - A plugin response marked as a direct result short-circuits model re-entry
-  (`bot/openai_tool_handler.py:130`, `bot/openai_tool_handler.py:144`).
+  (`bot/openai_tool_handler.py:1192`, `bot/openai_tool_handler.py:1315`).
 - Google model tool specs use `{"function_declarations": specs}` while other models receive
   OpenAI-style `{"type": "function", "function": spec}` entries
-  (`bot/plugin_manager.py:159`).
+  (`bot/plugin_manager.py:338`). Note: the Google branch is currently unreachable because
+  `GOOGLE_MODELS` is an empty tuple in `bot/model_constants.py`.
 - Core modules (`bot/openai_helper.py`, `bot/telegram_bot.py`, `bot/database.py`) must not
   introduce new hardcoded plugin-id references. Generic `get_plugin(plugin_id)` reads for UI
   menus and the documented Strategy Z compromise are tracked in
@@ -93,16 +95,16 @@ There are four kinds of hooks, each with a different dispatch policy:
    a raising plugin yields the unchanged value from the previous step. Order is
    deterministic — `sorted(self.plugins.keys())`, i.e. by plugin module name.
    Active mutators in tree:
-   - `agent_tools.on_before_chat_request` (`bot/plugins/agent_tools.py:200`) — injects the
+   - `agent_tools.on_before_chat_request` (`bot/plugins/agent_tools.py:276`) — injects the
      planning-prefix system message that reminds the model to call `manage_plan_tasks`
      before non-trivial work.
-   - `hindsight_memory.on_before_chat_request` (`bot/plugins/hindsight_memory.py:1607`) —
+   - `hindsight_memory.on_before_chat_request` (`bot/plugins/hindsight_memory.py:1835`) —
      injects a recalled long-term-memory system message when auto-recall is enabled.
 4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, called
    **sequentially**. Active slots in tree: `auto_mode_priority` (auto-mode prompt prefix,
-   `bot/openai_helper.py:2379`), `stats_block` (`/stats` extra blocks,
-   `bot/telegram_bot.py:842`), `settings_menu_buttons` (extra settings-menu button rows,
-   `bot/telegram_bot.py:1125` — only consumer of `collect_objects`). Each plugin's
+   `bot/openai_helper.py:3585`), `stats_block` (`/stats` extra blocks,
+   `bot/telegram_bot.py:999`), `settings_menu_buttons` (extra settings-menu button rows,
+   `bot/telegram_bot.py:1283` — only consumer of `collect_objects`). Each plugin's
    `contribute_prompt_fragment(slot, payload)` returns a string fragment (for
    `collect_fragments`) or an arbitrary object (for `collect_objects`) or `None`. Skipped
    on exception. Caller decides composition (e.g. `"\n\n".join(...)`).
@@ -119,7 +121,7 @@ through `self.db_handle` (async `DbHandle` facade: `execute`/`executemany`/`fetc
 once per plugin; tables created this way live alongside core tables but are owned by the
 plugin and are removed from `bot/database.py`.
 
-Examples in tree: `bot/plugins/hindsight_memory.py:366-386` (`hindsight_finalize_jobs`),
+Examples in tree: `bot/plugins/hindsight_memory.py:876-897` (`hindsight_finalize_jobs`),
 `bot/plugins/agent_tools.py` (`agent_plan_contracts` / `agent_plan_tasks`). Plugins that own
 a table without `ON DELETE CASCADE` to a core table are responsible for their own GC if/when
 a user-deletion mechanism is introduced.
@@ -144,41 +146,54 @@ bot, openai helper) no longer launches plugin-specific workers.
 
 - Chat modes are defined in `bot/chat_modes.yml` and loaded through `ChatModesRegistry`.
 - `OpenAIHelper` constructs the registry and validates mode tool references during init
-  (`bot/openai_helper.py:137`).
+  (`bot/openai_helper.py:253`).
 - Missing tool references in `chat_modes.yml` are logged by `validate_tools()`
-  (`bot/chat_modes_registry.py:62`).
+  (`bot/chat_modes_registry.py:67`).
 - During request preparation, the active mode can restrict allowed plugins via its `tools`
-  field; absent mode tooling defaults to `['All']` (`bot/openai_helper.py:520`).
+  field; absent mode tooling defaults to `['All']` (`bot/openai_helper.py:1067`).
 - When editing chat modes, keep plugin names aligned with loaded plugin module names, not
   human-readable descriptions.
 
 ## Telegram Handler Rules
 
 - Plugin commands are normalized through `PluginManager.get_plugin_commands()` and registered
-  in `post_init()` as command handlers or callback handlers (`bot/plugin_manager.py:395`,
-  `bot/telegram_bot.py:2003`).
+  in `post_init()` as command handlers or callback handlers (`bot/plugin_manager.py:839`,
+  `bot/telegram_bot.py:4461`).
 - Plugin command names must not include spaces; a leading `/` is stripped during normalization
-  (`bot/plugin_manager.py:450`).
+  (`bot/plugin_manager.py:901`).
 - Plugin message handlers can provide a ready handler object or a `filters.X` string/object.
-  Invalid filters are logged and skipped (`bot/telegram_bot.py:2035`,
-  `bot/telegram_bot.py:2911`).
+  Invalid filters are logged and skipped (`bot/telegram_bot.py:4374`,
+  `bot/telegram_bot.py:4411`).
 - Do not reintroduce `eval` for handler filters.
 
 ## Database Rules
 
 - `Database` is a singleton with thread-local SQLite connections and an operation `RLock`
-  (`bot/database.py:18`, `bot/database.py:31`).
+  (`bot/database.py:21`, `bot/database.py:38`).
 - New SQLite connections enable foreign keys, WAL by default, and `busy_timeout`
-  (`bot/database.py:46`).
+  (`bot/database.py:80`).
+- Async DB access (the `Database.*_async` methods and the `DbHandle` facade) routes through a
+  single dedicated worker thread — `Database._run_in_db_thread` over a `max_workers=1`
+  `ThreadPoolExecutor` — instead of bare `asyncio.to_thread`. This bounds thread-local
+  connections to one worker; the executor is torn down by `Database.shutdown()` (called from
+  `_reset_singleton` and `__del__`). The operation `RLock` is unchanged.
 - `conversation_context.context` is JSON shaped as `{"messages": [...]}`; do not migrate or
-  seed it as a bare list (`bot/database.py:570`).
+  seed it as a bare list (`bot/database.py:715`).
+- `conversation_context` carries a monotonic `version` column (schema `TARGET_SCHEMA_VERSION`
+  = 2); each `save_conversation_context()` UPDATE bumps it by one. Writes are serialized by
+  the per-operation write-lock (`transaction()` = `BEGIN IMMEDIATE`), so `version` is a
+  revision counter, not a rejecting CAS gate. Migration adds the column idempotently across
+  fresh-install, v1→v2, and legacy (no-`session_id`) paths.
 - `save_conversation_context()` persists `message_count` as the number of user-role messages
-  (`bot/database.py:198`, `bot/database.py:211`).
-- Session creation enforces `max_sessions` through `delete_oldest_session()`
-  (`bot/database.py:528`, `bot/database.py:547`).
+  (`bot/database.py:547`, `bot/database.py:563`).
+- Session creation prunes old sessions inline via `_oldest_session_ids_for_limit()`
+  (`bot/database.py:963`, `bot/database.py:1011`). Note: `delete_oldest_session()` at
+  `bot/database.py:921` is a dead method with no callers in working code; the pruning is
+  done inline inside `create_session`.
 - Keep long-running OpenAI calls outside active DB transactions. Async session-name
-  generation saves DB state first, then calls `openai_helper.generate_session_name()`
-  outside the DB write (`bot/database.py:494`, `bot/database.py:549`).
+  generation is handled by `OpenAIHelper._ensure_session_name_with_llm()` after the DB write
+  (`bot/openai_helper.py:529`); `Database.ensure_session_name_async()` at
+  `bot/database.py:647` provides a short fallback but no longer calls the LLM directly.
 
 ## Testing And Verification
 

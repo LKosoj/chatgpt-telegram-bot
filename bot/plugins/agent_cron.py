@@ -219,6 +219,10 @@ class AgentCronPlugin(Plugin):
                 user_id=int(job["user_id"]),
                 request_context=request_context,
             )
+            live = (self.jobs.get(scope) or {}).get(job_id)
+            if live is None:
+                return
+            job = live
             job["status"] = "active"
             job["last_finished_at"] = datetime.now().isoformat(timespec="seconds")
             job["last_error"] = ""
@@ -236,6 +240,10 @@ class AgentCronPlugin(Plugin):
             )
         except Exception as exc:
             logger.exception("Agent cron job %s failed", job_id)
+            live = (self.jobs.get(scope) or {}).get(job_id)
+            if live is None:
+                return
+            job = live
             job["status"] = "failed"
             job["last_error"] = str(exc)
             if not manual:
@@ -261,10 +269,11 @@ class AgentCronPlugin(Plugin):
             for jobs in self.jobs.values():
                 if not isinstance(jobs, dict):
                     continue
-                for job in jobs.values():
+                for job_id, job in jobs.items():
                     if isinstance(job, dict) and job.get("status") == "running":
-                        job["status"] = "active"
-                        changed = True
+                        if job_id not in self._running_tasks:
+                            job["status"] = "active"
+                            changed = True
             if changed:
                 self._save_jobs()
         except Exception:
@@ -273,9 +282,13 @@ class AgentCronPlugin(Plugin):
 
     def _save_jobs(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self.jobs_file), exist_ok=True)
-            with open(self.jobs_file, "w", encoding="utf-8") as fh:
+            jobs_dir = os.path.dirname(self.jobs_file)
+            if jobs_dir:
+                os.makedirs(jobs_dir, exist_ok=True)
+            tmp_path = self.jobs_file + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(self.jobs, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.jobs_file)
         except Exception:
             logger.exception("Failed to save agent cron jobs")
 
@@ -319,6 +332,11 @@ class AgentCronPlugin(Plugin):
             return
         if kind == "interval":
             seconds = int(job.get("interval_seconds") or 0)
+            if seconds <= 0:
+                logger.error("Agent cron job %s has invalid interval_seconds=%r; pausing", job.get("id"), seconds)
+                job["paused"] = True
+                job["next_run_at"] = None
+                return
             next_run = self._parse_iso(job.get("next_run_at")) or now
             while next_run <= now:
                 next_run += timedelta(seconds=seconds)
@@ -392,10 +410,13 @@ class AgentCronPlugin(Plugin):
         if match:
             seconds = self._unit_seconds(match.group(2))
             if seconds:
-                next_run = now + timedelta(seconds=int(match.group(1)) * seconds)
+                interval_seconds = int(match.group(1)) * seconds
+                if interval_seconds <= 0:
+                    return None
+                next_run = now + timedelta(seconds=interval_seconds)
                 return {
                     "schedule_type": "interval",
-                    "interval_seconds": int(match.group(1)) * seconds,
+                    "interval_seconds": interval_seconds,
                     "next_run_at": next_run.isoformat(timespec="seconds"),
                 }
 
