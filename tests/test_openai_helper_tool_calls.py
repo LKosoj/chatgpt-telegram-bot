@@ -1276,7 +1276,15 @@ async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
         and event["tool_calls"][0]["arguments"] == bad_arguments
         for event in helper.session_logger.events
     )
-    assert any(
+    outbound_arguments = [
+        message.get("tool_calls", [{}])[0].get("function", {}).get("arguments")
+        for event in helper.session_logger.events
+        if event.get("type") == "llm_request"
+        for message in event["payload"]["messages"]
+        if message.get("tool_calls")
+    ]
+    assert outbound_arguments == ["{}"]
+    assert not any(
         event.get("type") == "llm_request"
         and any(
             message.get("tool_calls", [{}])[0].get("function", {}).get("arguments") == bad_arguments
@@ -1299,7 +1307,7 @@ def test_repair_tool_call_history_emits_synthetic_tool_result():
                 "type": "function",
                 "function": {
                     "name": "chief.get_recipe",
-                    "arguments": "{}",
+                    "arguments": '{"broken":',
                 },
             }],
         },
@@ -1310,6 +1318,7 @@ def test_repair_tool_call_history_emits_synthetic_tool_result():
     messages = helper._messages_with_language_instruction(helper.conversations[1])
 
     synthetic_tool_result = helper.conversations[1][2]
+    assert helper.conversations[1][1]["tool_calls"][0]["function"]["arguments"] == "{}"
     assert synthetic_tool_result["role"] == "tool"
     assert synthetic_tool_result["tool_call_id"] == "chief_get_recipe:2"
     assert helper.conversations[1][3] == {"role": "user", "content": "continue"}

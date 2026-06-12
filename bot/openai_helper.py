@@ -83,6 +83,10 @@ _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 _TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
 def _json_for_log(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
@@ -1473,6 +1477,23 @@ class OpenAIHelper:
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
         return model_to_use in (GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS)
 
+    @staticmethod
+    def _tool_arguments_for_history(arguments: Any) -> str:
+        if isinstance(arguments, str):
+            if not arguments.strip():
+                return "{}"
+            try:
+                parsed = json.loads(arguments, parse_constant=_reject_json_constant)
+            except (TypeError, ValueError):
+                return "{}"
+            return arguments if isinstance(parsed, dict) else "{}"
+        if isinstance(arguments, dict):
+            try:
+                return json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError):
+                return "{}"
+        return "{}"
+
     def _tool_result_content(self, content: Any) -> str:
         return tool_result_content(content)
 
@@ -1486,7 +1507,7 @@ class OpenAIHelper:
                 "function": {
                     "name": call.get("model_name")
                     or (to_model_name(call["name"]) if callable(to_model_name) else call["name"]),
-                    "arguments": call.get("arguments") or "{}",
+                    "arguments": self._tool_arguments_for_history(call.get("arguments")),
                 },
                 "canonical_name": call.get("name"),
             }
@@ -2613,6 +2634,36 @@ class OpenAIHelper:
                 repaired.append(message)
                 index += 1
                 continue
+
+            sanitized_tool_call_ids = []
+            tool_calls = message.get("tool_calls") or []
+            if message.get("role") == "assistant" and tool_calls:
+                sanitized_tool_calls = []
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        sanitized_tool_calls.append(call)
+                        continue
+                    function = call.get("function")
+                    if not isinstance(function, dict):
+                        sanitized_tool_calls.append(call)
+                        continue
+                    arguments = self._tool_arguments_for_history(function.get("arguments"))
+                    if function.get("arguments") != arguments:
+                        call = dict(call)
+                        function = dict(function)
+                        function["arguments"] = arguments
+                        call["function"] = function
+                        sanitized_tool_call_ids.append(str(call.get("id") or ""))
+                    sanitized_tool_calls.append(call)
+                if sanitized_tool_call_ids:
+                    message = dict(message)
+                    message["tool_calls"] = sanitized_tool_calls
+                    changed = True
+                    logger.warning(
+                        "Sanitized invalid tool-call arguments for chat_id=%s tool_call_ids=%s",
+                        chat_id,
+                        sanitized_tool_call_ids,
+                    )
 
             expected_ids = self._tool_call_ids(message)
             if message.get("role") == "assistant" and expected_ids:
