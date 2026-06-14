@@ -111,6 +111,7 @@ _SUBAGENT_SYSTEM_PROMPT_CACHE: str | None = None
 
 _REPLAN_TRIGGER_MARKER = "[re-plan trigger-v1] "
 _REPLAN_ERROR_THRESHOLD = 2
+_VERIFY_TRIGGER_MARKER = "[verify-step-v1] "
 
 _PLAN_RULE_MARKER = "[plan-rule-v1] "
 _WORKING_CHECKPOINT_MARKER = "[working-checkpoint-v1] "
@@ -119,7 +120,9 @@ _PLAN_RULE_TEXT = (
     "шагов (несколько разных тулов, проверка промежуточных результатов, исправление ошибок) — "
     "ПЕРВЫМ ходом вызови agent_tools.manage_plan_tasks с goal/success_criteria/verification и "
     "зафиксируй план. Для тривиальных запросов (быстрый ответ из знаний, один очевидный тул, "
-    "перевод/время/факт) план НЕ создавай."
+    "перевод/время/факт) план НЕ создавай. "
+    "Перед каждым нетривиальным tool-вызовом одной строкой укажи намерение: что вызываешь и зачем. "
+    "После результата тула одной строкой оцени, продвинул ли он к цели и что делать дальше."
 )
 _CHECKPOINT_MAX_TEXT_CHARS = 1600
 _CHECKPOINT_MAX_LIST_ITEMS = 8
@@ -184,6 +187,9 @@ class AgentToolsPlugin(Plugin):
         # _pending_replan is a one-shot inject flag consumed by on_before_chat_request.
         self._tool_error_streaks: Dict[str, Dict[str, Any]] = {}
         self._pending_replan: Dict[str, Dict[str, Any]] = {}
+        # _pending_verify is a one-shot inject flag scheduled when a plan task
+        # transitions to completed; consumed by on_before_chat_request.
+        self._pending_verify: Dict[str, Dict[str, Any]] = {}
         self._replan_lock: Optional[asyncio.Lock] = None
         self._plan_scope_locks: Dict[str, asyncio.Lock] = {}
         self._load_orphaned_pending()
@@ -298,15 +304,18 @@ class AgentToolsPlugin(Plugin):
             return None
         user_id = getattr(payload, "user_id", None)
 
-        # Pop pending re-plan trigger ONCE per scope; idempotent.
+        # Pop pending re-plan / verify triggers ONCE per scope; idempotent.
         scope = compute_scope_key(chat_id, user_id)
         pending = None
+        pending_verify = None
         try:
             async with self._get_replan_lock():
                 pending = self._pending_replan.pop(scope, None)
+                pending_verify = self._pending_verify.pop(scope, None)
         except Exception:
             logging.debug("agent_tools: replan-pop failed", exc_info=True)
             pending = None
+            pending_verify = None
 
         # Cheap idempotency / mode-prompt checks BEFORE the SQL-backed
         # ``resolve_allowed_plugins`` call: this mutator runs on the hot path
@@ -365,7 +374,7 @@ class AgentToolsPlugin(Plugin):
                 logging.debug("agent_tools: checkpoint read failed", exc_info=True)
                 checkpoint = None
 
-        if not inject_plan_rule and not pending and not checkpoint:
+        if not inject_plan_rule and not pending and not pending_verify and not checkpoint:
             return None
 
         new_messages = list(messages)
@@ -395,6 +404,13 @@ class AgentToolsPlugin(Plugin):
             new_messages.insert(insert_at + injected, {
                 "role": "system",
                 "content": body,
+            })
+            injected += 1
+        if pending_verify:
+            task_id = str(pending_verify.get("task_id") or "")
+            new_messages.insert(insert_at + injected, {
+                "role": "system",
+                "content": self._verify_message_body(task_id),
             })
         return new_messages
 
@@ -1866,6 +1882,7 @@ class AgentToolsPlugin(Plugin):
         if not payload.terminal_only:
             self._tool_error_streaks.pop(scope, None)
             self._pending_replan.pop(scope, None)
+            self._pending_verify.pop(scope, None)
 
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
@@ -1949,6 +1966,14 @@ class AgentToolsPlugin(Plugin):
             return
         self._pending_replan[scope] = new_entry
 
+    def _schedule_verify(self, scope: str, task_id: str) -> None:
+        if not scope or not task_id:
+            return
+        new_entry = {"task_id": task_id}
+        if self._pending_verify.get(scope) == new_entry:
+            return
+        self._pending_verify[scope] = new_entry
+
     async def _record_tool_outcome(
         self,
         scope: str,
@@ -1995,6 +2020,15 @@ class AgentToolsPlugin(Plugin):
             f"{_REPLAN_TRIGGER_MARKER}consecutive errors on task {task_id}. "
             "Пересмотри план через manage_plan_tasks(action=update). "
             "Опиши, что не сработало, и предложи альтернативную ветку плана."
+        )
+
+    @staticmethod
+    def _verify_message_body(task_id: str) -> str:
+        return (
+            f"{_VERIFY_TRIGGER_MARKER}task {task_id} помечена completed. "
+            "Прежде чем продолжать, одной фразой подтверди, что результат закрыл "
+            "success_criteria/verification из контракта плана. Если нет — верни "
+            "задачу в работу через manage_plan_tasks(action=update)."
         )
 
     @staticmethod
@@ -2405,6 +2439,7 @@ class AgentToolsPlugin(Plugin):
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
             blocked_transitions: List[str] = []
+            completed_transitions: List[str] = []
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 content = str(item.get("content") or "").strip()
@@ -2435,6 +2470,8 @@ class AgentToolsPlugin(Plugin):
                     )
                 if status == "blocked" and previous_status != "blocked":
                     blocked_transitions.append(task_id)
+                if status == "completed" and previous_status != "completed":
+                    completed_transitions.append(task_id)
             validation_error = self._validate_plan_tasks(candidate_tasks)
             if validation_error:
                 return {"success": False, "error": validation_error}
@@ -2447,6 +2484,8 @@ class AgentToolsPlugin(Plugin):
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
                 for task_id in blocked_transitions:
                     self._schedule_replan(scope, "blocked", task_id)
+                for task_id in completed_transitions:
+                    self._schedule_verify(scope, task_id)
             return self._tasks_response(
                 action,
                 candidate_tasks,
@@ -2461,6 +2500,7 @@ class AgentToolsPlugin(Plugin):
             candidate_tasks = self._copy_plan_tasks(tasks)
             changed = contract_changed
             blocked_transitions: List[str] = []
+            completed_transitions: List[str] = []
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
@@ -2481,6 +2521,8 @@ class AgentToolsPlugin(Plugin):
                         item_changed = True
                         if status == "blocked":
                             blocked_transitions.append(task_id)
+                        if status == "completed":
+                            completed_transitions.append(task_id)
                 if "depends_on" in item:
                     depends_on = self._normalize_depends_on(item.get("depends_on"))
                     if self._normalize_depends_on(existing.get("depends_on")) != depends_on:
@@ -2496,6 +2538,8 @@ class AgentToolsPlugin(Plugin):
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
                 for task_id in blocked_transitions:
                     self._schedule_replan(scope, "blocked", task_id)
+                for task_id in completed_transitions:
+                    self._schedule_verify(scope, task_id)
             return self._tasks_response(
                 action,
                 candidate_tasks,
@@ -2515,6 +2559,7 @@ class AgentToolsPlugin(Plugin):
                 self._save_scope_plan(scope, active, contract=effective_contract)
             self._tool_error_streaks.pop(scope, None)
             self._pending_replan.pop(scope, None)
+            self._pending_verify.pop(scope, None)
             return self._tasks_response(
                 action,
                 active,
