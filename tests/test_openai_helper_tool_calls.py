@@ -1333,6 +1333,97 @@ def test_repair_tool_call_history_emits_synthetic_tool_result():
     assert "Tool result missing" in json.loads(outbound_tool_result["content"])["error"]
 
 
+def _tool_call_pair(call_id, content):
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "terminal.run",
+                    "arguments": "{}",
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": content,
+        },
+    ]
+
+
+def test_compact_old_tool_results_history_keeps_last_five_full():
+    helper = _make_helper(DummyPluginManager({}))
+    original_contents = []
+    messages = []
+    for index in range(7):
+        content = json.dumps({
+            "success": True,
+            "stdout": f"output-{index} " + ("x" * 300),
+            "file_path": f"/tmp/artifact-{index}.txt",
+        })
+        original_contents.append(content)
+        messages.extend(_tool_call_pair(f"call-{index}", content))
+    helper.conversations[1] = messages
+
+    helper._compact_old_tool_results_history(1)
+
+    tool_messages = [msg for msg in helper.conversations[1] if msg.get("role") == "tool"]
+    compacted_first = json.loads(tool_messages[0]["content"])
+    compacted_second = json.loads(tool_messages[1]["content"])
+
+    assert compacted_first["result"] == "compacted_tool_result"
+    assert compacted_first["summary"].startswith("stdout: output-0")
+    assert compacted_first["paths"] == ["/tmp/artifact-0.txt"]
+    assert compacted_first["counts"]["content_chars"] == len(original_contents[0])
+    assert compacted_first["counts"]["paths"] == 1
+    assert compacted_second["result"] == "compacted_tool_result"
+    assert [msg["content"] for msg in tool_messages[2:]] == original_contents[2:]
+
+    for offset in range(0, len(helper.conversations[1]), 2):
+        assistant_msg = helper.conversations[1][offset]
+        tool_msg = helper.conversations[1][offset + 1]
+        assert assistant_msg["tool_calls"][0]["id"] == tool_msg["tool_call_id"]
+
+
+@pytest.mark.asyncio
+async def test_add_to_history_persists_compacted_old_tool_results():
+    db = SavingDummyDB()
+    helper = _make_helper(DummyPluginManager({}), db=db)
+    messages = []
+    original_contents = []
+    for index in range(6):
+        content = json.dumps({
+            "success": True,
+            "output": f"full-result-{index}",
+        })
+        original_contents.append(content)
+        messages.extend(_tool_call_pair(f"call-{index}", content))
+    helper.conversations[1] = messages
+
+    await helper._OpenAIHelper__add_to_history(
+        1,
+        role="assistant",
+        content="final answer",
+        session_id="session-1",
+    )
+
+    saved_context = db.saved_contexts[-1][0][1]
+    saved_tool_messages = [
+        msg for msg in saved_context["messages"]
+        if msg.get("role") == "tool"
+    ]
+    compacted = json.loads(saved_tool_messages[0]["content"])
+
+    assert compacted["result"] == "compacted_tool_result"
+    assert compacted["summary"] == "output: full-result-0"
+    assert [msg["content"] for msg in saved_tool_messages[1:]] == original_contents[1:]
+    assert saved_context["messages"][-1] == {"role": "assistant", "content": "final answer"}
+
+
 @pytest.mark.asyncio
 async def test_empty_response_after_tool_calls_is_retried_for_final_answer():
     tool_spec = {

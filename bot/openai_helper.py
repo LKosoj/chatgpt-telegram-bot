@@ -25,7 +25,7 @@ import yaml
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
-from .tool_result import tool_result_content
+from .tool_result import artifact_entries_from_tool_response, tool_result_content
 from .utils import is_direct_result, encode_image, decode_image, escape_markdown
 from .plugin_manager import PluginManager
 from .database import Database
@@ -78,6 +78,8 @@ THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOT
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
 TTS_OPTIONS_CACHE_SECONDS = 300
+TOOL_RESULTS_KEEP_FULL = 5
+TOOL_RESULT_SUMMARY_CHARS = 240
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 _TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
@@ -1496,6 +1498,136 @@ class OpenAIHelper:
 
     def _tool_result_content(self, content: Any) -> str:
         return tool_result_content(content)
+
+    @staticmethod
+    def _compact_text_preview(value: Any, limit: int = TOOL_RESULT_SUMMARY_CHARS) -> str:
+        text = str(value or "").strip().replace("\r", " ").replace("\n", " ")
+        if len(text) <= limit:
+            return text
+        omitted = len(text) - limit
+        return text[:limit].rstrip() + f"...[truncated {omitted} chars]"
+
+    @staticmethod
+    def _json_payload(value: str) -> Any | None:
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _tool_result_summary(cls, payload: Any, raw_content: str) -> str:
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                return "error: " + cls._compact_text_preview(payload.get("error"))
+            if payload.get("success") is False:
+                detail = payload.get("message") or payload.get("result") or "success=false"
+                return "success=false: " + cls._compact_text_preview(detail)
+
+            direct_result = payload.get("direct_result")
+            if isinstance(direct_result, dict):
+                kind = direct_result.get("kind")
+                value = (
+                    direct_result.get("text")
+                    or direct_result.get("value")
+                    or direct_result.get("file_path")
+                    or direct_result.get("url")
+                    or direct_result.get("caption")
+                )
+                if value:
+                    prefix = f"direct_result {kind}: " if kind else "direct_result: "
+                    return prefix + cls._compact_text_preview(value)
+                if kind:
+                    return f"direct_result {kind}"
+
+            for key in ("summary", "message", "result", "output", "text", "stdout", "stderr"):
+                value = payload.get(key)
+                if value:
+                    return f"{key}: " + cls._compact_text_preview(value)
+
+            keys = ", ".join(sorted(str(key) for key in payload.keys())[:8])
+            return f"JSON result with keys: {keys}" if keys else "JSON object result"
+
+        if isinstance(payload, list):
+            return f"JSON list result with {len(payload)} item(s)"
+
+        return cls._compact_text_preview(raw_content)
+
+    @staticmethod
+    def _tool_result_paths(tool_name: str, content: str) -> list[str]:
+        paths = []
+        seen = set()
+
+        def add_path(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            path = value.strip()
+            if path and os.path.isabs(path) and path not in seen:
+                paths.append(path)
+                seen.add(path)
+
+        for entry in artifact_entries_from_tool_response(tool_name, content):
+            add_path(entry.get("path"))
+        payload = OpenAIHelper._json_payload(content)
+        if isinstance(payload, dict):
+            for key in ("path", "file_path", "value", "output_path", "artifact_path"):
+                add_path(payload.get(key))
+            for key in ("paths", "artifact_paths"):
+                values = payload.get(key)
+                if isinstance(values, list):
+                    for value in values:
+                        add_path(value)
+        return paths
+
+    def _compact_tool_message_content(self, message: dict[str, Any]) -> str:
+        content = self._tool_result_content(message.get("content", ""))
+        payload = self._json_payload(content)
+        if isinstance(payload, dict) and payload.get("result") == "compacted_tool_result":
+            return content
+
+        tool_name = str(message.get("name") or message.get("tool_call_id") or "tool")
+        paths = self._tool_result_paths(tool_name, content)
+        counts = {"content_chars": len(content)}
+        if isinstance(payload, dict):
+            counts["json_keys"] = len(payload)
+        elif isinstance(payload, list):
+            counts["items"] = len(payload)
+        if paths:
+            counts["paths"] = len(paths)
+
+        compact = {
+            "result": "compacted_tool_result",
+            "summary": self._tool_result_summary(payload, content),
+            "paths": paths,
+            "counts": counts,
+        }
+        return json.dumps(compact, ensure_ascii=False)
+
+    def _compact_old_tool_results_history(self, state_key) -> None:
+        messages = self.conversations.get(state_key)
+        if not isinstance(messages, list):
+            return
+
+        tool_indexes = [
+            index for index, message in enumerate(messages)
+            if isinstance(message, dict) and message.get("role") == "tool"
+        ]
+        if len(tool_indexes) <= TOOL_RESULTS_KEEP_FULL:
+            return
+
+        compact_indexes = set(tool_indexes[:-TOOL_RESULTS_KEEP_FULL])
+        compacted = list(messages)
+        changed = False
+        for index in compact_indexes:
+            original = messages[index]
+            message = dict(original)
+            content = self._compact_tool_message_content(message)
+            if message.get("content") != content:
+                message["content"] = content
+                compacted[index] = message
+                changed = True
+
+        if changed:
+            self.conversations[state_key] = compacted
 
     def _add_assistant_tool_calls_to_history(self, chat_id: int, tool_calls: list[dict[str, Any]]) -> None:
         state_key = self._chat_state_key(chat_id)
@@ -3031,6 +3163,7 @@ class OpenAIHelper:
             await self.reset_chat_history(chat_id, session_id=session_id)
 
         self.conversations[state_key].append({"role": role, "content": content})
+        self._compact_old_tool_results_history(state_key)
         
         # Получаем текущий контекст для сохранения с учетом session_id
         _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
