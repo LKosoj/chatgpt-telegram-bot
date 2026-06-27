@@ -21,7 +21,6 @@ import uuid
 import re
 import importlib
 import shutil
-from ..model_constants import LLMGATEWAY_HIGH_MODEL
 from .plugin import Plugin
 from urllib.parse import urlparse
 
@@ -35,6 +34,10 @@ class TimeoutException(Exception):
 class SecurityError(Exception):
     """Исключение для потенциально опасного кода"""
     pass
+
+
+def _configured_chat_model(openai_helper):
+    return (getattr(openai_helper, "config", {}) or {}).get("model")
 
 @contextmanager
 def timeout(seconds: int):
@@ -228,7 +231,7 @@ class CodeInterpreterPlugin(Plugin):
         #print(f"enhanced_prompt: {enhanced_prompt}")
         try:
             response = await self.openai.chat_completion(
-                model=LLMGATEWAY_HIGH_MODEL,
+                model=_configured_chat_model(self.openai),
                 messages=[
                     {"role": "system", "content": "Ты - самый опытный Python разработчик, который может написать код для решения любых задач. Ты можешь использовать необходимые библиотеки для решения задач. Все комментарии должны быть на русском языке, это важно! Все графики должны быть в формате png. Все текстовые сообщения должны быть на русском языке, это важно! Включай traceback в код, это важно! Используй logging.error(f'Error message: {str(e)}', exc_info=True) для вывода ошибок в код, это важно!"},
                     {"role": "user", "content": enhanced_prompt}
@@ -655,7 +658,7 @@ class CodeInterpreterPlugin(Plugin):
         """Генерирует объяснение для заданного кода."""
         try:
             response = await self.openai.chat_completion(
-                model=LLMGATEWAY_HIGH_MODEL,
+                model=_configured_chat_model(self.openai),
                 messages=[{"role": "user", "content": f"Объясни, что делает этот код:\n{code}"}],
                 max_tokens=55000,
             )

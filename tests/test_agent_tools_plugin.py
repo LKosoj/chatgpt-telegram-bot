@@ -234,14 +234,27 @@ class SkillAwarePluginManager(FakePluginManager):
 
 
 class FakeLLMHelper:
-    def __init__(self, completions=None, plugin_manager=None, model_name="llmgateway/high"):
+    def __init__(
+        self,
+        completions=None,
+        plugin_manager=None,
+        model_name="llmgateway/high",
+        model_choices=None,
+    ):
         self.completions = completions or FakeCompletions()
         self.client = SimpleNamespace(chat=SimpleNamespace(completions=self.completions))
         self.plugin_manager = plugin_manager or FakePluginManager()
         self.model_name = model_name
+        self.config = {
+            "model": model_name,
+            "model_choices": list(model_choices or [model_name]),
+        }
 
     def get_current_model(self, user_id, session_id=None):
         return self.model_name
+
+    def get_model_choices(self):
+        return list(self.config["model_choices"])
 
     def get_output_max_tokens(self):
         return MAX_OUTPUT_TOKENS
@@ -388,6 +401,9 @@ def test_agent_tools_registers_specs_and_handlers():
     ask_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_ask_telegram_user")
     assert ask_spec["parameters"]["required"] == ["question", "options"]
     assert ask_spec["parameters"]["properties"]["options"]["minItems"] == 1
+    run_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_run_subagents")
+    subagent_model = run_spec["parameters"]["properties"]["subagents"]["items"]["properties"]["model"]
+    assert "enum" not in subagent_model
     plan_spec = next(spec["function"] for spec in specs if spec["function"]["name"] == "agent_tools_manage_plan_tasks")
     assert "more than two steps" in plan_spec["description"]
     task_props = plan_spec["parameters"]["properties"]["tasks"]["items"]["properties"]
@@ -1247,7 +1263,10 @@ async def test_run_subagents_applies_per_subagent_overrides(tmp_path):
 async def test_run_subagents_applies_per_subagent_model_override(tmp_path):
     plugin = AgentToolsPlugin()
     plugin.initialize(storage_root=str(tmp_path))
-    helper = FakeLLMHelper(model_name="llmgateway/high")
+    helper = FakeLLMHelper(
+        model_name="model-main",
+        model_choices=["model-main", "model-light"],
+    )
 
     await plugin.execute(
         "run_subagents",
@@ -1255,12 +1274,12 @@ async def test_run_subagents_applies_per_subagent_model_override(tmp_path):
         chat_id=10,
         user_id=42,
         subagents=[
-            {"id": "a1", "role": "r", "task": "t", "model": "llmgateway/light_model"},
+            {"id": "a1", "role": "r", "task": "t", "model": "model-light"},
         ],
     )
 
     assert helper.completions.calls
-    assert helper.completions.calls[0]["model"] == "llmgateway/light_model"
+    assert helper.completions.calls[0]["model"] == "model-light"
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,7 @@ def _make_db():
         export_sessions_to_yaml=MagicMock(return_value=None),
         get_user_settings=MagicMock(return_value=None),
         save_user_settings=MagicMock(),
+        save_user_model=MagicMock(),
         save_conversation_context=MagicMock(),
         get_conversation_context=MagicMock(return_value=({"messages": []}, "HTML", 0.1, 80, "session-1")),
         get_active_session_id=MagicMock(return_value="session-1"),
@@ -216,6 +217,7 @@ async def test_unauthorized_prompt_selection_does_not_mutate_mode_or_context():
         "session:switch:session-1",
         "session:delete:session-1",
         "session:export",
+        "session:set_model:0",
     ],
 )
 async def test_unauthorized_session_callback_does_not_mutate_db(callback_data):
@@ -230,8 +232,46 @@ async def test_unauthorized_session_callback_does_not_mutate_db(callback_data):
     bot.db.switch_active_session.assert_not_called()
     bot.db.delete_session.assert_not_called()
     bot.db.export_sessions_to_yaml.assert_not_called()
+    bot.db.save_user_model.assert_not_called()
     bot.openai.reset_chat_history.assert_not_called()
     bot.reset.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_change_model_shows_openai_model_choices():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.config = {
+        "model": "model-a",
+        "model_choices": ["model-a", "model-b"],
+    }
+    bot.openai.get_current_model.return_value = "model-a"
+    update = FakeCallbackUpdate("session:change_model", user_id=999)
+
+    await bot.handle_session_callback(update, _make_context())
+
+    text = update.callback_query.edit_message_text.await_args.kwargs["text"]
+    reply_markup = update.callback_query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert "OPENAI_MODEL" in text
+    assert reply_markup.inline_keyboard[0][0].text == "✓ model-a"
+    assert reply_markup.inline_keyboard[1][0].text == "model-b"
+    assert reply_markup.inline_keyboard[1][0].callback_data == "session:set_model:1"
+
+
+@pytest.mark.asyncio
+async def test_session_set_model_saves_selected_openai_model_choice():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.config = {
+        "model": "model-a",
+        "model_choices": ["model-a", "model-b"],
+    }
+    bot.reset = AsyncMock()
+    update = FakeCallbackUpdate("session:set_model:1", user_id=999)
+    context = _make_context()
+
+    await bot.handle_session_callback(update, context)
+
+    bot.db.save_user_model.assert_called_once_with(999, "model-b")
+    bot.reset.assert_awaited_once_with(update, context)
 
 
 @pytest.mark.asyncio

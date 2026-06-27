@@ -173,7 +173,7 @@ Startup order:
 | `bot/conversation_key.py` | `(chat_id, thread_id)` keying for per-conversation locking |
 | `bot/i18n.py` | Bot localization helper |
 | `bot/html_utils.py` | Markdown / HTML conversion utilities |
-| `bot/model_constants.py` | Default model identifiers (`LLMGATEWAY_HIGH_MODEL`, …) |
+| `bot/model_constants.py` | Legacy model family constants used for capability checks and token limits |
 | `bot/prompts/subagent_system.md` | System prompt for spawned subagents |
 | `examples/` | Sample MCP server / client (`mcp_server_example.py`, `mcp_stdio_*.py`) |
 | `tests/` | Top-level pytest suite |
@@ -258,9 +258,9 @@ by the runtime. **Bold** rows are required.
 | Variable | Default | Type | Purpose |
 |---|---|---|---|
 | `OPENAI_BASE_URL` | `` | url | Gateway / OpenAI-compatible base URL (e.g. `http://gateway.example/v1`). |
-| `OPENAI_MODEL` | `llmgateway/high` | string | Main assistant model. |
-| `LIGHT_MODEL` | `llmgateway/light_model` | string | Fast model used for classification, routing, naming, intent detection. |
-| `BIG_MODEL_TO_USE` | `llmgateway/big_context` | string | Large-context model (used for big history compactions and as a vision fallback). |
+| `OPENAI_MODEL` | `llmgateway/high` | csv strings | Main assistant model list. The first entry is the default; session model selection is limited to this list. |
+| `LIGHT_MODEL` | `llmgateway/light_model` | csv strings | Fast model list for classification, routing, naming, intent detection. The first entry is used. |
+| `BIG_MODEL_TO_USE` | `llmgateway/big_context` | csv strings | Large-context model list (used for big history compactions and as a vision fallback). The first entry is used. |
 | `MAX_TOKENS` | model-dependent | int | Max output tokens per response. |
 | `MAX_HISTORY_SIZE` | `15` | int | Max chat-history messages kept in memory before summarisation. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Age window after which conversations are reset. |
@@ -283,21 +283,21 @@ by the runtime. **Bold** rows are required.
 | Variable | Default | Type | Purpose |
 |---|---|---|---|
 | `ENABLE_IMAGE_GENERATION` | `true` | bool | Toggle image generation and the `/image` command. |
-| `IMAGE_MODEL` | `llmgateway/ai-klein-generation` | string | Image generation model. |
+| `IMAGE_MODEL` | `llmgateway/ai-klein-generation` | csv strings | Image generation model list. The first entry is used. |
 | `IMAGE_QUALITY` | `standard` | string | `standard` or `hd`. |
 | `IMAGE_STYLE` | `vivid` | string | `vivid` or `natural`. |
 | `IMAGE_SIZE` | `512x512` | string | Output size, e.g. `1024x1024`. |
 | `IMAGE_FORMAT` | `photo` | string | `photo` or `document`. |
 | `ENABLE_VISION` | `true` | bool | Toggle vision over photos / image documents. |
-| `VISION_MODEL` | `llmgateway/big_context` | string | Vision model. |
+| `VISION_MODEL` | `llmgateway/big_context` | csv strings | Vision model list. The first entry is used. |
 | `VISION_PROMPT` | `What is in this image` | string | Default vision instruction. |
 | `VISION_DETAIL` | `auto` | string | `low`, `high`, or `auto`. |
 | `VISION_MAX_TOKENS` | `1000` | int | Max tokens for vision answers. |
 | `ENABLE_VISION_FOLLOW_UP_QUESTIONS` | `true` | bool | Allow follow-up Q&A on the most recent image. |
 | `ENABLE_TRANSCRIPTION` | `true` | bool | Toggle voice / audio / video transcription. |
-| `TRANSCRIPTION_MODEL` | `llmgateway/whisper-large-v3` | string | Transcription model. |
+| `TRANSCRIPTION_MODEL` | `llmgateway/whisper-large-v3` | csv strings | Transcription model list. The first entry is used. |
 | `ENABLE_TTS_GENERATION` | `true` | bool | Toggle the `/tts` command and TTS plugins. |
-| `TTS_MODEL` | `llmgateway/silero-tts` | string | TTS model. |
+| `TTS_MODEL` | `llmgateway/silero-tts` | csv strings | TTS model list. The first entry is used. |
 | `TTS_VOICE` | `kseniya` | string | TTS voice. |
 | `TTS_RESPONSE_FORMAT` | `wav` | string | TTS output format (`wav`, `mp3`, …). |
 | `VOICE_REPLY_WITH_TRANSCRIPT_ONLY` | `false` | bool | Reply to voice messages with the transcript only. |

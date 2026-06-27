@@ -15,9 +15,14 @@ from functools import lru_cache
 from datetime import datetime
 import yaml
 
-from .model_constants import LLMGATEWAY_HIGH_MODEL
-
 logger = logging.getLogger(__name__)
+
+
+def _first_openai_model_from_env() -> str:
+    return next(
+        (model.strip() for model in os.getenv("OPENAI_MODEL", "").split(",") if model.strip()),
+        "",
+    )
 
 
 class Database:
@@ -659,7 +664,7 @@ class Database:
                 else:
                     # Строки нет — обычная вставка с version=0.
                     logger.info(f"Создаем новую запись для сессии {session_id}")
-                    model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
+                    model = openai_helper.config['model'] if openai_helper else _first_openai_model_from_env()
                     cursor.execute('''
                         UPDATE conversation_context
                         SET is_active = 0
@@ -1079,7 +1084,7 @@ class Database:
             max_tokens_percent = 100
             system_message = None
             new_session_id = str(uuid.uuid4())
-            model = openai_helper.config['model'] if openai_helper else LLMGATEWAY_HIGH_MODEL
+            model = openai_helper.config['model'] if openai_helper else _first_openai_model_from_env()
             now = datetime.now()
 
             with self.transaction() as conn:
@@ -1333,7 +1338,7 @@ class Database:
                             COALESCE(created_at, CURRENT_TIMESTAMP),
                             COALESCE(updated_at, CURRENT_TIMESTAMP)
                         FROM conversation_context_old
-                    ''', (default_context, LLMGATEWAY_HIGH_MODEL))
+                    ''', (default_context, _first_openai_model_from_env()))
 
                     cursor.execute('DROP TABLE conversation_context_old')
                     logger.info('Миграция conversation_context завершена успешно')

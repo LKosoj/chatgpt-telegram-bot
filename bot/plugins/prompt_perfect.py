@@ -2,7 +2,6 @@
 import logging
 from typing import Any, Dict
 
-from ..model_constants import LLMGATEWAY_LIGHT_MODEL
 from .plugin import Plugin
 
 class PromptPerfectPlugin(Plugin):
@@ -84,7 +83,7 @@ class PromptPerfectPlugin(Plugin):
         )
 
         config = getattr(helper, "config", {}) or {}
-        model = config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+        model = config.get('light_model') or config.get('model')
         response = await helper.chat_completion(
             model=model,
             messages=[

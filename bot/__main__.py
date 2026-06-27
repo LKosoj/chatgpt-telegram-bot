@@ -5,12 +5,6 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 from .model_constants import (
-    LLMGATEWAY_BIG_CONTEXT_MODEL,
-    LLMGATEWAY_HIGH_MODEL,
-    LLMGATEWAY_IMAGE_GENERATION_MODEL,
-    LLMGATEWAY_LIGHT_MODEL,
-    LLMGATEWAY_TRANSCRIPTION_MODEL,
-    LLMGATEWAY_TTS_MODEL,
     MAX_OUTPUT_TOKENS,
 )
 from .plugin_manager import PluginManager
@@ -57,6 +51,19 @@ def _parse_numeric_env(name, default, cast):
         return default
 
 
+def parse_model_list_env(name, *, required=False):
+    raw = os.environ.get(name, '')
+    models = [model.strip() for model in raw.split(',') if model.strip()]
+    if required and not models:
+        raise ValueError(f'{name} must contain at least one model')
+    return models
+
+
+def first_model_env(name, *, required=False):
+    models = parse_model_list_env(name, required=required)
+    return models[0] if models else ''
+
+
 def validate_telegram_base_url(value):
     if not value:
         return ''
@@ -87,7 +94,8 @@ def main():
         exit(1)
 
     # Setup configurations
-    model = os.environ.get('OPENAI_MODEL', LLMGATEWAY_HIGH_MODEL)
+    model_choices = parse_model_list_env('OPENAI_MODEL', required=True)
+    model = model_choices[0]
     functions_available = are_functions_available(model=model)
     max_tokens_default = default_max_tokens(model=model)
     api_key = os.environ['OPENAI_API_KEY']
@@ -107,12 +115,13 @@ def main():
         'output_max_tokens': int(os.environ.get('OUTPUT_MAX_TOKENS', MAX_OUTPUT_TOKENS)),
         'n_choices': int(os.environ.get('N_CHOICES', 1)),
         'temperature': float(os.environ.get('TEMPERATURE', 1.0)),
-        'image_model': os.environ.get('IMAGE_MODEL', LLMGATEWAY_IMAGE_GENERATION_MODEL),
+        'image_model': first_model_env('IMAGE_MODEL'),
         'image_quality': os.environ.get('IMAGE_QUALITY', 'standard'),
         'image_style': os.environ.get('IMAGE_STYLE', 'vivid'),
         'image_size': os.environ.get('IMAGE_SIZE', '512x512'),
         'auto_chat_modes': os.environ.get('AUTO_CHAT_MODES', 'false').lower() == 'true',
         'model': model,
+        'model_choices': model_choices,
         'enable_functions': os.environ.get('ENABLE_FUNCTIONS', str(functions_available)).lower() == 'true',
         'functions_max_consecutive_calls': int(os.environ.get('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10)),
         'presence_penalty': float(os.environ.get('PRESENCE_PENALTY', 0.0)),
@@ -120,19 +129,19 @@ def main():
         'bot_language': bot_language,
         'show_plugins_used': os.environ.get('SHOW_PLUGINS_USED', 'false').lower() == 'true',
         'whisper_prompt': os.environ.get('WHISPER_PROMPT', ''),
-        'vision_model': os.environ.get('VISION_MODEL', LLMGATEWAY_BIG_CONTEXT_MODEL),
+        'vision_model': first_model_env('VISION_MODEL'),
         'enable_vision_follow_up_questions': os.environ.get('ENABLE_VISION_FOLLOW_UP_QUESTIONS', 'true').lower() == 'true',
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
         'vision_detail': os.environ.get('VISION_DETAIL', 'auto'),
         'vision_max_tokens': int(os.environ.get('VISION_MAX_TOKENS', '1000')),
-        'tts_model': os.environ.get('TTS_MODEL', LLMGATEWAY_TTS_MODEL),
+        'tts_model': first_model_env('TTS_MODEL'),
         'tts_voice': os.environ.get('TTS_VOICE', 'kseniya').lower(),
         'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
-        'transcription_model': os.environ.get('TRANSCRIPTION_MODEL', LLMGATEWAY_TRANSCRIPTION_MODEL),
+        'transcription_model': first_model_env('TRANSCRIPTION_MODEL'),
         'yandex_api_token': os.environ.get('YANDEX_API_TOKEN', ''),
         'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
-        'big_model_to_use': os.environ.get('BIG_MODEL_TO_USE', LLMGATEWAY_BIG_CONTEXT_MODEL),
-        'light_model': os.environ.get('LIGHT_MODEL', LLMGATEWAY_LIGHT_MODEL),
+        'big_model_to_use': first_model_env('BIG_MODEL_TO_USE'),
+        'light_model': first_model_env('LIGHT_MODEL'),
         # T4: context summarisation knobs. ``SUMMARY_MODEL`` empty -> helper
         # falls back to ``light_model``/``model``.
         'summary_enabled': parse_bool_env('SUMMARY_ENABLED', True),
@@ -192,7 +201,7 @@ def main():
         'image_prices': [float(i) for i in os.environ.get('IMAGE_PRICES', "0.016,0.018,0.02").split(",")],
         'vision_token_price': float(os.environ.get('VISION_TOKEN_PRICE', '0.01')),
         'image_receive_mode': os.environ.get('IMAGE_FORMAT', "photo"),
-        'tts_model': os.environ.get('TTS_MODEL', LLMGATEWAY_TTS_MODEL),
+        'tts_model': first_model_env('TTS_MODEL'),
         'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'tts_prices': [float(i) for i in os.environ.get('TTS_PRICES', "0.015,0.030").split(",")],
         'transcription_price': float(os.environ.get('TRANSCRIPTION_PRICE', 0.006)),

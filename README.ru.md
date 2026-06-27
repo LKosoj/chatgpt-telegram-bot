@@ -180,7 +180,7 @@ LLMGateway-маршрутизации, управляемых tool calls, име
 | `bot/conversation_key.py` | Ключ `(chat_id, thread_id)` для пер-чатовой сериализации |
 | `bot/i18n.py` | Локализация UI |
 | `bot/html_utils.py` | Конвертация Markdown / HTML |
-| `bot/model_constants.py` | Дефолтные идентификаторы моделей (`LLMGATEWAY_HIGH_MODEL`, …) |
+| `bot/model_constants.py` | Legacy-константы семейств моделей для capability checks и лимитов токенов |
 | `bot/prompts/subagent_system.md` | Системный промпт для субагентов |
 | `examples/` | Пример MCP-сервера / клиента (`mcp_server_example.py`, `mcp_stdio_*.py`) |
 | `tests/` | Основной набор pytest |
@@ -265,9 +265,9 @@ docker compose up
 | Переменная | По умолчанию | Тип | Назначение |
 |---|---|---|---|
 | `OPENAI_BASE_URL` | `` | url | Base URL gateway / OpenAI-совместимого API (например, `http://gateway.example/v1`). |
-| `OPENAI_MODEL` | `llmgateway/high` | string | Основная модель ассистента. |
-| `LIGHT_MODEL` | `llmgateway/light_model` | string | Быстрая модель для классификации, маршрутизации, нейминга, распознавания намерений. |
-| `BIG_MODEL_TO_USE` | `llmgateway/big_context` | string | Модель для большого контекста (используется при компактизации истории и как фолбэк для vision). |
+| `OPENAI_MODEL` | `llmgateway/high` | csv strings | Список основных моделей ассистента. Первая запись используется по умолчанию; выбор модели сессии ограничен этим списком. |
+| `LIGHT_MODEL` | `llmgateway/light_model` | csv strings | Список быстрых моделей для классификации, маршрутизации, нейминга, распознавания намерений. Используется первая запись. |
+| `BIG_MODEL_TO_USE` | `llmgateway/big_context` | csv strings | Список моделей для большого контекста (используется при компактизации истории и как фолбэк для vision). Используется первая запись. |
 | `MAX_TOKENS` | зависит от модели | int | Лимит выходных токенов на ответ. |
 | `MAX_HISTORY_SIZE` | `15` | int | Сколько сообщений истории держать в памяти до суммаризации. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Возраст разговора, после которого он сбрасывается. |
@@ -290,21 +290,21 @@ docker compose up
 | Переменная | По умолчанию | Тип | Назначение |
 |---|---|---|---|
 | `ENABLE_IMAGE_GENERATION` | `true` | bool | Включить генерацию изображений и команду `/image`. |
-| `IMAGE_MODEL` | `llmgateway/ai-klein-generation` | string | Модель генерации. |
+| `IMAGE_MODEL` | `llmgateway/ai-klein-generation` | csv strings | Список моделей генерации. Используется первая запись. |
 | `IMAGE_QUALITY` | `standard` | string | `standard` или `hd`. |
 | `IMAGE_STYLE` | `vivid` | string | `vivid` или `natural`. |
 | `IMAGE_SIZE` | `512x512` | string | Размер, например `1024x1024`. |
 | `IMAGE_FORMAT` | `photo` | string | `photo` или `document`. |
 | `ENABLE_VISION` | `true` | bool | Включить vision над фото / image-документами. |
-| `VISION_MODEL` | `llmgateway/big_context` | string | Vision-модель. |
+| `VISION_MODEL` | `llmgateway/big_context` | csv strings | Список vision-моделей. Используется первая запись. |
 | `VISION_PROMPT` | `What is in this image` | string | Дефолтная инструкция для vision. |
 | `VISION_DETAIL` | `auto` | string | `low`, `high` или `auto`. |
 | `VISION_MAX_TOKENS` | `1000` | int | Лимит токенов для vision-ответа. |
 | `ENABLE_VISION_FOLLOW_UP_QUESTIONS` | `true` | bool | Разрешить follow-up-вопросы по последнему изображению. |
 | `ENABLE_TRANSCRIPTION` | `true` | bool | Включить транскрипцию голосовых / аудио / видео. |
-| `TRANSCRIPTION_MODEL` | `llmgateway/whisper-large-v3` | string | Модель транскрипции. |
+| `TRANSCRIPTION_MODEL` | `llmgateway/whisper-large-v3` | csv strings | Список моделей транскрипции. Используется первая запись. |
 | `ENABLE_TTS_GENERATION` | `true` | bool | Включить команду `/tts` и TTS-плагины. |
-| `TTS_MODEL` | `llmgateway/silero-tts` | string | TTS-модель. |
+| `TTS_MODEL` | `llmgateway/silero-tts` | csv strings | Список TTS-моделей. Используется первая запись. |
 | `TTS_VOICE` | `kseniya` | string | Голос. |
 | `TTS_RESPONSE_FORMAT` | `wav` | string | Формат аудио на выходе (`wav`, `mp3`, …). |
 | `VOICE_REPLY_WITH_TRANSCRIPT_ONLY` | `false` | bool | Отвечать на голосовое только транскриптом. |

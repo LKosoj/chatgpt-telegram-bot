@@ -31,22 +31,15 @@ from .plugin_manager import PluginManager
 from .database import Database
 from .model_constants import (
     LLMGATEWAY_BIG_CONTEXT_MODEL,
-    LLMGATEWAY_CHAT_MODELS,
     LLMGATEWAY_HIGH_MODEL,
-    LLMGATEWAY_IMAGE_GENERATION_MODEL,
     LLMGATEWAY_LIGHT_MODEL,
     MAX_OUTPUT_TOKENS,
-    LLMGATEWAY_TRANSCRIPTION_MODEL,
-    LLMGATEWAY_TTS_MODEL,
-    GPT_4_VISION_MODELS,
     GPT_4O_MODELS,
-    GPT_5_MODELS,
     O_MODELS,
     ANTHROPIC,
     GOOGLE,
     MISTRALAI,
     DEEPSEEK,
-    LLAMA,
     PERPLEXITY,
     MOONSHOTAI,
     QWEN,
@@ -197,7 +190,11 @@ def are_functions_available(model: str) -> bool:
     """
     Whether the given model supports functions
     """
-    return model in LLMGATEWAY_CHAT_MODELS
+    if not model:
+        return False
+    if model in ("gpt-3.5-turbo-0301", "gpt-4-0314", "gpt-4-32k-0314"):
+        return False
+    return True
 
 
 def _read_file_bytes(path: str) -> bytes:
@@ -265,12 +262,13 @@ class OpenAIHelper:
         self.config.setdefault('frequency_penalty', 0.0)
         self.config.setdefault('vision_detail', 'auto')
         self.config.setdefault('n_choices', 1)
-        self.config.setdefault('light_model', LLMGATEWAY_LIGHT_MODEL)
-        self.config.setdefault('big_model_to_use', LLMGATEWAY_BIG_CONTEXT_MODEL)
-        self.config.setdefault('tts_model', LLMGATEWAY_TTS_MODEL)
+        self.config.setdefault('model_choices', [self.config['model']])
+        self.config.setdefault('light_model', '')
+        self.config.setdefault('big_model_to_use', '')
+        self.config.setdefault('tts_model', '')
         self.config.setdefault('tts_voice', 'kseniya')
         self.config.setdefault('tts_response_format', 'wav')
-        self.config.setdefault('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL)
+        self.config.setdefault('transcription_model', '')
         # T4: summary defaults. ``summary_model`` defaults to '' meaning
         # ``_summarise_window`` falls back to ``light_model``/``model``.
         self.config.setdefault('summary_enabled', True)
@@ -303,7 +301,7 @@ class OpenAIHelper:
         ]
         response = await self._timed_create(
             kind='reply_intent',
-            model=self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            model=self.config.get('light_model') or self.config.get('model'),
             messages=messages,
             temperature=0.0,
             max_tokens=1000,
@@ -620,7 +618,7 @@ class OpenAIHelper:
             if model:
                 model_to_use = model
             else:
-                model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+                model_to_use = self.config.get('light_model') or self.config.get('model')
             logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
@@ -1128,7 +1126,7 @@ class OpenAIHelper:
         if user_messages:
             return
 
-        model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+        model_to_use = self.config.get('light_model') or self.config.get('model')
         auto_mode_prompt = await self._build_auto_chat_mode_prompt(
             query, chat_id=chat_id, user_id=user_id
         )
@@ -1477,7 +1475,7 @@ class OpenAIHelper:
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
-        return model_to_use in (GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS)
+        return model_to_use in GPT_4O_MODELS or model_to_use in self.get_model_choices()
 
     @staticmethod
     def _tool_arguments_for_history(arguments: Any) -> str:
@@ -1956,7 +1954,7 @@ class OpenAIHelper:
             image_args = {
                 "prompt": prompt,
                 "n": 1,
-                "model": self.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+                "model": self.config.get("image_model"),
                 "size": self.config["image_size"],
                 "extra_headers": { "X-Title": "tgBot" },
             }
@@ -1988,7 +1986,7 @@ class OpenAIHelper:
             response = await self.gateway_client.image_edit_file(
                 prompt,
                 image_bytes,
-                model=self.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+                model=self.config.get("image_model"),
             )
             return extract_image_result(response)
         except Exception as e:
@@ -2065,7 +2063,7 @@ class OpenAIHelper:
         return list(models)
 
     async def get_available_tts_voices(self, model: str | None = None) -> list[str]:
-        model_to_use = model or self.config.get('tts_model', LLMGATEWAY_TTS_MODEL)
+        model_to_use = model or self.config.get('tts_model')
         cache_entry = self._tts_voices_cache.get(model_to_use)
         if self._cache_is_fresh(cache_entry):
             return list(cache_entry[1])
@@ -2124,7 +2122,7 @@ class OpenAIHelper:
             audio_bytes = await asyncio.to_thread(_read_file_bytes, filename)
             prompt_text = self.config['whisper_prompt']
             result = await self.client.audio.transcriptions.create(
-                model=self.config.get('transcription_model', LLMGATEWAY_TRANSCRIPTION_MODEL),
+                model=self.config.get('transcription_model'),
                 file=(os.path.basename(filename), audio_bytes),
                 prompt=prompt_text,
                 response_format="text",
@@ -3135,7 +3133,7 @@ class OpenAIHelper:
                 "name": model_function_name,
                 "content": content,
             })
-        elif model_to_use in (O_MODELS + GPT_4O_MODELS + LLMGATEWAY_CHAT_MODELS):
+        elif model_to_use in (O_MODELS + GPT_4O_MODELS) or model_to_use in self.get_model_choices():
             # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
             # The 'function' role is no longer supported in OpenAI API as of 2025
             function_result = f"Function {function_name} returned: {content}"
@@ -3495,17 +3493,8 @@ class OpenAIHelper:
         except KeyError:
             encoding = tiktoken.get_encoding("cl100k_base")
 
-        supported_models = (
-            GPT_4_VISION_MODELS + GPT_4O_MODELS + O_MODELS + 
-            ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + 
-            PERPLEXITY + LLAMA + MOONSHOTAI + QWEN + GPT_5_MODELS +
-            LLMGATEWAY_CHAT_MODELS
-        )
-        if model in supported_models:
-            tokens_per_message = 3
-            tokens_per_name = 1
-        else:
-            raise NotImplementedError(f"""num_tokens_from_messages() is not implemented for model {model}.""")
+        tokens_per_message = 3
+        tokens_per_name = 1
         num_tokens = 0
         for message in messages:
             num_tokens += tokens_per_message
@@ -3643,7 +3632,7 @@ class OpenAIHelper:
             - Избегать слишком общих названий
             """
             
-            model_to_use = self.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+            model_to_use = self.config.get('light_model') or self.config.get('model')
             response = await self.chat_completion(
                 model=model_to_use,
                 messages=[
@@ -3670,6 +3659,18 @@ class OpenAIHelper:
             logger.error(f"Ошибка генерации названия сессии: {e}")
             return f"Сессия {dt.now().strftime('%d.%m')}", 0
 
+    def get_model_choices(self) -> list[str]:
+        choices = self.config.get('model_choices') or []
+        if isinstance(choices, str):
+            models = [model.strip() for model in choices.split(',') if model.strip()]
+        else:
+            models = [str(model).strip() for model in choices if str(model).strip()]
+
+        default_model = str(self.config.get('model') or '').strip()
+        if default_model and default_model not in models:
+            models.insert(0, default_model)
+        return models
+
     def get_current_model(self, user_id: int = None, session_id: str | None = None) -> str:
         """
         Получает текущую модель с учетом приоритетов:
@@ -3695,12 +3696,11 @@ class OpenAIHelper:
                 active_session = next((s for s in sessions if s.get('is_active')), None)
                 session_model = active_session.get('model', '') if active_session else ''
 
-            # Проверяем модель в сессии, но используем только разрешенные llmgateway модели.
-            if session_model in LLMGATEWAY_CHAT_MODELS:
+            if session_model in self.get_model_choices():
                 logger.info(f"Модель из сессии: {session_model}")
                 return session_model
             if session_model:
-                logger.info(f"Игнорируем неподдерживаемую модель из сессии: {session_model}")
+                logger.info(f"Игнорируем модель из сессии вне OPENAI_MODEL: {session_model}")
                             
         # Возвращаем модель по умолчанию
         logger.info(f"Модель по умолчанию: {self.config['model']}")

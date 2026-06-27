@@ -121,6 +121,15 @@ class SessionModelDB(DummyDB):
         return sessions
 
 
+class UnsupportedSessionModelDB(DummyDB):
+    def list_user_sessions(self, user_id, is_active=1):
+        return [{
+            "session_id": "custom-session",
+            "is_active": 1,
+            "model": "model-outside-openai-model",
+        }]
+
+
 class OwnerAwareSessionModelDB(DummyDB):
     def __init__(self):
         super().__init__()
@@ -375,6 +384,7 @@ def _make_helper(plugin_manager, db=None, client=None):
         "image_size": "512x512",
         "auto_chat_modes": False,
         "model": "llmgateway/high",
+        "model_choices": ["llmgateway/high", "llmgateway/light_model"],
         "enable_functions": True,
         "functions_max_consecutive_calls": 2,
         "presence_penalty": 0.0,
@@ -413,6 +423,21 @@ def test_get_current_model_prefers_explicit_session_model():
 
     assert helper.get_current_model(1, session_id="old-session") == "llmgateway/light_model"
     assert helper.get_current_model(1) == "llmgateway/high"
+
+
+def test_get_current_model_ignores_session_model_outside_openai_model_list():
+    helper = _make_helper(DummyPluginManager({}), db=UnsupportedSessionModelDB())
+
+    assert helper.get_current_model(1) == "llmgateway/high"
+
+
+def test_token_counting_allows_configured_model_ids_not_hardcoded():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.config["model"] = "gateway/custom-main"
+    helper.config["model_choices"] = ["gateway/custom-main"]
+    helper.conversations[1] = [{"role": "user", "content": "hello"}]
+
+    assert helper.get_max_tokens("gateway/custom-main", 80, 1) > 0
 
 
 @pytest.mark.asyncio

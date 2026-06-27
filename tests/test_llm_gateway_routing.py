@@ -3,11 +3,11 @@ import types
 import pytest
 
 from bot.model_constants import (
-    GPT_ALL_MODELS,
     LLMGATEWAY_BIG_CONTEXT_MODEL,
     LLMGATEWAY_HIGH_MODEL,
     LLMGATEWAY_LIGHT_MODEL,
 )
+from bot.openai_helper import are_functions_available
 from bot.plugins.web_research import WebResearchPlugin
 
 
@@ -46,6 +46,9 @@ class FakeHelper:
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)
 
+    async def _timed_create(self, kind, **kwargs):
+        return await self.chat_completion(**kwargs)
+
 
 def _assert_user_message_mentions_json(messages):
     """OpenAI Responses API requires the literal word 'json' in the input
@@ -56,12 +59,8 @@ def _assert_user_message_mentions_json(messages):
     assert any("json" in m["content"].lower() for m in user_messages)
 
 
-def test_llmgateway_models_are_the_only_chat_models():
-    assert GPT_ALL_MODELS == (
-        LLMGATEWAY_HIGH_MODEL,
-        LLMGATEWAY_LIGHT_MODEL,
-        LLMGATEWAY_BIG_CONTEXT_MODEL,
-    )
+def test_custom_configured_chat_model_can_use_functions():
+    assert are_functions_available("gateway/custom-main") is True
 
 
 @pytest.mark.asyncio

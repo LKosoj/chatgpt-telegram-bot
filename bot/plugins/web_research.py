@@ -3,7 +3,6 @@ import logging
 import re
 from typing import Dict, List
 
-from ..model_constants import LLMGATEWAY_LIGHT_MODEL
 from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ class WebResearchPlugin(Plugin):
         ]
 
     async def _choose_research_depth(self, helper, query: str) -> dict[str, str]:
-        model = helper.config.get('light_model', LLMGATEWAY_LIGHT_MODEL)
+        model = helper.config.get('light_model') or helper.config.get('model')
         response = await helper.chat_completion(
             model=model,
             messages=[

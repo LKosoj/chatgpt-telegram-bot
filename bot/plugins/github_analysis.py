@@ -6,7 +6,6 @@ import json
 from typing import Dict
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
-from ..model_constants import LLMGATEWAY_HIGH_MODEL
 from .plugin import Plugin
 
 #logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,7 +16,6 @@ class GitHubCodeAnalysisPlugin(Plugin):
 
     def __init__(self):
         super().__init__()
-        self.model = LLMGATEWAY_HIGH_MODEL
         self.max_tokens = int(os.environ.get('MAX_TOKENS', 1000))
         self.temperature = float(os.environ.get('TEMPERATURE', 1.0))
 
@@ -142,9 +140,10 @@ class GitHubCodeAnalysisPlugin(Plugin):
             prompt = "Provide insights and suggestions"
         logging.info(f"prompt = {prompt}")
         prompt = f"We have some code written in {language}. {prompt}:\n{code}\n"
+        model = (getattr(self.openai, "config", {}) or {}).get("model")
 
         completion = await self.openai.chat_completion(
-            model=self.model,
+            model=model,
             messages=[{"role": "system", "content": prompt}],
             temperature=self.temperature,
             max_tokens=self.max_tokens,

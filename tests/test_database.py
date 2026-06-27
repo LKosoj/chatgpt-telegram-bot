@@ -99,6 +99,16 @@ def test_save_context_with_missing_explicit_session_includes_model(db):
     assert sessions[0]["model"] == "llmgateway/high"
 
 
+def test_create_session_without_helper_uses_first_openai_model_from_env(db, monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL", "db-main,db-other")
+
+    session_id = db.create_session(1)
+
+    session = db.list_user_sessions(1)[0]
+    assert session["session_id"] == session_id
+    assert session["model"] == "db-main"
+
+
 def test_save_context_with_missing_explicit_session_deactivates_previous(db):
     helper = DummyOpenAI()
     first = db.create_session(1, openai_helper=helper)
@@ -196,6 +206,7 @@ def test_deleting_active_session_at_limit_does_not_delete_extra_session(db):
 def test_legacy_conversation_context_migrates_before_session_index(tmp_path, monkeypatch):
     db_path = tmp_path / "legacy.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("OPENAI_MODEL", "db-main,db-other")
     Database._reset_singleton()
     with sqlite3.connect(db_path) as conn:
         conn.execute("""
@@ -220,7 +231,7 @@ def test_legacy_conversation_context_migrates_before_session_index(tmp_path, mon
     sessions = migrated.list_user_sessions(1)
     assert len(sessions) == 1
     assert sessions[0]["session_id"]
-    assert sessions[0]["model"] == "llmgateway/high"
+    assert sessions[0]["model"] == "db-main"
     with migrated.get_connection() as conn:
         indexes = conn.execute("PRAGMA index_list(conversation_context)").fetchall()
     assert any(row[1] == "idx_conversation_context_session" for row in indexes)

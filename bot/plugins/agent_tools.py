@@ -13,7 +13,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..agent_delivery import send_agent_response, send_text_chunks
-from ..model_constants import LLMGATEWAY_CHAT_MODELS
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..utils import compute_scope_key, get_thread_id, message_text
@@ -64,6 +63,24 @@ DELIVERY_TARGET_WORDS = (
 MAX_SUBAGENTS = 5
 MIN_SUBAGENT_TOOL_ROUNDS = 10
 MAX_SUBAGENT_TOOL_ROUNDS = 50
+
+
+def _model_choices_for_helper(helper) -> list[str]:
+    get_model_choices = getattr(helper, "get_model_choices", None)
+    if callable(get_model_choices):
+        return get_model_choices()
+
+    config = getattr(helper, "config", {}) or {}
+    choices = config.get("model_choices") or []
+    if isinstance(choices, str):
+        models = [model.strip() for model in choices.split(",") if model.strip()]
+    else:
+        models = [str(model).strip() for model in choices if str(model).strip()]
+
+    default_model = str(config.get("model") or "").strip()
+    if default_model and default_model not in models:
+        models.insert(0, default_model)
+    return models
 
 
 def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -766,11 +783,10 @@ class AgentToolsPlugin(Plugin):
                                     },
                                     "model": {
                                         "type": "string",
-                                        "enum": list(LLMGATEWAY_CHAT_MODELS),
                                         "description": (
                                             "Optional model override for this subagent only. "
-                                            "Pick a lighter model for parsing/routing/lookup work and a heavier model "
-                                            "for reasoning. Defaults to the parent's current model."
+                                            "Must be one of the configured OPENAI_MODEL entries. "
+                                            "Defaults to the parent's current model."
                                         ),
                                     },
                                 },
@@ -3109,7 +3125,8 @@ class AgentToolsPlugin(Plugin):
 
         user_id = kwargs.get("user_id")
         override_model = str(item.get("model") or "").strip() or None
-        if override_model and override_model not in LLMGATEWAY_CHAT_MODELS:
+        model_choices = _model_choices_for_helper(helper)
+        if override_model and override_model not in model_choices:
             logging.warning(
                 "Subagent %s requested unsupported model %r; falling back to parent model",
                 subagent_id,
@@ -3120,7 +3137,7 @@ class AgentToolsPlugin(Plugin):
             model_to_use = override_model
         else:
             model_to_use = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
-            model_to_use = model_to_use or getattr(helper, "model", None) or "llmgateway/high"
+            model_to_use = model_to_use or (model_choices[0] if model_choices else None) or getattr(helper, "model", None)
 
         max_rounds = self._normalize_max_rounds(item.get("max_rounds"), parent_max_rounds)
         temperature = self._normalize_temperature(item.get("temperature"))

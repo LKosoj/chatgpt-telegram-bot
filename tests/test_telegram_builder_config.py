@@ -197,6 +197,7 @@ def _run_bot_with_fake_builder(monkeypatch, config=None):
 def _set_required_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_MODEL", "llmgateway/high")
     monkeypatch.delenv("TELEGRAM_LOCAL_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_BASE_URL", raising=False)
 
@@ -265,6 +266,39 @@ def test_main_defaults_bot_language_to_auto(monkeypatch):
 
     assert bot.config["bot_language"] == "auto"
     assert bot.openai.config["bot_language"] == "auto"
+
+
+def test_main_uses_first_openai_model_as_default_and_keeps_choices(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL", "model-a, model-b,,model-c")
+    monkeypatch.setenv("LIGHT_MODEL", "light-a,light-b")
+    monkeypatch.setenv("BIG_MODEL_TO_USE", "big-a,big-b")
+    monkeypatch.setenv("VISION_MODEL", "vision-a,vision-b")
+    monkeypatch.setenv("IMAGE_MODEL", "image-a,image-b")
+    monkeypatch.setenv("TTS_MODEL", "tts-a,tts-b")
+    monkeypatch.setenv("TRANSCRIPTION_MODEL", "speech-a,speech-b")
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.openai.config["model"] == "model-a"
+    assert bot.openai.config["model_choices"] == ["model-a", "model-b", "model-c"]
+    assert bot.openai.config["light_model"] == "light-a"
+    assert bot.openai.config["big_model_to_use"] == "big-a"
+    assert bot.openai.config["vision_model"] == "vision-a"
+    assert bot.openai.config["image_model"] == "image-a"
+    assert bot.openai.config["tts_model"] == "tts-a"
+    assert bot.openai.config["transcription_model"] == "speech-a"
+    assert bot.config["tts_model"] == "tts-a"
+
+
+def test_missing_openai_model_is_rejected_before_polling(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    with pytest.raises(ValueError, match="OPENAI_MODEL"):
+        _run_main_with_fake_dependencies(monkeypatch)
+
+    assert CapturingTelegramBot.instances == []
 
 
 def test_main_normalizes_explicit_bot_language(monkeypatch):

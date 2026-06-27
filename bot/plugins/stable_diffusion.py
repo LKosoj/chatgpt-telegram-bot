@@ -2,7 +2,6 @@ import logging
 from typing import Dict
 
 from ..llm_gateway_client import extract_image_result
-from ..model_constants import LLMGATEWAY_IMAGE_GENERATION_MODEL
 from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
@@ -53,7 +52,7 @@ class StableDiffusionPlugin(Plugin):
         response = await helper.client.images.generate(
             prompt=prompt,
             n=1,
-            model=helper.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+            model=helper.config.get("image_model"),
             size=helper.config.get("image_size", "1024x1024"),
             extra_headers={ "X-Title": "tgBot" },
         )
@@ -63,7 +62,7 @@ class StableDiffusionPlugin(Plugin):
         response = await helper.gateway_client.image_edit(
             prompt,
             [image_url],
-            model=helper.config.get("image_model", LLMGATEWAY_IMAGE_GENERATION_MODEL),
+            model=helper.config.get("image_model"),
         )
         return extract_image_result(response)
 

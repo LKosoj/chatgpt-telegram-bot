@@ -1360,11 +1360,11 @@ class HindsightMemoryPlugin(Plugin):
         rendered_events: str,
         existing_documents: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        from ..openai_helper import _first_choice_or_raise, LLMGATEWAY_LIGHT_MODEL
+        from ..openai_helper import _first_choice_or_raise
 
         existing = self._render_existing_documents(existing_documents)
         response = await self.openai.chat_completion(
-            model=self.openai.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            model=self.openai.config.get('light_model') or self.openai.config.get('model'),
             messages=[
                 {"role": "system", "content": HINDSIGHT_DREAM_PROMPT},
                 {
@@ -1738,7 +1738,7 @@ class HindsightMemoryPlugin(Plugin):
         return len(normalized)
 
     async def _extract_hindsight_memory_items(self, transcript: str) -> list[dict[str, Any]]:
-        from ..openai_helper import _first_choice_or_raise, LLMGATEWAY_LIGHT_MODEL
+        from ..openai_helper import _first_choice_or_raise
 
         messages = [
             {"role": "system", "content": HINDSIGHT_EXTRACTOR_PROMPT},
@@ -1753,7 +1753,7 @@ class HindsightMemoryPlugin(Plugin):
             },
         ]
         response = await self.openai.chat_completion(
-            model=self.openai.config.get('light_model', LLMGATEWAY_LIGHT_MODEL),
+            model=self.openai.config.get('light_model') or self.openai.config.get('model'),
             messages=messages,
             temperature=0.0,
             max_tokens=4000,

@@ -5157,6 +5157,51 @@ class ChatGPTTelegramBot:
                 conversation_key,
             )
 
+    def _configured_openai_models(self) -> list[str]:
+        get_model_choices = getattr(self.openai, "get_model_choices", None)
+        if callable(get_model_choices):
+            return get_model_choices()
+
+        config = getattr(self.openai, "config", {}) or {}
+        choices = config.get("model_choices") or []
+        if isinstance(choices, str):
+            models = [model.strip() for model in choices.split(",") if model.strip()]
+        else:
+            models = [str(model).strip() for model in choices if str(model).strip()]
+
+        default_model = str(config.get("model") or "").strip()
+        if default_model and default_model not in models:
+            models.insert(0, default_model)
+        return models
+
+    async def _show_session_model_selection(self, query, conversation_key) -> None:
+        models = self._configured_openai_models()
+        if not models:
+            await query.edit_message_text(
+                text="No models configured in OPENAI_MODEL."
+            )
+            return
+
+        current_model = self.openai.get_current_model(conversation_key)
+        keyboard = [
+            [InlineKeyboardButton(
+                text=f"{'✓ ' if model == current_model else ''}{model}",
+                callback_data=f"session:set_model:{index}",
+            )]
+            for index, model in enumerate(models)
+        ]
+        keyboard.append([InlineKeyboardButton(
+            text=localized_text('session_back_to_sessions', self.config['bot_language']),
+            callback_data="session:back",
+        )])
+
+        await query.edit_message_text(
+            text=localized_text('model_choose_from_group', self.config['bot_language']).format(
+                group='OPENAI_MODEL'
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
     async def _handle_session_callback_locked(
         self,
         update: Update,
@@ -5323,9 +5368,21 @@ class ChatGPTTelegramBot:
                     text=localized_text('session_choose_mode_group', self.config['bot_language']),
                     reply_markup=reply_markup
                 )
-                
+
             elif action == "change_model":
-                logger.info("Model switching callback ignored because model selection is disabled.")
+                await self._show_session_model_selection(query, conversation_key)
+
+            elif action == "set_model":
+                models = self._configured_openai_models()
+                try:
+                    index = int(data[2])
+                except (IndexError, ValueError):
+                    await self._show_session_model_selection(query, conversation_key)
+                    return
+                if index < 0 or index >= len(models):
+                    await self._show_session_model_selection(query, conversation_key)
+                    return
+                self.db.save_user_model(conversation_key, models[index])
                 await self.reset(update, context)
                 
             elif action == "back":
