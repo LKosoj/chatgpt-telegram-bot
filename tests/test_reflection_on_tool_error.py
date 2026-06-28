@@ -181,6 +181,17 @@ async def test_reflection_injected_on_failed_tool():
     assert len(content) <= 400
 
 
+async def test_reflection_injected_on_ok_false_tool():
+    pm = ScriptedPluginManager({"alpha.fail": {"ok": False, "code": "REMOTE_BLOCKED", "message": "blocked"}})
+    helper = FakeHelper(pm)
+
+    await _run(helper, [FakeToolCall("alpha.fail", {})])
+
+    notes = _reflection_messages(helper)
+    assert len(notes) == 1, helper.conversations[1234]
+    assert "alpha.fail" in notes[0]["content"]
+
+
 async def test_no_reflection_on_empty_success():
     pm = ScriptedPluginManager({"alpha.search": {"results": []}})
     helper = FakeHelper(pm)

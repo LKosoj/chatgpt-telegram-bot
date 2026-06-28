@@ -48,6 +48,23 @@ class ContextPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_ok_false_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class OkFalsePlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "OkFalse"
+
+    def get_spec(self):
+        return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"ok": False, "code": "REMOTE_BLOCKED", "message": "blocked"}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def _write_guard_plugin(path: Path):
     code = """
 from bot.plugins.plugin import Plugin
@@ -458,3 +475,28 @@ async def test_call_function_records_tool_telemetry(tmp_path):
     assert events[0]["chat_id"] == 77
     assert events[0]["user_id"] == 42
     assert events[0]["request_id"] == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_call_function_records_ok_false_as_error(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    _write_ok_false_plugin(plugin_dir / "ok_false.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    events = []
+
+    class FakeDB:
+        def record_tool_call_event(self, **kwargs):
+            events.append(kwargs)
+
+    result = await pm.call_function(
+        "ok_false.do",
+        helper=SimpleNamespace(db=FakeDB()),
+        arguments=json.dumps({"chat_id": 77, "user_id": 42}),
+    )
+
+    assert json.loads(result) == {"ok": False, "code": "REMOTE_BLOCKED", "message": "blocked"}
+    assert len(events) == 1
+    assert events[0]["status"] == "error"
+    assert events[0]["error"] == "blocked"

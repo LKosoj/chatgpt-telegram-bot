@@ -12,11 +12,17 @@ def test_tool_result_normalizes_successful_dict_payload():
 def test_tool_result_normalizes_error_payloads():
     error_result = normalize_tool_result({"error": "boom"})
     false_result = normalize_tool_result({"success": False, "message": "bad"})
+    ok_false_result = normalize_tool_result({"ok": False, "code": "REMOTE_BLOCKED", "error": "blocked"})
+    ok_false_code_result = normalize_tool_result({"ok": False, "code": "REMOTE_BLOCKED"})
 
     assert error_result.success is False
     assert error_result.error == "boom"
     assert false_result.success is False
     assert false_result.error == "bad"
+    assert ok_false_result.success is False
+    assert ok_false_result.error == "blocked"
+    assert ok_false_code_result.success is False
+    assert ok_false_code_result.error == "REMOTE_BLOCKED"
 
 
 def test_tool_result_extracts_direct_result_and_artifacts():

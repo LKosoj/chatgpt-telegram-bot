@@ -24,6 +24,7 @@ from .user_settings import (
     get_user_settings,
     normalize_string_list,
 )
+from .tool_result import tool_response_error, tool_response_succeeded
 from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
@@ -450,10 +451,9 @@ class PluginManager:
             status = "success"
             if isinstance(result, dict):
                 direct_result = isinstance(result.get("direct_result"), dict)
-                if result.get("error") or result.get("success") is False:
+                if not tool_response_succeeded(result):
                     status = "error"
-                    error_value = result.get("error")
-                    error_msg = str(error_value) if error_value else None
+                    error_msg = tool_response_error(result)
             return json.dumps(result, default=str, ensure_ascii=False)
 
         except json.JSONDecodeError as e:

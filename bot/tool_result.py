@@ -102,6 +102,8 @@ def tool_response_succeeded(value) -> bool:
             return False
         if payload.get("success") is False:
             return False
+        if payload.get("ok") is False:
+            return False
     return True
 
 
@@ -114,6 +116,8 @@ def tool_response_error(value) -> str | None:
         return str(error)
     if payload.get("success") is False:
         return str(payload.get("message") or payload.get("result") or "Tool returned success=false")
+    if payload.get("ok") is False:
+        return str(payload.get("message") or payload.get("code") or "Tool returned ok=false")
     return None
 
 
