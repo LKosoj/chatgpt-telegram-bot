@@ -1,9 +1,11 @@
+import asyncio
 import importlib.util
 import sys
 import types
+from unittest.mock import AsyncMock
 
 import pytest
-from telegram.ext import MessageHandler, filters
+from telegram.ext import CommandHandler, ConversationHandler, MessageHandler, filters
 
 
 _INSERTED_MODULES = []
@@ -55,6 +57,18 @@ for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
 
 
+def _current_policy_loop():
+    policy = asyncio.get_event_loop_policy()
+    return getattr(getattr(policy, "_local", None), "_loop", None)
+
+
+def _restore_policy_loop(loop):
+    if loop is not None and not loop.is_closed():
+        asyncio.set_event_loop(loop)
+    else:
+        asyncio.set_event_loop(None)
+
+
 async def plugin_message_callback(update, context):
     return None
 
@@ -75,6 +89,7 @@ class FakeApplication:
         self.post_init_callback = None
         self.owner = None
         self.run_polling_calls = 0
+        self.run_polling_kwargs = []
 
     def add_handler(self, handler, group=0):
         self.handlers.append(handler)
@@ -82,8 +97,9 @@ class FakeApplication:
     def add_error_handler(self, handler):
         self.error_handlers.append(handler)
 
-    def run_polling(self):
+    def run_polling(self, **kwargs):
         self.run_polling_calls += 1
+        self.run_polling_kwargs.append(kwargs)
         if self.post_init_callback:
             self.owner._background_tasks = [object()]
             telegram_bot.asyncio.get_event_loop().run_until_complete(
@@ -136,6 +152,9 @@ class FakePluginManager:
     def build_bot_commands(self):
         return {"plugin_commands": [], "menu_entries": []}
 
+    def is_plugin_disabled_for_user(self, plugin_name, user_id):
+        return False
+
     def close_all(self):
         return None
 
@@ -166,6 +185,8 @@ def _make_bot(message_handlers):
         {
             "token": "test-token",
             "bot_language": "en",
+            "allowed_user_ids": "*",
+            "admin_user_ids": "-",
             "enable_image_generation": False,
             "enable_tts_generation": False,
         },
@@ -173,6 +194,27 @@ def _make_bot(message_handlers):
         db=object(),
     )
     return bot, plugin_manager
+
+
+class FakeMessage:
+    def __init__(self, user_id=999):
+        self.from_user = types.SimpleNamespace(id=user_id, name=f"user-{user_id}")
+        self.chat_id = 1234
+        self.message_id = 55
+        self.text = "/animate_prompt"
+        self.is_topic_message = False
+        self.message_thread_id = None
+        self.reply_text = AsyncMock()
+
+
+class FakeUpdate:
+    def __init__(self, user_id=999):
+        self.message = FakeMessage(user_id=user_id)
+        self.callback_query = None
+        self.inline_query = None
+        self.effective_user = self.message.from_user
+        self.effective_message = self.message
+        self.effective_chat = types.SimpleNamespace(id=1234, type="private")
 
 
 def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
@@ -204,7 +246,12 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
 
     monkeypatch.setattr(bot, "cleanup", cleanup)
 
-    bot.run()
+    previous_loop = _current_policy_loop()
+    asyncio.set_event_loop(None)
+    try:
+        bot.run()
+    finally:
+        _restore_policy_loop(previous_loop)
 
     generated_plugin_handlers = [
         handler
@@ -233,7 +280,8 @@ def test_plugin_message_handlers_registered_once_and_before_builtin_handlers(
         ready_handler_count,
         len(generated_plugin_handlers),
         order_is_preserved,
-    ) == (1, 1, 1, 1, True)
+        application.run_polling_kwargs,
+    ) == (1, 1, 1, 1, True, [{"close_loop": True}])
 
 
 @pytest.mark.asyncio
@@ -313,3 +361,65 @@ async def test_post_init_guard_skips_plugin_message_handlers_on_second_call():
         ready_handler_count,
         len(generated_plugin_handlers),
     ) == (1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_ready_plugin_message_handler_rejects_unauthorized_user():
+    callback = AsyncMock()
+    ready_handler = MessageHandler(filters.TEXT, callback)
+    bot, _plugin_manager = _make_bot([
+        {"handler": ready_handler, "plugin_name": "agent_tools"},
+    ])
+    bot.config["allowed_user_ids"] = "111"
+    application = FakeApplication()
+
+    bot._register_plugin_message_handlers(application, "test")
+    update = FakeUpdate(user_id=999)
+
+    await ready_handler.callback(update, types.SimpleNamespace())
+
+    callback.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ready_plugin_message_handler_allows_authorized_user():
+    callback = AsyncMock(return_value="ok")
+    ready_handler = MessageHandler(filters.TEXT, callback)
+    bot, _plugin_manager = _make_bot([
+        {"handler": ready_handler, "plugin_name": "agent_tools"},
+    ])
+    application = FakeApplication()
+
+    bot._register_plugin_message_handlers(application, "test")
+    update = FakeUpdate(user_id=999)
+    context = types.SimpleNamespace()
+
+    result = await ready_handler.callback(update, context)
+
+    callback.assert_awaited_once_with(update, context)
+    assert result == "ok"
+    update.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ready_conversation_handler_entrypoint_rejects_unauthorized_user():
+    callback = AsyncMock()
+    conversation = ConversationHandler(
+        entry_points=[CommandHandler("animate_prompt", callback)],
+        states={1: [MessageHandler(filters.TEXT, AsyncMock())]},
+        fallbacks=[CommandHandler("cancel", AsyncMock())],
+    )
+    bot, _plugin_manager = _make_bot([
+        {"handler": conversation, "plugin_name": "haiper_image_to_video"},
+    ])
+    bot.config["allowed_user_ids"] = "111"
+    application = FakeApplication()
+
+    bot._register_plugin_message_handlers(application, "test")
+    update = FakeUpdate(user_id=999)
+
+    await conversation.entry_points[0].callback(update, types.SimpleNamespace())
+
+    callback.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once()

@@ -23,10 +23,16 @@ from calendar import monthrange
 from PIL import Image
 import yaml
 
-from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
-
 from .tool_result import artifact_entries_from_tool_response, tool_result_content
-from .utils import is_direct_result, encode_image, decode_image, escape_markdown
+from .utils import (
+    is_direct_result,
+    encode_image,
+    decode_image,
+    escape_markdown,
+    log_exception_shape,
+    log_json_shape,
+    log_value_shape,
+)
 from .plugin_manager import PluginManager
 from .database import Database
 from .model_constants import (
@@ -67,6 +73,8 @@ logger = logging.getLogger(__name__)
 
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
 VISION_MAX_ATTEMPTS = 3
+LLM_RATE_LIMIT_RETRY_ATTEMPTS = 3
+LLM_RATE_LIMIT_RETRY_WAIT_SECONDS = 20
 THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
 RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
@@ -83,7 +91,7 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _json_for_log(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, default=str)
+    return log_json_shape(value)
 
 # skills_agent first-turn planner gate: information-only tools that are safe to
 # call BEFORE the model has called manage_plan_tasks. Anything not in this set is
@@ -236,7 +244,6 @@ class OpenAIHelper:
         self.db = db
         self.conversations: dict[int, list] = {}  # {chat_id: history}
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
-        self.conversations_vision: dict[int, bool] = {}  # {chat_id: is_vision}
         self._background_tasks: set[asyncio.Task] = set()
         self._chat_request_models: dict[int, str] = {}
         self._chat_request_extra_tokens: dict[int, int] = {}
@@ -263,6 +270,7 @@ class OpenAIHelper:
         self.config.setdefault('vision_detail', 'auto')
         self.config.setdefault('n_choices', 1)
         self.config.setdefault('model_choices', [self.config['model']])
+        self.config.setdefault('model_context_windows', {})
         self.config.setdefault('light_model', '')
         self.config.setdefault('big_model_to_use', '')
         self.config.setdefault('tts_model', '')
@@ -279,7 +287,14 @@ class OpenAIHelper:
         self.config.setdefault('summary_target_keep_ratio', 0.5)
         self.config.setdefault('session_log_enabled', False)
         self.config.setdefault('session_log_dir', './log')
-        self.session_logger = SessionLogger(self.config['session_log_enabled'], self.config['session_log_dir'])
+        self.config.setdefault('session_log_max_bytes', 10 * 1024 * 1024)
+        self.config.setdefault('session_log_retention_days', 30)
+        self.session_logger = SessionLogger(
+            self.config['session_log_enabled'],
+            self.config['session_log_dir'],
+            max_file_bytes=self.config['session_log_max_bytes'],
+            retention_seconds=int(self.config['session_log_retention_days']) * 24 * 60 * 60,
+        )
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -345,7 +360,10 @@ class OpenAIHelper:
         for alias, intent in intent_aliases.items():
             if alias in normalized_content:
                 return intent
-        logger.info("Reply intent classifier returned unrecognized content: %r", content[:200])
+        logger.info(
+            "Reply intent classifier returned unrecognized content content_shape=%s",
+            log_json_shape({"content": content}),
+        )
         return "unknown"
 
     async def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
@@ -356,7 +374,7 @@ class OpenAIHelper:
         """
         state_key = self._chat_state_key(chat_id)
         if state_key not in self.conversations:
-            saved_context, _, _, _, session_id = self.db.get_conversation_context(chat_id, None)
+            saved_context, _, _, _, session_id = await self._db_call("get_conversation_context", chat_id, None)
             if saved_context and 'messages' in saved_context:
                 self.conversations[state_key] = self._messages_without_image_payloads(saved_context['messages'])
                 self.loaded_conversation_sessions[state_key] = session_id
@@ -405,6 +423,23 @@ class OpenAIHelper:
             kwargs.update(extra)
         return await self._timed_create(kind='chat_completion', **kwargs)
 
+    async def _create_chat_completion_with_rate_limit_retry(self, *, kind, **kwargs):
+        for attempt in range(1, LLM_RATE_LIMIT_RETRY_ATTEMPTS + 1):
+            try:
+                return await self.client.chat.completions.create(**kwargs)
+            except openai.RateLimitError as exc:
+                if attempt >= LLM_RATE_LIMIT_RETRY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Rate limit error on LLM request kind=%s attempt=%s/%s; retrying in %ss error=%s",
+                    kind,
+                    attempt,
+                    LLM_RATE_LIMIT_RETRY_ATTEMPTS,
+                    LLM_RATE_LIMIT_RETRY_WAIT_SECONDS,
+                    log_exception_shape(exc),
+                )
+                await asyncio.sleep(LLM_RATE_LIMIT_RETRY_WAIT_SECONDS)
+
     async def _timed_create(self, *, kind, **kwargs):
         """Wrapper around client.chat.completions.create: measures duration,
         writes an llm_call event to session_logger (when a trace is active),
@@ -420,19 +455,18 @@ class OpenAIHelper:
                 'payload': kwargs,
             })
         logger.info(
-            "LLM request payload kind=%s payload=%s",
+            "LLM request payload kind=%s payload_shape=%s",
             kind,
             _json_for_log(kwargs),
         )
         try:
-            response = await self.client.chat.completions.create(**kwargs)
+            response = await self._create_chat_completion_with_rate_limit_retry(kind=kind, **kwargs)
         except Exception as exc:
             logger.error(
-                "LLM request failed kind=%s error=%s payload=%s",
+                "LLM request failed kind=%s error=%s payload_shape=%s",
                 kind,
-                exc,
+                log_exception_shape(exc),
                 _json_for_log(kwargs),
-                exc_info=True,
             )
             if slog is not None and get_trace() is not None:
                 slog.record({
@@ -495,26 +529,17 @@ class OpenAIHelper:
         session_id: str | None,
     ) -> str | None:
         save_async = getattr(self.db, "save_conversation_context_async", None)
-        if callable(save_async):
-            saved = await save_async(
-                chat_id,
-                context,
-                parse_mode,
-                temperature,
-                max_tokens_percent,
-                session_id,
-                self,
-            )
-        else:
-            saved = self.db.save_conversation_context(
-                chat_id,
-                context,
-                parse_mode,
-                temperature,
-                max_tokens_percent,
-                session_id,
-                self,
-            )
+        if not callable(save_async):
+            raise RuntimeError("Database.save_conversation_context_async is required in async chat flow")
+        saved = await save_async(
+            chat_id,
+            context,
+            parse_mode,
+            temperature,
+            max_tokens_percent,
+            session_id,
+            self,
+        )
         if saved and not getattr(self, "_closed", False):
             # Why: LLM-генерация имени не должна блокировать держателя conversation_lock;
             # сохраняем ссылку, чтобы task не был GC до завершения.
@@ -530,6 +555,12 @@ class OpenAIHelper:
             task.add_done_callback(bg.discard)
         return saved
 
+    async def _db_call(self, method_name: str, *args, **kwargs):
+        async_method = getattr(self.db, f"{method_name}_async", None)
+        if not callable(async_method):
+            raise RuntimeError(f"Database.{method_name}_async is required in async chat flow")
+        return await async_method(*args, **kwargs)
+
     async def _ensure_session_name_with_llm(
         self,
         user_id: int,
@@ -541,13 +572,13 @@ class OpenAIHelper:
         вызывал LLM). Теперь БД отвечает только за персистенцию, а вызов модели
         делает OpenAIHelper после save.
         """
-        get_details = getattr(self.db, "get_session_details", None)
-        if not callable(get_details):
-            return
         try:
-            session = await asyncio.to_thread(get_details, user_id, session_id)
+            session = await self._db_call("get_session_details", user_id, session_id)
         except Exception as exc:
-            logger.debug(f"ensure_session_name: cannot fetch session details: {exc}")
+            logger.debug(
+                "ensure_session_name: cannot fetch session details error=%s",
+                log_exception_shape(exc),
+            )
             return
         if not session or session.get("session_name") != "...":
             return
@@ -569,17 +600,20 @@ class OpenAIHelper:
                 user_id, user_message, session_id
             )
         except Exception as exc:
-            logger.warning(f"ensure_session_name: LLM generation failed: {exc}")
+            logger.warning(
+                "ensure_session_name: LLM generation failed error=%s",
+                log_exception_shape(exc),
+            )
             return
         if not session_name:
             return
-        set_name = getattr(self.db, "set_session_name", None)
-        if not callable(set_name):
-            return
         try:
-            await asyncio.to_thread(set_name, user_id, session_id, session_name)
+            await self._db_call("set_session_name", user_id, session_id, session_name)
         except Exception as exc:
-            logger.warning(f"ensure_session_name: failed to persist: {exc}")
+            logger.warning(
+                "ensure_session_name: failed to persist error=%s",
+                log_exception_shape(exc),
+            )
 
     async def ask(self, prompt, user_id, assistant_prompt=None, model=None, json_mode: bool = False):
         """
@@ -591,14 +625,15 @@ class OpenAIHelper:
         # In that case we skip all history writes.
         _in_active_turn = _CHAT_STATE_KEY.get() is not None
 
-        model_to_use = model or self.get_current_model(user_id)
         try:
             if not _in_active_turn:
                 # Проверяем, инициализирован ли контекст разговора
                 if user_id not in self.conversations:
                     logger.info(f'Initializing conversation context for user_id={user_id}')
                     # Пытаемся загрузить контекст из базы данных
-                    saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(user_id, None)
+                    saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
+                        await self._db_call("get_conversation_context", user_id, None)
+                    )
 
                     if saved_context and 'messages' in saved_context:
                         # Если есть сохраненный контекст в БД, используем его
@@ -607,18 +642,11 @@ class OpenAIHelper:
                         # Если нет контекста в БД, начинаем новый чат
                         await self.reset_chat_history(user_id, session_id=None)
 
-                # Инициализируем conversations_vision для пользователя, если его нет
-                if user_id not in self.conversations_vision:
-                    self.conversations_vision[user_id] = False
-
             add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
             if assistant_prompt is None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
-            if model:
-                model_to_use = model
-            else:
-                model_to_use = self.config.get('light_model') or self.config.get('model')
+            model_to_use = model or self.config.get('light_model') or self.config.get('model')
             logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
@@ -641,7 +669,7 @@ class OpenAIHelper:
                 await self.__add_to_history(user_id, role="assistant", content=content)
             return content, response.usage.total_tokens
         except Exception as e:
-            logger.error(f'Error in ask method: {str(e)}', exc_info=True)
+            logger.error("Error in ask method error=%s", log_exception_shape(e))
             raise
 
     async def get_chat_response(
@@ -722,10 +750,6 @@ class OpenAIHelper:
             # Reset per-request skills_agent gate flag so it doesn't persist
             # across user-initiated requests.
             self._gate_fired.pop(state_key, None)
-            # Add the last image file ID to the context if available
-            if chat_id in self.last_image_file_ids:
-                # The model can now access this through the function calls
-                self.last_image_file_id = self.last_image_file_ids[chat_id]
             plugins_used = ()
             # Вызов с учетом возможного отсутствия session_id
             response = await self.__common_get_chat_response(
@@ -749,7 +773,6 @@ class OpenAIHelper:
                     user_id=user_id,
                     request_context=request_context,
                     model_to_use=self._chat_request_models.get(state_key),
-                    retry_plain_text_tool_intent=self.conversations_vision.get(state_key, False),
                     token_accumulator=token_accumulator,
                 )
                 if is_direct_result(response):
@@ -858,13 +881,8 @@ class OpenAIHelper:
             return answer, total_tokens
         except Exception as e:
             self._chat_request_extra_tokens.pop(self._chat_state_key(chat_id), None)
-            logger.error(f'Error in get_chat_response: {str(e)}', exc_info=True)
+            logger.error("Error in get_chat_response error=%s", log_exception_shape(e))
             raise
-        finally:
-            # Clean up after response is generated
-            if hasattr(self, 'last_image_file_id'):
-                delattr(self, 'last_image_file_id')
-
     async def get_chat_response_stream(
         self,
         chat_id: int,
@@ -948,7 +966,9 @@ class OpenAIHelper:
             logger.info(f'Starting chat response stream for chat_id={chat_id}')
 
             # Проверяем, инициализирован ли контекст разговора
-            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
+                await self._db_call("get_conversation_context", chat_id, session_id)
+            )
             loaded_session_id = self.loaded_conversation_sessions.get(state_key)
             session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
             if state_key not in self.conversations or session_changed:
@@ -962,10 +982,6 @@ class OpenAIHelper:
                     await self.reset_chat_history(chat_id, session_id=session_id)
                 self.loaded_conversation_sessions[state_key] = session_id
 
-            # Инициализируем conversations_vision для чата, если его нет
-            if state_key not in self.conversations_vision:
-                self.conversations_vision[state_key] = False
-
             logger.info('Getting chat response from model')
             try:
                 # Вызов с учетом возможного отсутствия session_id
@@ -978,7 +994,7 @@ class OpenAIHelper:
                 )
             except Exception as e:
                 self._chat_request_extra_tokens.pop(state_key, None)
-                logger.error(f'Error getting chat response: {str(e)}')
+                logger.error("Error getting chat response error=%s", log_exception_shape(e))
                 yield f"Error: {str(e)}", '0'
                 return
 
@@ -995,14 +1011,13 @@ class OpenAIHelper:
                         user_id=user_id,
                         request_context=request_context,
                         model_to_use=model_to_use,
-                        retry_plain_text_tool_intent=self.conversations_vision.get(state_key, False),
                     )
                     if is_direct_result(response):
                         tokens_used = extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use)
                         yield response, str(tokens_used)
                         return
                 except Exception as e:
-                    logger.error(f'Error in function call: {str(e)}')
+                    logger.error("Error in function call error=%s", log_exception_shape(e))
                     yield f"Error in function call: {str(e)}", '0'
                     return
 
@@ -1019,7 +1034,7 @@ class OpenAIHelper:
                         answer += delta.content
                         yield answer, 'not_finished'
             except Exception as e:
-                logger.error(f'Error processing response stream: {str(e)}')
+                logger.error("Error processing response stream error=%s", log_exception_shape(e))
                 if answer:
                     tokens_used = extra_tokens + self._estimate_stream_tokens(chat_id, answer, model_to_use)
                     yield answer, str(tokens_used)
@@ -1044,7 +1059,7 @@ class OpenAIHelper:
 
         except Exception as e:
             self._chat_request_extra_tokens.pop(self._chat_state_key(chat_id), None)
-            logger.error(f"Error in chat response stream: {e}", exc_info=True)
+            logger.error("Error in chat response stream error=%s", log_exception_shape(e))
             # Yield an error message or handle it gracefully
             yield f"Error generating response: {str(e)}", '0'
 
@@ -1067,7 +1082,7 @@ class OpenAIHelper:
         return [plugin_name for plugin_name in allowed_plugins if plugin_name not in disabled_plugins]
 
     async def resolve_allowed_plugins(self, chat_id: int, session_id: str | None = None, user_id: int | None = None):
-        saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+        saved_context, _, _, _, _ = await self._db_call("get_conversation_context", chat_id, session_id)
         allowed_plugins = ['All']
 
         if saved_context and 'messages' in saved_context:
@@ -1090,7 +1105,7 @@ class OpenAIHelper:
                         f'session {session_id}. Resetting session.'
                     )
                     await self.reset_chat_history(chat_id, '', session_id)
-                    saved_context, _, _, _, _ = self.db.get_conversation_context(chat_id, session_id)
+                    saved_context, _, _, _, _ = await self._db_call("get_conversation_context", chat_id, session_id)
                     if saved_context and 'messages' in saved_context:
                         system_message = next(
                             (msg for msg in saved_context['messages'] if msg.get('role') == 'system'),
@@ -1173,7 +1188,7 @@ class OpenAIHelper:
 
         if parse_mode is None or temperature is None or max_tokens_percent is None or session_id is None:
             _, saved_parse_mode, saved_temperature, saved_max_tokens_percent, saved_session_id = (
-                self.db.get_conversation_context(chat_id, session_id)
+                await self._db_call("get_conversation_context", chat_id, session_id)
             )
             if parse_mode is None:
                 parse_mode = saved_parse_mode
@@ -1193,12 +1208,6 @@ class OpenAIHelper:
             session_id,
         )
 
-    @retry(
-        reraise=True,
-        retry=retry_if_exception_type(openai.RateLimitError),
-        wait=wait_fixed(20),
-        stop=stop_after_attempt(3)
-    )
     async def __common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None, **kwargs):
         """
         Request a response from the GPT model.
@@ -1212,10 +1221,12 @@ class OpenAIHelper:
         try:
             state_key = self._chat_state_key(chat_id)
             logger.info(f'Generating chat response (chat_id={chat_id}, stream={stream})')
-            logger.debug(f'Query: {query}')
+            logger.debug("Query received chat_id=%s chars=%d", chat_id, len(query or ""))
             
             # Пытаемся загрузить контекст из базы данных
-            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
+                await self._db_call("get_conversation_context", chat_id, session_id)
+            )
 
             loaded_session_id = self.loaded_conversation_sessions.get(state_key)
             session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
@@ -1227,10 +1238,6 @@ class OpenAIHelper:
                     # Если нет контекста в БД, начинаем новый чат
                     await self.reset_chat_history(chat_id, session_id=session_id)
                 self.loaded_conversation_sessions[state_key] = session_id
-
-            # Инициализируем conversations_vision для чата, если его нет
-            if state_key not in self.conversations_vision:
-                self.conversations_vision[state_key] = False
 
             await self._maybe_apply_auto_chat_mode(
                 chat_id,
@@ -1248,11 +1255,8 @@ class OpenAIHelper:
 
             await self.__add_to_history(chat_id, role="user", content=query, session_id=session_id)
 
-            if self.conversations_vision.get(state_key, False):
-                model_to_use = self.config['vision_model']
-            else:
-                model_owner = chat_id if session_id else (memory_user_id or chat_id)
-                model_to_use = self.get_current_model(model_owner, session_id=session_id)
+            model_owner = chat_id if session_id else (memory_user_id or chat_id)
+            model_to_use = await self.get_current_model_async(model_owner, session_id=session_id)
 
             # Рассчитываем максимальное количество токенов с учетом процента
             max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
@@ -1260,7 +1264,7 @@ class OpenAIHelper:
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
-            exceeded_max_tokens = token_count + max_tokens > default_max_tokens(model_to_use) * 0.95
+            exceeded_max_tokens = token_count + max_tokens > self._context_window(model_to_use) * 0.95
             exceeded_max_history_size = len(self.conversations[state_key]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -1285,7 +1289,10 @@ class OpenAIHelper:
                         memory_user_id=memory_user_id,
                     )
                 except Exception as e:
-                    logger.warning(f'Error while summarising chat history: {str(e)}. Falling back to head-preserve trim.')
+                    logger.warning(
+                        "Error while summarising chat history; falling back to head-preserve trim error=%s",
+                        log_exception_shape(e),
+                    )
                     summarized = False
                 if not summarized:
                     conv = self.conversations[state_key]
@@ -1319,7 +1326,7 @@ class OpenAIHelper:
                 persist=True,
             )
             common_args = {
-                'model': model_to_use, #if not self.conversations_vision[chat_id] else self.config['vision_model'],
+                'model': model_to_use,
                 'messages': messages,
                 'temperature': temperature,
                 'n': 1, # several choices is not implemented yet
@@ -1332,10 +1339,11 @@ class OpenAIHelper:
 
             if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
                 stream = False
+                common_args['stream'] = False
 
                 #common_args['messages'] = [msg for msg in common_args['messages'] if msg['role'] != 'system']
                 common_args['max_completion_tokens'] = max_tokens # o1 series only supports max_completion_tokens
-                #common_args['max_tokens'] = max_tokens
+                common_args.pop('max_tokens', None)
          
                 # 'temperature', 'top_p', 'n', 'presence_penalty', 'frequency_penalty' are currently fixed and cannot be changed
             else:
@@ -1358,11 +1366,7 @@ class OpenAIHelper:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
-            log_args = {
-                key: (f"<{len(value)} messages>" if key == "messages" and isinstance(value, list) else value)
-                for key, value in common_args.items()
-            }
-            logger.info(f"common_args = {json.dumps(log_args, ensure_ascii=False)}")
+            logger.info("common_args shape = %s", _json_for_log(common_args))
 
             # skills_agent first-turn planner gate. Only runs on non-streaming
             # first turns; the streaming dispatch path is expected to route to
@@ -1402,8 +1406,11 @@ class OpenAIHelper:
                         }
                         for tc in raw_tool_calls
                     ]
-                except Exception:
-                    logger.debug("skills_agent gate: failed to read tool_calls", exc_info=True)
+                except Exception as exc:
+                    logger.debug(
+                        "skills_agent gate: failed to read tool_calls error=%s",
+                        log_exception_shape(exc),
+                    )
                     tool_calls_normalized = []
                 if self._skills_agent_gate_should_fire(tool_calls_normalized):
                     logger.info(
@@ -1427,21 +1434,24 @@ class OpenAIHelper:
                 return response
     
         except openai.RateLimitError as e:
-            logger.warning(f'Rate limit error: {str(e)}')
+            logger.warning("Rate limit error error=%s", log_exception_shape(e))
             raise e
 
         except openai.BadRequestError as e:
-            logger.error(f'Bad request error: {str(e)}')
+            logger.error("Bad request error error=%s", log_exception_shape(e))
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
 
         except ValueError as e:
-            logger.error(f'Configuration error: {str(e)}')
+            logger.error("Configuration error error=%s", log_exception_shape(e))
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ Configuration error: {error_message}") from e
 
         except Exception as e:
-            logger.error(f'Unexpected error in chat response generation: {str(e)}', exc_info=True)
+            logger.error(
+                "Unexpected error in chat response generation error=%s",
+                log_exception_shape(e),
+            )
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
@@ -1644,7 +1654,7 @@ class OpenAIHelper:
             for call in tool_calls
         ]
         logger.info(
-            "Appending assistant tool calls to history chat_id=%s state_key=%s count=%d payload=%s",
+            "Appending assistant tool calls to history chat_id=%s state_key=%s count=%d payload_shape=%s",
             chat_id,
             state_key,
             len(history_tool_calls),
@@ -1719,8 +1729,11 @@ class OpenAIHelper:
                 return False
             tasks = plugin.get_plan_tasks(chat_id=chat_id, user_id=user_id)
             return bool(tasks)
-        except Exception:
-            logger.debug("skills_agent gate: get_plan_tasks failed", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "skills_agent gate: get_plan_tasks failed error=%s",
+                log_exception_shape(exc),
+            )
             return False
 
     def _skills_agent_gate_should_fire(self, tool_calls: list[dict]) -> bool:
@@ -1780,10 +1793,34 @@ class OpenAIHelper:
         try:
             session_owner = user_id if user_id is not None else chat_id
             model_to_use = self.get_current_model(session_owner)
-        except Exception:
-            logger.debug("skills_agent gate: get_current_model failed", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "skills_agent gate: get_current_model failed error=%s",
+                log_exception_shape(exc),
+            )
             # Fall back to the configured default model so a future expansion of
             # the excluded-family lists still skips streaming overrides cleanly.
+            try:
+                model_to_use = self.config.get("model", "") or ""
+            except Exception:
+                model_to_use = ""
+        if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
+            return False
+        return not self._skills_agent_has_plan(chat_id, user_id)
+
+    async def should_force_non_stream_first_turn_async(self, chat_id: int, user_id: int | None) -> bool:
+        if not self._is_skills_agent_mode(chat_id):
+            return False
+        if not self._skills_agent_gate_enabled_for_mode():
+            return False
+        try:
+            session_owner = user_id if user_id is not None else chat_id
+            model_to_use = await self.get_current_model_async(session_owner)
+        except Exception as exc:
+            logger.debug(
+                "skills_agent gate: get_current_model_async failed error=%s",
+                log_exception_shape(exc),
+            )
             try:
                 model_to_use = self.config.get("model", "") or ""
             except Exception:
@@ -1798,12 +1835,14 @@ class OpenAIHelper:
         function_name: str,
         content: str,
         tool_call_id: str | None = None,
+        model_to_use: str | None = None,
     ) -> None:
         self.__add_function_call_to_history(
             chat_id=chat_id,
             function_name=function_name,
             content=content,
             tool_call_id=tool_call_id,
+            model_to_use=model_to_use,
         )
 
     def _localized_text(self, key, bot_language):
@@ -1823,7 +1862,7 @@ class OpenAIHelper:
             session_id,
         )
         session_owner = chat_id if session_id else (user_id if user_id is not None else chat_id)
-        model_to_use = model_to_use or self.get_current_model(session_owner, session_id=session_id)
+        model_to_use = model_to_use or await self.get_current_model_async(session_owner, session_id=session_id)
         max_tokens_percent = 80
         try:
             list_async = getattr(self.db, "list_user_sessions_async", None)
@@ -1831,7 +1870,7 @@ class OpenAIHelper:
             if list_async is not None:
                 sessions = await list_async(session_owner, is_active=session_filter)
             else:
-                sessions = self.db.list_user_sessions(session_owner, is_active=session_filter)
+                sessions = await self._db_call("list_user_sessions", session_owner, is_active=session_filter)
             if session_id:
                 session = next((s for s in sessions if s.get('session_id') == session_id), None)
             else:
@@ -1839,7 +1878,10 @@ class OpenAIHelper:
             if session:
                 max_tokens_percent = session.get('max_tokens_percent') or max_tokens_percent
         except Exception as exc:
-            logger.warning("Failed to read session for empty response retry: %s", exc)
+            logger.warning(
+                "Failed to read session for empty response retry error=%s",
+                log_exception_shape(exc),
+            )
 
         max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
         messages = await self._apply_before_chat_request_mutators(
@@ -1871,6 +1913,7 @@ class OpenAIHelper:
         }
         if model_to_use in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + PERPLEXITY + MOONSHOTAI + QWEN):
             common_args['max_completion_tokens'] = max_tokens
+            common_args.pop('max_tokens', None)
         return await self._create_empty_response_retry_completion("after_tools", **common_args)
 
     async def _retry_empty_response_with_tools(
@@ -1882,7 +1925,7 @@ class OpenAIHelper:
         model_to_use: str | None = None,
     ):
         model_owner = chat_id if session_id else (user_id if user_id is not None else chat_id)
-        model_to_use = model_to_use or self.get_current_model(model_owner, session_id=session_id)
+        model_to_use = model_to_use or await self.get_current_model_async(model_owner, session_id=session_id)
         if model_to_use in (O_MODELS + GOOGLE + PERPLEXITY):
             return None
 
@@ -1964,8 +2007,13 @@ class OpenAIHelper:
 
             response = await self.client.images.generate(**image_args)
 
-            if len(response.data) == 0:
-                logger.error(f'No response from GPT: {str(response)}')
+            response_data = getattr(response, "data", None) or []
+            if len(response_data) == 0:
+                logger.error(
+                    "No response from GPT: response_type=%s data_count=%d",
+                    type(response).__name__,
+                    len(response_data),
+                )
                 raise Exception(
                     f"⚠️ _{localized_text('error', bot_language)}._ "
                     f"⚠️\n{localized_text('try_again', bot_language)}."
@@ -2057,7 +2105,7 @@ class OpenAIHelper:
                 if self._is_tts_model_id(model)
             ]
         except Exception as exc:
-            logger.warning("Failed to load TTS models from API: %s", exc)
+            logger.warning("Failed to load TTS models from API error=%s", log_exception_shape(exc))
             return []
         self._tts_models_cache = (time.monotonic(), models)
         return list(models)
@@ -2071,7 +2119,7 @@ class OpenAIHelper:
             response = await self.gateway_client.audio_voices(model_to_use)
             voices = self._extract_option_ids(response, ("voices",))
         except Exception as exc:
-            logger.warning("Failed to load TTS voices from API: %s", exc)
+            logger.warning("Failed to load TTS voices from API error=%s", log_exception_shape(exc))
             return []
         self._tts_voices_cache[model_to_use] = (time.monotonic(), voices)
         return list(voices)
@@ -2081,8 +2129,22 @@ class OpenAIHelper:
         model = str(settings.get(USER_TTS_MODEL_SETTING) or "").strip()
         return model or self.config['tts_model']
 
+    async def get_user_tts_model_async(self, user_id: int | None = None) -> str:
+        settings = await self._db_call("get_user_settings", user_id) if user_id is not None else {}
+        if not isinstance(settings, dict):
+            settings = {}
+        model = str(settings.get(USER_TTS_MODEL_SETTING) or "").strip()
+        return model or self.config['tts_model']
+
     def get_user_tts_voice(self, user_id: int | None = None) -> str:
         settings = get_user_settings(self.db, user_id)
+        voice = str(settings.get(USER_TTS_VOICE_SETTING) or "").strip()
+        return voice or str(self.config['tts_voice']).lower()
+
+    async def get_user_tts_voice_async(self, user_id: int | None = None) -> str:
+        settings = await self._db_call("get_user_settings", user_id) if user_id is not None else {}
+        if not isinstance(settings, dict):
+            settings = {}
         voice = str(settings.get(USER_TTS_VOICE_SETTING) or "").strip()
         return voice or str(self.config['tts_voice']).lower()
 
@@ -2095,8 +2157,8 @@ class OpenAIHelper:
         bot_language = self.config['bot_language']
         try:
             response = await self.client.audio.speech.create(
-                model=self.get_user_tts_model(user_id),
-                voice=self.get_user_tts_voice(user_id).lower(),
+                model=await self.get_user_tts_model_async(user_id),
+                voice=(await self.get_user_tts_voice_async(user_id)).lower(),
                 input=text,
                 response_format=self.config.get('tts_response_format', 'wav'),
                 extra_headers={ "X-Title": "tgBot" },
@@ -2130,16 +2192,10 @@ class OpenAIHelper:
             )
             return result
         except Exception as e:
-            logger.exception(e)
+            logger.error("Error in transcription request error=%s", log_exception_shape(e))
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{error_message}") from e
 
-    @retry(
-        reraise=True,
-        retry=retry_if_exception_type(openai.RateLimitError),
-        wait=wait_fixed(20),
-        stop=stop_after_attempt(3)
-    )
     async def __common_get_chat_response_vision(
         self,
         chat_id: int,
@@ -2159,7 +2215,9 @@ class OpenAIHelper:
         temperature = self.config['temperature']
         try:
             state_key = self._chat_state_key(chat_id)
-            saved_context, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+            saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
+                await self._db_call("get_conversation_context", chat_id, session_id)
+            )
             loaded_session_id = self.loaded_conversation_sessions.get(state_key)
             session_changed = state_key in self.loaded_conversation_sessions and loaded_session_id != session_id
             if state_key not in self.conversations or self.__max_age_reached(state_key) or session_changed:
@@ -2180,13 +2238,12 @@ class OpenAIHelper:
                 max_tokens_percent=max_tokens_percent,
                 user_id=user_id,
             )
-            self.conversations_vision[state_key] = False
             await self.__add_to_history(chat_id, role="user", content=history_content, session_id=session_id)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
             vision_model = self.config['vision_model']
             token_count = self.__count_tokens(self.conversations[state_key], vision_model)
-            exceeded_max_tokens = token_count + self.config['vision_max_tokens'] > default_max_tokens(vision_model)
+            exceeded_max_tokens = token_count + self.config['vision_max_tokens'] > self._context_window(vision_model)
             exceeded_max_history_size = len(self.conversations[state_key]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
@@ -2210,7 +2267,10 @@ class OpenAIHelper:
                         memory_user_id=user_id or chat_id,
                     )
                 except Exception as e:
-                    logger.warning(f'Error while summarising chat history: {str(e)}. Falling back to head-preserve trim.')
+                    logger.warning(
+                        "Error while summarising chat history; falling back to head-preserve trim error=%s",
+                        log_exception_shape(e),
+                    )
                     summarized = False
                 if not summarized:
                     conv = self.conversations[state_key]
@@ -2250,12 +2310,12 @@ class OpenAIHelper:
             raise e
 
         except openai.BadRequestError as e:
-            logger.error(f'Bad request error: {str(e)}')
+            logger.error("Bad request error error=%s", log_exception_shape(e))
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
 
         except Exception as e:
-            logger.error(f'Error in function call handling: {str(e)}', exc_info=True)
+            logger.error("Error in function call handling error=%s", log_exception_shape(e))
             error_message = escape_markdown(str(e))
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{error_message}") from e
 
@@ -2292,8 +2352,6 @@ class OpenAIHelper:
         return {
             "has_conversation": state_key in self.conversations,
             "conversation": list(self.conversations.get(state_key, [])),
-            "has_vision": state_key in self.conversations_vision,
-            "vision": self.conversations_vision.get(state_key),
             "has_last_updated": state_key in self.last_updated,
             "last_updated": self.last_updated.get(state_key),
             "has_loaded_session": state_key in self.loaded_conversation_sessions,
@@ -2306,10 +2364,6 @@ class OpenAIHelper:
             self.conversations[state_key] = list(snapshot["conversation"])
         else:
             self.conversations.pop(state_key, None)
-        if snapshot["has_vision"]:
-            self.conversations_vision[state_key] = snapshot["vision"]
-        else:
-            self.conversations_vision.pop(state_key, None)
         if snapshot["has_last_updated"]:
             self.last_updated[state_key] = snapshot["last_updated"]
         else:
@@ -2454,16 +2508,11 @@ class OpenAIHelper:
                     last_error = exc
             if attempt < VISION_MAX_ATTEMPTS:
                 logger.warning(
-                    "Vision request attempt %s/%s failed for chat_id=%s: %s",
+                    "Vision request attempt %s/%s failed for chat_id=%s error=%s",
                     attempt,
                     VISION_MAX_ATTEMPTS,
                     chat_id,
-                    last_error,
-                    exc_info=(
-                        (type(last_error), last_error, last_error.__traceback__)
-                        if isinstance(last_error, Exception)
-                        else None
-                    ),
+                    log_exception_shape(last_error) if isinstance(last_error, Exception) else "<no exception>",
                 )
                 self._restore_chat_state(chat_id, snapshot)
         self._chat_request_extra_tokens.pop(state_key, None)
@@ -2588,7 +2637,7 @@ class OpenAIHelper:
                     answer += delta.content
                     yield answer, 'not_finished'
         except Exception as e:
-            logger.error(f'Error processing vision response stream: {str(e)}')
+            logger.error("Error processing vision response stream error=%s", log_exception_shape(e))
             if answer:
                 yield answer, str(
                     self._estimate_stream_tokens(chat_id, answer, self.config['vision_model']) + extra_tokens
@@ -2681,8 +2730,9 @@ class OpenAIHelper:
                             )
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(
-                                "Failed to persist removal of session-memory message for chat_id=%s: %s",
-                                chat_id, exc,
+                                "Failed to persist removal of session-memory message for chat_id=%s error=%s",
+                                chat_id,
+                                log_exception_shape(exc),
                             )
         base = self._messages_with_language_instruction(self.conversations[state_key])
         payload = BeforeChatRequestPayload(
@@ -2736,8 +2786,9 @@ class OpenAIHelper:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to persist session-memory message for chat_id=%s: %s",
-                chat_id, exc,
+                "Failed to persist session-memory message for chat_id=%s error=%s",
+                chat_id,
+                log_exception_shape(exc),
             )
         return mutated
 
@@ -2893,12 +2944,14 @@ class OpenAIHelper:
                 slog.record({'type': 'turn_end', 'round_trips': stats['round_trips'],
                              'llm_ms_total': stats['llm_ms'], 'mutator_ms_total': stats['mutator_ms'],
                              'wall_ms': wall_ms})
-                try:
-                    task = asyncio.create_task(slog.flush_summary(user_id, session_id))
-                    slog._bg_tasks.add(task)
-                    task.add_done_callback(slog._bg_tasks.discard)
-                except RuntimeError:
-                    pass
+                schedule_flush = getattr(slog, "schedule_flush_summary", None)
+                if callable(schedule_flush):
+                    schedule_flush(user_id, session_id)
+                else:
+                    try:
+                        asyncio.create_task(slog.flush_summary(user_id, session_id))
+                    except RuntimeError:
+                        pass
         finally:
             try:
                 _TURN_STATS.reset(stats_token)
@@ -2920,13 +2973,11 @@ class OpenAIHelper:
     def _clear_chat_state(self, chat_id) -> None:
         """Drop all per-chat state for chat_id.
 
-        Why: conversations / conversations_vision / last_updated /
-        loaded_conversation_sessions / last_image_file_ids / extra token usage share the same
-        chat_id key. Clearing only one of them leaves the others stale,
-        and __max_age_reached / vision routing read stale flags.
+        Why: conversations / last_updated / loaded_conversation_sessions /
+        last_image_file_ids / extra token usage share the same chat_id key.
+        Clearing only one of them leaves the others stale.
         """
         self.conversations.pop(chat_id, None)
-        self.conversations_vision.pop(chat_id, None)
         self.last_updated.pop(chat_id, None)
         self.loaded_conversation_sessions.pop(chat_id, None)
         self._chat_request_extra_tokens.pop(chat_id, None)
@@ -2969,14 +3020,17 @@ class OpenAIHelper:
                 payload,
                 user_id=effective_user_id,
             )
-        except Exception:
-            logger.exception("on_session_before_delete pre-dispatch failed")
+        except Exception as exc:
+            logger.error(
+                "on_session_before_delete pre-dispatch failed error=%s",
+                log_exception_shape(exc),
+            )
 
     async def _dispatch_before_create_session_prune(self, user_id: int) -> None:
         """Fire ``on_session_before_delete`` for sessions that
         ``Database.create_session`` is about to prune.
 
-        Walks the same selection ``delete_oldest_session`` uses so the hook
+        Walks the same oldest-session selection used by session pruning so the hook
         sees exactly the sessions that will be deleted. Failures here must not
         block session creation — caller continues regardless.
         """
@@ -2985,23 +3039,30 @@ class OpenAIHelper:
             return
         try:
             max_sessions = int(self.config.get('max_sessions', 5))
-            session_ids = self.db.get_oldest_session_ids_for_limit(
-                user_id, max_sessions=max_sessions,
+            session_ids = await self._db_call(
+                "get_oldest_session_ids_for_limit",
+                user_id,
+                max_sessions=max_sessions,
             )
-        except Exception:
-            logger.exception("Failed to enumerate sessions for pre-prune dispatch")
+        except Exception as exc:
+            logger.error(
+                "Failed to enumerate sessions for pre-prune dispatch error=%s",
+                log_exception_shape(exc),
+            )
             return
         for session_id in session_ids:
             try:
-                context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id)
+                context, _, _, _, _ = await self._db_call("get_conversation_context", user_id, session_id)
                 messages = context.get('messages', []) if isinstance(context, dict) else []
                 messages = tuple(
                     dict(m) for m in messages if isinstance(m, dict)
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to load session %s/%s for pre-prune dispatch",
-                    user_id, session_id,
+            except Exception as exc:
+                logger.error(
+                    "Failed to load session %s/%s for pre-prune dispatch error=%s",
+                    user_id,
+                    session_id,
+                    log_exception_shape(exc),
                 )
                 continue
             payload = SessionBeforeDeletePayload(
@@ -3015,10 +3076,12 @@ class OpenAIHelper:
                     payload,
                     user_id=user_id,
                 )
-            except Exception:
-                logger.exception(
-                    "on_session_before_delete pre-prune dispatch failed for %s/%s",
-                    user_id, session_id,
+            except Exception as exc:
+                logger.error(
+                    "on_session_before_delete pre-prune dispatch failed for %s/%s error=%s",
+                    user_id,
+                    session_id,
+                    log_exception_shape(exc),
                 )
 
     async def reset_chat_history(
@@ -3045,7 +3108,8 @@ class OpenAIHelper:
                 # will be pruned, so plugin subscribers can snapshot them.
                 if prune_old_sessions:
                     await self._dispatch_before_create_session_prune(chat_id)
-                session_id = self.db.create_session(
+                session_id = await self._db_call(
+                    "create_session",
                     chat_id,
                     max_sessions=self.config.get('max_sessions', 5),
                     openai_helper=self,
@@ -3056,9 +3120,19 @@ class OpenAIHelper:
                 raise ValueError(f"Не удалось создать/получить сессию для пользователя {chat_id}")
             
             # Получаем контекст сессии
-            context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(chat_id, session_id)
+            context, parse_mode, temperature, max_tokens_percent, _ = await self._db_call(
+                "get_conversation_context",
+                chat_id,
+                session_id,
+            )
             # Инициализируем историю чата
-            system_message = self.db.get_mode_from_context(context)
+            messages = context.get('messages') if isinstance(context, dict) else []
+            if not isinstance(messages, list):
+                messages = []
+            system_message = next(
+                (msg for msg in messages if isinstance(msg, dict) and msg.get('role') == 'system'),
+                None,
+            )
             
             self.conversations[state_key] = [{"role": "system", "content": content or (system_message['content'] if system_message else '')}]
             self.loaded_conversation_sessions[state_key] = session_id
@@ -3084,7 +3158,7 @@ class OpenAIHelper:
             logger.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
             
         except Exception as e:
-            logger.error(f'Error in reset_chat_history: {str(e)}', exc_info=True)
+            logger.error("Error in reset_chat_history error=%s", log_exception_shape(e))
             raise
 
     def __max_age_reached(self, chat_id) -> bool:
@@ -3100,13 +3174,15 @@ class OpenAIHelper:
         max_age_minutes = self.config['max_conversation_age_minutes']
         return last_updated < now - datetime.timedelta(minutes=max_age_minutes)
 
-    def __add_function_call_to_history(self, chat_id, function_name, content, tool_call_id=None):
+    def __add_function_call_to_history(self, chat_id, function_name, content, tool_call_id=None, model_to_use=None):
         """
         Adds a function call to the conversation history
         """
         # For models that don't support function role, add as a user message
         state_key = self._chat_state_key(chat_id)
-        model_to_use = self._chat_request_models.get(state_key) or self.get_current_model(chat_id)
+        model_to_use = model_to_use or self._chat_request_models.get(state_key)
+        if model_to_use is None:
+            raise RuntimeError("model_to_use is required when adding tool results to history")
         content = self._tool_result_content(content)
         to_model_name = getattr(self.plugin_manager, "to_model_function_name", None)
         model_function_name = (
@@ -3164,7 +3240,11 @@ class OpenAIHelper:
         self._compact_old_tool_results_history(state_key)
         
         # Получаем текущий контекст для сохранения с учетом session_id
-        _, parse_mode, temperature, max_tokens_percent, session_id = self.db.get_conversation_context(chat_id, session_id)
+        _, parse_mode, temperature, max_tokens_percent, session_id = await self._db_call(
+            "get_conversation_context",
+            chat_id,
+            session_id,
+        )
         self.loaded_conversation_sessions[state_key] = session_id
         
         # Сохраняем обновленный контекст в базу данных с использованием session_id
@@ -3193,7 +3273,7 @@ class OpenAIHelper:
         """
         state_key = self._chat_state_key(chat_id)
         saved_context, parse_mode, temperature, max_tokens_percent, session_id = (
-            self.db.get_conversation_context(chat_id, session_id)
+            await self._db_call("get_conversation_context", chat_id, session_id)
         )
         loaded_session_id = self.loaded_conversation_sessions.get(state_key)
         session_changed = (
@@ -3456,10 +3536,11 @@ class OpenAIHelper:
                 self._summarise_window(to_summarize),
                 timeout=timeout_seconds,
             )
-        except Exception:
-            logger.exception(
-                "Summary window call failed for state_key=%s",
+        except Exception as exc:
+            logger.error(
+                "Summary window call failed for state_key=%s error=%s",
                 state_key,
+                log_exception_shape(exc),
             )
             return False
 
@@ -3571,7 +3652,7 @@ class OpenAIHelper:
                 else:
                     raise ValueError(f"Unknown vision_detail parameter: {detail}")
         except Exception as e:
-            logger.error(f"Error processing image for token counting: {e}")
+            logger.error("Error processing image for token counting error=%s", log_exception_shape(e))
             raise
 
     async def get_file_data(self, file_id: str) -> bytes:
@@ -3585,7 +3666,7 @@ class OpenAIHelper:
             file = await self.bot.get_file(file_id)
             return await file.download_as_bytearray()
         except Exception as e:
-            logger.error(f"Error downloading file: {e}")
+            logger.error("Error downloading file error=%s", log_exception_shape(e))
             raise
 
     async def download_file_as_bytes(self, file_id: str) -> bytes:
@@ -3656,7 +3737,7 @@ class OpenAIHelper:
             return session_name or f"Сессия {dt.now().strftime('%d.%m')}", tokens
         
         except Exception as e:
-            logger.error(f"Ошибка генерации названия сессии: {e}")
+            logger.error("Session name generation failed error=%s", log_exception_shape(e))
             return f"Сессия {dt.now().strftime('%d.%m')}", 0
 
     def get_model_choices(self) -> list[str]:
@@ -3705,15 +3786,54 @@ class OpenAIHelper:
         # Возвращаем модель по умолчанию
         logger.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
+
+    async def get_current_model_async(self, user_id: int = None, session_id: str | None = None) -> str:
+        session_model = ''
+        if user_id:
+            if session_id:
+                sessions = await self._db_call("list_user_sessions", user_id, is_active=0)
+                selected_session = next(
+                    (s for s in sessions if s.get('session_id') == session_id),
+                    None,
+                )
+                session_model = selected_session.get('model', '') if selected_session else ''
+            else:
+                sessions = await self._db_call("list_user_sessions", user_id, is_active=1)
+                active_session = next((s for s in sessions if s.get('is_active')), None)
+                session_model = active_session.get('model', '') if active_session else ''
+
+            if session_model in self.get_model_choices():
+                logger.info(f"Модель из сессии: {session_model}")
+                return session_model
+            if session_model:
+                logger.info(f"Игнорируем модель из сессии вне OPENAI_MODEL: {session_model}")
+
+        logger.info(f"Модель по умолчанию: {self.config['model']}")
+        return self.config['model']
     
     def get_output_max_tokens(self) -> int:
         """Лимит max_tokens для одного запроса генерации: из конфига
         (``output_max_tokens``), иначе фолбэк ``MAX_OUTPUT_TOKENS``."""
         return int(self.config.get('output_max_tokens') or MAX_OUTPUT_TOKENS)
 
+    def _context_window(self, model_to_use: str | None) -> int:
+        windows = self.config.get('model_context_windows') or {}
+        if isinstance(windows, dict) and model_to_use in windows:
+            try:
+                window = int(windows[model_to_use])
+                if window > 0:
+                    return window
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid context window for model %s value_shape=%s",
+                    model_to_use,
+                    log_value_shape(windows[model_to_use], key="value"),
+                )
+        return default_max_tokens(model_to_use)
+
     def get_max_tokens(self, model_to_use, max_tokens_percent, chat_id):
         # Получаем максимальное количество токенов для модели
-        total_max_tokens = default_max_tokens(model_to_use)
+        total_max_tokens = self._context_window(model_to_use)
         
         # Рассчитываем текущее количество токенов в контексте
         current_tokens = 0
@@ -3804,12 +3924,17 @@ class OpenAIHelper:
         # дренируем хвост событий сессии до закрытия клиента
         slog = getattr(self, "session_logger", None)
         if slog is not None:
+            close_logger = getattr(slog, "close", None)
             drain = getattr(slog, "drain", None)
-            if callable(drain):
+            logger_cleanup = close_logger if callable(close_logger) else drain
+            if callable(logger_cleanup):
                 try:
-                    await drain()
-                except Exception:
-                    logger.debug("session_logger.drain() failed during close", exc_info=True)
+                    await logger_cleanup()
+                except Exception as exc:
+                    logger.debug(
+                        "session_logger cleanup failed during close error=%s",
+                        log_exception_shape(exc),
+                    )
         try:
             if hasattr(self, 'client') and self.client:
                 await self.client.close()
@@ -3819,4 +3944,4 @@ class OpenAIHelper:
             if hasattr(self, '_http_client') and self._http_client is not None:
                 await self._http_client.aclose()
         except Exception as e:
-            logger.error(f"Error closing OpenAI client: {e}")
+            logger.error("Error closing OpenAI client error=%s", log_exception_shape(e))

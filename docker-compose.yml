@@ -3,6 +3,33 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DB_PATH: ${DB_PATH:-/app/data/user_data.db}
+      PLUGIN_STORAGE_ROOT: ${PLUGIN_STORAGE_ROOT:-/app/data}
+      SESSION_LOG_DIR: ${SESSION_LOG_DIR:-/app/log}
+      BOT_DATA_DIR: ${BOT_DATA_DIR:-/app/data}
+      BOT_OUTPUT_DIR: ${BOT_OUTPUT_DIR:-/app/output}
+      BOT_PLOTS_DIR: ${BOT_PLOTS_DIR:-/app/plots}
+      SKILLS_DIR: /app/data/skills
+      SKILLS_WORKDIR: /app/data/skill_workdir
     volumes:
-      - .:/app
+      - bot-data:/app/data
+      - bot-output:/app/output
+      - bot-plots:/app/plots
+      - bot-usage-logs:/app/usage_logs
+      - bot-session-logs:/app/log
+      - bot-uploads:/app/uploads
+    tmpfs:
+      - /app/bot/temp:rw,nosuid,nodev,mode=1777
+      - /tmp:rw,nosuid,nodev,mode=1777
     restart: unless-stopped
+
+volumes:
+  bot-data:
+  bot-output:
+  bot-plots:
+  bot-usage-logs:
+  bot-session-logs:
+  bot-uploads:

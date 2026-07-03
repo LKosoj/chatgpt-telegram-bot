@@ -25,9 +25,16 @@ from .tool_result import (
     normalize_tool_result,
 )
 from .session_logger import get_trace
-from .utils import compute_scope_key
+from .utils import compute_scope_key, log_exception_shape, log_json_shape, log_value_shape
 
 logger = logging.getLogger(__name__)
+
+FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "request_context"}
+
+
+def _strip_framework_tool_args(args: dict) -> None:
+    for key in FRAMEWORK_TOOL_ARGS:
+        args.pop(key, None)
 
 
 def _tool_call_semaphore(helper) -> asyncio.Semaphore:
@@ -109,16 +116,31 @@ async def _execute_prepared_tool_calls(helper, prepared, request_context, semaph
         ]
         phase_results = await asyncio.gather(*tasks, return_exceptions=True)
         for (idx, _item), result in zip(phase, phase_results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
             results[idx] = result
     return results
 
 
 async def _list_user_sessions(db, user_id, *, is_active: int = 0):
-    """Use the async DB API when available, fall back to sync for test doubles."""
     fn = getattr(db, "list_user_sessions_async", None)
-    if fn is not None:
-        return await fn(user_id, is_active=is_active)
-    return db.list_user_sessions(user_id, is_active=is_active)
+    if fn is None:
+        raise RuntimeError("Database.list_user_sessions_async is required in async tool flow")
+    return await fn(user_id, is_active=is_active)
+
+
+async def _get_conversation_context(db, user_id, session_id=None):
+    fn = getattr(db, "get_conversation_context_async", None)
+    if fn is None:
+        raise RuntimeError("Database.get_conversation_context_async is required in async tool flow")
+    return await fn(user_id, session_id)
+
+
+async def _get_current_model(helper, user_id, *, session_id=None):
+    fn = getattr(helper, "get_current_model_async", None)
+    if fn is None:
+        raise RuntimeError("OpenAIHelper.get_current_model_async is required in async tool flow")
+    return await fn(user_id, session_id=session_id)
 
 
 def _chat_state_key(helper, chat_id):
@@ -140,12 +162,17 @@ async def _reentry_session(helper, chat_id, user_id, request_context):
     session_id = getattr(request_context, "session_id", None)
     if session_id:
         try:
-            _, _, _, max_tokens_percent, resolved_session_id = helper.db.get_conversation_context(
+            _, _, _, max_tokens_percent, resolved_session_id = await _get_conversation_context(
+                helper.db,
                 chat_id,
                 session_id,
             )
-        except Exception:
-            logger.warning("Failed to load request session %s for tool reentry", session_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load request session %s for tool reentry error=%s",
+                session_id,
+                log_exception_shape(exc),
+            )
             return session_id, 80
         return resolved_session_id or session_id, max_tokens_percent or 80
 
@@ -383,8 +410,34 @@ def _filter_tools_by_name(tools, suppressed_names: set[str], plugin_manager=None
     return tools
 
 
+def _filter_tools_to_names(tools, allowed_names: set[str], plugin_manager=None):
+    def is_allowed(name: str | None) -> bool:
+        if not name:
+            return False
+        canonical = _to_canonical_tool_name(plugin_manager, name)
+        return canonical in allowed_names
+
+    if isinstance(tools, dict):
+        declarations = tools.get("function_declarations")
+        if not isinstance(declarations, list):
+            return tools
+        return {
+            **tools,
+            "function_declarations": [
+                spec for spec in declarations
+                if is_allowed(_tool_spec_name(spec))
+            ],
+        }
+    if isinstance(tools, list):
+        return [
+            spec for spec in tools
+            if is_allowed(_tool_spec_name(spec))
+        ]
+    return tools
+
+
 def _json_for_log(value) -> str:
-    return json.dumps(value, ensure_ascii=False, default=str)
+    return log_json_shape(value)
 
 
 def _tool_calls_payload(tool_calls: list[dict]) -> list[dict]:
@@ -413,12 +466,17 @@ def _log_model_tool_calls(
     tool_calls: list[dict],
 ) -> None:
     payload = _tool_calls_payload(tool_calls)
+    names = [
+        call.get("name") or call.get("model_name") or "<unknown>"
+        for call in tool_calls
+    ]
     logger.info(
-        "Model tool calls received chat_id=%s model=%s stream=%s count=%d payload=%s",
+        "Model tool calls received chat_id=%s model=%s stream=%s count=%d names=%s payload_shape=%s",
         chat_id,
         model_to_use,
         stream,
         len(tool_calls),
+        names,
         _json_for_log(payload),
     )
 
@@ -459,6 +517,38 @@ def _agent_delivery_workflow_active(tool_calls: list[dict], tools_used: tuple) -
 
 _TEXT_PREVIEW_LIMIT = 600
 _ARTIFACT_MANIFEST_LIMIT = 50
+_DIRECT_RESULT_COMPACT_KEYS = (
+    "kind",
+    "format",
+    "value",
+    "file_path",
+    "path",
+    "output_path",
+    "artifact_path",
+    "url",
+    "mime_type",
+    "caption",
+    "add_value",
+    "file_size",
+    "status",
+    "verification_summary",
+    "blocked_reason",
+)
+_DIRECT_RESULT_ARTIFACT_KEYS = (
+    "kind",
+    "format",
+    "value",
+    "file_path",
+    "path",
+    "output_path",
+    "artifact_path",
+    "url",
+    "mime_type",
+    "caption",
+    "add_value",
+    "file_size",
+    "preserve_after_delivery",
+)
 
 
 def _artifact_path(value) -> str | None:
@@ -494,6 +584,23 @@ def _artifact_manifest_message(manifest: list[dict]) -> str:
     return "Current run artifact manifest:\n" + json.dumps(payload, ensure_ascii=False)
 
 
+def _copy_known_keys(payload: dict, keys: tuple[str, ...]) -> dict:
+    return {
+        key: payload.get(key)
+        for key in keys
+        if payload.get(key) is not None
+    }
+
+
+def _compact_artifact_payload(payload: dict) -> dict:
+    compact = _copy_known_keys(payload, _DIRECT_RESULT_ARTIFACT_KEYS)
+    return compact or {
+        key: value
+        for key, value in payload.items()
+        if key not in ("cleanup_skill", "cleanup_skills")
+    }
+
+
 def _compact_deferred_tool_response(response) -> str:
     """
     Replace a deferred direct_result payload with a compact summary suitable for
@@ -503,9 +610,8 @@ def _compact_deferred_tool_response(response) -> str:
     """
     direct_result = _direct_result_payload(response) or {}
     compact: dict = {"result": "deferred"}
-    for key in ("kind", "format", "value", "file_path", "url", "mime_type", "caption"):
-        value = direct_result.get(key)
-        if isinstance(value, str) and value:
+    for key, value in _copy_known_keys(direct_result, _DIRECT_RESULT_COMPACT_KEYS).items():
+        if value != "":
             compact[key] = value
 
     text = direct_result.get("text")
@@ -518,16 +624,43 @@ def _compact_deferred_tool_response(response) -> str:
 
     artifacts = direct_result.get("artifacts")
     if isinstance(artifacts, list) and artifacts:
-        compact["artifacts_count"] = len(artifacts)
-        compact["artifact_paths"] = [
-            str(item.get("value") or item.get("file_path") or "")
+        compact_artifacts = [
+            _compact_artifact_payload(item)
             for item in artifacts
-            if isinstance(item, dict) and (item.get("value") or item.get("file_path"))
+            if isinstance(item, dict)
         ]
+        compact["artifacts_count"] = len(compact_artifacts)
+        if compact_artifacts:
+            compact["artifacts"] = compact_artifacts
+            compact["artifact_paths"] = [
+                str(
+                    item.get("value")
+                    or item.get("file_path")
+                    or item.get("path")
+                    or item.get("output_path")
+                    or item.get("artifact_path")
+                    or ""
+                )
+                for item in compact_artifacts
+                if (
+                    item.get("value")
+                    or item.get("file_path")
+                    or item.get("path")
+                    or item.get("output_path")
+                    or item.get("artifact_path")
+                )
+            ]
+
+    cleanup_skill = direct_result.get("cleanup_skill")
+    if isinstance(cleanup_skill, dict):
+        compact["cleanup_skill"] = cleanup_skill
 
     cleanup_skills = direct_result.get("cleanup_skills")
     if isinstance(cleanup_skills, list) and cleanup_skills:
-        compact["cleanup_skills_count"] = len(cleanup_skills)
+        compact["cleanup_skills"] = [
+            item for item in cleanup_skills if isinstance(item, dict)
+        ]
+        compact["cleanup_skills_count"] = len(compact["cleanup_skills"])
 
     return json.dumps(compact, ensure_ascii=False)
 
@@ -536,6 +669,9 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
     text_parts: list[str] = []
     artifacts: list[dict] = []
     cleanup_directives: list[dict] = []
+    statuses: list[str] = []
+    verification_summaries: list[str] = []
+    blocked_reasons: list[str] = []
     for tool_response in direct_results:
         payload = tool_response
         if isinstance(payload, str):
@@ -545,8 +681,8 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
                 continue
         if not isinstance(payload, dict):
             continue
-        direct_result = payload.get("direct_result")
-        if not isinstance(direct_result, dict):
+        direct_result = _direct_result_payload(payload)
+        if not direct_result:
             continue
 
         single_cleanup = direct_result.get("cleanup_skill")
@@ -555,6 +691,16 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
         many_cleanup = direct_result.get("cleanup_skills")
         if isinstance(many_cleanup, list):
             cleanup_directives.extend(item for item in many_cleanup if isinstance(item, dict))
+
+        status = direct_result.get("status")
+        if status:
+            statuses.append(str(status))
+        verification_summary = direct_result.get("verification_summary")
+        if verification_summary:
+            verification_summaries.append(str(verification_summary))
+        blocked_reason = direct_result.get("blocked_reason")
+        if blocked_reason:
+            blocked_reasons.append(str(blocked_reason))
 
         kind = direct_result.get("kind")
         if kind == "final":
@@ -566,16 +712,12 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
                     artifacts.append(artifact)
             continue
         if kind == "text":
-            value = direct_result.get("value")
+            value = direct_result.get("add_value") or direct_result.get("value")
             if value:
                 text_parts.append(str(value))
             continue
         if kind in ("file", "photo", "gif"):
-            artifacts.append({
-                key: direct_result.get(key)
-                for key in ("kind", "format", "value", "add_value", "file_size")
-                if direct_result.get(key) is not None
-            })
+            artifacts.append(_compact_artifact_payload(direct_result))
             continue
         artifacts.append({k: v for k, v in direct_result.items() if k not in ("cleanup_skill", "cleanup_skills")})
 
@@ -590,6 +732,12 @@ def _merge_direct_results_into_final(direct_results: list) -> dict:
     }
     if cleanup_directives:
         merged["direct_result"]["cleanup_skills"] = cleanup_directives
+    if statuses:
+        merged["direct_result"]["status"] = "blocked" if "blocked" in statuses else statuses[-1]
+    if verification_summaries:
+        merged["direct_result"]["verification_summary"] = "\n\n".join(verification_summaries)
+    if blocked_reasons:
+        merged["direct_result"]["blocked_reason"] = "\n\n".join(blocked_reasons)
     return merged
 
 
@@ -690,13 +838,17 @@ async def _retry_missing_delivery_tool(
     )
 
     session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
-    model_to_use = model_to_use or helper.get_current_model(
+    model_to_use = model_to_use or await _get_current_model(
+        helper,
         _model_owner(chat_id, user_id, session_id),
         session_id=session_id,
     )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
+    max_consecutive_calls = helper.config['functions_max_consecutive_calls']
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
     tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
+    if times >= max_consecutive_calls:
+        tools = _filter_tools_to_names(tools, {DELIVERY_TOOL_NAME}, helper.plugin_manager)
     tool_choice = "auto" if _has_tool_specs(tools) else "none"
 
     messages = await helper._apply_before_chat_request_mutators(
@@ -763,13 +915,17 @@ async def _retry_plain_text_tool_intent(
     logger.warning("Retrying plain-text tool intent for chat_id=%s", chat_id)
 
     session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
-    model_to_use = model_to_use or helper.get_current_model(
+    model_to_use = model_to_use or await _get_current_model(
+        helper,
         _model_owner(chat_id, user_id, session_id),
         session_id=session_id,
     )
     suppressed_reentry_tools = set(suppressed_reentry_tools or ())
+    max_consecutive_calls = helper.config['functions_max_consecutive_calls']
     tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
     tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
+    if times >= max_consecutive_calls:
+        tools = _filter_tools_to_names(tools, set(), helper.plugin_manager)
     tool_choice = "auto" if _has_tool_specs(tools) else "none"
 
     messages = await helper._apply_before_chat_request_mutators(
@@ -912,7 +1068,10 @@ async def handle_function_call(
                     buffered_items.append(next_item)
                     text_parts.append(_stream_item_content(next_item))
             except openai.APIError as e:
-                logger.error(f"API Error while buffering plain-text tool intent stream: {e}")
+                logger.error(
+                    "API Error while buffering plain-text tool intent stream error=%s",
+                    log_exception_shape(e),
+                )
                 return _replay_stream_items(buffered_items), tools_used
             plain_text = "".join(text_parts)
             repaired = await retry_plain_text_tool_intent_if_needed(plain_text)
@@ -963,7 +1122,10 @@ async def handle_function_call(
                             return enforced
                         return _prepend_stream_item(item, response), tools_used
             except openai.APIError as e:
-                logger.error(f"API Error in function call streaming: {e}")
+                logger.error(
+                    "API Error in function call streaming error=%s",
+                    log_exception_shape(e),
+                )
                 return response, tools_used
             for idx, entry in sorted(tool_call_parts.items(), key=lambda x: x[0]):
                 entry["id"] = entry["id"] or f"call_{idx}"
@@ -975,7 +1137,13 @@ async def handle_function_call(
         else:
             if len(response.choices) > 0:
                 first_choice = response.choices[0]
-                logger.info(f"first_choice = {first_choice}")
+                first_message = getattr(first_choice, "message", None)
+                logger.info(
+                    "First response choice received finish_reason=%s has_tool_calls=%s message_type=%s",
+                    getattr(first_choice, "finish_reason", None),
+                    bool(getattr(first_message, "tool_calls", None)),
+                    type(first_message).__name__,
+                )
                 if first_choice.message.tool_calls:
                     logger.info("found tool calls")
                     for tc in first_choice.message.tool_calls:
@@ -1007,7 +1175,8 @@ async def handle_function_call(
             return response, tools_used
 
         request_session_id = getattr(request_context, "session_id", None)
-        model_to_use = model_to_use or helper.get_current_model(
+        model_to_use = model_to_use or await _get_current_model(
+            helper,
             _model_owner(chat_id, user_id, request_session_id),
             session_id=request_session_id,
         )
@@ -1051,12 +1220,14 @@ async def handle_function_call(
                     function_name=tool_name,
                     content=tool_response,
                     tool_call_id=tool_call_id,
+                    model_to_use=model_to_use,
                 )
             else:
                 helper._add_function_call_to_history(
                     chat_id=chat_id,
                     function_name=tool_name,
                     content=tool_response,
+                    model_to_use=model_to_use,
                 )
 
         prepared = []
@@ -1068,22 +1239,22 @@ async def handle_function_call(
             arguments = call["arguments"]
             canonical_arguments = _canonical_tool_arguments(arguments)
             logger.info(
-                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments=%s",
+                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments_shape=%s",
                 chat_id,
                 tool_call_id,
                 model_tool_name,
                 tool_name,
-                arguments,
+                log_value_shape(arguments, key="arguments"),
             )
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
                 logger.warning(
-                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments=%s",
+                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments_shape=%s",
                     error,
                     chat_id,
                     tool_call_id,
                     model_tool_name,
-                    arguments,
+                    log_value_shape(arguments, key="arguments"),
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
@@ -1091,6 +1262,7 @@ async def handle_function_call(
                 args = json.loads(arguments)
                 if not isinstance(args, dict):
                     raise TypeError("tool arguments must be a JSON object")
+                _strip_framework_tool_args(args)
                 if request_context is not None:
                     args['chat_id'] = request_context.plugin_chat_id
                     args['user_id'] = request_context.user_id
@@ -1113,24 +1285,24 @@ async def handle_function_call(
                 prepared.append((tool_name, arguments, _canonical_tool_arguments(arguments), tool_call_id))
             except json.JSONDecodeError as exc:
                 logger.error(
-                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments_shape=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
-                    exc,
-                    arguments,
+                    log_exception_shape(exc),
+                    log_value_shape(arguments, key="arguments"),
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
             except TypeError as exc:
                 logger.error(
-                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments_shape=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
-                    exc,
-                    arguments,
+                    log_exception_shape(exc),
+                    log_value_shape(arguments, key="arguments"),
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
@@ -1149,9 +1321,10 @@ async def handle_function_call(
                     snapshot_scope,
                 )
                 replan_pre_snapshot = (snapshot_scope, pre_task_id)
-        except Exception:
+        except Exception as exc:
             logger.debug(
-                "agent_tools re-plan pre-snapshot failed", exc_info=True
+                "agent_tools re-plan pre-snapshot failed error=%s",
+                log_exception_shape(exc),
             )
 
         semaphore = _tool_call_semaphore(helper)
@@ -1170,10 +1343,16 @@ async def handle_function_call(
         prior_failure_fingerprints = set(failure_escalation_state.get("seen") or set())
         batch_failure_fingerprints: set[tuple[str, str, str]] = set()
         for (tool_name, _, canonical_arguments, tool_call_id), tool_response in zip(prepared, results):
+            if isinstance(tool_response, asyncio.CancelledError):
+                raise tool_response
             if isinstance(tool_response, Exception):
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             tool_result = normalize_tool_result(tool_response, tool_name=tool_name)
-            logger.info(f'Function {tool_name} response: {tool_result.content}')
+            logger.info(
+                "Function %s response_shape=%s",
+                tool_name,
+                log_value_shape(tool_result.content, key="response"),
+            )
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
             suppressed_reentry_tools.update(_suppressed_reentry_tools(tool_result))
@@ -1181,7 +1360,7 @@ async def handle_function_call(
                 retry_plain_text_tool_intent
                 or _requires_plain_text_tool_intent_retry(tool_result)
             )
-            if tool_result.success:
+            if tool_result.success and (defer_direct_results or tool_result.artifacts):
                 final_delivery_required = True
             tool_outcomes.append((tool_name, bool(tool_result.success)))
             for entry in tool_result.artifacts:
@@ -1289,8 +1468,11 @@ async def handle_function_call(
                         batch_success,
                         representative_name,
                     )
-        except Exception:
-            logger.debug("agent_tools re-plan bookkeeping failed", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "agent_tools re-plan bookkeeping failed error=%s",
+                log_exception_shape(exc),
+            )
 
         if repeated_failures and not direct_results_collected:
             skills_agent_mode = _is_skills_agent_mode(helper, chat_id)
@@ -1324,17 +1506,20 @@ async def handle_function_call(
         session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
 
         logger.info(
-            "Function calls completed. messages: %s session_id: %s",
-            helper.conversations.get(_chat_state_key(helper, chat_id)),
+            "Function calls completed. conversation_shape=%s session_id=%s",
+            _json_for_log(helper.conversations.get(_chat_state_key(helper, chat_id))),
             session_id,
         )
 
+        max_consecutive_calls = helper.config['functions_max_consecutive_calls']
         tools = helper.plugin_manager.get_functions_specs(helper, model_to_use, allowed_plugins)
         tools = _filter_tools_by_name(tools, suppressed_reentry_tools, helper.plugin_manager)
+        if final_delivery_required and times >= max_consecutive_calls:
+            tools = _filter_tools_to_names(tools, {DELIVERY_TOOL_NAME}, helper.plugin_manager)
         tool_choice = _reentry_tool_choice(
             tools,
             times=times,
-            max_consecutive_calls=helper.config['functions_max_consecutive_calls'],
+            max_consecutive_calls=max_consecutive_calls,
             final_delivery_required=final_delivery_required,
         )
 
@@ -1373,6 +1558,6 @@ async def handle_function_call(
             token_accumulator,
             failure_escalation_state,
         )
-    except Exception:
-        logger.error('Error in function call handling', exc_info=True)
+    except Exception as exc:
+        logger.error('Error in function call handling error=%s', log_exception_shape(exc))
         raise

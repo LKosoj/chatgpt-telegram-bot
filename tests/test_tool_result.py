@@ -45,6 +45,74 @@ def test_tool_result_extracts_direct_result_and_artifacts():
     },)
 
 
+def test_tool_result_extracts_artifact_path_variants_and_metadata():
+    result = normalize_tool_result({
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "file_path": "/tmp/file-path.txt",
+                    "caption": "file path",
+                    "file_size": 12,
+                },
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "output_path": "/tmp/output-path.txt",
+                },
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "artifact_path": "/tmp/artifact-path.txt",
+                },
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "value": "relative.txt",
+                },
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "value": "https://example.com/file.txt",
+                },
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "value": "/tmp/bad\npath.txt",
+                },
+            ],
+        }
+    }, tool_name="agent_tools.deliver_to_user")
+
+    assert result.artifacts == (
+        {
+            "tool": "agent_tools.deliver_to_user",
+            "kind": "file",
+            "path": "/tmp/file-path.txt",
+            "format": "path",
+            "caption": "file path",
+            "file_size": 12,
+        },
+        {
+            "tool": "agent_tools.deliver_to_user",
+            "kind": "file",
+            "path": "/tmp/output-path.txt",
+            "format": "path",
+            "caption": None,
+        },
+        {
+            "tool": "agent_tools.deliver_to_user",
+            "kind": "file",
+            "path": "/tmp/artifact-path.txt",
+            "format": "path",
+            "caption": None,
+        },
+    )
+
+
 def test_tool_result_rejects_malformed_direct_result_without_kind():
     result = normalize_tool_result({
         "direct_result": {

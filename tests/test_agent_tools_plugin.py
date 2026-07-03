@@ -321,6 +321,11 @@ class TerminalOnlyPluginManager(FakePluginManager):
         return json.dumps({"success": True, "output": "/tmp/pptx-work-XXXXXX"}, ensure_ascii=False)
 
 
+class CancellingPluginManager(FakePluginManager):
+    async def call_function(self, function_name, helper, arguments, request_context=None):
+        raise asyncio.CancelledError()
+
+
 class SlowFakeCompletions(FakeCompletions):
     async def create(self, **kwargs):
         await asyncio.sleep(0.01)
@@ -448,6 +453,49 @@ def test_agent_tools_timeout_ignores_invalid_env_default(monkeypatch):
     assert AgentToolsPlugin._normalize_timeout(None) == 1800
 
 
+def test_agent_tools_has_no_repo_local_runtime_files_by_default():
+    plugin = AgentToolsPlugin()
+
+    assert plugin.pending_file is None
+    assert plugin.background_jobs_file is None
+    assert not Path("bot/plugins/agent_pending_questions.json").exists()
+    assert not Path("bot/plugins/agent_background_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_plan_scope_locks_are_bounded():
+    plugin = AgentToolsPlugin()
+    plugin.PLAN_SCOPE_LOCKS_MAX = 3
+
+    for index in range(10):
+        plugin._get_plan_scope_lock(f"chat:{index}")
+
+    assert len(plugin._plan_scope_locks) <= 3
+    assert list(plugin._plan_scope_locks) == ["chat:7", "chat:8", "chat:9"]
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_plan_scope_lock_eviction_preserves_locked_scope():
+    plugin = AgentToolsPlugin()
+    plugin.PLAN_SCOPE_LOCKS_MAX = 2
+    locked = plugin._get_plan_scope_lock("chat:locked")
+    await locked.acquire()
+
+    try:
+        for index in range(3):
+            plugin._get_plan_scope_lock(f"chat:{index}")
+
+        assert "chat:locked" in plugin._plan_scope_locks
+        assert len(plugin._plan_scope_locks) <= 2
+    finally:
+        locked.release()
+
+    plugin._get_plan_scope_lock("chat:after-release")
+
+    assert "chat:locked" not in plugin._plan_scope_locks
+    assert len(plugin._plan_scope_locks) <= 2
+
+
 def test_subagent_prompt_declares_local_skill_flow():
     prompt = Path("bot/prompts/subagent_system.md").read_text(encoding="utf-8")
 
@@ -497,6 +545,95 @@ async def test_manage_plan_tasks_tracks_progress(tmp_path, agent_db):
     cleared = await plugin.execute("manage_plan_tasks", helper, chat_id=10, action="clear")
     assert cleared["success"] is True
     assert cleared["plan_tasks"]["tasks"] == []
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_trusts_request_context_over_model_args(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    request_context = RequestContext(
+        chat_id=10,
+        user_id=42,
+        message_id=1,
+        request_id="10_1",
+    )
+
+    result = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        request_context=request_context,
+        chat_id=999,
+        user_id=999,
+        action="add",
+        definition_of_done=PLAN_CONTRACT,
+        tasks=[{"id": "T1", "content": "Use trusted scope", "status": "pending"}],
+    )
+
+    assert result["success"] is True
+    trusted = await plugin.execute(
+        "manage_plan_tasks", helper, chat_id=10, user_id=42, action="list"
+    )
+    spoofed = await plugin.execute(
+        "manage_plan_tasks", helper, chat_id=999, user_id=999, action="list"
+    )
+    assert [task["id"] for task in trusted["plan_tasks"]["tasks"]] == ["T1"]
+    assert spoofed["plan_tasks"]["tasks"] == []
+
+
+@pytest.mark.asyncio
+async def test_manage_plan_tasks_clear_removes_contract_checkpoint_and_runtime(tmp_path, agent_db):
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+    await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="add",
+        definition_of_done=PLAN_CONTRACT,
+        tasks=[{"id": "T1", "content": "Do work", "status": "completed"}],
+    )
+    await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="update",
+        summary="halfway",
+    )
+    scope = "chat:10"
+    plugin._pending_verify[scope] = {"task_id": "T1"}
+    plugin._pending_replan[scope] = {"reason": "blocked", "task_id": "T1"}
+    plugin._tool_error_streaks[scope] = {"task_id": "T1", "count": 2}
+
+    cleared = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="clear",
+    )
+    listed = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+    checkpoint = await plugin.execute(
+        "update_working_checkpoint",
+        helper,
+        chat_id=10,
+        user_id=42,
+        action="list",
+    )
+
+    assert cleared["success"] is True
+    assert cleared["plan_tasks"]["changed"] is True
+    assert listed["plan_tasks"]["tasks"] == []
+    assert listed["plan_tasks"]["definition_of_done"] is None
+    assert checkpoint["working_checkpoint"]["checkpoint"] is None
+    assert scope not in plugin._pending_verify
+    assert scope not in plugin._pending_replan
+    assert scope not in plugin._tool_error_streaks
 
 
 @pytest.mark.asyncio
@@ -1111,6 +1248,87 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
         for message in helper.completions.calls[0]["messages"]
         if message.get("role") == "user"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_uses_async_current_model_when_available(tmp_path):
+    class AsyncModelHelper(FakeLLMHelper):
+        def get_current_model(self, user_id, session_id=None):
+            raise AssertionError("sync get_current_model should not be used")
+
+        async def get_current_model_async(self, user_id, session_id=None):
+            return "llmgateway/async"
+
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = AsyncModelHelper(
+        model_name="llmgateway/high",
+        model_choices=["llmgateway/high", "llmgateway/async"],
+    )
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["success"] is True
+    assert helper.completions.calls
+    assert all(call["model"] == "llmgateway/async" for call in helper.completions.calls)
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_overwrites_model_supplied_framework_args(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    completions = FakeCompletions(tool_calls=[
+        SimpleNamespace(
+            id="tool_1",
+            function=SimpleNamespace(
+                name="skills.list_skills",
+                arguments=json.dumps({
+                    "chat_id": 999,
+                    "user_id": 999,
+                    "message_id": 999,
+                    "request_context": {"user_id": 999},
+                }),
+            ),
+        )
+    ])
+    helper = FakeLLMHelper(completions=completions)
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["success"] is True
+    sent_args = helper.plugin_manager.calls[0][1]
+    assert sent_args["chat_id"] == 10
+    assert sent_args["user_id"] == 42
+    assert "message_id" not in sent_args
+    assert "request_context" not in sent_args
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_propagates_cancelled_error(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(plugin_manager=CancellingPluginManager())
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.execute(
+            "run_subagents",
+            helper,
+            chat_id=10,
+            user_id=42,
+            subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+        )
 
 
 @pytest.mark.asyncio

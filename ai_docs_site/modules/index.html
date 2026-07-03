@@ -385,7 +385,7 @@
 <ul class="nav flex-column">
 </ul>
 </li>
-<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#html_visualizer">html_visualizer</a>
+<li class="nav-item" data-bs-level="2"><a class="nav-link" href="#html_utils">html_utils</a>
 <ul class="nav flex-column">
 </ul>
 </li>
@@ -652,7 +652,7 @@
 </table>
 <hr/>
 <h2 id="usage_tracker"><code>usage_tracker</code></h2>
-<p>Учёт потребления ресурсов с сохранением в JSON.</p>
+<p>Учёт потребления ресурсов с сохранением в SQLite и импортом legacy JSON.</p>
 <h3 id="year_monthdate_str"><code>year_month(date_str)</code></h3>
 <p>Извлекает <code>'YYYY-MM'</code> из даты (первые 7 символов).</p>
 <h3 id="usagetracker"><code>UsageTracker</code></h3>
@@ -678,12 +678,12 @@
 <tr>
 <td><code>user_file</code></td>
 <td><code>str</code></td>
-<td>Путь к JSON-файлу пользователя</td>
+<td>Путь к legacy JSON-файлу пользователя для импорта/восстановления</td>
 </tr>
 <tr>
 <td><code>usage</code></td>
 <td><code>dict</code></td>
-<td>Данные использования в формате JSON</td>
+<td>Read-compatible snapshot данных из SQLite</td>
 </tr>
 </tbody>
 </table>
@@ -701,7 +701,7 @@
 <td><code>__init__</code></td>
 <td><code>user_id, user_name, logs_dir="usage_logs"</code></td>
 <td>—</td>
-<td>Загружает или создаёт файл</td>
+<td>Открывает SQLite store и импортирует legacy JSON при наличии</td>
 </tr>
 <tr>
 <td><code>add_chat_tokens</code></td>
@@ -873,7 +873,7 @@
 </tbody>
 </table>
 <hr/>
-<h2 id="html_visualizer"><code>html_visualizer</code></h2>
+<h2 id="html_utils"><code>html_utils</code></h2>
 <p>Расширенная HTML-визуализация с Mermaid, PlantUML, библиографическими ссылками.</p>
 <h3 id="htmlvisualizer"><code>HTMLVisualizer</code></h3>
 <table>
@@ -968,48 +968,12 @@
 <td></td>
 </tr>
 <tr>
-<td><code>_enhance_mermaid_code(code)</code></td>
-<td>Отступы и форматирование</td>
-</tr>
-<tr>
-<td><code>_enhance_flowchart(code)</code></td>
-<td>Цветовые стили узлов</td>
-</tr>
-<tr>
-<td><code>_enhance_sequence_diagram(code)</code></td>
-<td>Стили и цвета</td>
-</tr>
-<tr>
-<td><code>_enhance_class_diagram(code)</code></td>
-<td>Цвета и стили</td>
-</tr>
-<tr>
-<td><code>_enhance_gantt(code)</code></td>
-<td></td>
-</tr>
-<tr>
-<td><code>_enhance_state_diagram(code)</code></td>
-<td></td>
-</tr>
-<tr>
-<td><code>_enhance_pie_chart(code)</code></td>
-<td></td>
-</tr>
-<tr>
-<td><code>_get_state_color(state_name)</code></td>
-<td>Hex-код цвета</td>
-</tr>
-<tr>
 <td><code>clean_data(session_id)</code></td>
 <td>Очистка данных сессии</td>
 </tr>
 <tr>
 <td><code>generate_puml_image(puml_code, output_dir, output_file, max_attempts=3)</code></td>
 <td>PNG из PlantUML с автоматическим исправлением ошибок</td>
-</tr>
-<tr>
-<td><code>visualize_agent_execution(agent, output_file="agent_execution.html")</code></td>
-<td>HTML-визуализация выполнения агента</td>
 </tr>
 </tbody>
 </table>
@@ -1049,10 +1013,6 @@
 <tr>
 <td><code>fix_encoded_url(match)</code></td>
 <td>Сохранение URL-encoded символов</td>
-</tr>
-<tr>
-<td><code>json_to_readable_text(data, indent=0)</code></td>
-<td>Рекурсивное форматирование JSON</td>
 </tr>
 <tr>
 <td><code>zoomIn(content_id)</code>, <code>zoomOut(content_id)</code>, <code>resetZoom(content_id)</code></td>
@@ -1660,11 +1620,6 @@
 <td><code>conversations</code></td>
 <td><code>dict[int, list]</code></td>
 <td>История сообщений</td>
-</tr>
-<tr>
-<td><code>conversations_vision</code></td>
-<td><code>dict[int, bool]</code></td>
-<td>Флаги vision-режима</td>
 </tr>
 <tr>
 <td><code>loaded_conversation_sessions</code></td>
@@ -2824,11 +2779,6 @@
 <tr>
 <td><code>decode_image</code></td>
 <td><code>(imgbase64) -&gt; bytes</code></td>
-<td></td>
-</tr>
-<tr>
-<td><code>markdown_to_html</code></td>
-<td><code>(text) -&gt; str</code></td>
 <td></td>
 </tr>
 <tr>

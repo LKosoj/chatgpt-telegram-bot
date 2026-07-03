@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import inspect
 import importlib.util
 import json
 import logging
@@ -48,10 +49,16 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import EMPTY_MODEL_RESPONSE_ERROR, OpenAIHelper, default_max_tokens  # noqa: E402
+import bot.openai_helper as openai_helper_module  # noqa: E402
+import bot.openai_tool_handler as openai_tool_handler_module  # noqa: E402
 from bot.openai_tool_handler import (  # noqa: E402
+    _append_artifact_entry,
+    _artifact_manifest_message,
     _call_function_bounded,
+    _compact_deferred_tool_response,
     _filter_tools_by_name,
     _has_tool_specs,
+    _merge_direct_results_into_final,
     _retry_plain_text_tool_intent,
     handle_function_call,
 )
@@ -77,14 +84,26 @@ class DummyDB:
     def list_user_sessions(self, user_id, is_active=1):
         return []
 
+    async def list_user_sessions_async(self, user_id, is_active=1):
+        return self.list_user_sessions(user_id, is_active=is_active)
+
     def get_conversation_context(self, *args, **kwargs):
         return self.context, None, 0.1, 80, "session-1"
+
+    async def get_conversation_context_async(self, *args, **kwargs):
+        return self.get_conversation_context(*args, **kwargs)
 
     def save_conversation_context(self, *args, **kwargs):
         self.saved_contexts.append((args, kwargs))
 
+    async def save_conversation_context_async(self, *args, **kwargs):
+        return self.save_conversation_context(*args, **kwargs)
+
     def get_user_settings(self, user_id):
         return self.user_settings.get(user_id)
+
+    async def get_user_settings_async(self, user_id):
+        return self.get_user_settings(user_id)
 
 
 class SavingDummyDB(DummyDB):
@@ -418,6 +437,150 @@ def test_high_model_default_context_is_256k():
     assert default_max_tokens("llmgateway/high") == 256_000
 
 
+def test_configured_model_context_window_overrides_default():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.config["model_context_windows"] = {
+        "custom/model": 8192,
+        "bad/model": "nope",
+    }
+
+    assert helper._context_window("custom/model") == 8192
+    assert helper._context_window("bad/model") == default_max_tokens("bad/model")
+    assert helper._context_window("llmgateway/high") == 256_000
+
+
+def test_common_chat_response_methods_are_not_wrapped_in_method_level_retry():
+    chat_source = inspect.getsource(OpenAIHelper._OpenAIHelper__common_get_chat_response)
+    vision_source = inspect.getsource(OpenAIHelper._OpenAIHelper__common_get_chat_response_vision)
+
+    assert "@retry" not in chat_source
+    assert "@retry" not in vision_source
+
+
+@pytest.mark.asyncio
+async def test_provider_family_branch_forces_non_streaming_request(monkeypatch):
+    monkeypatch.setattr(openai_helper_module, "O_MODELS", ("provider/no-stream",))
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.config["model"] = "provider/no-stream"
+    helper.config["model_choices"] = ["provider/no-stream"]
+
+    response = await helper._OpenAIHelper__common_get_chat_response(
+        1,
+        "hello",
+        stream=True,
+        user_id=1,
+    )
+
+    assert response.choices[0].message.content == "done"
+    request_kwargs = helper.client.create_kwargs[0]
+    assert request_kwargs["stream"] is False
+    assert "max_completion_tokens" in request_kwargs
+    assert "max_tokens" not in request_kwargs
+
+
+@pytest.mark.asyncio
+async def test_timed_create_retries_rate_limit_at_sdk_boundary(monkeypatch):
+    class DummyRateLimitError(Exception):
+        pass
+
+    class RateLimitOnceClient(DummyClient):
+        async def _create(self, **kwargs):
+            self.calls += 1
+            self.create_kwargs.append(kwargs)
+            if self.calls == 1:
+                raise DummyRateLimitError("limited")
+            return FakeResponse(content="ok")
+
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(openai_helper_module.openai, "RateLimitError", DummyRateLimitError)
+    monkeypatch.setattr(openai_helper_module.asyncio, "sleep", fake_sleep)
+    client = RateLimitOnceClient()
+    helper = _make_helper(DummyPluginManager({}), client=client)
+
+    response = await helper._timed_create(kind="unit", model="llmgateway/high", messages=[])
+
+    assert response.choices[0].message.content == "ok"
+    assert client.calls == 2
+    assert sleep_calls == [20]
+    assert client.create_kwargs == [
+        {"model": "llmgateway/high", "messages": []},
+        {"model": "llmgateway/high", "messages": []},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_rate_limit_does_not_duplicate_user_message(monkeypatch):
+    class DummyRateLimitError(Exception):
+        pass
+
+    class AlwaysRateLimitedClient(DummyClient):
+        async def _create(self, **kwargs):
+            self.calls += 1
+            self.create_kwargs.append(kwargs)
+            raise DummyRateLimitError("limited")
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(openai_helper_module.openai, "RateLimitError", DummyRateLimitError)
+    monkeypatch.setattr(openai_helper_module.asyncio, "sleep", fake_sleep)
+    db = SavingDummyDB()
+    helper = _make_helper(DummyPluginManager({}), db=db, client=AlwaysRateLimitedClient())
+
+    with pytest.raises(DummyRateLimitError):
+        await helper.get_chat_response(chat_id=1, query="hello", user_id=1)
+
+    user_messages = [
+        message
+        for message in helper.conversations[1]
+        if message["role"] == "user" and message["content"] == "hello"
+    ]
+    saved_user_messages = [
+        message
+        for args, _kwargs in db.saved_contexts
+        for message in args[1]["messages"]
+        if message["role"] == "user" and message["content"] == "hello"
+    ]
+    assert len(user_messages) == 1
+    assert len(saved_user_messages) == 1
+    assert helper.client.calls == openai_helper_module.LLM_RATE_LIMIT_RETRY_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_provider_failure_redacts_lower_and_upper_logs(caplog):
+    class FailingClient(DummyClient):
+        async def _create(self, **kwargs):
+            self.calls += 1
+            self.create_kwargs.append(kwargs)
+            raise RuntimeError("provider secret request fragment")
+
+    helper = _make_helper(DummyPluginManager({}), client=FailingClient())
+
+    caplog.set_level(logging.INFO, logger="bot.openai_helper")
+    with pytest.raises(Exception):
+        await helper.get_chat_response(
+            chat_id=1,
+            query="secret user prompt",
+            user_id=1,
+        )
+
+    log_text = caplog.text
+    assert "LLM request failed kind=main" in log_text
+    assert "Unexpected error in chat response generation" in log_text
+    assert "Error in get_chat_response" in log_text
+    assert "payload_shape" in log_text
+    assert "RuntimeError(message_chars=" in log_text
+    assert "secret user prompt" not in log_text
+    assert "provider secret request fragment" not in log_text
+
+
 def test_get_current_model_prefers_explicit_session_model():
     helper = _make_helper(DummyPluginManager({}), db=SessionModelDB())
 
@@ -640,7 +803,6 @@ async def test_vision_follow_up_keeps_text_memory_and_uses_chat_model():
         image_file_id="telegram-file-id",
     )
     assert answer == "image answer"
-    assert helper.conversations_vision[1] is False
     assert helper.conversations[1][0]["content"] == "what is shown?\n[image_file_id: telegram-file-id]"
     assert any(
         item.get("type") == "image_url"
@@ -1092,6 +1254,31 @@ async def test_tts_options_are_loaded_from_api():
 
 
 @pytest.mark.asyncio
+async def test_tts_option_api_failures_are_redacted_from_normal_logs(caplog):
+    class FailingModelsClient(DummyClient):
+        async def _list_models(self):
+            raise RuntimeError("secret model provider text")
+
+    class FailingVoiceGateway:
+        async def audio_voices(self, model=None):
+            raise RuntimeError("secret voice provider text")
+
+    helper = _make_helper(DummyPluginManager({}), client=FailingModelsClient())
+    helper.client.models = types.SimpleNamespace(list=helper.client._list_models)
+    helper.gateway_client = FailingVoiceGateway()
+
+    caplog.set_level(logging.WARNING, logger="bot.openai_helper")
+    assert await helper.get_available_tts_models() == []
+    assert await helper.get_available_tts_voices("llmgateway/silero-tts") == []
+
+    assert "Failed to load TTS models from API" in caplog.text
+    assert "Failed to load TTS voices from API" in caplog.text
+    assert "RuntimeError(message_chars=" in caplog.text
+    assert "secret model provider text" not in caplog.text
+    assert "secret voice provider text" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_generate_speech_uses_user_tts_settings():
     db = DummyDB()
     db.user_settings[42] = {"tts_model": "tts-1", "tts_voice": "bob"}
@@ -1249,7 +1436,108 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
 
 
 @pytest.mark.asyncio
-async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
+async def test_tool_history_uses_supplied_model_without_model_lookup():
+    pm = DummyPluginManager({
+        "skills.get_skill_status": {"success": True, "skill": {"active": True}},
+    })
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
+
+    def fail_model_lookup(*args, **kwargs):
+        raise AssertionError("model lookup should not run")
+
+    async def fail_model_lookup_async(*args, **kwargs):
+        raise AssertionError("async model lookup should not run")
+
+    helper.get_current_model = fail_model_lookup
+    helper.get_current_model_async = fail_model_lookup_async
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills.get_skill_status", "{}", id="call-status"),
+    ])
+
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=response,
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=1,
+        model_to_use="llmgateway/high",
+    )
+
+    assert set(tools_used) == {"skills.get_skill_status"}
+    assert out.choices[0].message.content == "done"
+    assert helper.conversations[1][1] == {
+        "role": "tool",
+        "tool_call_id": "call-status",
+        "content": '{"success": true, "skill": {"active": true}}',
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_propagates_cancelled_error():
+    class CancellingPluginManager(DummyPluginManager):
+        async def call_function(self, name, helper, arguments, request_context=None):
+            raise asyncio.CancelledError()
+
+    pm = CancellingPluginManager({
+        "skills.get_skill_status": {"success": True},
+    })
+    helper = _make_helper(pm)
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills.get_skill_status", "{}", id="call-status"),
+    ])
+
+    with pytest.raises(asyncio.CancelledError):
+        await handle_function_call(
+            helper,
+            chat_id=1,
+            response=response,
+            stream=False,
+            allowed_plugins=["All"],
+            user_id=1,
+            model_to_use="llmgateway/high",
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_cancellation_skips_delivery_phase():
+    class CancellingThenDeliveryPluginManager(DummyPluginManager):
+        async def call_function(self, name, helper, arguments, request_context=None):
+            self.calls.append((name, arguments))
+            if name == "skills.get_skill_status":
+                raise asyncio.CancelledError()
+            return json.dumps({
+                "direct_result": {"kind": "final", "format": "mixed", "text": "delivered"}
+            })
+
+    pm = CancellingThenDeliveryPluginManager({
+        "skills.get_skill_status": {"success": True},
+        "agent_tools.deliver_to_user": {
+            "direct_result": {"kind": "final", "format": "mixed", "text": "delivered"}
+        },
+    })
+    helper = _make_helper(pm)
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("skills.get_skill_status", "{}", id="call-status"),
+        FakeToolCall("agent_tools.deliver_to_user", "{}", id="call-deliver"),
+    ])
+
+    with pytest.raises(asyncio.CancelledError):
+        await handle_function_call(
+            helper,
+            chat_id=1,
+            response=response,
+            stream=False,
+            allowed_plugins=["All"],
+            user_id=1,
+            model_to_use="llmgateway/high",
+        )
+
+    assert [name for name, _arguments in pm.calls] == ["skills.get_skill_status"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_redacts_normal_logs_but_keeps_session_event(caplog):
     from bot.session_logger import clear_trace, set_trace
 
     class CaptureSessionLogger:
@@ -1294,7 +1582,8 @@ async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
     assert "LLM request payload kind=chat_completion" in log_text
     assert "call-debug-1" in log_text
     assert "skills_run_skill_agent" in log_text
-    assert bad_arguments in log_text
+    assert "arguments_shape" in log_text
+    assert bad_arguments not in log_text
     assert any(
         event.get("type") == "tool_calls_received"
         and event["tool_calls"][0]["tool_call_id"] == "call-debug-1"
@@ -1318,6 +1607,104 @@ async def test_invalid_tool_arguments_log_full_tool_call_payload(caplog):
         )
         for event in helper.session_logger.events
     )
+
+
+@pytest.mark.asyncio
+async def test_tool_arguments_and_response_are_redacted_from_normal_logs(caplog):
+    secret_arguments = '{"needle":"private search phrase"}'
+    secret_tool_result = {"result": "private tool response"}
+    helper = _make_helper(
+        DummyPluginManager({"p1.do": secret_tool_result}),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("p1.do", secret_arguments, id="call-redact"),
+    ])
+
+    caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
+    caplog.set_level(logging.INFO, logger="bot.openai_helper")
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1,
+        response=response,
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=1,
+    )
+
+    log_text = caplog.text
+    assert out.choices[0].message.content == "done"
+    assert set(tools_used) == {"p1.do"}
+    assert "arguments_shape" in log_text
+    assert "response_shape" in log_text
+    assert "call-redact" in log_text
+    assert "p1.do" in log_text
+    assert "private search phrase" not in log_text
+    assert "private tool response" not in log_text
+    assert any(
+        "private tool response" in str(message.get("content") or "")
+        for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_streaming_api_error_log_redacts_error_text(monkeypatch, caplog):
+    class DummyAPIError(Exception):
+        pass
+
+    async def failing_stream():
+        raise DummyAPIError("secret streaming api error")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(openai_tool_handler_module.openai, "APIError", DummyAPIError)
+    helper = _make_helper(DummyPluginManager({}))
+    response = failing_stream()
+
+    caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=response,
+        stream=True,
+        allowed_plugins=["All"],
+        user_id=1,
+    )
+
+    assert out is response
+    assert tools_used == ()
+    assert "API Error in function call streaming" in caplog.text
+    assert "DummyAPIError(message_chars=" in caplog.text
+    assert "secret streaming api error" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_streaming_plain_text_tool_intent_buffer_api_error_log_redacts_error_text(monkeypatch, caplog):
+    class DummyAPIError(Exception):
+        pass
+
+    async def stream_then_fail():
+        yield FakeStreamItem("plain text")
+        raise DummyAPIError("secret buffering api error")
+
+    monkeypatch.setattr(openai_tool_handler_module.openai, "APIError", DummyAPIError)
+    helper = _make_helper(DummyPluginManager({}))
+
+    caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=stream_then_fail(),
+        stream=True,
+        allowed_plugins=["All"],
+        user_id=1,
+        retry_plain_text_tool_intent=True,
+    )
+
+    assert await _collect_stream_content(out) == "plain text"
+    assert tools_used == ()
+    assert "API Error while buffering plain-text tool intent stream" in caplog.text
+    assert "DummyAPIError(message_chars=" in caplog.text
+    assert "secret buffering api error" not in caplog.text
 
 
 def test_repair_tool_call_history_emits_synthetic_tool_result():
@@ -1652,6 +2039,39 @@ async def test_tool_reentry_uses_current_chat_state_key():
 
 
 @pytest.mark.asyncio
+async def test_plain_text_tool_intent_repair_after_limit_sends_no_tools():
+    specs = [
+        {"type": "function", "function": {"name": "weather.get_weather"}},
+        {"type": "function", "function": {"name": "task_management.create_task"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager({}, specs=specs),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    helper.conversations[1] = [{"role": "system", "content": "system"}]
+
+    out, tools_used = await _retry_plain_text_tool_intent(
+        helper,
+        chat_id=1,
+        stream=False,
+        times=1,
+        tools_used=("task_management.create_task",),
+        allowed_plugins=["All"],
+        user_id=1,
+        request_context=None,
+        model_to_use="llmgateway/high",
+        plain_text="I will call weather.get_weather next",
+        suppressed_reentry_tools={"task_management.create_task"},
+    )
+
+    assert out.choices[0].message.content == "done"
+    assert tools_used == ("task_management.create_task",)
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert helper.client.create_kwargs[0]["tools"] == []
+
+
+@pytest.mark.asyncio
 async def test_tool_reentry_uses_session_owner_for_group_model_lookup():
     db = OwnerAwareSessionModelDB()
     state_key = (-100, "group-session")
@@ -1710,6 +2130,27 @@ async def test_empty_response_retry_uses_pinned_session_max_tokens_percent():
     assert seen_percent == [30]
     assert (-100, 0) in db.session_lookups
     assert client.create_kwargs[0]["max_tokens"] == 123
+
+
+@pytest.mark.asyncio
+async def test_empty_response_after_tools_provider_family_uses_completion_tokens(monkeypatch):
+    monkeypatch.setattr(openai_helper_module, "O_MODELS", ("provider/no-stream",))
+    client = DummyClient([FakeResponse(content="retry done")])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+    helper.conversations[1] = [{"role": "system", "content": "system"}]
+
+    response = await helper._retry_empty_response_after_tools(
+        chat_id=1,
+        user_id=1,
+        session_id=None,
+        model_to_use="provider/no-stream",
+    )
+
+    assert response.choices[0].message.content == "retry done"
+    request_kwargs = client.create_kwargs[0]
+    assert request_kwargs["stream"] is False
+    assert "max_completion_tokens" in request_kwargs
+    assert "max_tokens" not in request_kwargs
 
 
 @pytest.mark.asyncio
@@ -2195,6 +2636,64 @@ async def test_agent_tools_workflow_defers_intermediate_direct_results_without_m
 
 
 @pytest.mark.asyncio
+async def test_successful_tool_output_path_adds_manifest_for_delivery_reentry():
+    responses = {
+        "builder.build": {
+            "success": True,
+            "output_path": "/tmp/out.pptx",
+        },
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "done",
+                "artifacts": [{"kind": "file", "format": "path", "value": "/tmp/out.pptx"}],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "builder.build"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({
+                        "text": "done",
+                        "artifacts": [{"file_path": "/tmp/out.pptx"}],
+                    }),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("builder.build", "{}", id="call-build"),
+    ])
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
+    )
+
+    assert helper.client.calls == 1
+    assert set(tools_used) == {"builder.build", "agent_tools.deliver_to_user"}
+    assert out["direct_result"]["artifacts"][0]["value"] == "/tmp/out.pptx"
+    manifest_messages = [
+        message.get("content", "")
+        for message in helper.conversations[1]
+        if message.get("role") == "user" and "Current run artifact manifest" in message.get("content", "")
+    ]
+    assert manifest_messages
+    assert "/tmp/out.pptx" in manifest_messages[-1]
+    assert "Do not discover artifacts by broad-listing shared directories" in manifest_messages[-1]
+
+
+@pytest.mark.asyncio
 async def test_malformed_direct_result_reenters_model_instead_of_short_circuiting():
     helper = _make_helper(
         DummyPluginManager({"p1.do": {"direct_result": {"value": "missing kind"}}}),
@@ -2345,7 +2844,7 @@ async def test_skills_agent_plain_status_after_tools_can_resume_tool_work():
 
 
 @pytest.mark.asyncio
-async def test_final_delivery_reentry_keeps_tools_after_consecutive_call_limit():
+async def test_final_delivery_reentry_after_limit_only_exposes_delivery_tool():
     responses = {
         "terminal.terminal": {
             "success": True,
@@ -2398,8 +2897,109 @@ async def test_final_delivery_reentry_keeps_tools_after_consecutive_call_limit()
     )
 
     assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
+    assert helper.client.create_kwargs[0]["tools"] == [
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
     assert set(tools_used) == {"terminal.terminal", "agent_tools.deliver_to_user"}
     assert out["direct_result"]["kind"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_delivery_repair_after_limit_only_exposes_delivery_tool():
+    responses = {
+        "agent_tools.deliver_to_user": {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "Готово",
+                "artifacts": [],
+                "defer": False,
+            },
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "terminal.terminal"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([
+            FakeResponse(tool_calls=[
+                FakeToolCall(
+                    "agent_tools.deliver_to_user",
+                    json.dumps({"text": "Готово"}),
+                    id="call-final",
+                ),
+            ]),
+        ]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    helper.conversations[1] = [{
+        "role": "system",
+        "content": "agent-mode agent_tools.deliver_to_user",
+        "mode_key": "skills_agent",
+    }]
+    helper.chat_modes_registry = types.SimpleNamespace(
+        get_mode_by_key=lambda key: {
+            "defer_direct_results": True,
+            "prompt_start": "agent_tools.deliver_to_user",
+        } if key == "skills_agent" else None,
+        get_mode_by_system_prompt=lambda _content: None,
+    )
+
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=FakeResponse(content="plain text instead of delivery"),
+        stream=False,
+        times=1,
+        allowed_plugins=["All"],
+        user_id=1,
+        final_delivery_required=True,
+    )
+
+    assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
+    assert helper.client.create_kwargs[0]["tools"] == [
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    assert set(tools_used) == {"agent_tools.deliver_to_user"}
+    assert out["direct_result"]["text"] == "Готово"
+
+
+@pytest.mark.asyncio
+async def test_generic_successful_tool_does_not_bypass_consecutive_call_limit():
+    responses = {
+        "weather.get_weather": {
+            "success": True,
+            "forecast": "sunny",
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "weather.get_weather"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("weather.get_weather", "{}", id="call-weather"),
+    ])
+
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=response,
+        stream=False,
+        times=1,
+        allowed_plugins=["All"],
+        user_id=1,
+    )
+
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert [name for name, _args in helper.plugin_manager.calls] == ["weather.get_weather"]
+    assert tools_used == ("weather.get_weather",)
+    assert out.choices[0].message.content == "done"
 
 
 @pytest.mark.asyncio
@@ -2686,7 +3286,12 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
     helper = _make_helper(pm)
     helper.conversations[request_context.chat_id] = []
     response = FakeResponse(tool_calls=[
-        FakeToolCall("p1.do", "{}"),
+        FakeToolCall("p1.do", json.dumps({
+            "chat_id": 999,
+            "user_id": 999,
+            "message_id": 999,
+            "request_context": {"user_id": 999},
+        })),
     ])
 
     out, tools_used = await helper._OpenAIHelper__handle_function_call(
@@ -2961,6 +3566,133 @@ async def test_ordinary_mode_merges_multiple_direct_results_into_final():
     assert artifact_values == ["/tmp/a.png", "/tmp/b.png"]
 
 
+def test_compact_deferred_tool_response_preserves_delivery_metadata():
+    compact = json.loads(_compact_deferred_tool_response({
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "status": "blocked",
+            "text": "x" * 700,
+            "verification_summary": "checked",
+            "blocked_reason": "missing dependency",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "format": "path",
+                    "artifact_path": "/tmp/deck.pptx",
+                    "caption": "deck",
+                    "file_size": 123,
+                }
+            ],
+            "cleanup_skills": [
+                {"plugin_id": "skills", "scope": "chat:1", "skill_id": "pptx"},
+            ],
+        }
+    }))
+
+    assert compact["status"] == "blocked"
+    assert compact["verification_summary"] == "checked"
+    assert compact["blocked_reason"] == "missing dependency"
+    assert compact["text_chars"] == 700
+    assert "text_preview" in compact
+    assert compact["artifacts"] == [
+        {
+            "kind": "file",
+            "format": "path",
+            "artifact_path": "/tmp/deck.pptx",
+            "caption": "deck",
+            "file_size": 123,
+        }
+    ]
+    assert compact["artifact_paths"] == ["/tmp/deck.pptx"]
+    assert compact["cleanup_skills"][0]["skill_id"] == "pptx"
+
+
+def test_artifact_manifest_deduplicates_and_keeps_safe_instruction():
+    manifest = []
+    seen = set()
+
+    for entry in [
+        {"path": "/tmp/report.pdf", "kind": "file", "caption": "report"},
+        {"path": "/tmp/report.pdf", "kind": "file", "caption": "duplicate"},
+        {"path": "relative.pdf", "kind": "file"},
+        {"path": "https://example.com/report.pdf", "kind": "file"},
+    ]:
+        _append_artifact_entry(manifest, seen, entry)
+
+    assert manifest == [{"path": "/tmp/report.pdf", "kind": "file", "caption": "report"}]
+    text = _artifact_manifest_message(manifest)
+    assert "/tmp/report.pdf" in text
+    assert "relative.pdf" not in text
+    assert "https://example.com/report.pdf" not in text
+    assert "Do not discover artifacts by broad-listing shared directories" in text
+
+
+def test_merge_direct_results_preserves_artifact_and_cleanup_metadata():
+    merged = _merge_direct_results_into_final([
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "add_value": "first",
+                "cleanup_skill": {"plugin_id": "skills", "scope": "chat:1", "skill_id": "draft"},
+            }
+        },
+        {
+            "direct_result": {
+                "kind": "file",
+                "format": "path",
+                "output_path": "/tmp/report.pdf",
+                "caption": "Report",
+                "file_size": 10,
+            }
+        },
+        {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "status": "blocked",
+                "text": "second",
+                "verification_summary": "checked",
+                "blocked_reason": "cannot continue",
+                "artifacts": [
+                    {
+                        "kind": "file",
+                        "format": "path",
+                        "value": "/tmp/final.pptx",
+                        "caption": "Final",
+                    }
+                ],
+                "cleanup_skills": [
+                    {"plugin_id": "skills", "scope": "chat:1", "skill_id": "pptx"},
+                ],
+            }
+        },
+    ])
+
+    direct_result = merged["direct_result"]
+    assert direct_result["text"] == "first\n\nsecond"
+    assert direct_result["status"] == "blocked"
+    assert direct_result["verification_summary"] == "checked"
+    assert direct_result["blocked_reason"] == "cannot continue"
+    assert direct_result["artifacts"] == [
+        {
+            "kind": "file",
+            "format": "path",
+            "output_path": "/tmp/report.pdf",
+            "caption": "Report",
+            "file_size": 10,
+        },
+        {
+            "kind": "file",
+            "format": "path",
+            "value": "/tmp/final.pptx",
+            "caption": "Final",
+        },
+    ]
+    assert [item["skill_id"] for item in direct_result["cleanup_skills"]] == ["draft", "pptx"]
+
+
 @pytest.mark.asyncio
 async def test_deliver_to_user_carries_cleanup_directive_in_payload():
     responses = {
@@ -3067,10 +3799,19 @@ async def test_ensure_session_name_with_llm_persists_generated_name():
         def get_session_details(self, user_id, session_id):
             return {"session_name": "..."}
 
+        async def get_session_details_async(self, user_id, session_id):
+            return self.get_session_details(user_id, session_id)
+
         def set_session_name(self, user_id, session_id, name):
             captured["name"] = name
 
+        async def set_session_name_async(self, user_id, session_id, name):
+            return self.set_session_name(user_id, session_id, name)
+
     class _Helper:
+        async def _db_call(self, method_name, *args, **kwargs):
+            return await getattr(self.db, f"{method_name}_async")(*args, **kwargs)
+
         async def generate_session_name(self, user_id, message, session_id):
             captured["generate_called_with"] = (user_id, message, session_id)
             return ("Generated", None)
@@ -3092,10 +3833,19 @@ async def test_ensure_session_name_with_llm_skips_short_messages():
         def get_session_details(self, user_id, session_id):
             return {"session_name": "..."}
 
+        async def get_session_details_async(self, user_id, session_id):
+            return self.get_session_details(user_id, session_id)
+
         def set_session_name(self, *args, **kwargs):  # pragma: no cover
             raise AssertionError("DB.set_session_name should not be called")
 
+        async def set_session_name_async(self, *args, **kwargs):  # pragma: no cover
+            return self.set_session_name(*args, **kwargs)
+
     class _Helper:
+        async def _db_call(self, method_name, *args, **kwargs):
+            return await getattr(self.db, f"{method_name}_async")(*args, **kwargs)
+
         async def generate_session_name(self, *args, **kwargs):  # pragma: no cover
             raise AssertionError("generate_session_name should not be called")
 

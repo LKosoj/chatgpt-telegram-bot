@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from bot.chat_modes_registry import ChatModesRegistry
@@ -30,6 +31,80 @@ assistant:
     registry.validate_tools(DummyPluginManager(available={"ok"}))
 
     assert any("missing_tool" in rec.message for rec in caplog.records)
+
+
+def test_chat_modes_keeps_previous_data_when_reload_yaml_is_invalid(tmp_path, caplog):
+    yaml_path = tmp_path / "chat_modes.yml"
+    yaml_path.write_text(
+        """
+assistant:
+  prompt_start: "hi"
+  welcome_message: "hello"
+""",
+        encoding="utf-8",
+    )
+    registry = ChatModesRegistry(str(yaml_path))
+    assert registry.get_mode_by_key("assistant")["prompt_start"] == "hi"
+
+    yaml_path.write_text("assistant: [broken", encoding="utf-8")
+    stat_result = yaml_path.stat()
+    os.utime(yaml_path, (stat_result.st_mtime + 1, stat_result.st_mtime + 1))
+    caplog.set_level(logging.ERROR)
+
+    assert registry.get_mode_by_key("assistant")["prompt_start"] == "hi"
+    assert any("Failed to load chat_modes.yml" in rec.message for rec in caplog.records)
+
+
+def test_chat_modes_initial_invalid_yaml_starts_empty(tmp_path, caplog):
+    yaml_path = tmp_path / "chat_modes.yml"
+    yaml_path.write_text("assistant: [broken", encoding="utf-8")
+    registry = ChatModesRegistry(str(yaml_path))
+    caplog.set_level(logging.ERROR)
+
+    assert registry.all_modes() == {}
+    assert registry.get_mode_by_key("assistant") is None
+    assert any("Failed to load chat_modes.yml" in rec.message for rec in caplog.records)
+
+
+def test_chat_modes_handles_none_system_prompt_and_returns_copy(tmp_path):
+    yaml_path = tmp_path / "chat_modes.yml"
+    yaml_path.write_text(
+        """
+assistant:
+  prompt_start: "hi"
+  welcome_message: "hello"
+""",
+        encoding="utf-8",
+    )
+    registry = ChatModesRegistry(str(yaml_path))
+
+    assert registry.get_mode_by_system_prompt(None) is None
+    modes = registry.all_modes()
+    modes["assistant"]["prompt_start"] = "mutated"
+
+    assert registry.get_mode_by_key("assistant")["prompt_start"] == "hi"
+
+
+def test_chat_modes_ignores_non_mapping_mode_entries(tmp_path, caplog):
+    yaml_path = tmp_path / "chat_modes.yml"
+    yaml_path.write_text(
+        """
+assistant:
+  prompt_start: "hi"
+  welcome_message: "hello"
+broken:
+  - not
+  - mapping
+""",
+        encoding="utf-8",
+    )
+    registry = ChatModesRegistry(str(yaml_path))
+
+    assert registry.get_mode_by_system_prompt("hi")["welcome_message"] == "hello"
+    caplog.set_level(logging.ERROR)
+    registry.validate_tools(DummyPluginManager(available={"ok"}))
+
+    assert any("mode 'broken' must be a mapping" in rec.message for rec in caplog.records)
 
 
 def test_skills_agent_mode_is_registered():

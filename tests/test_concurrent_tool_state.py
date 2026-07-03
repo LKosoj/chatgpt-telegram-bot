@@ -124,7 +124,10 @@ class SharedHelper:
     def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
-    def _add_function_call_to_history(self, chat_id, function_name, content):
+    async def get_current_model_async(self, user_id, session_id=None):
+        return "gpt-test"
+
+    def _add_function_call_to_history(self, chat_id, function_name, content, **_kwargs):
         self.history.append((chat_id, function_name, content))
 
     def _localized_text(self, key, bot_language):

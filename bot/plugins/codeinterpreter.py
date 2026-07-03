@@ -21,7 +21,14 @@ import uuid
 import re
 import importlib
 import shutil
+from pathlib import Path
 from .plugin import Plugin
+from ..runtime_paths import (
+    ensure_runtime_dir,
+    runtime_data_dir,
+    runtime_output_dir,
+    runtime_plots_dir,
+)
 from urllib.parse import urlparse
 
 # Настройка логирования
@@ -87,6 +94,9 @@ class CodeInterpreterPlugin(Plugin):
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 120
         self.python_alias_dir = "/tmp/chatgpt_telegram_bot_codeinterpreter_bin"
+        self.data_dir = runtime_data_dir()
+        self.output_dir = runtime_output_dir()
+        self.plots_dir = runtime_plots_dir()
         self.supported_formats = {
             '.csv': pd.read_csv,
             '.xlsx': pd.read_excel,
@@ -97,6 +107,18 @@ class CodeInterpreterPlugin(Plugin):
 
     def get_source_name(self) -> str:
         return "Code Interpreter"
+
+    def _data_dir(self) -> Path:
+        return ensure_runtime_dir(Path(getattr(self, "data_dir", runtime_data_dir())))
+
+    def _output_dir(self) -> Path:
+        return ensure_runtime_dir(Path(getattr(self, "output_dir", runtime_output_dir())))
+
+    def _plots_dir(self) -> Path:
+        return ensure_runtime_dir(Path(getattr(self, "plots_dir", runtime_plots_dir())))
+
+    def _interactive_html_path(self, session_id: str) -> Path:
+        return self._output_dir() / f"interactive_plots_{session_id}.html"
 
     def get_spec(self) -> List[Dict]:
         return [{
@@ -161,7 +183,7 @@ class CodeInterpreterPlugin(Plugin):
             
             if isinstance(result, str):
                 # Проверяем, есть ли сгенерированный HTML файл
-                html_file = f"output/interactive_plots_{session_id}.html"
+                html_file = str(self._interactive_html_path(session_id))
 
                 if os.path.exists(html_file):
                     return {
@@ -222,7 +244,7 @@ class CodeInterpreterPlugin(Plugin):
         - Код должен содержать if __name__ == "__main__": для получения результата
         - В ответе должен быть только код на python, даже без ``` и ничего лишнего! Это важно!
         - Если передан файл на вход, необходимо сгенерировать функцию для получения имен колонок из файла, названия колонок case sensitive.
-        - Если в коде используется построение графиков - сделай их сохранение в каталог 'output/plots'.
+        - Если в коде используется построение графиков - сделай их сохранение в каталог '{self._plots_dir()}'.
         - Во всех именах файлов обязательно используй суффикс _{session_id}
 
         Задача:
@@ -507,12 +529,10 @@ class CodeInterpreterPlugin(Plugin):
         Args:
             output_path (str): Путь для сохранения HTML файла с графиками
         """
-        output_path=f"output/interactive_plots_{session_id}.html"
-        os.makedirs("output", exist_ok=True)
+        output_path = self._interactive_html_path(session_id)
         try:
             # Проверяем наличие директории с графиками
-            plots_dir = 'output/plots'
-            os.makedirs(plots_dir, exist_ok=True)
+            plots_dir = self._plots_dir()
 
             plot_files = []
             # Получаем список всех PNG файлов
@@ -692,8 +712,8 @@ class CodeInterpreterPlugin(Plugin):
         return matches[0].strip() if matches else text
     
     def clean_data(self, session_id):
-        """Удаляет файлы с суффиксом _{session_id} в каталогах data и output/plots."""
-        for directory in ('data', 'output/plots'):
+        """Удаляет файлы с суффиксом _{session_id} в runtime data/plots каталогах."""
+        for directory in (self._data_dir(), self._plots_dir()):
             if not os.path.isdir(directory):
                 continue
             for file in os.listdir(directory):
@@ -714,8 +734,8 @@ class CodeInterpreterPlugin(Plugin):
             new_data_path = f"{file_name}_{session_id}{file_ext}"
             
             # Копируем файл с новым именем
-            os.makedirs('data', exist_ok=True)
-            new_data_path = os.path.join('data', os.path.basename(new_data_path))
+            data_dir = self._data_dir()
+            new_data_path = str(data_dir / os.path.basename(new_data_path))
             shutil.copy2(data_path, new_data_path)
             data_path = new_data_path
             
@@ -803,7 +823,7 @@ class CodeInterpreterPlugin(Plugin):
         """
         try:
             # Создаем директорию для временных файлов, если её нет
-            os.makedirs('data', exist_ok=True)
+            data_dir = self._data_dir()
             
             # Получаем имя файла из URL
             parsed_url = urlparse(url)
@@ -817,7 +837,7 @@ class CodeInterpreterPlugin(Plugin):
                 filename = f"downloaded_{str(uuid.uuid4())[:8]}{extension}"
             
             # Полный путь для сохранения файла
-            save_path = os.path.join('data', filename)
+            save_path = str(data_dir / filename)
             
             # Асинхронно скачиваем файл
             async with httpx.AsyncClient() as client:

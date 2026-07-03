@@ -28,7 +28,7 @@ from .tool_result import tool_response_error, tool_response_succeeded
 from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
-FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id"}
+FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "request_context"}
 MODEL_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -58,7 +58,7 @@ class PluginManager:
         self.db = None
         self.db_handle: DbHandle | None = None
         self._background_tasks: dict[str, asyncio.Task] = {}
-        self.enabled_plugins = [p for p in (config.get('plugins', []) or []) if p]
+        self.enabled_plugins = [p for p in (self.config.get('plugins', []) or []) if p]
         self.strict_validation = str(os.getenv("PLUGIN_STRICT_VALIDATION", "false")).lower() == "true"
         self.storage_root = os.getenv("PLUGIN_STORAGE_ROOT")
         if not self.storage_root:
@@ -254,8 +254,15 @@ class PluginManager:
         """Регистрирует плагин в менеджере"""
         try:
             # Получаем класс плагина из модуля
-            plugin_classes = [cls for name, cls in inspect.getmembers(plugin_module, inspect.isclass)
-                            if issubclass(cls, Plugin) and cls != Plugin]
+            plugin_classes = [
+                cls
+                for name, cls in inspect.getmembers(plugin_module, inspect.isclass)
+                if (
+                    issubclass(cls, Plugin)
+                    and cls != Plugin
+                    and cls.__module__ == plugin_module.__name__
+                )
+            ]
 
             if not plugin_classes:
                 logger.warning(f"No plugin class found in {plugin_name}")
@@ -419,23 +426,42 @@ class PluginManager:
         try:
             logger.debug(f"Пытаемся разобрать аргументы функции {function_name}: {arguments}")
             parsed_args = json.loads(arguments)
+            framework_args = {}
+            if isinstance(parsed_args, dict):
+                parsed_args.pop("request_context", None)
+                if request_context is not None:
+                    parsed_args.pop("chat_id", None)
+                    parsed_args.pop("user_id", None)
+                    parsed_args.pop("message_id", None)
+                    framework_args = {
+                        "chat_id": request_context.plugin_chat_id,
+                        "user_id": request_context.user_id,
+                        "request_context": request_context,
+                    }
+                    if request_context.message_id is not None:
+                        framework_args["message_id"] = request_context.message_id
 
             spec = self.get_spec_by_function_name(function_name)
-            if spec:
-                params = spec.get("parameters") or {}
-                properties = params.get("properties") or {}
-                validation_args = {
-                    key: value
-                    for key, value in parsed_args.items()
-                    if key not in FRAMEWORK_TOOL_ARGS or key in properties
-                }
-                errors = validate_function_args(spec, validation_args)
-                if errors:
-                    error_msg = f'Invalid args for {function_name}: {errors}'
-                    return json.dumps({'error': error_msg}, ensure_ascii=False)
+            if not spec:
+                error_msg = f'Function spec for {function_name} not found'
+                return json.dumps({'error': error_msg}, ensure_ascii=False)
+            params = spec.get("parameters") or {}
+            properties = params.get("properties") or {}
+            validation_args = {
+                key: value
+                for key, value in parsed_args.items()
+                if key not in FRAMEWORK_TOOL_ARGS or key in properties
+            }
+            for key, value in framework_args.items():
+                if key in properties:
+                    validation_args[key] = value
+            errors = validate_function_args(spec, validation_args)
+            if errors:
+                error_msg = f'Invalid args for {function_name}: {errors}'
+                return json.dumps({'error': error_msg}, ensure_ascii=False)
 
             if request_context is not None:
-                parsed_args['request_context'] = request_context
+                parsed_args.update(framework_args)
 
             guard_result = await self._guard_tool_call(function_name, parsed_args, request_context=request_context)
             if guard_result:

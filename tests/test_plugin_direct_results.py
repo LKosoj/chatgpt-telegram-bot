@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -59,6 +61,7 @@ class FakeMessage:
         self.message_thread_id = None
         self.reply_to_message = reply_to_message
         self.reply_text = AsyncMock(return_value=SimpleNamespace(message_id=200))
+        self.reply_photo = AsyncMock(return_value=SimpleNamespace(message_id=203))
         self.reply_document = AsyncMock(return_value=SimpleNamespace(message_id=201))
         self.reply_animation = AsyncMock(return_value=SimpleNamespace(message_id=202))
 
@@ -179,6 +182,52 @@ async def test_handle_direct_result_final_sends_artifacts_before_text(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_direct_result_final_accepts_file_path_artifacts(tmp_path):
+    artifact = tmp_path / "report.pdf"
+    artifact.write_bytes(b"pdf")
+    message = FakeMessage()
+    calls = []
+
+    async def reply_document_side_effect(*args, **kwargs):
+        calls.append(("document", kwargs["document"].name, kwargs.get("caption")))
+        return SimpleNamespace(message_id=201)
+
+    async def reply_text_side_effect(*args, **kwargs):
+        calls.append(("text", kwargs["text"], None))
+        return SimpleNamespace(message_id=200)
+
+    message.reply_document.side_effect = reply_document_side_effect
+    message.reply_text.side_effect = reply_text_side_effect
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "final",
+                "format": "mixed",
+                "text": "summary",
+                "artifacts": [
+                    {
+                        "kind": "file",
+                        "format": "path",
+                        "file_path": str(artifact),
+                        "caption": "Report",
+                    },
+                ],
+            }
+        },
+    )
+
+    assert calls == [
+        ("document", str(artifact), "Report"),
+        ("text", "summary", None),
+    ]
+    assert [message.message_id for message in sent_messages] == [201, 200]
+    assert artifact.exists()
+
+
+@pytest.mark.asyncio
 async def test_handle_direct_result_final_does_not_send_text_when_artifact_delivery_fails(tmp_path):
     artifact = tmp_path / "broken.pptx"
     artifact.write_bytes(b"data")
@@ -229,6 +278,129 @@ async def test_handle_direct_result_final_does_not_send_text_when_artifact_is_no
 
     message.reply_document.assert_not_called()
     message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_final_not_delivered_error_redacts_artifact_payload(tmp_path, caplog):
+    secret_path = tmp_path / "secret-client-path.pptx"
+    message = FakeMessage()
+
+    caplog.set_level(logging.INFO)
+    with pytest.raises(RuntimeError) as exc_info:
+        await handle_direct_result(
+            _config(),
+            FakeUpdate(message),
+            {
+                "direct_result": {
+                    "kind": "final",
+                    "format": "mixed",
+                    "text": "summary",
+                    "artifacts": [
+                        {"kind": "file", "format": "unknown", "value": str(secret_path)},
+                    ],
+                }
+            },
+        )
+
+    error_text = str(exc_info.value)
+    assert "final artifact was not delivered" in error_text
+    assert "artifact_shape" in error_text
+    assert "redacted" in error_text
+    assert "secret-client-path" not in error_text
+    assert "secret-client-path" not in caplog.text
+    message.reply_text.assert_not_called()
+    message.reply_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_photo_path_failure_logs_shape_only(tmp_path, monkeypatch, caplog):
+    import bot.utils as utils
+
+    secret_path = tmp_path / "secret-image-path.png"
+    message = FakeMessage()
+
+    def fail_image_size(_path):
+        raise OSError("secret image path leaked by PIL")
+
+    def fake_resize(_path):
+        return io.BytesIO(b"png"), "PNG"
+
+    monkeypatch.setattr(utils, "get_image_size", fail_image_size)
+    monkeypatch.setattr(utils, "resize_image_if_needed", fake_resize)
+
+    caplog.set_level(logging.INFO)
+    await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "photo",
+                "format": "path",
+                "value": str(secret_path),
+            }
+        },
+    )
+
+    message.reply_photo.assert_awaited_once()
+    assert "Error handling photo direct result" in caplog.text
+    assert "value_shape" in caplog.text
+    assert "OSError(message_chars=" in caplog.text
+    assert "secret-image-path" not in caplog.text
+    assert "secret image path leaked" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_file_path_read_failure_logs_value_shape_only(tmp_path, caplog):
+    secret_path = tmp_path / "secret-report-path.pdf"
+    message = FakeMessage()
+
+    caplog.set_level(logging.INFO)
+    with pytest.raises(FileNotFoundError):
+        await handle_direct_result(
+            _config(),
+            FakeUpdate(message),
+            {
+                "direct_result": {
+                    "kind": "file",
+                    "format": "path",
+                    "value": str(secret_path),
+                }
+            },
+        )
+
+    assert "Handling direct result" in caplog.text
+    assert "value_shape" in caplog.text
+    assert "secret-report-path" not in caplog.text
+    message.reply_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_text_reply_failure_logs_shape_only(caplog):
+    message = FakeMessage()
+    message.reply_text.side_effect = [
+        RuntimeError("secret direct result chunk"),
+        SimpleNamespace(message_id=200),
+    ]
+
+    caplog.set_level(logging.INFO)
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "text",
+                "value": "secret direct result chunk",
+            }
+        },
+    )
+
+    assert [message.message_id for message in sent_messages] == [200]
+    assert message.reply_text.await_count == 2
+    assert "Unexpected error in handle_direct_result" in caplog.text
+    assert "RuntimeError(message_chars=" in caplog.text
+    assert "chunk_shape" in caplog.text
+    assert "secret direct result chunk" not in caplog.text
 
 
 @pytest.mark.asyncio

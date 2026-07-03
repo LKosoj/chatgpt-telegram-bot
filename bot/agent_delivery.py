@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -8,20 +7,20 @@ from typing import Any
 import telegram
 from telegram import constants
 
-from .utils import is_direct_result, split_into_chunks
+from .tool_result import direct_result_payload
+from .utils import (
+    cleanup_intermediate_files,
+    is_direct_result,
+    render_markdown_message_entities,
+    split_into_chunks,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 def _direct_result_payload(response: Any) -> dict | None:
-    if not isinstance(response, dict):
-        try:
-            response = json.loads(response)
-        except Exception:
-            return None
-    payload = response.get("direct_result") if isinstance(response, dict) else None
-    return payload if isinstance(payload, dict) else None
+    return direct_result_payload(response)
 
 
 async def send_text_chunks(
@@ -34,12 +33,19 @@ async def send_text_chunks(
     parse_mode=constants.ParseMode.MARKDOWN,
 ):
     sent = []
-    for index, chunk in enumerate(split_into_chunks(str(text or ""))):
+    text = str(text or "")
+    if parse_mode == constants.ParseMode.MARKDOWN:
+        message_parts = render_markdown_message_entities(text)
+    else:
+        message_parts = [(chunk, None) for chunk in split_into_chunks(text)]
+    for index, (chunk, entities) in enumerate(message_parts):
         kwargs = {
             "chat_id": chat_id,
             "text": chunk or "...",
-            "parse_mode": parse_mode,
+            "parse_mode": None if entities else parse_mode,
         }
+        if entities:
+            kwargs["entities"] = entities
         if reply_to_message_id and index == 0:
             kwargs["reply_to_message_id"] = reply_to_message_id
         if message_thread_id:
@@ -48,6 +54,7 @@ async def send_text_chunks(
             sent.append(await bot.send_message(**kwargs))
         except telegram.error.BadRequest:
             kwargs["parse_mode"] = None
+            kwargs.pop("entities", None)
             sent.append(await bot.send_message(**kwargs))
     return sent
 
@@ -95,6 +102,17 @@ async def _send_direct_payload(
     sent = []
     kind = payload.get("kind")
     if kind == "final":
+        for artifact in payload.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                artifact_payload = dict(artifact)
+                artifact_payload["preserve_after_delivery"] = True
+                sent.extend(await _send_direct_payload(
+                    bot,
+                    chat_id=chat_id,
+                    payload=artifact_payload,
+                    reply_to_message_id=reply_to_message_id,
+                    message_thread_id=message_thread_id,
+                ))
         text = str(payload.get("text") or "").strip()
         if title or text:
             sent.extend(await send_text_chunks(
@@ -105,16 +123,6 @@ async def _send_direct_payload(
                 message_thread_id=message_thread_id,
                 parse_mode=constants.ParseMode.MARKDOWN,
             ))
-            reply_to_message_id = None
-        for artifact in payload.get("artifacts") or []:
-            if isinstance(artifact, dict):
-                sent.extend(await _send_direct_payload(
-                    bot,
-                    chat_id=chat_id,
-                    payload=artifact,
-                    reply_to_message_id=reply_to_message_id,
-                    message_thread_id=message_thread_id,
-                ))
         return sent
 
     if kind == "text":
@@ -139,7 +147,14 @@ async def _send_direct_payload(
     if caption:
         common["caption"] = str(caption)
 
-    value = payload.get("value") or payload.get("file_path") or payload.get("url")
+    value = (
+        payload.get("value")
+        or payload.get("file_path")
+        or payload.get("path")
+        or payload.get("output_path")
+        or payload.get("artifact_path")
+        or payload.get("url")
+    )
     result_format = payload.get("format")
     if not value:
         return sent
@@ -163,6 +178,9 @@ async def _send_direct_payload(
                 sent.append(await bot.send_animation(**common, animation=fh))
             else:
                 sent.append(await bot.send_document(**common, document=fh))
+        cleanup_payload = dict(payload)
+        cleanup_payload["value"] = path
+        cleanup_intermediate_files({"direct_result": cleanup_payload})
         return sent
 
     if kind == "photo":

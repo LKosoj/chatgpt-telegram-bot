@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import os
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,27 +30,42 @@ class ChatModesRegistry:
             self._mtime = None
             return
 
-        mtime = self.path.stat().st_mtime
+        mtime = self.path.stat().st_mtime_ns
         if self._mtime is None or mtime != self._mtime:
-            with open(self.path, "r", encoding="utf-8") as f:
-                self._data = yaml.safe_load(f) or {}
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                if not isinstance(data, dict):
+                    raise ValueError("chat_modes.yml root must be a mapping")
+            except Exception as exc:
+                logger.error("Failed to load chat_modes.yml from %s: %s", self.path, exc)
+                if self._mtime is None:
+                    self._data = {}
+                return
+            self._data = data
             self._mtime = mtime
 
     def all_modes(self) -> Dict[str, Dict]:
         self._load_if_needed()
-        return self._data
+        return copy.deepcopy(self._data)
 
     def get_mode_by_key(self, key: str) -> Optional[Dict]:
         self._load_if_needed()
         return self._data.get(key)
 
-    def get_mode_by_system_prompt(self, system_content: str) -> Optional[Dict]:
+    def get_mode_by_system_prompt(self, system_content: str | None) -> Optional[Dict]:
+        if not system_content:
+            return None
         self._load_if_needed()
         for mode_data in self._data.values():
+            if not isinstance(mode_data, dict):
+                continue
             if mode_data.get("prompt_start", "").strip() == system_content.strip():
                 return mode_data
         normalized_content = system_content.lower()
         for mode_data in self._data.values():
+            if not isinstance(mode_data, dict):
+                continue
             markers = mode_data.get("prompt_markers") or []
             if markers and all(str(marker).lower() in normalized_content for marker in markers):
                 return mode_data
@@ -67,6 +82,9 @@ class ChatModesRegistry:
     def validate_tools(self, plugin_manager) -> None:
         self._load_if_needed()
         for mode_key, mode_data in self._data.items():
+            if not isinstance(mode_data, dict):
+                logger.error(f"chat_modes.yml: mode '{mode_key}' must be a mapping")
+                continue
             tools = mode_data.get("tools", [])
             if not tools:
                 continue

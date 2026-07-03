@@ -67,23 +67,24 @@ async def test_save_uses_async_method_when_available():
 
 
 @pytest.mark.asyncio
-async def test_save_falls_back_to_sync_when_no_async_method():
-    """Если async-метода нет — вызывается sync-вариант."""
+async def test_save_requires_async_method():
+    """Async chat flow must fail fast instead of doing sync DB work on the event loop."""
     helper = _make_helper_for_save()
     sync_save = MagicMock(return_value=None)
     helper.db = SimpleNamespace(save_conversation_context=sync_save)
 
-    await OpenAIHelper._save_conversation_context(
-        helper,
-        chat_id=1,
-        context={"messages": []},
-        parse_mode="HTML",
-        temperature=0.7,
-        max_tokens_percent=80,
-        session_id=None,
-    )
+    with pytest.raises(RuntimeError, match="save_conversation_context_async"):
+        await OpenAIHelper._save_conversation_context(
+            helper,
+            chat_id=1,
+            context={"messages": []},
+            parse_mode="HTML",
+            temperature=0.7,
+            max_tokens_percent=80,
+            session_id=None,
+        )
 
-    sync_save.assert_called_once()
+    sync_save.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,19 @@ async def test_close_calls_drain_on_session_logger():
     await OpenAIHelper.close(helper)
 
     drain_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_prefers_session_logger_close():
+    helper = _make_helper_for_close()
+    close_mock = AsyncMock()
+    drain_mock = AsyncMock()
+    helper.session_logger = SimpleNamespace(close=close_mock, drain=drain_mock)
+
+    await OpenAIHelper.close(helper)
+
+    close_mock.assert_awaited_once()
+    drain_mock.assert_not_called()
 
 
 @pytest.mark.asyncio

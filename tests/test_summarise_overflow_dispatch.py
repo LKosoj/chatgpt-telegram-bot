@@ -20,15 +20,24 @@ from bot.openai_helper import OpenAIHelper
 from bot.plugins.hooks import HookEvent, SessionBeforeDeletePayload
 
 
+def _with_async_db_facade(db):
+    for method_name in ("get_oldest_session_ids_for_limit", "get_conversation_context"):
+        async def _call(*args, _method_name=method_name, **kwargs):
+            return getattr(db, _method_name)(*args, **kwargs)
+
+        setattr(db, f"{method_name}_async", AsyncMock(side_effect=_call))
+    return db
+
+
 def _make_helper():
     helper = object.__new__(OpenAIHelper)
     helper.conversations = {}
     helper.config = {'max_sessions': 5}
     helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
-    helper.db = SimpleNamespace(
+    helper.db = _with_async_db_facade(SimpleNamespace(
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
         get_conversation_context=MagicMock(),
-    )
+    ))
     return helper
 
 

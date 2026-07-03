@@ -6,6 +6,17 @@
 .pytest_cache
 .ai-docs
 .ai_docs_cache
+bot/user_data.db
+bot/user_data.db-shm
+bot/user_data.db-wal
+bot/temp
+data
+log
+media
+output
+plots
+uploads
+usage_logs
 __pycache__
 *.py[cod]
 .dockerignore

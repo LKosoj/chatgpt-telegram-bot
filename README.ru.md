@@ -199,8 +199,8 @@ LLMGateway-маршрутизации, управляемых tool calls, име
 - **LLMGateway-совместимый эндпоинт** (или любой другой OpenAI-совместимый —
   имена `OPENAI_API_KEY` / `OPENAI_BASE_URL` остались по совместимости).
 - **`ffmpeg`** для аудио / видео.
-- **Java runtime** (только если включён плагин `show_me_diagrams` — он
-  вызывает `bot/plugins/plantuml.jar`).
+- **Java runtime + Graphviz `dot`** (только если включён плагин `show_me_diagrams` —
+  он вызывает отслеживаемый `bot/plugins/plantuml.jar`).
 - Рекомендуется **локальный Telegram Bot API** (бот по умолчанию идёт на
   `TELEGRAM_LOCAL_MODE=true`, base URL `http://localhost:8081/bot`).
   Для хостируемого Telegram API — `TELEGRAM_LOCAL_MODE=false`.
@@ -225,6 +225,18 @@ python -m bot
 ```bash
 docker compose up
 ```
+
+Compose читает `.env`, запускает бота от непривилегированного пользователя
+в контейнере и хранит runtime-состояние в named Docker volumes, смонтированных
+в `/app/data`, `/app/output`, `/app/plots`, `/app/usage_logs`, `/app/log` и `/app/uploads`.
+Временные media-файлы пишутся в tmpfs. Image healthcheck проверяет процесс
+бота и доступность runtime-каталогов на запись. Compose-дефолт для `DB_PATH` —
+`/app/data/user_data.db`; `SKILLS_DIR` и `SKILLS_WORKDIR` закреплены внутри
+`/app/data`, чтобы состояние skills было контейнерным. Если раньше
+использовался старый bind-mount всего репозитория, перед переходом скопируй
+существующие `bot/user_data.db*` в новый data-volume. Если локальный Telegram
+Bot API сервер недоступен из контейнера, задай `TELEGRAM_LOCAL_MODE=false` или
+укажи достижимый `TELEGRAM_BASE_URL`.
 
 `OPENAI_BASE_URL` по умолчанию пустой и должен указывать на твой gateway,
 например `http://gateway.example/v1`.
@@ -316,11 +328,16 @@ docker compose up
 
 | Переменная | По умолчанию | Тип | Назначение |
 |---|---|---|---|
-| `MAX_SESSIONS` | `5` | int | Максимум именованных сессий на пользователя. Старые удаляются через `delete_oldest_session()`. |
+| `MAX_SESSIONS` | `5` | int | Максимум именованных сессий на пользователя. Старые удаляются inline при создании новой сессии. |
 | `BOT_LANGUAGE` | `en` | string | Язык UI бота (`en`, `ru`, …). |
 | `AUTO_CHAT_MODES` | `false` | bool | Автоматически предлагать чат-режим по первому сообщению. |
 | `SESSION_LOG_ENABLED` | `false` | bool | Писать на диск структурированные диагностические события по каждому turn'у (тайминги turn/LLM/инструментов). По умолчанию выключено. |
-| `SESSION_LOG_DIR` | `./log` | path | Базовый каталог логов сессий; по подкаталогу на `user_id`, события сессии в JSONL плюс `summary.json`. |
+| `SESSION_LOG_DIR` | `./log` | path | Базовый каталог логов сессий; по подкаталогу на `user_id`, события сессии в JSONL плюс `<session_id>.summary.json`. |
+| `SESSION_LOG_MAX_BYTES` | `10485760` | int | Ротировать JSONL-файл сессии перед записью, если новая строка превысит этот размер. `0` отключает ротацию. |
+| `SESSION_LOG_RETENTION_DAYS` | `30` | int | Удалять JSONL/summary-файлы сессий старше указанного числа дней. `0` отключает очистку. |
+| `BOT_DATA_DIR` | `<repo>/data` | path | Runtime-корень данных для HTML/file delivery и data-файлов code-interpreter. Относительные значения резолвятся от корня репозитория. |
+| `BOT_OUTPUT_DIR` | `<repo>/output` | path | Runtime-корень output для сгенерированных HTML-отчётов. Относительные значения резолвятся от корня репозитория. |
+| `BOT_PLOTS_DIR` | `<BOT_OUTPUT_DIR>/plots` | path | Runtime-корень plot/artifact файлов, которые сканирует HTML-генерация. Относительные значения резолвятся от корня репозитория. |
 
 ### Бюджеты и тарификация
 
@@ -530,8 +547,8 @@ RAG.
 
 1. Новые сессии создаются автоматически на первом промпте или из меню
    сессий.
-2. При достижении лимита `delete_oldest_session()` удаляет самую старую
-   до создания новой.
+2. При достижении лимита самые старые сессии удаляются inline до создания
+   новой.
 3. Сессии можно переименовывать; долгие сессии получают авто-имя через
    light-модель.
 4. Удаление сессии триггерит Hindsight auto-save (если настроен) — меню
@@ -666,7 +683,7 @@ RAG в меню `/rag` возвращает текстовые сообщени�
 | `terminal` | `terminal` | Прямой shell; пара к `skills.run_skill_script`. |
 | `codeinterpreter` | `deep_analysis` | Sandboxed Python с pandas / numpy / matplotlib / plotly. |
 | `github_analysis` | `analyze_github_code` | Читает и суммирует репозитории GitHub с подсветкой. |
-| `show_me_diagrams` | `create_diagram` | Диаграммы PlantUML; нужен Java + `bot/plugins/plantuml.jar`. |
+| `show_me_diagrams` | `create_diagram` | Диаграммы PlantUML; нужны Java, Graphviz `dot` и `bot/plugins/plantuml.jar`. |
 | `chief` | `get_recipe`, `plan_menu` | Рецепты и меню Edamam. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | Интеграция с ВкусВиллом. |
 | `dice` | `send_dice` | Анимированные кубики Telegram. |

@@ -779,11 +779,11 @@ PluginManager → Database → OpenAIHelper → ChatGPTTelegramBot
 <tbody>
 <tr>
 <td>Базовый образ</td>
-<td><code>python:3.9-alpine</code></td>
+<td><code>python:3.12-slim</code></td>
 </tr>
 <tr>
 <td>Системный пакет</td>
-<td><code>ffmpeg</code></td>
+<td><code>ffmpeg</code>, <code>default-jre-headless</code>, <code>graphviz</code></td>
 </tr>
 <tr>
 <td>Точка входа</td>
@@ -823,7 +823,7 @@ PluginManager → Database → OpenAIHelper → ChatGPTTelegramBot
 </tr>
 </tbody>
 </table>
-<p><strong>Оптимизации размера:</strong> <code>--no-cache</code> для <code>apk</code>, <code>--no-cache-dir</code> для <code>pip</code>.</p>
+<p><strong>Оптимизации размера:</strong> <code>--no-install-recommends</code> для <code>apt-get</code>, <code>--no-cache-dir</code> для <code>pip</code>, purge build-пакетов и очистка <code>/var/lib/apt/lists</code>.</p>
 <hr />
 <h2 id="_22">Переменные окружения</h2>
 <h3 id="_23">Приоритет источников</h3>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import tempfile
 from uuid import uuid4
 from pathlib import Path
@@ -20,6 +21,17 @@ class LLMGatewayError(RuntimeError):
     pass
 
 
+_ERROR_DETAIL_LIMIT = 500
+_IMAGE_OUTPUT_DIR: Path | None = None
+
+
+def _error_detail(text: str) -> str:
+    detail = str(text or "")
+    if len(detail) <= _ERROR_DETAIL_LIMIT:
+        return detail
+    return detail[:_ERROR_DETAIL_LIMIT].rstrip() + "... [truncated]"
+
+
 class LLMGatewayClient:
     def __init__(self, base_url: str, api_key: str, timeout: float = 120.0):
         self.base_url = (base_url or "").rstrip("/")
@@ -28,6 +40,12 @@ class LLMGatewayClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        try:
+            return await getattr(self._client, method)(url, **kwargs)
+        except httpx.HTTPError as exc:
+            raise LLMGatewayError(f"LLMGateway request failed: {exc}") from exc
 
     async def get_json(self, path: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         if not self.base_url:
@@ -38,9 +56,9 @@ class LLMGatewayClient:
             "Authorization": f"Bearer {self.api_key}",
             "X-Title": "tgBot",
         }
-        response = await self._client.get(url, headers=headers, params=params, timeout=timeout)
+        response = await self._request("get", url, headers=headers, params=params, timeout=timeout)
         if response.status_code >= 400:
-            detail = response.text
+            detail = _error_detail(response.text)
             raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
         try:
             return response.json()
@@ -57,9 +75,9 @@ class LLMGatewayClient:
             "Content-Type": "application/json",
             "X-Title": "tgBot",
         }
-        response = await self._client.post(url, headers=headers, json=payload, timeout=timeout)
+        response = await self._request("post", url, headers=headers, json=payload, timeout=timeout)
         if response.status_code >= 400:
-            detail = response.text
+            detail = _error_detail(response.text)
             raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
         try:
             data = response.json()
@@ -85,9 +103,9 @@ class LLMGatewayClient:
             "Authorization": f"Bearer {self.api_key}",
             "X-Title": "tgBot",
         }
-        response = await self._client.post(url, headers=headers, data=data, files=files, timeout=timeout)
+        response = await self._request("post", url, headers=headers, data=data, files=files, timeout=timeout)
         if response.status_code >= 400:
-            detail = response.text
+            detail = _error_detail(response.text)
             raise LLMGatewayError(f"LLMGateway request failed: {response.status_code} {detail}")
         try:
             response_data = response.json()
@@ -214,8 +232,14 @@ class LLMGatewayClient:
 
 
 def _write_base64_image(encoded: str, suffix: str) -> str:
-    output_dir = Path(tempfile.gettempdir()) / "llmgateway_images"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    global _IMAGE_OUTPUT_DIR
+    if _IMAGE_OUTPUT_DIR is None or not _IMAGE_OUTPUT_DIR.is_dir():
+        _IMAGE_OUTPUT_DIR = Path(tempfile.mkdtemp(prefix="llmgateway_images_"))
+    output_dir = _IMAGE_OUTPUT_DIR
+    try:
+        os.chmod(output_dir, 0o700)
+    except OSError:
+        pass
     output_path = output_dir / f"{uuid4().hex}{suffix}"
     output_path.write_bytes(base64.b64decode("".join(encoded.split()), validate=True))
     return str(output_path)

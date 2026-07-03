@@ -28,8 +28,7 @@ class MCPServerPlugin(Plugin):
         self.openai = None
         self.bot = None
         self.servers = {}  # Словарь для хранения конфигураций серверов
-        self.config_path = self._get_config_path()
-        self.load_servers_config()
+        self.config_path: Path | None = None
         self.admin_ids = self._get_admin_ids()
         self.allowed_users = self._get_allowed_users()
         self.sessions: Dict[str, ClientSession] = {}
@@ -45,14 +44,22 @@ class MCPServerPlugin(Plugin):
         if storage_root:
             os.makedirs(storage_root, exist_ok=True)
             self.config_path = Path(storage_root) / "mcp_servers.json"
-            self.load_servers_config()
+        else:
+            self.config_path = self._get_config_path()
+        self.load_servers_config()
+
+    def _ensure_config_path(self) -> Path:
+        if self.config_path is None:
+            self.config_path = self._get_config_path()
+        return self.config_path
 
     def _get_config_path(self) -> Path:
         """Получает путь к файлу конфигурации MCP серверов"""
+        configured = os.getenv("MCP_SERVERS_CONFIG_PATH")
+        if configured:
+            return Path(configured)
         repo_root = Path(__file__).resolve().parent.parent.parent
-        data_dir = repo_root / "data"
-        os.makedirs(data_dir, exist_ok=True)
-        return data_dir / "mcp_servers.json"
+        return repo_root / "data" / "mcp_servers.json"
 
     def _get_admin_ids(self) -> List[int]:
         """Получает список ID администраторов из переменной окружения"""
@@ -100,10 +107,14 @@ class MCPServerPlugin(Plugin):
 
     def load_servers_config(self):
         """Загружает конфигурацию серверов из JSON файла"""
+        config_path = self._ensure_config_path()
         try:
-            if self.config_path.exists():
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    self.servers = json.load(f)
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    raise ValueError("MCP servers config must be a JSON object")
+                self.servers = loaded
                 logger.info(f"Загружена конфигурация {len(self.servers)} MCP серверов")
             else:
                 self.servers = {}
@@ -114,8 +125,11 @@ class MCPServerPlugin(Plugin):
                 if default_servers:
                     self._load_default_servers(default_servers)
         except Exception as e:
-            logger.error(f"Ошибка при загрузке конфигурации MCP серверов: {str(e)}")
-            self.servers = {}
+            logger.error(
+                "Ошибка при загрузке конфигурации MCP серверов из %s: %s; сохраняем текущую конфигурацию в памяти",
+                config_path,
+                str(e),
+            )
 
     def _load_default_servers(self, default_servers_str: str):
         """Загружает серверы по умолчанию из переменной окружения"""
@@ -139,8 +153,10 @@ class MCPServerPlugin(Plugin):
 
     def save_servers_config(self):
         """Сохраняет конфигурацию серверов в JSON файл"""
+        config_path = self._ensure_config_path()
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.servers, f, ensure_ascii=False, indent=2)
             logger.info(f"Сохранена конфигурация {len(self.servers)} MCP серверов")
         except Exception as e:

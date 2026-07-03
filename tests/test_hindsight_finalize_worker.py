@@ -1,7 +1,8 @@
 """Tests for the Hindsight finalize background worker.
 
 Stage 4C-3+5: ``HindsightMemoryPlugin._finalize_tick`` claims pending jobs,
-runs ``finalize_session_memory`` for each, and marks them done/failed.
+extracts memory outside the user lock, retains it under the lock, and marks
+jobs done/failed.
 """
 
 from __future__ import annotations
@@ -16,6 +17,11 @@ pytest.importorskip("tiktoken")
 from bot.plugins.hindsight_memory import HindsightMemoryPlugin
 
 
+class FakeDbHandle:
+    async def run_sync(self, func, *args, **kwargs):
+        return func(object(), *args, **kwargs)
+
+
 def _make_plugin(*, enabled: bool = True, auto_save: bool = True):
     plugin = HindsightMemoryPlugin()
     plugin.initialize(plugin_config={
@@ -23,8 +29,8 @@ def _make_plugin(*, enabled: bool = True, auto_save: bool = True):
         'hindsight_api_token': 't' if enabled else '',
         'hindsight_auto_save': auto_save,
     })
-    # Hook db_handle so _finalize_tick has a Database instance via .database.
-    plugin.db_handle = SimpleNamespace(database=object())
+    plugin.db_handle = FakeDbHandle()
+    plugin._current_clear_generation_sync = MagicMock(return_value=0)
     return plugin
 
 
@@ -32,26 +38,26 @@ def _make_plugin(*, enabled: bool = True, auto_save: bool = True):
 async def test_finalize_tick_skips_when_disabled():
     plugin = _make_plugin(enabled=False)
     plugin._claim_finalize_jobs_sync = MagicMock()
-    plugin.finalize_session_memory = AsyncMock()
+    plugin._extract_session_memory_items = AsyncMock()
 
     await plugin._finalize_tick(application=None)
 
     plugin._claim_finalize_jobs_sync.assert_not_called()
-    plugin.finalize_session_memory.assert_not_awaited()
+    plugin._extract_session_memory_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_finalize_tick_no_jobs_does_not_call_finalize():
     plugin = _make_plugin()
     plugin._claim_finalize_jobs_sync = MagicMock(return_value=[])
-    plugin.finalize_session_memory = AsyncMock()
+    plugin._extract_session_memory_items = AsyncMock()
     plugin._mark_finalize_job_done_sync = MagicMock()
     plugin._mark_finalize_job_failed_sync = MagicMock()
 
     await plugin._finalize_tick(application=None)
 
     plugin._claim_finalize_jobs_sync.assert_called_once()
-    plugin.finalize_session_memory.assert_not_awaited()
+    plugin._extract_session_memory_items.assert_not_awaited()
     plugin._mark_finalize_job_done_sync.assert_not_called()
     plugin._mark_finalize_job_failed_sync.assert_not_called()
 
@@ -67,15 +73,19 @@ async def test_finalize_tick_marks_done_on_success():
         "attempts": 0,
     }
     plugin._claim_finalize_jobs_sync = MagicMock(return_value=[job])
-    plugin.finalize_session_memory = AsyncMock(return_value=3)
+    plugin._extract_session_memory_items = AsyncMock(return_value=[{"content": "a"}])
+    plugin._retain_session_memory_items = AsyncMock(return_value=3)
     plugin._mark_finalize_job_done_sync = MagicMock()
     plugin._mark_finalize_job_failed_sync = MagicMock()
 
     await plugin._finalize_tick(application=None)
 
-    plugin.finalize_session_memory.assert_awaited_once_with(
+    plugin._extract_session_memory_items.assert_awaited_once_with(
         42, "s-1", [{"role": "user", "content": "x"}],
-        raise_on_error=True, async_store=False,
+        raise_on_error=True,
+    )
+    plugin._retain_session_memory_items.assert_awaited_once_with(
+        42, "s-1", [{"content": "a"}], async_store=False,
     )
     plugin._mark_finalize_job_done_sync.assert_called_once()
     args = plugin._mark_finalize_job_done_sync.call_args.args
@@ -86,6 +96,37 @@ async def test_finalize_tick_marks_done_on_success():
 
 
 @pytest.mark.asyncio
+async def test_finalize_tick_extracts_memory_outside_user_lock():
+    plugin = _make_plugin()
+    job = {
+        "id": 8,
+        "user_id": 42,
+        "session_id": "s-lock",
+        "messages": [{"role": "user", "content": "x"}],
+        "attempts": 0,
+    }
+    plugin._claim_finalize_jobs_sync = MagicMock(return_value=[job])
+    events = []
+
+    async def extract(*args, **kwargs):
+        events.append(("extract", plugin._memory_user_lock(42).locked()))
+        return [{"content": "a"}]
+
+    async def retain(*args, **kwargs):
+        events.append(("retain", plugin._memory_user_lock(42).locked()))
+        return 1
+
+    plugin._extract_session_memory_items = AsyncMock(side_effect=extract)
+    plugin._retain_session_memory_items = AsyncMock(side_effect=retain)
+    plugin._mark_finalize_job_done_sync = MagicMock()
+    plugin._mark_finalize_job_failed_sync = MagicMock()
+
+    await plugin._finalize_tick(application=None)
+
+    assert events == [("extract", False), ("retain", True)]
+
+
+@pytest.mark.asyncio
 async def test_finalize_tick_marks_failed_on_exception():
     plugin = _make_plugin()
     job = {
@@ -93,7 +134,7 @@ async def test_finalize_tick_marks_failed_on_exception():
         "messages": [{"role": "user", "content": "y"}], "attempts": 1,
     }
     plugin._claim_finalize_jobs_sync = MagicMock(return_value=[job])
-    plugin.finalize_session_memory = AsyncMock(side_effect=RuntimeError("boom"))
+    plugin._extract_session_memory_items = AsyncMock(side_effect=RuntimeError("boom"))
     plugin._mark_finalize_job_done_sync = MagicMock()
     plugin._mark_finalize_job_failed_sync = MagicMock()
 
@@ -116,13 +157,53 @@ async def test_finalize_tick_processes_multiple_jobs():
         {"id": 3, "user_id": 3, "session_id": "c", "messages": [], "attempts": 0},
     ]
     plugin._claim_finalize_jobs_sync = MagicMock(return_value=jobs)
-    plugin.finalize_session_memory = AsyncMock(return_value=0)
+    plugin._extract_session_memory_items = AsyncMock(return_value=[])
+    plugin._retain_session_memory_items = AsyncMock(return_value=0)
     plugin._mark_finalize_job_done_sync = MagicMock()
 
     await plugin._finalize_tick(application=None)
 
-    assert plugin.finalize_session_memory.await_count == 3
+    assert plugin._extract_session_memory_items.await_count == 3
+    plugin._retain_session_memory_items.assert_not_awaited()
     assert plugin._mark_finalize_job_done_sync.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_dream_tick_extracts_documents_outside_user_lock():
+    plugin = _make_plugin()
+    plugin.config["hindsight_dream_enabled"] = True
+    plugin.openai = SimpleNamespace(config={"model": "llmgateway/light_model"})
+    plugin._users_with_dream_events = AsyncMock(return_value=[{
+        "user_id": 42,
+        "last_event_id": 0,
+        "max_event_id": 2,
+    }])
+    plugin._fetch_dream_events = AsyncMock(return_value=[
+        {"id": 1, "event_type": "message", "payload": {"text": "one"}},
+        {"id": 2, "event_type": "message", "payload": {"text": "two"}},
+    ])
+    plugin._fetch_approved_memory_documents = AsyncMock(return_value=[])
+    events = []
+
+    async def run_sync(func, *args, **kwargs):
+        if func == plugin._create_dream_run_sync:
+            events.append(("create", plugin._memory_user_lock(42).locked()))
+            return 99
+        if func == plugin._complete_dream_run_sync:
+            events.append(("complete", plugin._memory_user_lock(42).locked()))
+            return None
+        raise AssertionError(f"unexpected db function: {func}")
+
+    async def extract(*args, **kwargs):
+        events.append(("extract", plugin._memory_user_lock(42).locked()))
+        return [{"path": "preferences/example", "kind": "memory", "content": "User likes concise answers."}]
+
+    plugin._db_run_sync = AsyncMock(side_effect=run_sync)
+    plugin._extract_dream_documents = AsyncMock(side_effect=extract)
+
+    await plugin._dream_tick(application=None)
+
+    assert events == [("create", True), ("extract", False), ("complete", True)]
 
 
 def test_get_background_tasks_returns_finalize_worker():

@@ -8,6 +8,7 @@ import json
 import threading
 import os
 import logging
+import math
 import hashlib
 import uuid
 import random
@@ -16,6 +17,12 @@ from datetime import datetime
 import yaml
 
 logger = logging.getLogger(__name__)
+_DB_HANDLE_TRANSACTION_LOCK_BYPASS = contextvars.ContextVar(
+    "db_handle_transaction_lock_bypass",
+    default=False,
+)
+
+SQLITE_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"})
 
 
 def _first_openai_model_from_env() -> str:
@@ -25,11 +32,40 @@ def _first_openai_model_from_env() -> str:
     )
 
 
+def _sqlite_journal_mode_from_env() -> str:
+    raw_mode = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
+    mode = raw_mode.strip().upper()
+    if mode not in SQLITE_JOURNAL_MODES:
+        logger.warning("Invalid SQLITE_JOURNAL_MODE=%r; falling back to WAL", raw_mode)
+        return "WAL"
+    return mode
+
+
+def _numeric_env(name, default, cast, *, minimum=None):
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    raw_value = raw_value.strip()
+    if raw_value == "":
+        return default
+    try:
+        value = cast(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; falling back to %r", name, raw_value, default)
+        return default
+    if isinstance(value, float) and not math.isfinite(value):
+        logger.warning("Invalid %s=%r; falling back to %r", name, raw_value, default)
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning("Invalid %s=%r; falling back to %r", name, raw_value, default)
+        return default
+    return value
+
+
 class Database:
     _instance = None
     _lock = threading.Lock()
     _connection_lock = threading.Lock()
-    _local = threading.local()
 
     # Текущая целевая версия схемы. Миграция 1 — переход с legacy-таблицы
     # `conversation_context` без session_id на новую схему с сессиями.
@@ -45,8 +81,14 @@ class Database:
                 instance.db_path = os.getenv("DB_PATH") or os.path.join(current_dir, 'user_data.db')
                 instance._op_lock = threading.RLock()
                 instance._executor = None
+                instance._local = threading.local()
+                try:
+                    instance.init_db()
+                except Exception:
+                    instance.shutdown()
+                    instance._close_db_thread_connection()
+                    raise
                 cls._instance = instance
-                instance.init_db()
             return cls._instance
 
     def __init__(self):
@@ -57,20 +99,11 @@ class Database:
     def _reset_singleton(cls) -> None:
         """Reset the cached singleton (intended for tests)."""
         with cls._lock:
-            if cls._instance is not None:
-                cls._instance.shutdown()
-                local_conn = getattr(cls._local, 'connection', None)
-                if local_conn is not None:
-                    try:
-                        local_conn.close()
-                    except sqlite3.Error:
-                        pass
-                    try:
-                        del cls._local.connection
-                    except AttributeError:
-                        pass
+            instance = cls._instance
             cls._instance = None
-            cls._local = threading.local()
+            if instance is not None:
+                instance.shutdown()
+                instance._close_db_thread_connection()
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -84,16 +117,16 @@ class Database:
         """
         if not hasattr(self._local, 'connection'):
             with self._connection_lock:
-                timeout = float(os.getenv("SQLITE_TIMEOUT", "5.0"))
+                timeout = _numeric_env("SQLITE_TIMEOUT", 5.0, float, minimum=0.0)
                 self._local.connection = sqlite3.connect(self.db_path, timeout=timeout)
                 self._local.connection.row_factory = sqlite3.Row
                 self._local.connection.execute("PRAGMA foreign_keys = ON")
-                journal_mode = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
+                journal_mode = _sqlite_journal_mode_from_env()
                 try:
                     self._local.connection.execute(f"PRAGMA journal_mode = {journal_mode}")
                 except sqlite3.Error:
                     self._local.connection.execute("PRAGMA journal_mode = WAL")
-                busy_timeout = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+                busy_timeout = _numeric_env("SQLITE_BUSY_TIMEOUT_MS", 5000, int, minimum=0)
                 self._local.connection.execute(f"PRAGMA busy_timeout = {busy_timeout}")
         if not hasattr(self._local, 'depth'):
             self._local.depth = 0
@@ -103,7 +136,7 @@ class Database:
         is_outer = self._local.depth == 1
         try:
             yield self._local.connection
-        except Exception:
+        except BaseException:
             if is_outer:
                 try:
                     self._local.connection.rollback()
@@ -112,7 +145,14 @@ class Database:
             raise
         else:
             if is_outer:
-                self._local.connection.commit()
+                try:
+                    self._local.connection.commit()
+                except sqlite3.Error:
+                    try:
+                        self._local.connection.rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
         finally:
             self._local.depth -= 1
             self._op_lock.release()
@@ -133,7 +173,7 @@ class Database:
                 started = True
             try:
                 yield conn
-            except Exception:
+            except BaseException:
                 if started:
                     try:
                         conn.rollback()
@@ -147,19 +187,9 @@ class Database:
             self.shutdown()
         except Exception:
             pass
-        local = getattr(self, '_local', None)
-        if local is None:
-            return
-        connection = getattr(local, 'connection', None)
-        if connection is None:
-            return
         try:
-            connection.close()
+            self._close_db_thread_connection()
         except Exception:
-            pass
-        try:
-            del local.connection
-        except AttributeError:
             pass
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
@@ -168,6 +198,8 @@ class Database:
         max_workers=1 гарантирует ровно одно thread-local соединение воркера
         и сериализацию async-операций БД без дополнительных локов.
         """
+        if self._executor is not None:
+            return self._executor
         with self._op_lock:
             if self._executor is None:
                 self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -177,14 +209,17 @@ class Database:
 
     def _close_db_thread_connection(self) -> None:
         """Закрывает thread-local соединение текущего потока (вызывается из воркера)."""
-        conn = getattr(self._local, 'connection', None)
+        local = getattr(self, '_local', None)
+        if local is None:
+            return
+        conn = getattr(local, 'connection', None)
         if conn is not None:
             try:
                 conn.close()
             except Exception:
                 pass
             try:
-                del self._local.connection
+                del local.connection
             except AttributeError:
                 pass
 
@@ -208,14 +243,24 @@ class Database:
         except Exception:
             pass
 
-    async def _run_in_db_thread(self, func, *args):
+    async def _run_in_db_thread(self, func, *args, **kwargs):
         """Запускает sync-функцию в единственном db-worker потоке."""
+        lock = getattr(self, "_db_handle_transaction_lock", None)
+        if lock is not None and not _DB_HANDLE_TRANSACTION_LOCK_BYPASS.get():
+            async with lock:
+                return await self._run_in_db_thread_unlocked(func, *args, **kwargs)
+        return await self._run_in_db_thread_unlocked(func, *args, **kwargs)
+
+    async def _run_in_db_thread_unlocked(self, func, *args, **kwargs):
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
         return await loop.run_in_executor(
             self._get_executor(),
-            lambda: ctx.run(func, *args),
+            lambda: ctx.run(func, *args, **kwargs),
         )
+
+    async def _run_db_method(self, method_name: str, *args, **kwargs):
+        return await self._run_in_db_thread(getattr(self, method_name), *args, **kwargs)
 
     def init_db(self):
         """Инициализация базы данных и создание необходимых таблиц"""
@@ -276,6 +321,10 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_tool_call_events_chat_created
                     ON tool_call_events(chat_id, created_at)
                 ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_tool_call_events_created_at
+                    ON tool_call_events(created_at)
+                ''')
                 
                 # Таблица для контекста разговора с поддержкой сессий
                 cursor.execute('''
@@ -317,36 +366,19 @@ class Database:
                 cursor.execute('''
                     CREATE INDEX IF NOT EXISTS idx_file_id_hash ON images(file_id_hash)
                 ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at)
+                ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_images_user_created
+                    ON images(user_id, created_at)
+                ''')
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_images_user_chat_created
+                    ON images(user_id, chat_id, created_at)
+                ''')
 
-                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
-                current_version = cursor.fetchone()[0]
-                if current_version < 1:
-                    cursor.execute("PRAGMA table_info(conversation_context)")
-                    columns = [column[1] for column in cursor.fetchall()]
-                    if 'session_id' not in columns:
-                        logger.warning('Performing database migration for conversation_context')
-                        self.migrate_conversation_context()
-                    else:
-                        # Схема уже содержит session_id (создана с нуля),
-                        # фиксируем версию 1.
-                        cursor.execute(
-                            'INSERT OR IGNORE INTO schema_version (version) VALUES (1)',
-                        )
-
-                # Миграция < 2: добавляем колонку version для CAS.
-                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
-                current_version = cursor.fetchone()[0]
-                if current_version < 2:
-                    cursor.execute("PRAGMA table_info(conversation_context)")
-                    existing_cols = [row[1] for row in cursor.fetchall()]
-                    if 'version' not in existing_cols:
-                        logger.info('Migration < 2: adding version column to conversation_context')
-                        cursor.execute(
-                            'ALTER TABLE conversation_context ADD COLUMN version INTEGER NOT NULL DEFAULT 0'
-                        )
-                    cursor.execute(
-                        'INSERT OR IGNORE INTO schema_version (version) VALUES (2)',
-                    )
+                self._apply_schema_migrations(cursor)
 
                 # Индекс для быстрого поиска сессий (создаем после миграции)
                 cursor.execute('''
@@ -367,6 +399,116 @@ class Database:
             logger.error(f'Error initializing database: {e}', exc_info=True)
             raise
 
+    def _schema_version(self, cursor: sqlite3.Cursor) -> int:
+        cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
+        return int(cursor.fetchone()[0])
+
+    def _schema_migrations(self):
+        return (
+            (1, self._migrate_conversation_context_to_sessions),
+            (2, self._migrate_conversation_context_version_column),
+        )
+
+    def _apply_schema_migrations(self, cursor: sqlite3.Cursor) -> None:
+        self._reconcile_schema_version_with_shape(cursor)
+        current_version = self._schema_version(cursor)
+        for version, migration in self._schema_migrations():
+            if current_version >= version:
+                continue
+            migration(cursor)
+            cursor.execute(
+                'INSERT OR IGNORE INTO schema_version (version) VALUES (?)',
+                (version,),
+            )
+            current_version = version
+
+    def _reconcile_schema_version_with_shape(self, cursor: sqlite3.Cursor) -> None:
+        columns = set(self._conversation_context_columns(cursor))
+        actual_version = 0
+        if 'session_id' in columns:
+            actual_version = 1
+        if 'version' in columns:
+            actual_version = 2
+        recorded_version = self._schema_version(cursor)
+        if recorded_version <= actual_version:
+            return
+        logger.warning(
+            "schema_version=%s is ahead of conversation_context shape=%s; resetting to %s",
+            recorded_version,
+            sorted(columns),
+            actual_version,
+        )
+        cursor.execute('DELETE FROM schema_version WHERE version > ?', (actual_version,))
+
+    def _conversation_context_columns(self, cursor: sqlite3.Cursor) -> list[str]:
+        cursor.execute("PRAGMA table_info(conversation_context)")
+        return [row[1] for row in cursor.fetchall()]
+
+    def _migrate_conversation_context_to_sessions(self, cursor: sqlite3.Cursor) -> None:
+        columns = self._conversation_context_columns(cursor)
+        if 'session_id' in columns:
+            logger.info('Migration 1: conversation_context already has session_id')
+            return
+
+        logger.warning('Migration 1: adding session support to conversation_context')
+        cursor.execute('ALTER TABLE conversation_context RENAME TO conversation_context_old')
+        cursor.execute('''
+            CREATE TABLE conversation_context (
+                user_id INTEGER,
+                context TEXT NOT NULL,
+                model TEXT NOT NULL,
+                parse_mode TEXT NOT NULL,
+                temperature FLOAT NOT NULL,
+                max_tokens_percent INTEGER DEFAULT 100,
+                session_id TEXT,
+                session_name TEXT DEFAULT NULL,
+                is_active INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, session_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_conversation_context_session
+            ON conversation_context(user_id, session_id, is_active)
+        ''')
+
+        model_expr = "COALESCE(model, ?)" if 'model' in columns else "?"
+        default_context = '{"messages": []}'
+        cursor.execute(f'''
+            INSERT INTO conversation_context
+            (user_id, context, model, parse_mode, temperature, max_tokens_percent,
+             session_id, session_name, is_active, message_count, created_at, updated_at)
+            SELECT
+                user_id,
+                COALESCE(context, ?),
+                {model_expr},
+                COALESCE(parse_mode, 'HTML'),
+                COALESCE(temperature, 0.8),
+                COALESCE(max_tokens_percent, 100),
+                hex(randomblob(16)) as session_id,
+                'Первоначальная сессия' as session_name,
+                1 as is_active,
+                0 as message_count,
+                COALESCE(created_at, CURRENT_TIMESTAMP),
+                COALESCE(updated_at, CURRENT_TIMESTAMP)
+            FROM conversation_context_old
+        ''', (default_context, _first_openai_model_from_env()))
+
+        cursor.execute('DROP TABLE conversation_context_old')
+        logger.info('Migration 1: conversation_context session migration complete')
+
+    def _migrate_conversation_context_version_column(self, cursor: sqlite3.Cursor) -> None:
+        columns = self._conversation_context_columns(cursor)
+        if 'version' in columns:
+            logger.info('Migration 2: conversation_context already has version')
+            return
+        logger.info('Migration 2: adding version column to conversation_context')
+        cursor.execute(
+            'ALTER TABLE conversation_context ADD COLUMN version INTEGER NOT NULL DEFAULT 0'
+        )
+
     def _recover_from_failed_migration(self, cursor: sqlite3.Cursor) -> None:
         """Восстанавливает БД, если предыдущая миграция упала между RENAME и DROP."""
         cursor.execute(
@@ -381,6 +523,7 @@ class Database:
         if not has_new:
             logger.warning('Recovering conversation_context from _old after crashed migration')
             cursor.execute('ALTER TABLE conversation_context_old RENAME TO conversation_context')
+            cursor.execute('DELETE FROM schema_version WHERE version >= 1')
             return
         # Why: DROP _old делаем только если new — это уже мигрированная схема
         # (имеет session_id). Иначе мы рискуем потерять данные пользователей.
@@ -406,6 +549,7 @@ class Database:
             )
             cursor.execute('DROP TABLE conversation_context')
             cursor.execute('ALTER TABLE conversation_context_old RENAME TO conversation_context')
+            cursor.execute('DELETE FROM schema_version WHERE version >= 1')
             return
         logger.warning('Dropping stale conversation_context_old leftover')
         cursor.execute('DROP TABLE conversation_context_old')
@@ -583,6 +727,20 @@ class Database:
                 ]
         except Exception as e:
             logger.error(f'Error listing tool call events: {e}', exc_info=True)
+            raise
+
+    def prune_tool_call_events(self, days: int = 30) -> int:
+        """Delete tool-call telemetry older than ``days`` and return rowcount."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM tool_call_events
+                    WHERE created_at < datetime('now', '-' || ? || ' days')
+                ''', (int(days),))
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f'Error pruning tool call events: {e}', exc_info=True)
             raise
     
     def get_active_session_id(self, user_id: int) -> Optional[str]:
@@ -910,18 +1068,23 @@ class Database:
             logger.error(f'Error updating image status: {e}', exc_info=True)
             raise
 
-    def cleanup_old_images(self, days: int = 7) -> None:
-        """Очистка устаревших данных об изображениях"""
+    def prune_old_images(self, days: int = 7) -> int:
+        """Delete image records older than ``days`` and return rowcount."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     DELETE FROM images 
                     WHERE created_at < datetime('now', '-' || ? || ' days')
-                ''', (days,))
+                ''', (int(days),))
+                return cursor.rowcount
         except Exception as e:
             logger.error(f'Error cleaning up old images: {e}', exc_info=True)
             raise
+
+    def cleanup_old_images(self, days: int = 7) -> int:
+        """Очистка устаревших данных об изображениях"""
+        return self.prune_old_images(days)
 
     def count_user_sessions(self, user_id: int) -> int:
         """
@@ -969,10 +1132,7 @@ class Database:
         max_sessions: Optional[int] = None,
         exclude_session_ids: Optional[List[str]] = None,
     ) -> List[str]:
-        if max_sessions is None:
-            max_sessions = int(os.getenv('MAX_SESSIONS', 5))
-        else:
-            max_sessions = int(max_sessions)
+        max_sessions = self._coerce_max_sessions_limit(max_sessions)
 
         cursor.execute("SELECT COUNT(*) FROM conversation_context WHERE user_id = ?", (user_id,))
         total = cursor.fetchone()[0]
@@ -1001,6 +1161,16 @@ class Database:
         """, params)
         return [row[0] for row in cursor.fetchall()]
 
+    @staticmethod
+    def _coerce_max_sessions_limit(max_sessions: Optional[int] = None) -> int:
+        raw_value = os.getenv('MAX_SESSIONS', 5) if max_sessions is None else max_sessions
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid MAX_SESSIONS=%r; falling back to 5", raw_value)
+            value = 5
+        return max(1, value)
+
     def delete_sessions_by_ids(self, user_id: int, session_ids: List[str]) -> bool:
         if not session_ids:
             return True
@@ -1015,22 +1185,6 @@ class Database:
                 return cursor.rowcount == len(session_ids)
         except sqlite3.Error as e:
             logger.error(f"Ошибка при удалении сессий: {e}")
-            return False
-
-    def delete_oldest_session(self, user_id: int, max_sessions: Optional[int] = None) -> bool:
-        """
-        Удаление самых старых сессий пользователя до достижения лимита
-
-        :param user_id: Идентификатор пользователя
-        :return: Успешность удаления
-        """
-        try:
-            with self.transaction():
-                session_ids = self.get_oldest_session_ids_for_limit(user_id, max_sessions=max_sessions)
-                return self.delete_sessions_by_ids(user_id, session_ids)
-
-        except sqlite3.Error as e:
-            logger.error(f"Ошибка при удалении старых сессий: {e}")
             return False
 
     def get_mode_from_context(self, context: Dict[str, Any]) -> Optional[Dict]:
@@ -1085,7 +1239,7 @@ class Database:
             system_message = None
             new_session_id = str(uuid.uuid4())
             model = openai_helper.config['model'] if openai_helper else _first_openai_model_from_env()
-            now = datetime.now()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
             with self.transaction() as conn:
                 cursor = conn.cursor()
@@ -1198,6 +1352,137 @@ class Database:
         """Async-обёртка над list_user_sessions для вызова из event loop."""
         return await self._run_in_db_thread(self.list_user_sessions, user_id, is_active)
 
+    async def save_user_settings_async(self, user_id: int, settings: Dict[str, Any]) -> None:
+        return await self._run_db_method("save_user_settings", user_id, settings)
+
+    async def get_user_settings_async(self, user_id: int) -> Optional[Dict[str, Any]]:
+        return await self._run_db_method("get_user_settings", user_id)
+
+    async def save_chat_settings_async(self, chat_id: int | str, settings: Dict[str, Any]) -> None:
+        return await self._run_db_method("save_chat_settings", chat_id, settings)
+
+    async def get_chat_settings_async(self, chat_id: int | str) -> Optional[Dict[str, Any]]:
+        return await self._run_db_method("get_chat_settings", chat_id)
+
+    async def record_tool_call_event_async(self, **kwargs) -> None:
+        return await self._run_db_method("record_tool_call_event", **kwargs)
+
+    async def list_tool_call_events_async(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return await self._run_db_method("list_tool_call_events", limit)
+
+    async def prune_tool_call_events_async(self, days: int = 30) -> int:
+        return await self._run_db_method("prune_tool_call_events", days)
+
+    async def get_active_session_id_async(self, user_id: int) -> Optional[str]:
+        return await self._run_db_method("get_active_session_id", user_id)
+
+    async def set_session_name_async(self, user_id: int, session_id: str, session_name: str) -> None:
+        return await self._run_db_method("set_session_name", user_id, session_id, session_name)
+
+    async def get_conversation_context_async(
+        self,
+        user_id: int,
+        session_id: str = None,
+        openai_helper = None,
+    ) -> Optional[Dict[str, Any]]:
+        return await self._run_db_method(
+            "get_conversation_context",
+            user_id,
+            session_id,
+            openai_helper,
+        )
+
+    async def save_user_model_async(self, user_id: int, model_name: str) -> None:
+        return await self._run_db_method("save_user_model", user_id, model_name)
+
+    async def save_image_async(
+        self,
+        user_id: int,
+        chat_id: int,
+        file_id: str,
+        file_path: Optional[str] = None,
+        status: str = 'active',
+    ) -> int:
+        return await self._run_db_method(
+            "save_image",
+            user_id,
+            chat_id,
+            file_id,
+            file_path,
+            status,
+        )
+
+    async def get_user_images_async(
+        self,
+        user_id: int,
+        chat_id: Optional[int] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        return await self._run_db_method("get_user_images", user_id, chat_id, limit)
+
+    async def update_image_status_async(self, image_id: int, status: str) -> None:
+        return await self._run_db_method("update_image_status", image_id, status)
+
+    async def prune_old_images_async(self, days: int = 7) -> int:
+        return await self._run_db_method("prune_old_images", days)
+
+    async def cleanup_old_images_async(self, days: int = 7) -> int:
+        return await self._run_db_method("cleanup_old_images", days)
+
+    async def count_user_sessions_async(self, user_id: int) -> int:
+        return await self._run_db_method("count_user_sessions", user_id)
+
+    async def get_oldest_session_ids_for_limit_async(
+        self,
+        user_id: int,
+        max_sessions: Optional[int] = None,
+        exclude_session_ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        return await self._run_db_method(
+            "get_oldest_session_ids_for_limit",
+            user_id,
+            max_sessions,
+            exclude_session_ids,
+        )
+
+    async def delete_sessions_by_ids_async(self, user_id: int, session_ids: List[str]) -> bool:
+        return await self._run_db_method("delete_sessions_by_ids", user_id, session_ids)
+
+    async def create_session_async(
+        self,
+        user_id: int,
+        session_name: str = None,
+        max_sessions: Optional[int] = None,
+        first_message: str = None,
+        openai_helper = None,
+        prune_old_sessions: bool = True,
+    ) -> Optional[str]:
+        return await self._run_db_method(
+            "create_session",
+            user_id,
+            session_name,
+            max_sessions,
+            first_message,
+            openai_helper,
+            prune_old_sessions,
+        )
+
+    async def switch_active_session_async(self, user_id: int, session_id: str) -> bool:
+        return await self._run_db_method("switch_active_session", user_id, session_id)
+
+    async def delete_session_async(self, user_id: int, session_id: str, openai_helper=None):
+        return await self._run_db_method("delete_session", user_id, session_id, openai_helper)
+
+    async def get_session_details_async(
+        self,
+        user_id: int,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        return await self._run_db_method("get_session_details", user_id, session_id)
+
+    async def export_sessions_to_yaml_async(self, user_id: int) -> str:
+        return await self._run_db_method("export_sessions_to_yaml", user_id)
+
     def switch_active_session(self, user_id: int, session_id: str) -> bool:
         """Переключение активной сессии"""
         try:
@@ -1286,69 +1571,13 @@ class Database:
             logger.info('Начало миграции conversation_context')
             with self.transaction() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
-                if cursor.fetchone()[0] >= self.TARGET_SCHEMA_VERSION:
+                if self._schema_version(cursor) >= 1:
                     return
-
-                cursor.execute("PRAGMA table_info(conversation_context)")
-                columns = [column[1] for column in cursor.fetchall()]
-
-                if 'session_id' not in columns:
-                    cursor.execute('ALTER TABLE conversation_context RENAME TO conversation_context_old')
-                    cursor.execute('''
-                        CREATE TABLE conversation_context (
-                            user_id INTEGER,
-                            context TEXT NOT NULL,
-                            model TEXT NOT NULL,
-                            parse_mode TEXT NOT NULL,
-                            temperature FLOAT NOT NULL,
-                            max_tokens_percent INTEGER DEFAULT 100,
-                            session_id TEXT,
-                            session_name TEXT DEFAULT NULL,
-                            is_active INTEGER DEFAULT 0,
-                            message_count INTEGER DEFAULT 0,
-                            version INTEGER NOT NULL DEFAULT 0,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            PRIMARY KEY (user_id, session_id)
-                        )
-                    ''')
-                    cursor.execute('''
-                        CREATE INDEX IF NOT EXISTS idx_conversation_context_session
-                        ON conversation_context(user_id, session_id, is_active)
-                    ''')
-
-                    model_expr = "COALESCE(model, ?)" if 'model' in columns else "?"
-                    default_context = '{"messages": []}'
-                    cursor.execute(f'''
-                        INSERT INTO conversation_context
-                        (user_id, context, model, parse_mode, temperature, max_tokens_percent,
-                         session_id, session_name, is_active, message_count, created_at, updated_at)
-                        SELECT
-                            user_id,
-                            COALESCE(context, ?),
-                            {model_expr},
-                            COALESCE(parse_mode, 'HTML'),
-                            COALESCE(temperature, 0.8),
-                            COALESCE(max_tokens_percent, 100),
-                            hex(randomblob(16)) as session_id,
-                            'Первоначальная сессия' as session_name,
-                            1 as is_active,
-                            0 as message_count,
-                            COALESCE(created_at, CURRENT_TIMESTAMP),
-                            COALESCE(updated_at, CURRENT_TIMESTAMP)
-                        FROM conversation_context_old
-                    ''', (default_context, _first_openai_model_from_env()))
-
-                    cursor.execute('DROP TABLE conversation_context_old')
-                    logger.info('Миграция conversation_context завершена успешно')
-                else:
-                    logger.info('Миграция не требуется, таблица уже в новом формате')
-
+                self._migrate_conversation_context_to_sessions(cursor)
                 cursor.execute(
-                    'INSERT OR IGNORE INTO schema_version (version) VALUES (?)',
-                    (self.TARGET_SCHEMA_VERSION,),
+                    'INSERT OR IGNORE INTO schema_version (version) VALUES (1)',
                 )
+                logger.info('Миграция conversation_context завершена успешно')
         except Exception as e:
             logger.error(f'Ошибка миграции базы данных: {e}', exc_info=True)
             raise

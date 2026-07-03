@@ -520,8 +520,8 @@
 </blockquote>
 <hr />
 <h3 id="dockerfile"><code>Dockerfile</code></h3>
-<p>Многослойная сборка на базе Alpine с минимизацией размера образа.</p>
-<div class="highlight"><pre><span></span><code><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.9-alpine</span>
+<p>Сборка на базе slim-образа Python с runtime-пакетами для медиа и PlantUML.</p>
+<div class="highlight"><pre><span></span><code><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.12-slim</span>
 
 <span class="k">ENV</span><span class="w"> </span><span class="nv">PYTHONFAULTHANDLER</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span><span class="nv">PYTHONUNBUFFERED</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
@@ -530,10 +530,12 @@
 
 <span class="k">WORKDIR</span><span class="w"> </span><span class="s">/app</span>
 
-<span class="k">RUN</span><span class="w"> </span>apk<span class="w"> </span>add<span class="w"> </span>--no-cache<span class="w"> </span>ffmpeg
-
 <span class="k">COPY</span><span class="w"> </span>requirements.txt<span class="w"> </span>.
-<span class="k">RUN</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--no-cache-dir<span class="w"> </span>-r<span class="w"> </span>requirements.txt
+<span class="k">RUN</span><span class="w"> </span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>DEBIAN_FRONTEND=noninteractive<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>--no-install-recommends<span class="w"> </span>ffmpeg<span class="w"> </span>default-jre-headless<span class="w"> </span>graphviz<span class="w"> </span>g++<span class="w"> </span>libc6-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt<span class="w"> </span>--no-cache-dir<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>purge<span class="w"> </span>-y<span class="w"> </span>--auto-remove<span class="w"> </span>g++<span class="w"> </span>libc6-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>rm<span class="w"> </span>-rf<span class="w"> </span>/var/lib/apt/lists/*
 
 <span class="k">COPY</span><span class="w"> </span>.<span class="w"> </span>.
 
@@ -548,12 +550,12 @@
 </thead>
 <tbody>
 <tr>
-<td><code>FROM python:3.9-alpine</code></td>
-<td>Базовый образ ~50 МБ против ~900 МБ у стандартного <code>python:3.9</code></td>
+<td><code>FROM python:3.12-slim</code></td>
+<td>Базовый slim-образ Python 3.12</td>
 </tr>
 <tr>
-<td><code>apk add --no-cache ffmpeg</code></td>
-<td>Установка FFmpeg без сохранения кэша пакетов в слое</td>
+<td><code>apt-get install ffmpeg default-jre-headless graphviz</code></td>
+<td>Runtime-пакеты для медиа и PlantUML-диаграмм</td>
 </tr>
 <tr>
 <td><code>pip install --no-cache-dir</code></td>

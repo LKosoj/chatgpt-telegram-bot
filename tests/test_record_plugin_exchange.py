@@ -22,7 +22,6 @@ from bot.openai_helper import OpenAIHelper
 def _make_helper(db_context):
     helper = object.__new__(OpenAIHelper)
     helper.conversations = {}
-    helper.conversations_vision = {}
     helper.loaded_conversation_sessions = {}
     helper.last_updated = {}
     helper.config = {'max_conversation_age_minutes': 60}
@@ -30,6 +29,7 @@ def _make_helper(db_context):
     helper._closed = False
     helper.db = SimpleNamespace(
         get_conversation_context=MagicMock(return_value=db_context),
+        get_conversation_context_async=AsyncMock(return_value=db_context),
         save_conversation_context=MagicMock(return_value=None),
         save_conversation_context_async=AsyncMock(return_value=None),
     )

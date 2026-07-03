@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +37,7 @@ GOAL_RUN_DEFAULT_LIMITS = {
     "max_runtime_seconds": 1800,
 }
 GOAL_RUN_MAX_CONCURRENCY = 2
+FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "request_context"}
 DELIVERY_ACTION_WORDS = (
     "attach",
     "deliver",
@@ -47,6 +49,12 @@ DELIVERY_ACTION_WORDS = (
     "переда",
     "прикреп",
 )
+
+
+def _strip_framework_tool_args(args: Dict[str, Any]) -> None:
+    for key in FRAMEWORK_TOOL_ARGS:
+        args.pop(key, None)
+
 DELIVERY_TARGET_WORDS = (
     "artifact",
     "document",
@@ -185,12 +193,13 @@ class AgentToolsPlugin(Plugin):
     DELIVERY_DEDUP_WINDOW_SECONDS = 60
     DELIVERY_MAX_ARTIFACT_BYTES = 49 * 1024 * 1024
     TASKS_TTL_SECONDS = 2 * 24 * 3600
+    PLAN_SCOPE_LOCKS_MAX = 2048
 
     def __init__(self):
         self.db = None
         self.db_handle = None
-        self.pending_file = os.path.join(os.path.dirname(__file__), "agent_pending_questions.json")
-        self.background_jobs_file = os.path.join(os.path.dirname(__file__), "agent_background_jobs.json")
+        self.pending_file: str | None = None
+        self.background_jobs_file: str | None = None
         self.pending_questions: Dict[str, Dict[str, Any]] = {}
         self.pending_by_chat: Dict[int, str] = {}
         self.background_jobs: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -208,7 +217,7 @@ class AgentToolsPlugin(Plugin):
         # transitions to completed; consumed by on_before_chat_request.
         self._pending_verify: Dict[str, Dict[str, Any]] = {}
         self._replan_lock: Optional[asyncio.Lock] = None
-        self._plan_scope_locks: Dict[str, asyncio.Lock] = {}
+        self._plan_scope_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
         self._load_orphaned_pending()
         self._load_background_jobs()
 
@@ -930,6 +939,9 @@ class AgentToolsPlugin(Plugin):
 
     def _load_background_jobs(self) -> None:
         try:
+            if not self.background_jobs_file:
+                self.background_jobs = {}
+                return
             if not os.path.exists(self.background_jobs_file):
                 self.background_jobs = {}
                 return
@@ -953,6 +965,8 @@ class AgentToolsPlugin(Plugin):
 
     def _save_background_jobs(self) -> None:
         try:
+            if not self.background_jobs_file:
+                return
             jobs_dir = os.path.dirname(self.background_jobs_file) or "."
             os.makedirs(jobs_dir, exist_ok=True)
             tmp_path = f"{self.background_jobs_file}.tmp"
@@ -1539,6 +1553,7 @@ class AgentToolsPlugin(Plugin):
 
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         request_context = kwargs.pop("request_context", None)
+        self._trust_request_context_args(kwargs, request_context)
         if function_name == "manage_plan_tasks":
             # _manage_plan_tasks ходит в SQLite через sync get_connection
             # (_db_get_plan / _db_save_plan / _db_clear_plan). На event loop это
@@ -1547,7 +1562,12 @@ class AgentToolsPlugin(Plugin):
             # for the same scope (read→modify→write must be atomic per scope).
             scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
             async with self._get_plan_scope_lock(scope):
-                return await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
+                try:
+                    result = await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
+                    await self._apply_plan_runtime_effects(result)
+                    return result
+                finally:
+                    self._evict_plan_scope_locks(current_scope=scope)
         if function_name == "update_working_checkpoint":
             return await asyncio.to_thread(self._manage_working_checkpoint, helper, **kwargs)
         if function_name == "ask_telegram_user":
@@ -1561,6 +1581,22 @@ class AgentToolsPlugin(Plugin):
         if function_name == "manage_goal_runs":
             return await self._manage_goal_runs(helper, request_context=request_context, **kwargs)
         return {"success": False, "error": f"Unknown agent tool: {function_name}"}
+
+    @staticmethod
+    def _trust_request_context_args(kwargs: Dict[str, Any], request_context) -> None:
+        if request_context is None:
+            return
+        chat_id = getattr(request_context, "plugin_chat_id", None)
+        if chat_id is None:
+            chat_id = getattr(request_context, "chat_id", None)
+        user_id = getattr(request_context, "user_id", None)
+        message_id = getattr(request_context, "message_id", None)
+        if chat_id is not None:
+            kwargs["chat_id"] = chat_id
+        if user_id is not None:
+            kwargs["user_id"] = user_id
+        if message_id is not None:
+            kwargs["message_id"] = message_id
 
     def register_schema(self) -> List[str]:
         return [
@@ -1896,9 +1932,8 @@ class AgentToolsPlugin(Plugin):
         # so a pending re-plan inject scheduled earlier in the same session must
         # still be delivered on the next chat request.
         if not payload.terminal_only:
-            self._tool_error_streaks.pop(scope, None)
-            self._pending_replan.pop(scope, None)
-            self._pending_verify.pop(scope, None)
+            async with self._get_replan_lock():
+                self._clear_runtime_scope_locked(scope)
 
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
@@ -1954,10 +1989,27 @@ class AgentToolsPlugin(Plugin):
         return self._replan_lock
 
     def _get_plan_scope_lock(self, scope: str) -> asyncio.Lock:
-        # Lazy-init per scope; same pattern as _get_replan_lock.
-        if scope not in self._plan_scope_locks:
-            self._plan_scope_locks[scope] = asyncio.Lock()
-        return self._plan_scope_locks[scope]
+        lock = self._plan_scope_locks.get(scope)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._plan_scope_locks[scope] = lock
+        else:
+            self._plan_scope_locks.move_to_end(scope)
+        self._evict_plan_scope_locks(current_scope=scope)
+        return lock
+
+    def _evict_plan_scope_locks(self, *, current_scope: str | None = None) -> None:
+        while len(self._plan_scope_locks) > self.PLAN_SCOPE_LOCKS_MAX:
+            evicted = False
+            for scope, lock in list(self._plan_scope_locks.items()):
+                if scope == current_scope:
+                    continue
+                if not lock.locked():
+                    self._plan_scope_locks.pop(scope, None)
+                    evicted = True
+                    break
+            if not evicted:
+                break
 
     def _current_in_progress_task_id(self, scope: str) -> Optional[str]:
         if self.db is None:
@@ -1973,7 +2025,7 @@ class AgentToolsPlugin(Plugin):
                 return task_id or None
         return None
 
-    def _schedule_replan(self, scope: str, reason: str, task_id: str) -> None:
+    def _schedule_replan_locked(self, scope: str, reason: str, task_id: str) -> None:
         if not scope or not task_id:
             return
         existing = self._pending_replan.get(scope)
@@ -1982,13 +2034,47 @@ class AgentToolsPlugin(Plugin):
             return
         self._pending_replan[scope] = new_entry
 
-    def _schedule_verify(self, scope: str, task_id: str) -> None:
+    def _schedule_replan(self, scope: str, reason: str, task_id: str) -> None:
+        self._schedule_replan_locked(scope, reason, task_id)
+
+    def _schedule_verify_locked(self, scope: str, task_id: str) -> None:
         if not scope or not task_id:
             return
         new_entry = {"task_id": task_id}
         if self._pending_verify.get(scope) == new_entry:
             return
         self._pending_verify[scope] = new_entry
+
+    def _schedule_verify(self, scope: str, task_id: str) -> None:
+        self._schedule_verify_locked(scope, task_id)
+
+    def _clear_runtime_scope_locked(self, scope: str) -> None:
+        self._tool_error_streaks.pop(scope, None)
+        self._pending_replan.pop(scope, None)
+        self._pending_verify.pop(scope, None)
+
+    async def _apply_plan_runtime_effects(self, result: Dict[str, Any]) -> None:
+        effects = result.pop("_agent_runtime_effects", None)
+        if not isinstance(effects, dict):
+            return
+        scope = str(effects.get("scope") or "")
+        if not scope:
+            return
+        async with self._get_replan_lock():
+            if effects.get("clear_scope"):
+                self._clear_runtime_scope_locked(scope)
+            for item in effects.get("replan") or []:
+                if not isinstance(item, dict):
+                    continue
+                self._schedule_replan_locked(
+                    scope,
+                    str(item.get("reason") or ""),
+                    str(item.get("task_id") or ""),
+                )
+            for item in effects.get("verify") or []:
+                if not isinstance(item, dict):
+                    continue
+                self._schedule_verify_locked(scope, str(item.get("task_id") or ""))
 
     async def _record_tool_outcome(
         self,
@@ -2007,22 +2093,23 @@ class AgentToolsPlugin(Plugin):
         """
         if not scope:
             return
-        if success:
-            self._tool_error_streaks.pop(scope, None)
-            return
-        if not task_id:
-            # No in_progress task — no task-scoped streak to track.
-            return
-        entry = self._tool_error_streaks.get(scope)
-        if not entry or entry.get("task_id") != task_id:
-            self._tool_error_streaks[scope] = {"task_id": task_id, "count": 1}
-            return
-        entry["count"] = int(entry.get("count") or 0) + 1
-        if entry["count"] >= _REPLAN_ERROR_THRESHOLD:
-            self._schedule_replan(scope, "errors", task_id)
-            # Reset streak so the next streak must accumulate from zero
-            # (prevents trigger spam on subsequent failures).
-            self._tool_error_streaks.pop(scope, None)
+        async with self._get_replan_lock():
+            if success:
+                self._tool_error_streaks.pop(scope, None)
+                return
+            if not task_id:
+                # No in_progress task — no task-scoped streak to track.
+                return
+            entry = self._tool_error_streaks.get(scope)
+            if not entry or entry.get("task_id") != task_id:
+                self._tool_error_streaks[scope] = {"task_id": task_id, "count": 1}
+                return
+            entry["count"] = int(entry.get("count") or 0) + 1
+            if entry["count"] >= _REPLAN_ERROR_THRESHOLD:
+                self._schedule_replan_locked(scope, "errors", task_id)
+                # Reset streak so the next streak must accumulate from zero
+                # (prevents trigger spam on subsequent failures).
+                self._tool_error_streaks.pop(scope, None)
 
     @staticmethod
     def _replan_message_body(reason: str, task_id: str) -> str:
@@ -2438,6 +2525,7 @@ class AgentToolsPlugin(Plugin):
             return {"success": False, "error": "agent_tools plan storage requires database"}
         action = str(kwargs.get("action") or "").strip()
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        runtime_effects: Dict[str, Any] = {"scope": scope}
         plan = self._get_scope_plan(scope)
         tasks = plan.get("tasks") or []
         current_contract = plan.get("contract")
@@ -2498,16 +2586,23 @@ class AgentToolsPlugin(Plugin):
             changed = bool(items) or contract_changed
             if changed:
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
-                for task_id in blocked_transitions:
-                    self._schedule_replan(scope, "blocked", task_id)
-                for task_id in completed_transitions:
-                    self._schedule_verify(scope, task_id)
-            return self._tasks_response(
+                runtime_effects["replan"] = [
+                    {"reason": "blocked", "task_id": task_id}
+                    for task_id in blocked_transitions
+                ]
+                runtime_effects["verify"] = [
+                    {"task_id": task_id}
+                    for task_id in completed_transitions
+                ]
+            response = self._tasks_response(
                 action,
                 candidate_tasks,
                 changed=changed,
                 contract=effective_contract,
             )
+            if changed:
+                response["_agent_runtime_effects"] = runtime_effects
+            return response
 
         if action == "update":
             items = kwargs.get("tasks") or []
@@ -2552,36 +2647,41 @@ class AgentToolsPlugin(Plugin):
                 if validation_error:
                     return {"success": False, "error": validation_error}
                 self._save_scope_plan(scope, candidate_tasks, contract=effective_contract)
-                for task_id in blocked_transitions:
-                    self._schedule_replan(scope, "blocked", task_id)
-                for task_id in completed_transitions:
-                    self._schedule_verify(scope, task_id)
-            return self._tasks_response(
+                runtime_effects["replan"] = [
+                    {"reason": "blocked", "task_id": task_id}
+                    for task_id in blocked_transitions
+                ]
+                runtime_effects["verify"] = [
+                    {"task_id": task_id}
+                    for task_id in completed_transitions
+                ]
+            response = self._tasks_response(
                 action,
                 candidate_tasks,
                 changed=changed,
                 contract=effective_contract,
             )
+            if changed:
+                response["_agent_runtime_effects"] = runtime_effects
+            return response
 
         if action == "list":
             return self._tasks_response(action, tasks, changed=False, contract=current_contract)
 
         if action == "clear":
-            active = [task for task in tasks if task.get("status") not in CLOSED_STATUSES]
-            changed = len(active) != len(tasks)
-            if contract_changed:
-                changed = True
+            changed = bool(tasks) or current_contract is not None
+            checkpoint_cleared = self._db_clear_checkpoint(scope)
             if changed:
-                self._save_scope_plan(scope, active, contract=effective_contract)
-            self._tool_error_streaks.pop(scope, None)
-            self._pending_replan.pop(scope, None)
-            self._pending_verify.pop(scope, None)
-            return self._tasks_response(
+                self._db_clear_plan(scope, clear_contract=True)
+            changed = changed or checkpoint_cleared
+            response = self._tasks_response(
                 action,
-                active,
+                [],
                 changed=changed,
-                contract=effective_contract,
+                contract=None,
             )
+            response["_agent_runtime_effects"] = {"scope": scope, "clear_scope": True}
+            return response
 
         return {"success": False, "error": f"Unknown action: {action}"}
 
@@ -2932,6 +3032,8 @@ class AgentToolsPlugin(Plugin):
         for item, result in zip(subagents, results):
             subagent_id = str(item.get("id") or "subagent").strip()
             role = str(item.get("role") or "").strip()
+            if isinstance(result, asyncio.CancelledError):
+                raise result
             if isinstance(result, Exception):
                 normalized_results.append({
                     "id": subagent_id,
@@ -3097,6 +3199,14 @@ class AgentToolsPlugin(Plugin):
             return ["All"]
         return list(allowed) if allowed else ["All"]
 
+    @staticmethod
+    async def _resolve_current_model(helper, user_id):
+        async_resolver = getattr(helper, "get_current_model_async", None)
+        if callable(async_resolver):
+            return await async_resolver(user_id)
+        resolver = getattr(helper, "get_current_model", None)
+        return resolver(user_id) if callable(resolver) else None
+
     async def _run_one_subagent(
         self,
         helper,
@@ -3136,7 +3246,7 @@ class AgentToolsPlugin(Plugin):
         if override_model:
             model_to_use = override_model
         else:
-            model_to_use = helper.get_current_model(user_id) if hasattr(helper, "get_current_model") else None
+            model_to_use = await self._resolve_current_model(helper, user_id)
             model_to_use = model_to_use or (model_choices[0] if model_choices else None) or getattr(helper, "model", None)
 
         max_rounds = self._normalize_max_rounds(item.get("max_rounds"), parent_max_rounds)
@@ -3541,6 +3651,9 @@ class AgentToolsPlugin(Plugin):
             args = json.loads(call.get("arguments") or "{}")
         except json.JSONDecodeError:
             return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
+        if not isinstance(args, dict):
+            return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
+        _strip_framework_tool_args(args)
 
         if tool_name == INTERNAL_PUBLISH_TOOL:
             return self._handle_internal_publish(args, published)

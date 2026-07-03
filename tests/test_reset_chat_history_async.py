@@ -19,20 +19,34 @@ pytest.importorskip("tiktoken")
 from bot.openai_helper import OpenAIHelper
 
 
-def _make_helper():
+def _make_helper(saved_context=None):
     helper = object.__new__(OpenAIHelper)
     helper.conversations = {}
     helper.loaded_conversation_sessions = {}
     helper.config = {'max_sessions': 5}
     helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
+    if saved_context is None:
+        saved_context = {"messages": []}
     helper.db = SimpleNamespace(
-        create_session=MagicMock(return_value="session-new"),
-        get_conversation_context=MagicMock(return_value=(
-            {"messages": []}, "HTML", 0.1, 80, "session-new",
+        create_session=MagicMock(side_effect=AssertionError("sync create_session must not be called")),
+        create_session_async=AsyncMock(return_value="session-new"),
+        get_conversation_context=MagicMock(
+            side_effect=AssertionError("sync get_conversation_context must not be called")
+        ),
+        get_conversation_context_async=AsyncMock(return_value=(
+            saved_context, "HTML", 0.1, 80, "session-new",
         )),
-        get_mode_from_context=MagicMock(return_value={"role": "system", "content": "sys"}),
-        save_conversation_context=MagicMock(),
-        get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
+        get_mode_from_context=MagicMock(
+            side_effect=AssertionError("sync get_mode_from_context must not be called")
+        ),
+        save_conversation_context=MagicMock(
+            side_effect=AssertionError("sync save_conversation_context must not be called")
+        ),
+        save_conversation_context_async=AsyncMock(),
+        get_oldest_session_ids_for_limit=MagicMock(
+            side_effect=AssertionError("sync get_oldest_session_ids_for_limit must not be called")
+        ),
+        get_oldest_session_ids_for_limit_async=AsyncMock(return_value=[]),
     )
     return helper
 
@@ -51,9 +65,9 @@ async def test_reset_chat_history_with_prune_true_calls_pre_dispatch():
     await helper.reset_chat_history(42)
 
     helper._dispatch_before_create_session_prune.assert_awaited_once_with(42)
-    # create_session called with prune_old_sessions=True
-    helper.db.create_session.assert_called_once()
-    assert helper.db.create_session.call_args.kwargs["prune_old_sessions"] is True
+    helper.db.create_session.assert_not_called()
+    helper.db.create_session_async.assert_awaited_once()
+    assert helper.db.create_session_async.call_args.kwargs["prune_old_sessions"] is True
 
 
 @pytest.mark.asyncio
@@ -64,8 +78,30 @@ async def test_reset_chat_history_with_prune_false_skips_pre_dispatch():
     await helper.reset_chat_history(42, prune_old_sessions=False)
 
     helper._dispatch_before_create_session_prune.assert_not_awaited()
-    # create_session called with prune_old_sessions=False
-    assert helper.db.create_session.call_args.kwargs["prune_old_sessions"] is False
+    helper.db.create_session.assert_not_called()
+    assert helper.db.create_session_async.call_args.kwargs["prune_old_sessions"] is False
+
+
+@pytest.mark.asyncio
+async def test_reset_chat_history_parses_system_message_without_db_mode_lookup():
+    helper = _make_helper({"messages": [{"role": "system", "content": "sys"}]})
+    helper._dispatch_before_create_session_prune = AsyncMock()
+
+    await helper.reset_chat_history(42)
+
+    helper.db.get_mode_from_context.assert_not_called()
+    assert helper.conversations[42] == [{"role": "system", "content": "sys"}]
+
+
+@pytest.mark.asyncio
+async def test_reset_chat_history_treats_malformed_messages_as_no_system_message():
+    helper = _make_helper({"messages": None})
+    helper._dispatch_before_create_session_prune = AsyncMock()
+
+    await helper.reset_chat_history(42)
+
+    helper.db.get_mode_from_context.assert_not_called()
+    assert helper.conversations[42] == [{"role": "system", "content": ""}]
 
 
 @pytest.mark.asyncio
@@ -78,6 +114,55 @@ async def test_reset_chat_history_with_explicit_session_skips_both():
 
     helper._dispatch_before_create_session_prune.assert_not_awaited()
     helper.db.create_session.assert_not_called()
+    helper.db.create_session_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pre_prune_dispatch_uses_async_db_facade():
+    helper = object.__new__(OpenAIHelper)
+    helper.config = {'max_sessions': 5}
+    helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
+    helper.db = SimpleNamespace(
+        get_oldest_session_ids_for_limit=MagicMock(
+            side_effect=AssertionError("sync get_oldest_session_ids_for_limit must not be called")
+        ),
+        get_oldest_session_ids_for_limit_async=AsyncMock(return_value=["old-session"]),
+        get_conversation_context=MagicMock(
+            side_effect=AssertionError("sync get_conversation_context must not be called")
+        ),
+        get_conversation_context_async=AsyncMock(return_value=(
+            {"messages": [{"role": "user", "content": "old"}]},
+            "HTML",
+            0.1,
+            80,
+            "old-session",
+        )),
+    )
+
+    await helper._dispatch_before_create_session_prune(42)
+
+    helper.db.get_oldest_session_ids_for_limit.assert_not_called()
+    helper.db.get_oldest_session_ids_for_limit_async.assert_awaited_once_with(
+        42,
+        max_sessions=5,
+    )
+    helper.db.get_conversation_context.assert_not_called()
+    helper.db.get_conversation_context_async.assert_awaited_once_with(42, "old-session")
+    helper.plugin_manager.dispatch_blocking.assert_awaited_once()
+
+
+def _with_async_db_facade(db):
+    for method_name in (
+        "create_session",
+        "get_conversation_context",
+        "save_conversation_context",
+        "get_oldest_session_ids_for_limit",
+    ):
+        async def _call(*args, _method_name=method_name, **kwargs):
+            return getattr(db, _method_name)(*args, **kwargs)
+
+        setattr(db, f"{method_name}_async", AsyncMock(side_effect=_call))
+    return db
 
 
 @pytest.mark.asyncio
@@ -102,7 +187,7 @@ def _make_helper_stats(saved_context, session_id="s1"):
     helper.loaded_conversation_sessions = {}
     helper.config = {'max_sessions': 5, 'model': 'llmgateway/light_model'}
     helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
-    helper.db = SimpleNamespace(
+    helper.db = _with_async_db_facade(SimpleNamespace(
         create_session=MagicMock(return_value="session-new"),
         get_conversation_context=MagicMock(return_value=(
             saved_context, "HTML", 0.1, 80, session_id,
@@ -110,7 +195,7 @@ def _make_helper_stats(saved_context, session_id="s1"):
         get_mode_from_context=MagicMock(return_value={"role": "system", "content": "sys"}),
         save_conversation_context=MagicMock(),
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
-    )
+    ))
     helper._save_conversation_context = AsyncMock()
     helper._dispatch_before_create_session_prune = AsyncMock()
     return helper
@@ -163,7 +248,7 @@ def _make_helper_resolve():
         filter_allowed_plugins=MagicMock(side_effect=lambda x: x),
         disabled_plugins_for_user=MagicMock(return_value=set()),
     )
-    helper.db = SimpleNamespace(
+    helper.db = _with_async_db_facade(SimpleNamespace(
         create_session=MagicMock(return_value="session-new"),
         get_conversation_context=MagicMock(return_value=(
             {"messages": []}, "HTML", 0.1, 80, "session-new",
@@ -171,7 +256,7 @@ def _make_helper_resolve():
         get_mode_from_context=MagicMock(return_value={"role": "system", "content": "sys"}),
         save_conversation_context=MagicMock(),
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
-    )
+    ))
     helper._save_conversation_context = AsyncMock()
     helper._dispatch_before_create_session_prune = AsyncMock()
     helper._mode_from_system_message = MagicMock(return_value=None)
@@ -219,10 +304,9 @@ def _make_helper_ask():
     helper = object.__new__(OpenAIHelper)
     helper.conversations = {}
     helper.loaded_conversation_sessions = {}
-    helper.conversations_vision = {}
     helper.config = {'max_sessions': 5, 'light_model': 'test-model'}
     helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
-    helper.db = SimpleNamespace(
+    helper.db = _with_async_db_facade(SimpleNamespace(
         create_session=MagicMock(return_value="s1"),
         get_conversation_context=MagicMock(return_value=(
             {"messages": []}, "HTML", 0.1, 80, "s1",
@@ -230,7 +314,7 @@ def _make_helper_ask():
         get_mode_from_context=MagicMock(return_value={"role": "system", "content": "sys"}),
         save_conversation_context=MagicMock(),
         get_oldest_session_ids_for_limit=MagicMock(return_value=[]),
-    )
+    ))
     helper._save_conversation_context = AsyncMock()
     helper._dispatch_before_create_session_prune = AsyncMock()
 

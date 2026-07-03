@@ -90,6 +90,9 @@ class FakeDB:
     def list_user_sessions(self, user_id, is_active=1):
         return []
 
+    async def list_user_sessions_async(self, user_id, is_active=1):
+        return self.list_user_sessions(user_id, is_active=is_active)
+
 
 class FakeClient:
     def __init__(self):
@@ -124,10 +127,13 @@ class FakeHelper:
     def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
+    async def get_current_model_async(self, user_id, session_id=None):
+        return "gpt-test"
+
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)
 
-    def _add_function_call_to_history(self, chat_id, function_name, content):
+    def _add_function_call_to_history(self, chat_id, function_name, content, **_kwargs):
         self.history.append((chat_id, function_name, content))
 
     async def _apply_before_chat_request_mutators(self, **kwargs):

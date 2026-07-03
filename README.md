@@ -192,8 +192,8 @@ The repository also keeps a generated codebase map under
 - **LLMGateway-compatible API endpoint** (or any OpenAI-compatible endpoint —
   the bot still uses `OPENAI_API_KEY` / `OPENAI_BASE_URL` env names).
 - **`ffmpeg`** for audio / video processing.
-- **Java runtime** (only if the `show_me_diagrams` plugin is enabled — it
-  invokes `bot/plugins/plantuml.jar`).
+- **Java runtime + Graphviz `dot`** (only if the `show_me_diagrams` plugin is
+  enabled — it invokes the tracked `bot/plugins/plantuml.jar`).
 - A **local Telegram Bot API server** is recommended (the bot defaults to
   `TELEGRAM_LOCAL_MODE=true`, base URL `http://localhost:8081/bot`). To use
   Telegram's hosted API, set `TELEGRAM_LOCAL_MODE=false`.
@@ -218,6 +218,17 @@ Docker Compose is also available:
 ```bash
 docker compose up
 ```
+
+Compose reads `.env`, runs the bot as a non-root container user, and persists
+runtime state in named Docker volumes mounted at `/app/data`, `/app/output`,
+`/app/plots`, `/app/usage_logs`, `/app/log`, and `/app/uploads`; temporary media goes to tmpfs.
+The image healthcheck verifies the bot process and writable runtime paths. The
+Compose default `DB_PATH` is `/app/data/user_data.db`; `SKILLS_DIR` and
+`SKILLS_WORKDIR` are pinned under `/app/data` for container-local skill state.
+If you used the old full-repository bind mount, copy any existing
+`bot/user_data.db*` files into the new data volume before switching. If a local
+Telegram Bot API server is not reachable from inside the container, set
+`TELEGRAM_LOCAL_MODE=false` or point `TELEGRAM_BASE_URL` at a reachable host.
 
 The default `OPENAI_BASE_URL` is empty and must point at your gateway, e.g.
 `http://gateway.example/v1`.
@@ -262,6 +273,7 @@ by the runtime. **Bold** rows are required.
 | `LIGHT_MODEL` | `llmgateway/light_model` | csv strings | Fast model list for classification, routing, naming, intent detection. The first entry is used. |
 | `BIG_MODEL_TO_USE` | `llmgateway/big_context` | csv strings | Large-context model list (used for big history compactions and as a vision fallback). The first entry is used. |
 | `MAX_TOKENS` | model-dependent | int | Max output tokens per response. |
+| `MODEL_CONTEXT_WINDOWS` | `` | csv `model=tokens` | Optional context-window overrides, e.g. `custom/model=128000,large/model=1000000`. |
 | `MAX_HISTORY_SIZE` | `15` | int | Max chat-history messages kept in memory before summarisation. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Age window after which conversations are reset. |
 | `TEMPERATURE` | `1.0` | float | Sampling temperature. |
@@ -309,11 +321,16 @@ by the runtime. **Bold** rows are required.
 
 | Variable | Default | Type | Purpose |
 |---|---|---|---|
-| `MAX_SESSIONS` | `5` | int | Max named sessions per user. Older sessions are pruned via `delete_oldest_session()`. |
+| `MAX_SESSIONS` | `5` | int | Max named sessions per user. Older sessions are pruned inline when a new session is created. |
 | `BOT_LANGUAGE` | `en` | string | Bot UI language (`en`, `ru`, …). |
 | `AUTO_CHAT_MODES` | `false` | bool | Suggest a chat mode automatically based on the first user message. |
 | `SESSION_LOG_ENABLED` | `false` | bool | Write structured per-turn diagnostic events (turn/LLM/tool timings) to disk. Off by default. |
-| `SESSION_LOG_DIR` | `./log` | path | Base directory for session logs; one subdirectory per `user_id`, session events as JSONL plus a `summary.json`. |
+| `SESSION_LOG_DIR` | `./log` | path | Base directory for session logs; one subdirectory per `user_id`, session events as JSONL plus `<session_id>.summary.json`. |
+| `SESSION_LOG_MAX_BYTES` | `10485760` | int | Rotate a session JSONL file before appending when it would exceed this size. `0` disables rotation. |
+| `SESSION_LOG_RETENTION_DAYS` | `30` | int | Delete session JSONL/summary files older than this many days. `0` disables cleanup. |
+| `BOT_DATA_DIR` | `<repo>/data` | path | Runtime data root used by HTML/file delivery and code-interpreter data files. Relative values are resolved from the repository root. |
+| `BOT_OUTPUT_DIR` | `<repo>/output` | path | Runtime output root for generated HTML reports. Relative values are resolved from the repository root. |
+| `BOT_PLOTS_DIR` | `<BOT_OUTPUT_DIR>/plots` | path | Runtime plot/artifact root scanned by HTML report generation. Relative values are resolved from the repository root. |
 
 ### Budgets And Pricing
 
@@ -532,8 +549,8 @@ Session lifecycle:
 
 1. New sessions are created automatically on first prompt or via the session
    menu.
-2. When the limit is reached, `delete_oldest_session()` prunes the oldest one
-   before the new one is created.
+2. When the limit is reached, the oldest sessions are pruned inline before the
+   new one is created.
 3. Sessions can be renamed; long-running sessions are auto-named by the
    light model.
 4. Deleting a session triggers Hindsight auto-save (when configured) — the
@@ -670,7 +687,7 @@ standard conversation path.
 | `terminal` | `terminal` | Direct shell execution; pair with `skills.run_skill_script`. |
 | `codeinterpreter` | `deep_analysis` | Sandboxed Python with pandas / numpy / matplotlib / plotly. |
 | `github_analysis` | `analyze_github_code` | Reads and summarises GitHub repos with syntax highlighting. |
-| `show_me_diagrams` | `create_diagram` | PlantUML diagrams; requires Java + `bot/plugins/plantuml.jar`. |
+| `show_me_diagrams` | `create_diagram` | PlantUML diagrams; requires Java, Graphviz `dot`, and `bot/plugins/plantuml.jar`. |
 | `chief` | `get_recipe`, `plan_menu` | Edamam recipes / meal planning. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | VkusVill grocery integration. |
 | `dice` | `send_dice` | Animated Telegram dice. |

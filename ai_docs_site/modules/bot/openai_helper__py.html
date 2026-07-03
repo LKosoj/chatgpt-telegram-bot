@@ -469,7 +469,6 @@
 <p>Ключевые структуры данных</p>
 <p>OpenAIHelper — основной класс-обёртка для взаимодействия с LLM API, управления диалогами и плагинами.
 self.conversations — словарь {chat_id: [messages...]} хранения истории сообщений
-self.conversations_vision — словарь {chat_id: bool} флагов использования vision-режима
 self.loaded_conversation_sessions — словарь {chat_id: session_id} отслеживания загруженных сессий
 self.last_updated — словарь {chat_id: datetime} временных меток последней активности
 self._tts_models_cache — кэш кортеж (timestamp, [model_names]) доступных TTS-моделей

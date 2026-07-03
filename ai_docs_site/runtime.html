@@ -498,8 +498,8 @@ services:
 </tr>
 </tbody>
 </table>
-<p><strong>Dockerfile</strong> (базовый образ <code>python:3.9-alpine</code>):
-- Устанавливает <code>ffmpeg</code> для обработки медиа
+<p><strong>Dockerfile</strong> (базовый образ <code>python:3.12-slim</code>):
+- Устанавливает runtime-пакеты: <code>ffmpeg</code>, Java runtime и Graphviz
 - Отключает буферизацию и генерацию <code>.pyc</code> через переменные окружения
 - Точка входа: <code>python -m bot</code></p>
 <table>

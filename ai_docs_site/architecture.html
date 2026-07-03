@@ -797,8 +797,8 @@ flowchart TB
 <h2 id="_16">Развёртывание</h2>
 <h3 id="docker-">Docker-образ</h3>
 <ul>
-<li>База: <code>python:3.9-alpine</code></li>
-<li>Системный пакет: <code>ffmpeg</code> для обработки медиа</li>
+<li>База: <code>python:3.12-slim</code></li>
+<li>Системные пакеты: <code>ffmpeg</code>, <code>default-jre-headless</code>, <code>graphviz</code></li>
 <li>Точка входа: <code>python -m bot</code></li>
 <li>Переменные сборки: <code>PYTHONFAULTHANDLER=1</code>, <code>PYTHONUNBUFFERED=1</code>, <code>PYTHONDONTWRITEBYTECODE=1</code>, <code>PIP_DISABLE_PIP_VERSION_CHECK=on</code></li>
 </ul>

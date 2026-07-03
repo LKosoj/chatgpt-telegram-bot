@@ -8,6 +8,7 @@ This module exercises those paths end-to-end through ``Database`` + ``DbHandle``
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -52,7 +53,8 @@ def _job_rows(db):
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT id, user_id, session_id, status, attempts, saved_count, last_error '
+            'SELECT id, user_id, session_id, status, attempts, '
+            'saved_count, last_error, locked_at '
             'FROM hindsight_finalize_jobs ORDER BY id'
         )
         return [dict(row) for row in cursor.fetchall()]
@@ -61,7 +63,8 @@ def _job_rows(db):
 @pytest.mark.asyncio
 async def test_hook_inserts_job_then_worker_marks_done(db):
     plugin = _make_plugin(db)
-    plugin.finalize_session_memory = AsyncMock(return_value=2)
+    plugin._extract_session_memory_items = AsyncMock(return_value=[{"content": "a"}, {"content": "b"}])
+    plugin._retain_session_memory_items = AsyncMock(return_value=2)
 
     await plugin.on_session_before_delete(SessionBeforeDeletePayload(
         user_id=11, session_id="s-ok",
@@ -75,7 +78,18 @@ async def test_hook_inserts_job_then_worker_marks_done(db):
 
     await plugin._finalize_tick(application=None)
 
-    plugin.finalize_session_memory.assert_awaited_once()
+    plugin._extract_session_memory_items.assert_awaited_once_with(
+        11,
+        "s-ok",
+        [{"role": "user", "content": "hello"}],
+        raise_on_error=True,
+    )
+    plugin._retain_session_memory_items.assert_awaited_once_with(
+        11,
+        "s-ok",
+        [{"content": "a"}, {"content": "b"}],
+        async_store=False,
+    )
     rows = _job_rows(db)
     assert rows[0]["status"] == "done"
     assert rows[0]["saved_count"] == 2
@@ -85,7 +99,7 @@ async def test_hook_inserts_job_then_worker_marks_done(db):
 @pytest.mark.asyncio
 async def test_worker_marks_failed_when_finalize_raises(db):
     plugin = _make_plugin(db)
-    plugin.finalize_session_memory = AsyncMock(side_effect=RuntimeError("boom"))
+    plugin._extract_session_memory_items = AsyncMock(side_effect=RuntimeError("boom"))
 
     await plugin.on_session_before_delete(SessionBeforeDeletePayload(
         user_id=22, session_id="s-retry",
@@ -100,9 +114,50 @@ async def test_worker_marks_failed_when_finalize_raises(db):
 
 
 @pytest.mark.asyncio
+async def test_worker_retries_corrupt_payload_and_processes_valid_same_batch(db):
+    plugin = _make_plugin(db)
+    valid_messages = [{"role": "user", "content": "valid"}]
+    plugin._extract_session_memory_items = AsyncMock(return_value=[{"content": "valid"}])
+    plugin._retain_session_memory_items = AsyncMock(return_value=1)
+
+    with db.get_connection() as conn:
+        conn.execute(
+            'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
+            (55, "s-corrupt", "{not-json"),
+        )
+        conn.execute(
+            'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
+            (
+                55,
+                "s-valid",
+                json.dumps({"messages": valid_messages, "clear_generation": 0}),
+            ),
+        )
+
+    await plugin._finalize_tick(application=None)
+
+    plugin._extract_session_memory_items.assert_awaited_once_with(
+        55, "s-valid", valid_messages, raise_on_error=True,
+    )
+    plugin._retain_session_memory_items.assert_awaited_once_with(
+        55, "s-valid", [{"content": "valid"}], async_store=False,
+    )
+    rows = _job_rows(db)
+    assert rows[0]["session_id"] == "s-corrupt"
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["attempts"] == 1
+    assert rows[0]["locked_at"] is None
+    assert "Invalid finalize job payload" in (rows[0]["last_error"] or "")
+    assert rows[1]["session_id"] == "s-valid"
+    assert rows[1]["status"] == "done"
+    assert rows[1]["saved_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_worker_skips_claimed_job_after_memory_clear(db):
     plugin = _make_plugin(db)
-    plugin.finalize_session_memory = AsyncMock(return_value=1)
+    plugin._extract_session_memory_items = AsyncMock(return_value=[{"content": "old"}])
+    plugin._retain_session_memory_items = AsyncMock(return_value=1)
 
     await plugin.on_session_before_delete(SessionBeforeDeletePayload(
         user_id=44, session_id="s-stale",
@@ -120,7 +175,8 @@ async def test_worker_skips_claimed_job_after_memory_clear(db):
 
     await plugin._finalize_tick(application=None)
 
-    plugin.finalize_session_memory.assert_not_awaited()
+    plugin._extract_session_memory_items.assert_not_awaited()
+    plugin._retain_session_memory_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -134,7 +190,7 @@ async def test_worker_status_becomes_failed_after_max_attempts(db, monkeypatch):
         "bot.plugins.hindsight_memory.HINDSIGHT_FINALIZE_JOB_RETRY_SECONDS", 0,
     )
     plugin = _make_plugin(db)
-    plugin.finalize_session_memory = AsyncMock(side_effect=RuntimeError("boom"))
+    plugin._extract_session_memory_items = AsyncMock(side_effect=RuntimeError("boom"))
 
     await plugin.on_session_before_delete(SessionBeforeDeletePayload(
         user_id=33, session_id="s-fail",

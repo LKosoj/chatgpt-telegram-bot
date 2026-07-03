@@ -521,7 +521,7 @@
 │   ├── validation.py             # JSON Schema валидация конфигурации и аргументов функций
 │   ├── usage_tracker.py          # Учёт токенов, изображений, TTS, бюджетов пользователей
 │   ├── i18n.py                   # Локализация: нормализация кодов, ContextVar для текущего языка
-│   ├── html_visualizer.py        # HTML-визуализации с Mermaid, PlantUML, библиографией
+│   ├── html_utils.py             # HTML-визуализации с Mermaid, PlantUML, библиографией
 │   ├── conversation_key.py       # Выбор ключа разговора: chat_id для групп, user_id для личных чатов
 │   ├── utils.py                  # Вспомогательные функции Telegram, разбиение Markdown, индикаторы прогресса
 │   ├── plugins/                  # ~43 встроенных плагина
@@ -607,7 +607,7 @@
 │   ├── mcp_server_stdio.py       # Пример stdio-сервера (FastMCP, математика)
 │   └── mcp_server_http.py        # Пример HTTP-сервера (FastAPI, погода/валюты)
 ├── bot/user_data.db              # SQLite рантайм-состояния (в .gitignore)
-├── Dockerfile                    # Python 3.9 Alpine, FFmpeg, python -m bot
+├── Dockerfile                    # Python 3.12 slim, FFmpeg, Java, Graphviz, python -m bot
 ├── docker-compose.yml            # Сервис chatgpt-telegram-bot, volume /app для dev
 ├── requirements.txt              # Зависимости Python (~=, &gt;=, ==)
 ├── environment.yml               # Конфигурация Conda (conda + pip)
@@ -821,10 +821,10 @@ python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> <
 <h2 id="docker-">Docker-развёртывание</h2>
 <h3 id="dockerfile">Dockerfile</h3>
 <ul>
-<li>База: <code>python:3.9-alpine</code></li>
-<li>Системный пакет: <code>ffmpeg</code> (медиа-обработка)</li>
+<li>База: <code>python:3.12-slim</code></li>
+<li>Системные пакеты: <code>ffmpeg</code>, <code>default-jre-headless</code>, <code>graphviz</code></li>
 <li>Точка входа: <code>python -m bot</code></li>
-<li>Оптимизации: <code>--no-cache</code> для <code>apk</code>, <code>--no-cache-dir</code> для <code>pip</code></li>
+<li>Оптимизации: <code>--no-install-recommends</code> для <code>apt-get</code>, <code>--no-cache-dir</code> для <code>pip</code>, purge build-пакетов и очистка <code>/var/lib/apt/lists</code></li>
 </ul>
 <h3 id="docker-composeyml">docker-compose.yml</h3>
 <div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>

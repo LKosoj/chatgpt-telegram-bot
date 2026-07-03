@@ -3,38 +3,13 @@ import json
 import pytest
 
 pytest.importorskip("mcp")
-import tempfile
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
 import httpx
 
 # Импортируем класс плагина
 from bot.plugins.mcp_server import MCPServerPlugin
 from bot.i18n import localized_text
-
-
-@pytest.fixture
-def mcp_plugin():
-    """Фикстура для создания экземпляра плагина"""
-    with patch('bot.plugins.mcp_server.MCPServerPlugin._get_config_path') as mock_config_path:
-        # Создаем временный файл для конфигурации
-        temp_config = tempfile.NamedTemporaryFile(delete=False)
-        temp_config.close()
-        
-        # Мокаем путь к файлу конфигурации
-        mock_config_path.return_value = Path(temp_config.name)
-        
-        # Создаем экземпляр плагина
-        plugin = MCPServerPlugin()
-        plugin.openai = MagicMock(config={"bot_language": "ru"})
-        
-        # Возвращаем экземпляр и имя временного файла
-        yield plugin
-        
-        # Удаляем временный файл
-        if os.path.exists(temp_config.name):
-            os.unlink(temp_config.name)
 
 
 @pytest.fixture
@@ -47,6 +22,47 @@ def mock_env_vars():
         'DEFAULT_MCP_SERVERS': 'test:http://test.com'
     }):
         yield
+
+
+@pytest.fixture
+def mcp_plugin(tmp_path, mock_env_vars):
+    """Фикстура для создания экземпляра плагина"""
+    plugin = MCPServerPlugin()
+    plugin.initialize(openai=MagicMock(config={"bot_language": "ru"}), storage_root=str(tmp_path))
+    yield plugin
+
+
+def test_constructor_has_no_config_path_side_effects(tmp_path, monkeypatch):
+    config_path = tmp_path / "mcp_servers.json"
+    monkeypatch.setenv("MCP_SERVERS_CONFIG_PATH", str(config_path))
+
+    with patch.object(MCPServerPlugin, "load_servers_config") as load:
+        plugin = MCPServerPlugin()
+
+    load.assert_not_called()
+    assert plugin.config_path is None
+    assert not config_path.exists()
+
+
+def test_initialize_loads_storage_config(tmp_path, mock_env_vars):
+    config = tmp_path / "mcp_servers.json"
+    config.write_text(json.dumps({"stored": {"base_url": "http://stored", "tools": []}}), encoding="utf-8")
+
+    plugin = MCPServerPlugin()
+    plugin.initialize(openai=MagicMock(config={"bot_language": "ru"}), storage_root=str(tmp_path))
+
+    assert plugin.config_path == config
+    assert plugin.servers["stored"]["base_url"] == "http://stored"
+
+
+def test_corrupt_config_preserves_existing_servers(tmp_path, mock_env_vars):
+    config = tmp_path / "mcp_servers.json"
+    config.write_text("{not-json", encoding="utf-8")
+    plugin = MCPServerPlugin()
+    plugin.servers = {"live": {"base_url": "http://live", "tools": []}}
+    plugin.initialize(openai=MagicMock(config={"bot_language": "ru"}), storage_root=str(tmp_path))
+
+    assert plugin.servers == {"live": {"base_url": "http://live", "tools": []}}
 
 
 @pytest.mark.asyncio

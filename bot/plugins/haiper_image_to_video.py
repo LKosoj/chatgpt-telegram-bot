@@ -228,6 +228,12 @@ class HaiperImageToVideoPlugin(Plugin):
             for style_id in self.STYLE_IDS
         ]
 
+    async def _get_user_images(self, user_id, chat_id, limit):
+        get_user_images_async = getattr(self.openai.db, "get_user_images_async", None)
+        if get_user_images_async:
+            return await get_user_images_async(user_id, chat_id, limit=limit)
+        return self.openai.db.get_user_images(user_id, chat_id, limit=limit)
+
     def _get_effect_definitions(self):
         return [
             (effect_id, self.t(f"haiper_effect_{effect_id}_name"), self.t(f"haiper_effect_{effect_id}_desc"))
@@ -627,7 +633,7 @@ class HaiperImageToVideoPlugin(Plugin):
 
             # Если это не ответ на фото, продолжаем стандартную логику
             # Получаем последние изображения пользователя (максимум 1)
-            user_images = self.openai.db.get_user_images(user_id, chat_id, limit=1)
+            user_images = await self._get_user_images(user_id, chat_id, limit=1)
             if not user_images:
                 await message.reply_text(self.t("haiper_send_image_first"))
                 return
@@ -814,7 +820,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 # Если нет команды, показываем кнопку для анимации
                 file_id = message.photo[-1].file_id
                 # Получаем хеш из БД
-                user_images = self.openai.db.get_user_images(
+                user_images = await self._get_user_images(
                     message.from_user.id,
                     str(message.chat.id),
                     limit=1
@@ -1092,7 +1098,7 @@ class HaiperImageToVideoPlugin(Plugin):
             return
             
         # Получаем последнее изображение
-        user_images = self.openai.db.get_user_images(
+        user_images = await self._get_user_images(
             user_id,
             str(query.message.chat.id),
             limit=1
@@ -1154,7 +1160,7 @@ class HaiperImageToVideoPlugin(Plugin):
             file_id_hash = parts[1]
             
             # Получаем file_id из БД по хешу
-            user_images = self.openai.db.get_user_images(
+            user_images = await self._get_user_images(
                 query.from_user.id,
                 str(query.message.chat.id),
                 limit=5
@@ -1262,7 +1268,7 @@ class HaiperImageToVideoPlugin(Plugin):
             self.bot = openai.bot
             
             # Проверяем наличие изображений
-            user_images = self.openai.db.get_user_images(user_id, chat_id, limit=1)
+            user_images = await self._get_user_images(user_id, chat_id, limit=1)
             if not user_images:
                 logger.warning(f"Изображения не найдены для пользователя {user_id}")
                 await message.reply_text(

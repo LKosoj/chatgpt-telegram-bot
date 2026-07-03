@@ -33,6 +33,9 @@ class DummyDB:
             "max_tokens_percent": 50,
         }]
 
+    async def list_user_sessions_async(self, user_id, is_active=1):
+        return self.list_user_sessions(user_id, is_active=is_active)
+
     def get_conversation_context(self, *args, **kwargs):
         return (
             self.context,
@@ -42,9 +45,15 @@ class DummyDB:
             "session-1",
         )
 
+    async def get_conversation_context_async(self, *args, **kwargs):
+        return self.get_conversation_context(*args, **kwargs)
+
     def save_conversation_context(self, user_id, context, parse_mode, temperature, max_tokens_percent, session_id=None, openai_helper=None):
         self.context = context
         self.saved.append(context)
+
+    async def save_conversation_context_async(self, *args, **kwargs):
+        return self.save_conversation_context(*args, **kwargs)
 
 
 class DummyPluginManager:

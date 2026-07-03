@@ -186,10 +186,8 @@ bot, openai helper) no longer launches plugin-specific workers.
   fresh-install, v1→v2, and legacy (no-`session_id`) paths.
 - `save_conversation_context()` persists `message_count` as the number of user-role messages
   (`bot/database.py:547`, `bot/database.py:563`).
-- Session creation prunes old sessions inline via `_oldest_session_ids_for_limit()`
-  (`bot/database.py:963`, `bot/database.py:1011`). Note: `delete_oldest_session()` at
-  `bot/database.py:921` is a dead method with no callers in working code; the pruning is
-  done inline inside `create_session`.
+- Session creation prunes old sessions inline via `_oldest_session_ids_for_limit()`;
+  there is no separate oldest-session deletion API.
 - Keep long-running OpenAI calls outside active DB transactions. Async session-name
   generation is handled by `OpenAIHelper._ensure_session_name_with_llm()` after the DB write
   (`bot/openai_helper.py:529`); `Database.ensure_session_name_async()` at

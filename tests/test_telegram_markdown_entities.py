@@ -91,6 +91,33 @@ def test_split_into_chunks_long_emoji_line_splits():
         assert _utf16_len(chunk) <= 4096
 
 
+def test_split_into_chunks_preserves_fenced_code_blocks():
+    code = "\n".join(f"print({index})" for index in range(30))
+    text = f"before\n```python\n{code}\n```\nafter"
+
+    chunks = split_into_chunks(text, chunk_size=120)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert _utf16_len(chunk) <= 120
+        assert chunk.count("```") % 2 == 0, chunk
+        assert all(line.strip() not in {"`", "``"} for line in chunk.splitlines())
+
+
+def test_split_into_chunks_does_not_promote_inline_triple_backticks_to_fence():
+    text = "intro has inline ```ticks``` here\n" + "\n".join(
+        f"plain line {index}" for index in range(30)
+    )
+
+    chunks = split_into_chunks(text, chunk_size=120)
+
+    assert len(chunks) > 1
+    assert sum(chunk.count("```") for chunk in chunks) == text.count("```")
+    for chunk in chunks:
+        assert _utf16_len(chunk) <= 120
+        assert all(line.strip() != "```" for line in chunk.splitlines())
+
+
 # --- escape_markdown tests ---
 
 def test_escape_markdown_paired_backtick_preserves_code():

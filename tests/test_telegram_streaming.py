@@ -162,6 +162,12 @@ class FakeOpenAI:
     def get_current_model(self, user_id, session_id=None):
         return "gpt-test"
 
+    async def get_current_model_async(self, user_id, session_id=None):
+        return "gpt-test"
+
+    async def should_force_non_stream_first_turn_async(self, chat_id, user_id=None):
+        return False
+
     def get_chat_response_stream(self, **kwargs):
         self.stream_requests.append(kwargs)
 
@@ -257,23 +263,51 @@ class FakeDB:
         self.user_settings = {}
         self.saved_images = []
         self.cleanup_calls = 0
+        self.active_session_id = "session-1"
 
-    def get_conversation_context(self, chat_id):
+    def get_conversation_context(self, chat_id, *args, **kwargs):
         self.calls.append(chat_id)
         return self.conversation_context
+
+    async def get_conversation_context_async(self, chat_id, *args, **kwargs):
+        return self.get_conversation_context(chat_id, *args, **kwargs)
 
     def get_user_settings(self, user_id):
         return self.user_settings.get(user_id)
 
+    async def get_user_settings_async(self, user_id):
+        return self.get_user_settings(user_id)
+
     def get_user_images(self, user_id, chat_id=None, limit=1):
         return []
+
+    async def get_user_images_async(self, user_id, chat_id=None, limit=1):
+        return self.get_user_images(user_id, chat_id=chat_id, limit=limit)
 
     def cleanup_old_images(self):
         self.cleanup_calls += 1
 
+    async def cleanup_old_images_async(self):
+        return self.cleanup_old_images()
+
     def save_image(self, user_id, chat_id, file_id, file_path=None, status='active'):
         self.saved_images.append((user_id, chat_id, file_id, file_path, status))
         return len(self.saved_images)
+
+    async def save_image_async(self, user_id, chat_id, file_id, file_path=None, status='active'):
+        return self.save_image(user_id, chat_id, file_id, file_path=file_path, status=status)
+
+    def get_active_session_id(self, chat_id):
+        return self.active_session_id
+
+    async def get_active_session_id_async(self, chat_id):
+        return self.get_active_session_id(chat_id)
+
+    def list_user_sessions(self, user_id, is_active=1):
+        return []
+
+    async def list_user_sessions_async(self, user_id, is_active=1):
+        return self.list_user_sessions(user_id, is_active=is_active)
 
 
 class FakeRagPlugin:
@@ -461,11 +495,41 @@ async def test_process_message_routes_to_rag_when_enabled(monkeypatch):
         "chat_id": message.chat_id,
         "user_text": "What is in the docs?",
         "assistant_text": "RAG answer",
-        "session_id": None,
+        "session_id": "session-1",
     }]
     observed_events = [name for name, _payload, _uid in bot.openai.plugin_manager.observer_events]
     assert "on_user_message" in observed_events
     assert "on_assistant_response" in observed_events
+
+
+@pytest.mark.asyncio
+async def test_plugin_exchange_mirror_failure_logs_shape_only(monkeypatch, caplog):
+    async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", immediate_indicator)
+    rag_plugin = FakeRagPlugin()
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+        text_document_qa=rag_plugin,
+    )
+
+    async def fail_record_plugin_exchange(**_kwargs):
+        raise RuntimeError("secret plugin mirror prompt text")
+
+    bot.openai.record_plugin_exchange = fail_record_plugin_exchange
+    message = FakeMessage()
+    update = FakeUpdate(message)
+
+    with caplog.at_level(logging.WARNING, logger="bot.telegram_bot"):
+        await bot.process_message("secret user plugin prompt", update, _make_context())
+
+    assert message.reply_text_calls[0]["text"] == "RAG answer"
+    assert "Failed to mirror plugin 'text_document_qa' exchange" in caplog.text
+    assert "RuntimeError(message_chars=" in caplog.text
+    assert "secret plugin mirror prompt text" not in caplog.text
+    assert "secret user plugin prompt" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -702,7 +766,7 @@ async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {"bot_language": "en"}
     bot.openai = SimpleNamespace(plugin_manager=FakePluginManager(agent_tools))
-    bot._remember_sent_image_messages = Mock()
+    bot._remember_sent_image_messages = AsyncMock()
     bot._run_post_delivery_cleanup = AsyncMock()
     sent_messages = [SimpleNamespace(message_id=200)]
     monkeypatch.setattr(
@@ -726,7 +790,7 @@ async def test_handle_direct_result_keeps_plan_after_delivery_contract_error(mon
     bot.config = {"bot_language": "en"}
     plugin_manager = FakePluginManager(agent_tools)
     bot.openai = SimpleNamespace(plugin_manager=plugin_manager)
-    bot._remember_sent_image_messages = Mock()
+    bot._remember_sent_image_messages = AsyncMock()
     bot._run_post_delivery_cleanup = AsyncMock()
     sent_messages = [SimpleNamespace(message_id=200)]
     monkeypatch.setattr(
@@ -749,6 +813,76 @@ async def test_handle_direct_result_keeps_plan_after_delivery_contract_error(mon
 
     assert agent_tools.clear_calls == []
     assert plugin_manager.observer_events == []
+
+
+@pytest.mark.asyncio
+async def test_run_post_delivery_cleanup_runs_single_and_many_directives():
+    sync_plugin = SimpleNamespace(cleanup_after_delivery=Mock(return_value=True))
+    async_plugin = SimpleNamespace(cleanup_after_delivery=AsyncMock(return_value=True))
+    plugin_manager = SimpleNamespace(
+        get_plugin=lambda plugin_id: {
+            "sync": sync_plugin,
+            "async": async_plugin,
+        }.get(plugin_id)
+    )
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.openai = SimpleNamespace(plugin_manager=plugin_manager)
+    single = {"plugin_id": "sync", "scope": "chat:1", "skill_id": "draft"}
+    async_directive = {"plugin_id": "async", "scope": "chat:1", "skill_id": "pptx"}
+
+    await bot._run_post_delivery_cleanup({
+        "direct_result": {
+            "kind": "final",
+            "cleanup_skill": single,
+            "cleanup_skills": [
+                async_directive,
+                "not-a-directive",
+                {"scope": "missing-plugin-id"},
+                {"plugin_id": "missing", "scope": "chat:1"},
+            ],
+        }
+    })
+
+    sync_plugin.cleanup_after_delivery.assert_called_once_with(single)
+    async_plugin.cleanup_after_delivery.assert_awaited_once_with(async_directive)
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_runs_post_delivery_cleanup_after_success(monkeypatch):
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot.config = {"bot_language": "en"}
+    bot.openai = SimpleNamespace(plugin_manager=FakePluginManager(FakeAgentTools()))
+    bot._remember_sent_image_messages = AsyncMock()
+    events = []
+    sent_messages = [SimpleNamespace(message_id=200)]
+    response = {
+        "direct_result": {
+            "kind": "final",
+            "format": "mixed",
+            "text": "ok",
+            "cleanup_skill": {"plugin_id": "skills", "scope": "chat:1", "skill_id": "draft"},
+        }
+    }
+
+    async def deliver(*args, **kwargs):
+        events.append("deliver")
+        return sent_messages
+
+    async def cleanup(delivered_response):
+        events.append("cleanup")
+        assert delivered_response is response
+
+    bot._run_post_delivery_cleanup = AsyncMock(side_effect=cleanup)
+    monkeypatch.setattr(
+        telegram_bot,
+        "handle_direct_result",
+        AsyncMock(side_effect=deliver),
+    )
+
+    await bot._handle_direct_result(FakeUpdate(FakeMessage()), response)
+
+    assert events == ["deliver", "cleanup"]
+    bot._run_post_delivery_cleanup.assert_awaited_once_with(response)
 
 
 def test_direct_result_observer_text_does_not_use_non_text_value():
@@ -1093,6 +1227,7 @@ async def test_direct_vision_upload_uses_pinned_session(monkeypatch, tmp_path):
     bot.config["stream"] = False
     bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
     bot.db.get_active_session_id = Mock(return_value="session-1")
+    bot.db.get_active_session_id_async = AsyncMock(side_effect=bot.db.get_active_session_id)
     bot.openai = FakeVisionOpenAI()
     bot.openai.plugin_manager.set_db(bot.db)
     bot.application = SimpleNamespace(
@@ -1182,6 +1317,7 @@ async def test_media_group_images_are_processed_as_one_vision_request(monkeypatc
     bot.media_group_timeout = 0.01
     bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
     bot.db.get_active_session_id = Mock(return_value="session-1")
+    bot.db.get_active_session_id_async = AsyncMock(side_effect=bot.db.get_active_session_id)
     bot.openai = FakeVisionOpenAI()
     bot.openai.plugin_manager.set_db(bot.db)
     bot.application = SimpleNamespace(
@@ -1203,7 +1339,8 @@ async def test_media_group_images_are_processed_as_one_vision_request(monkeypatc
 
     await bot.vision(FakeUpdate(first), _make_context())
     await bot.vision(FakeUpdate(second), _make_context())
-    await asyncio.sleep(0.05)
+    timer = bot.media_group_buffer[(1234, "album-1")]["timer"]
+    await asyncio.wait_for(timer, timeout=1)
 
     assert bot.db.saved_images[0][2] == "image-1"
     assert bot.db.saved_images[1][2] == "image-2"
@@ -1291,4 +1428,6 @@ async def test_streaming_reply_text_failure_is_logged_and_does_not_retry_each_ch
     assert 1 <= len(message.reply_text_calls) <= 2
     assert len(message.reply_text_calls) < 3
     assert not edit_message.await_args_list
-    assert any(record.exc_info for record in caplog.records)
+    assert "Failed to send initial streaming message" in caplog.text
+    assert "RuntimeError(message_chars=20)" in caplog.text
+    assert "telegram send failed" not in caplog.text

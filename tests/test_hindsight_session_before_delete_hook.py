@@ -1,11 +1,7 @@
-"""Tests for HindsightMemoryPlugin.on_session_before_delete hook subscription.
-
-Stage 4C-3+5: plugin owns the enqueue logic and writes via DbHandle.execute.
-"""
+"""Tests for HindsightMemoryPlugin.on_session_before_delete hook subscription."""
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -30,22 +26,20 @@ def _make_plugin(*, enabled: bool = True, auto_save: bool = True):
 @pytest.mark.asyncio
 async def test_on_session_before_delete_inserts_finalize_job():
     plugin = _make_plugin()
-    plugin.db_handle = AsyncMock()
-    plugin.db_handle.execute = AsyncMock()
+    plugin.db_handle = object()
+    plugin._db_run_sync = AsyncMock(return_value=True)
 
     messages = ({"role": "user", "content": "remember"}, {"role": "assistant", "content": "ok"})
     payload = SessionBeforeDeletePayload(user_id=42, session_id="s-1", messages=messages)
 
     await plugin.on_session_before_delete(payload)
 
-    plugin.db_handle.execute.assert_awaited_once()
-    sql, params = plugin.db_handle.execute.await_args.args
-    assert "INSERT INTO hindsight_finalize_jobs" in sql
-    assert params[0] == 42
-    assert params[1] == "s-1"
-    decoded = json.loads(params[2])
-    assert decoded["messages"] == [dict(m) for m in messages]
-    assert decoded["clear_generation"] == 0
+    plugin._db_run_sync.assert_awaited_once_with(
+        plugin._enqueue_finalize_job_sync,
+        42,
+        "s-1",
+        [dict(m) for m in messages],
+    )
 
 
 @pytest.mark.asyncio

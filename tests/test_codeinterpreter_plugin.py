@@ -51,6 +51,9 @@ def _plugin(tmp_path):
     plugin = object.__new__(CodeInterpreterPlugin)
     plugin.timeout_seconds = 20
     plugin.python_alias_dir = str(tmp_path / "bin")
+    plugin.data_dir = tmp_path / "data"
+    plugin.output_dir = tmp_path / "output"
+    plugin.plots_dir = tmp_path / "output" / "plots"
     plugin.data = None
     return plugin
 
@@ -182,11 +185,26 @@ async def test_deep_analysis_direct_file_result_also_includes_text_result(tmp_pa
 
 def test_advanced_visualization_generates_mobile_responsive_shell(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    cwd = tmp_path / "cwd"
+    output_dir = tmp_path / "runtime-output"
+    data_dir = tmp_path / "runtime-data"
+    plots_dir = tmp_path / "runtime-plots"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("BOT_OUTPUT_DIR", str(output_dir))
+    monkeypatch.setenv("BOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("BOT_PLOTS_DIR", str(plots_dir))
+    plugin.output_dir = output_dir
+    plugin.data_dir = data_dir
+    plugin.plots_dir = plots_dir
 
     plugin.advanced_visualization("stdout with a very_long_unbroken_result_value", "mobiletest")
 
-    html = Path("output/interactive_plots_mobiletest.html").read_text(encoding="utf-8")
+    html_path = output_dir / "interactive_plots_mobiletest.html"
+    assert html_path.exists()
+    assert not (cwd / "output").exists()
+    assert not (cwd / "data").exists()
+    html = html_path.read_text(encoding="utf-8")
     soup = BeautifulSoup(html, "html.parser")
     viewport = soup.find("meta", attrs={"name": "viewport"})
 

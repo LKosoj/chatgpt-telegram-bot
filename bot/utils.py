@@ -20,6 +20,132 @@ from .i18n import localized_text
 
 from .usage_tracker import UsageTracker
 from .html_utils import HTMLVisualizer
+from .tool_result import direct_result_payload
+
+_GROUP_MEMBERSHIP_CACHE: dict[tuple[int, str], tuple[float, bool]] = {}
+_GROUP_MEMBERSHIP_CACHE_TTL_SECONDS = 60.0
+_LOG_SHAPE_REDACTED_KEYS = frozenset({
+    "add_value",
+    "arguments",
+    "artifact_path",
+    "caption",
+    "content",
+    "data",
+    "file_id",
+    "file_path",
+    "image_url",
+    "input",
+    "local_path",
+    "messages",
+    "output_path",
+    "path",
+    "payload",
+    "prompt",
+    "query",
+    "response",
+    "text",
+    "transcript",
+    "url",
+    "value",
+})
+_LOG_SHAPE_MAX_ITEMS = 8
+
+
+def _log_shape_key(key) -> str:
+    return str(key).lower()
+
+
+def _redacted_log_shape(value):
+    if isinstance(value, str):
+        return f"<redacted str chars={len(value)}>"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<redacted bytes bytes={len(value)}>"
+    if isinstance(value, dict):
+        return f"<redacted dict keys={len(value)}>"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return f"<redacted {type(value).__name__} items={len(value)}>"
+    if value is None:
+        return None
+    return f"<redacted {type(value).__name__}>"
+
+
+def _message_log_shape(messages):
+    roles = []
+    for message in messages:
+        if isinstance(message, dict):
+            role = message.get("role")
+            roles.append(str(role) if role is not None else "unknown")
+        else:
+            roles.append(type(message).__name__)
+    return {
+        "type": "messages",
+        "count": len(messages),
+        "roles": roles[:_LOG_SHAPE_MAX_ITEMS],
+        "truncated": len(roles) > _LOG_SHAPE_MAX_ITEMS,
+    }
+
+
+def log_value_shape(value, *, key=None, max_depth: int = 3):
+    key_name = _log_shape_key(key) if key is not None else ""
+    if key_name == "messages" and isinstance(value, list):
+        return _message_log_shape(value)
+    if key_name in _LOG_SHAPE_REDACTED_KEYS:
+        return _redacted_log_shape(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return f"<str chars={len(value)}>"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<bytes bytes={len(value)}>"
+    if max_depth <= 0:
+        if isinstance(value, dict):
+            return f"<dict keys={len(value)}>"
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return f"<{type(value).__name__} items={len(value)}>"
+        return f"<{type(value).__name__}>"
+    if isinstance(value, dict):
+        items = {}
+        for index, (item_key, item_value) in enumerate(value.items()):
+            if index >= _LOG_SHAPE_MAX_ITEMS:
+                break
+            item_key_str = str(item_key)
+            items[item_key_str] = log_value_shape(
+                item_value,
+                key=item_key_str,
+                max_depth=max_depth - 1,
+            )
+        return {
+            "type": "dict",
+            "keys": len(value),
+            "items": items,
+            "truncated": len(value) > _LOG_SHAPE_MAX_ITEMS,
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        sequence = list(value)
+        return {
+            "type": type(value).__name__,
+            "items": len(sequence),
+            "sample": [
+                log_value_shape(item, max_depth=max_depth - 1)
+                for item in sequence[:_LOG_SHAPE_MAX_ITEMS]
+            ],
+            "truncated": len(sequence) > _LOG_SHAPE_MAX_ITEMS,
+        }
+    return f"<{type(value).__name__}>"
+
+
+def log_json_shape(value, *, max_depth: int = 3) -> str:
+    return json.dumps(
+        log_value_shape(value, max_depth=max_depth),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def log_exception_shape(exc: BaseException) -> str:
+    message = str(exc)
+    return f"{type(exc).__name__}(message_chars={len(message)})"
+
 
 def message_text(message: Message) -> str:
     """
@@ -47,10 +173,27 @@ async def is_user_in_group(update: Update, context: CallbackContext, user_id: in
             chat = getattr(update.message, "chat", None)
         if chat is None:
             return False
+        now = time.monotonic()
+        cache_key = (chat.id, str(user_id))
+        cached = _GROUP_MEMBERSHIP_CACHE.get(cache_key)
+        if cached is not None:
+            expires_at, allowed = cached
+            if expires_at > now:
+                return allowed
         chat_member = await context.bot.get_chat_member(chat.id, user_id)
-        return chat_member.status in [ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER]
+        allowed = chat_member.status in [ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER]
+        _GROUP_MEMBERSHIP_CACHE[cache_key] = (
+            now + _GROUP_MEMBERSHIP_CACHE_TTL_SECONDS,
+            allowed,
+        )
+        return allowed
     except telegram.error.BadRequest as e:
         if str(e) == "User not found":
+            if 'cache_key' in locals():
+                _GROUP_MEMBERSHIP_CACHE[cache_key] = (
+                    time.monotonic() + _GROUP_MEMBERSHIP_CACHE_TTL_SECONDS,
+                    False,
+                )
             return False
         else:
             raise e
@@ -64,6 +207,11 @@ def get_thread_id(update: Update) -> int | None:
     if update.effective_message and update.effective_message.is_topic_message:
         return update.effective_message.message_thread_id
     return None
+
+
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, 'rb') as f:
+        return f.read()
 
 _PLAN_STATUS_ICONS = {
     "pending": "⏳",
@@ -128,7 +276,7 @@ class BusyStatusMessage:
             try:
                 await self.message.delete()
             except Exception as e:
-                logging.warning(f"Failed to delete busy status message: {e}")
+                logging.warning("Failed to delete busy status message error=%s", log_exception_shape(e))
             finally:
                 self.message = None
 
@@ -158,7 +306,7 @@ class BusyStatusMessage:
             )
             return True
         except Exception as e:
-            logging.warning(f"Failed to send busy status message: {e}")
+            logging.warning("Failed to send busy status message error=%s", log_exception_shape(e))
             return False
 
     async def _edit(self):
@@ -172,9 +320,9 @@ class BusyStatusMessage:
             if str(e).startswith("Message is not modified"):
                 self._last_text = text
                 return
-            logging.warning(f"Failed to edit busy status message: {e}")
+            logging.warning("Failed to edit busy status message error=%s", log_exception_shape(e))
         except Exception as e:
-            logging.warning(f"Failed to edit busy status message: {e}")
+            logging.warning("Failed to edit busy status message error=%s", log_exception_shape(e))
 
     def _text(self) -> str:
         elapsed_seconds = max(0, int(time.monotonic() - self._started_at))
@@ -193,8 +341,8 @@ class BusyStatusMessage:
             return []
         try:
             tasks = provider() or []
-        except Exception:
-            logging.debug("plan_provider raised", exc_info=True)
+        except Exception as exc:
+            logging.debug("plan_provider raised error=%s", log_exception_shape(exc))
             return []
         lines: list[str] = []
         for task in tasks:
@@ -279,27 +427,89 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     current_len = 0
     markdown_stack = []  # Стек для отслеживания открытых Markdown-элементов
 
+    def close_markdown_markers(chunk: str) -> str:
+        for md in reversed(markdown_stack):
+            if md == '```':
+                if chunk and not chunk.endswith('\n'):
+                    chunk += '\n'
+                chunk += md
+            elif not chunk.endswith(md):
+                chunk += md
+        return chunk
+
+    def opening_markdown_prefix() -> str:
+        prefix = ""
+        for md in markdown_stack:
+            if md == '```':
+                if prefix and not prefix.endswith('\n'):
+                    prefix += '\n'
+                prefix += md
+            else:
+                prefix += md
+        return prefix
+
+    def update_markdown_stack(line: str) -> None:
+        stripped = line.lstrip()
+        if stripped.startswith('```'):
+            if '```' in markdown_stack:
+                for index in range(len(markdown_stack) - 1, -1, -1):
+                    if markdown_stack[index] == '```':
+                        markdown_stack.pop(index)
+                        break
+            else:
+                markdown_stack.append('```')
+            return
+
+        if '```' in markdown_stack:
+            return
+
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if char not in ['*', '_', '`']:
+                index += 1
+                continue
+
+            if char == '`':
+                run_end = index
+                while run_end < len(line) and line[run_end] == '`':
+                    run_end += 1
+                run_length = run_end - index
+                if run_length >= 3:
+                    index = run_end
+                    continue
+                marker = char * run_length
+                index = run_end
+            elif index + 1 < len(line) and line[index + 1] == char:
+                marker = char * 2
+                index += 2
+            else:
+                marker = char
+                index += 1
+
+            if markdown_stack and markdown_stack[-1] == marker:
+                markdown_stack.pop()
+            else:
+                markdown_stack.append(marker)
+
     # Используем предварительно обработанные строки
     for line in processed_lines:
         line_len = _utf16_len(line)
         separator_len = 1 if current_chunk else 0  # '\n'
-        closing_overhead = sum(_utf16_len(md) for md in markdown_stack)
+        closing_overhead = (
+            _utf16_len(close_markdown_markers(current_chunk)) - _utf16_len(current_chunk)
+        )
 
         # Если текущая строка с переносом превысит размер чанка
         if current_len + separator_len + line_len + closing_overhead > chunk_size:
             # Закрываем все открытые Markdown-элементы
-            for md in reversed(markdown_stack):
-                if not current_chunk.endswith(md):
-                    current_chunk += md
+            current_chunk = close_markdown_markers(current_chunk)
 
             chunks.append(current_chunk.strip())
-            current_chunk = ""
-            current_len = 0
 
             # Открываем Markdown-элементы для нового чанка
-            for md in markdown_stack:
-                current_chunk += md
-                current_len += _utf16_len(md)
+            current_chunk = opening_markdown_prefix()
+            current_len = _utf16_len(current_chunk)
 
         # Добавляем строку к текущему чанку
         if current_chunk:
@@ -309,24 +519,12 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
         current_len += line_len
 
         # Отслеживаем Markdown-элементы в строке
-        for i, char in enumerate(line):
-            if char in ['*', '_', '`']:
-                # Проверяем, является ли это открывающим или закрывающим элементом
-                if markdown_stack and markdown_stack[-1][-1] == char:
-                    markdown_stack.pop()
-                else:
-                    # Определяем тип элемента (одиночный или двойной)
-                    if i + 1 < len(line) and line[i + 1] == char:
-                        markdown_stack.append(char * 2)
-                    else:
-                        markdown_stack.append(char)
+        update_markdown_stack(line)
 
     # Добавляем последний чанк
     if current_chunk:
         # Закрываем все открытые Markdown-элементы
-        for md in reversed(markdown_stack):
-            if not current_chunk.endswith(md):
-                current_chunk += md
+        current_chunk = close_markdown_markers(current_chunk)
         chunks.append(current_chunk.strip())
 
     return chunks
@@ -385,13 +583,13 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
                             message_thread_id=get_thread_id(update)
                         )
                     except Exception as e:
-                        logging.warning(f"Error sending chat action: {e}")
+                        logging.warning("Error sending chat action error=%s", log_exception_shape(e))
                 try:
                     await asyncio.wait_for(asyncio.shield(task), 4.5)
                 except asyncio.TimeoutError:
                     pass
                 except Exception as e:
-                    logging.error(f"Error in wrap_with_indicator: {e}")
+                    logging.error("Error in wrap_with_indicator error=%s", log_exception_shape(e))
                     break
             
             return await task
@@ -457,18 +655,24 @@ async def edit_message_with_retry(context: ContextTypes.DEFAULT_TYPE, chat_id: i
                 text=text,
             )
         except Exception as e:
-            logging.warning(f'Failed to edit message: {str(e)}')
+            logging.warning("Failed to edit message error=%s", log_exception_shape(e))
             raise e
 
     except Exception as e:
-        logging.warning(str(e))
+        logging.warning("Failed to edit message error=%s", log_exception_shape(e))
         raise e
 
 async def error_handler(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles errors in the telegram-python-bot library.
     """
-    logging.error(f'Exception while handling an update: {context.error}')
+    error = context.error
+    error_shape = (
+        log_exception_shape(error)
+        if isinstance(error, BaseException)
+        else log_value_shape(error, key="value")
+    )
+    logging.error("Exception while handling an update error=%s", error_shape)
 
 async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False) -> bool:
     """
@@ -625,6 +829,7 @@ def make_usage_tracker(config, user_id, user_name, logs_dir="usage_logs"):
         vision_token_price=config.get('vision_token_price'),
         tts_prices=config.get('tts_prices'),
         transcription_price=config.get('transcription_price'),
+        history_days=config.get('usage_retention_days'),
     )
 
 def _charge_user_and_guest(usage, config, user_id, charge_fn):
@@ -638,7 +843,7 @@ def _charge_user_and_guest(usage, config, user_id, charge_fn):
             charge_fn(usage['guests'])
         return True
     except Exception as e:
-        logging.warning(f'Failed to record usage: {str(e)}')
+        logging.warning("Failed to record usage error=%s", log_exception_shape(e))
         return False
 
 def _positive_int_usage(value, label):
@@ -738,17 +943,7 @@ def is_direct_result(response: any) -> bool:
     Checks if the dict contains a structurally valid direct_result payload that can be
     sent directly to the user. Requires a dict with a non-empty `kind` field.
     """
-    if type(response) is not dict:
-        try:
-            response = json.loads(response)
-        except Exception:
-            return False
-    if not isinstance(response, dict):
-        return False
-    direct_result = response.get('direct_result')
-    if not isinstance(direct_result, dict):
-        return False
-    return bool(direct_result.get('kind'))
+    return direct_result_payload(response) is not None
 
 
 def direct_result_inline_fallback_text(response: any, unavailable_message: str, *, max_chars: int = 3500) -> str:
@@ -769,7 +964,15 @@ def direct_result_inline_fallback_text(response: any, unavailable_message: str, 
 
     def _artifact_line(item: dict) -> str | None:
         kind = str(item.get("kind") or "artifact")
-        value = str(item.get("value") or item.get("file_path") or item.get("url") or "").strip()
+        value = str(
+            item.get("value")
+            or item.get("file_path")
+            or item.get("path")
+            or item.get("output_path")
+            or item.get("artifact_path")
+            or item.get("url")
+            or ""
+        ).strip()
         if not value:
             return None
         if item.get("format") == "path" or os.path.isabs(value):
@@ -892,16 +1095,35 @@ async def handle_direct_result(config, update: Update, response: any):
 
     result = response.get('direct_result') if isinstance(response, dict) else None
     if not isinstance(result, dict):
-        logging.warning("handle_direct_result called without a direct_result payload: %r", response)
+        logging.warning(
+            "handle_direct_result called without a direct_result payload response_shape=%s",
+            log_json_shape(response),
+        )
         return []
     kind = result.get('kind')
     if not kind:
-        logging.warning("handle_direct_result payload missing 'kind': %r", result)
+        logging.warning(
+            "handle_direct_result payload missing 'kind' payload_shape=%s",
+            log_json_shape(result),
+        )
         return []
     result_format = result.get('format')
-    value = result.get('value')
+    value = (
+        result.get('value')
+        or result.get('file_path')
+        or result.get('path')
+        or result.get('output_path')
+        or result.get('artifact_path')
+        or result.get('url')
+    )
     add_value = result.get('add_value', None)
-    logging.info(f"Handling direct result - kind: {kind}, format: {result_format}, value: {value}, add_value: {str(add_value)[:200]}")
+    logging.info(
+        "Handling direct result - kind=%s format=%s value_shape=%s add_value_shape=%s",
+        kind,
+        result_format,
+        log_value_shape(value, key="value"),
+        log_value_shape(add_value, key="add_value"),
+    )
 
     message = update.effective_message or (update.callback_query.message if update.callback_query else None)
     if not message:
@@ -917,12 +1139,18 @@ async def handle_direct_result(config, update: Update, response: any):
     if kind == 'final':
         for artifact in result.get("artifacts") or []:
             if not isinstance(artifact, dict):
-                raise ValueError(f"final artifact must be an object: {artifact!r}")
+                raise ValueError(
+                    "final artifact must be an object "
+                    f"artifact_shape={log_value_shape(artifact, key='value')}"
+                )
             artifact_payload = dict(artifact)
             artifact_payload["preserve_after_delivery"] = True
             artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload})
             if not artifact_messages:
-                raise RuntimeError(f"final artifact was not delivered: {artifact_payload!r}")
+                raise RuntimeError(
+                    "final artifact was not delivered "
+                    f"artifact_shape={log_json_shape({'artifact': artifact_payload})}"
+                )
             sent_messages.extend(artifact_messages)
 
         text = str(result.get('text') or "").strip()
@@ -956,7 +1184,11 @@ async def handle_direct_result(config, update: Update, response: any):
                     # Пробуем отправить как фото
                     sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
             except Exception as e:
-                logging.error(f"Error handling photo: {e}")
+                logging.error(
+                    "Error handling photo direct result error=%s value_shape=%s",
+                    log_exception_shape(e),
+                    log_value_shape(value, key="value"),
+                )
                 # Проверяем и изменяем размеры изображения при необходимости
                 photo_file, photo_format = resize_image_if_needed(value)
                 sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=photo_file))
@@ -982,7 +1214,10 @@ async def handle_direct_result(config, update: Update, response: any):
                 if await set_reaction(reaction=value):
                     return sent_messages
             except Exception as e:
-                logging.warning(f"Could not set reaction direct result: {e}", exc_info=True)
+                logging.warning(
+                    "Could not set reaction direct result error=%s",
+                    log_exception_shape(e),
+                )
         sent_messages.append(await message.reply_text(
             message_thread_id=get_thread_id(update),
             reply_to_message_id=get_reply_to_message_id(config, update),
@@ -1031,7 +1266,12 @@ async def handle_direct_result(config, update: Update, response: any):
                     ))
                 except telegram.error.BadRequest as e:
                     if "can't parse entities" in str(e).lower():
-                        logging.warning(f"Telegram entities error in handle_direct_result: {e}. Retrying without formatting.")
+                        logging.warning(
+                            "Telegram entities error in handle_direct_result; retrying without formatting "
+                            "error=%s chunk_shape=%s",
+                            log_exception_shape(e),
+                            log_value_shape(chunk, key="value"),
+                        )
                         sent_messages.append(await message.reply_text(
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=reply_to,
@@ -1047,7 +1287,11 @@ async def handle_direct_result(config, update: Update, response: any):
                             parse_mode=None
                         ))
                 except Exception as e:
-                    logging.error(f"Unexpected error in handle_direct_result: {e}")
+                    logging.error(
+                        "Unexpected error in handle_direct_result error=%s chunk_shape=%s",
+                        log_exception_shape(e),
+                        log_value_shape(chunk, key="value"),
+                    )
                     # В случае любой другой ошибки отправляем без форматирования
                     sent_messages.append(await message.reply_text(
                         message_thread_id=get_thread_id(update),
@@ -1076,7 +1320,13 @@ def cleanup_intermediate_files(response: any):
                 cleanup_intermediate_files({"direct_result": artifact})
         return
     format = result.get('format')
-    value = result.get('value') or result.get('file_path')
+    value = (
+        result.get('value')
+        or result.get('file_path')
+        or result.get('path')
+        or result.get('output_path')
+        or result.get('artifact_path')
+    )
 
     if format == 'path' and value and not result.get("preserve_after_delivery"):
         if os.path.exists(value):
@@ -1091,71 +1341,6 @@ def decode_image(imgbase64):
     image = imgbase64[len('data:image/jpeg;base64,'):]
     return base64.b64decode(image)
 
-# Функция для конвертации markdown в HTML
-def markdown_to_html(text):
-    import re
-    
-    # Экранирование HTML-символов
-    def escape_html(text):
-        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-    # Последовательность преобразований
-    conversions = [
-        # Блоки кода с подсветкой языка
-        (r'```(\w*)\n(.*?)```', 
-            lambda m: f'<pre><code class="language-{m.group(1)}">{escape_html(m.group(2))}</code></pre>', 
-            re.DOTALL),
-        
-        # Моноширный текст (код)
-        (r'`(.*?)`', 
-            lambda m: f'<code>{escape_html(m.group(1))}</code>'),
-        
-        # Жирный текст (должен идти до курсива)
-        (r'\*\*(.*?)\*\*', 
-            lambda m: f'<b>{m.group(1)}</b>'),
-        (r'__(.*?)__', 
-            lambda m: f'<b>{m.group(1)}</b>'),
-        
-        # Курсив
-        (r'\*(.*?)\*', 
-            lambda m: f'<i>{m.group(1)}</i>'),
-        (r'_(.*?)_', 
-            lambda m: f'<i>{m.group(1)}</i>'),
-        
-        # Зачеркнутый текст
-        (r'~~(.*?)~~', 
-            lambda m: f'<s>{m.group(1)}</s>'),
-        
-        # Ссылки с титлом
-        (r'\[(.*?)\]\((.*?)(?:\s+"(.*?)")?\)', 
-            lambda m: f'<a href="{m.group(2)}" title="{m.group(3) or ""}">{m.group(1)}</a>'),
-        
-        # Списки
-        (r'^(\s*[-*+])\s*(.*)', 
-            lambda m: f'<li>{m.group(2)}</li>', 
-            re.MULTILINE),
-        
-        # Заголовки
-        (r'^(#{1,6})\s*(.*)', 
-            lambda m: f'<h{len(m.group(1))}>{m.group(2)}</h{len(m.group(1))}>', 
-            re.MULTILINE)
-    ]
-    
-    # Применяем преобразования
-    for pattern, repl, *flags in conversions:
-        flag = flags[0] if flags else 0
-        text = re.sub(pattern, repl, text, flags=flag)
-    
-    # Переносы строк и абзацы
-    text = re.sub(r'\n\n+', '</p><p>', text)
-    text = re.sub(r'\n', '<br>', text)
-    
-    # Оборачиваем в параграфы, если нет других блочных элементов
-    if not re.search(r'<(h\d|pre|ul|ol|blockquote)', text):
-        text = f'<p>{text}</p>'
-    
-    return text
-
 async def send_long_response_as_file(config, update: Update, response: str, session_name: str = 'response'):
     """
     Отправляет длинный ответ в виде HTML-файла с сохранением форматирования
@@ -1165,21 +1350,30 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     :param response: Текст ответа для отправки
     :param session_name: Базовое имя файла (по умолчанию 'response')
     """
-    # Создаем директории output, data и plots, если их нет
-    os.makedirs('output', exist_ok=True)
-    os.makedirs('data', exist_ok=True)
-    os.makedirs('plots', exist_ok=True)
-    
     # Генерируем уникальный идентификатор сессии
     session_id = str(uuid.uuid4())[:8]
     
     # Используем HTMLVisualizer для создания HTML-файла
-    visualizer = HTMLVisualizer()
-    output_path = visualizer.advanced_visualization(response, session_id)
+    visualizer = HTMLVisualizer(
+        output_dir=config.get("output_dir") or None,
+        data_dir=config.get("data_dir") or None,
+        plots_dir=config.get("plots_dir") or None,
+    )
+    output_path = await asyncio.to_thread(visualizer.advanced_visualization, response, session_id)
+    if not output_path:
+        logging.error("HTML visualization did not produce an output path")
+        return None
     
     # Получаем содержимое созданного файла
-    with open(output_path, 'rb') as f:
-        file_content = f.read()
+    try:
+        file_content = await asyncio.to_thread(_read_file_bytes, output_path)
+    except OSError as e:
+        logging.error(
+            "Failed to read generated HTML file output_shape=%s error=%s",
+            log_value_shape(output_path, key="path"),
+            log_exception_shape(e),
+        )
+        return None
     
     # Создаем файл с ответом для отправки
     response_file = io.BytesIO(file_content)
@@ -1206,6 +1400,10 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     try:
         os.remove(output_path)
     except Exception as e:
-        logging.warning(f"Не удалось удалить временный файл {output_path}: {e}")
+        logging.warning(
+            "Failed to delete generated HTML file output_shape=%s error=%s",
+            log_value_shape(output_path, key="path"),
+            log_exception_shape(e),
+        )
 
     return sent_message

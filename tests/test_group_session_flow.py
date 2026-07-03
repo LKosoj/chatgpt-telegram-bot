@@ -88,8 +88,27 @@ def _make_context():
     return SimpleNamespace(bot=SimpleNamespace(get_chat_member=AsyncMock()))
 
 
+def _with_async_db_facade(db):
+    for method_name in (
+        "list_user_sessions",
+        "create_session",
+        "switch_active_session",
+        "delete_session",
+        "get_oldest_session_ids_for_limit",
+        "delete_sessions_by_ids",
+        "save_conversation_context",
+        "get_active_session_id",
+        "get_conversation_context",
+    ):
+        async def _call(*args, _method_name=method_name, **kwargs):
+            return getattr(db, _method_name)(*args, **kwargs)
+
+        setattr(db, f"{method_name}_async", AsyncMock(side_effect=_call))
+    return db
+
+
 def _make_db(active_sessions=None):
-    return SimpleNamespace(
+    return _with_async_db_facade(SimpleNamespace(
         list_user_sessions=MagicMock(return_value=active_sessions or []),
         create_session=MagicMock(return_value="session-new"),
         switch_active_session=MagicMock(),
@@ -105,7 +124,7 @@ def _make_db(active_sessions=None):
             80,
             "session-1",
         )),
-    )
+    ))
 
 
 class _FakeHindsightPlugin:
@@ -191,6 +210,59 @@ def _private_update(data):
         chat_id=42,
         chat_type=constants.ChatType.PRIVATE,
     )
+
+
+def test_session_mode_display_name_prefers_mode_key_over_prompt_text():
+    bot = _make_bot()
+    bot.get_chat_modes.return_value = {
+        "assistant": {"name": "Assistant", "prompt_start": "Shared prompt"},
+        "expert": {"name": "Expert", "prompt_start": "Shared prompt"},
+    }
+    session = {
+        "context": {
+            "messages": [
+                {"role": "system", "content": "Shared prompt", "mode_key": "expert"},
+            ]
+        }
+    }
+
+    assert bot._session_mode_display_name(session) == "Expert"
+
+
+def test_session_mode_display_name_supports_prompt_markers():
+    bot = _make_bot()
+    bot.get_chat_modes.return_value = {
+        "legacy": {
+            "name": "Legacy",
+            "prompt_start": "new prompt",
+            "prompt_markers": ["legacy agent", "skills"],
+        },
+    }
+    session = {
+        "context": {
+            "messages": [
+                {"role": "system", "content": "Old legacy agent prompt with skills."},
+            ]
+        }
+    }
+
+    assert bot._session_mode_display_name(session) == "Legacy"
+
+
+def test_session_mode_display_name_ignores_malformed_mode_key():
+    bot = _make_bot()
+    bot.get_chat_modes.return_value = {
+        "assistant": {"name": "Assistant", "prompt_start": "Assistant prompt"},
+    }
+    session = {
+        "context": {
+            "messages": [
+                {"role": "system", "content": "Assistant prompt", "mode_key": ["bad"]},
+            ]
+        }
+    }
+
+    assert bot._session_mode_display_name(session) == "Assistant"
 
 
 @pytest.mark.asyncio

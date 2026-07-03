@@ -98,6 +98,9 @@ class SequencingDB:
     def get_active_session_id(self, user_id):
         return self.active_session_id
 
+    async def get_active_session_id_async(self, user_id):
+        return self.get_active_session_id(user_id)
+
     def get_conversation_context(self, chat_id, session_id=None, *args, **kwargs):
         self.load_calls.append(chat_id)
         if self.active_by_chat[chat_id]:
@@ -105,12 +108,21 @@ class SequencingDB:
         self.active_by_chat[chat_id] += 1
         return {"messages": []}, "HTML", 0.8, 100, session_id or self.active_session_id
 
+    async def get_conversation_context_async(self, chat_id, session_id=None, *args, **kwargs):
+        return self.get_conversation_context(chat_id, session_id, *args, **kwargs)
+
     def save_conversation_context(self, chat_id, *args, **kwargs):
         self.save_calls.append(chat_id)
         self.active_by_chat[chat_id] -= 1
 
+    async def save_conversation_context_async(self, chat_id, *args, **kwargs):
+        return self.save_conversation_context(chat_id, *args, **kwargs)
+
     def get_user_images(self, user_id, chat_id, limit=1):
         return []
+
+    async def get_user_images_async(self, user_id, chat_id, limit=1):
+        return self.get_user_images(user_id, chat_id, limit=limit)
 
     def get_oldest_session_ids_for_limit(self, user_id, max_sessions=None, exclude_session_ids=None):
         excluded = set(exclude_session_ids or [])
@@ -122,6 +134,13 @@ class SequencingDB:
         self.oldest_session_excludes.append(tuple(exclude_session_ids or ()))
         return [session_id for session_id in self.oldest_session_ids if session_id not in excluded]
 
+    async def get_oldest_session_ids_for_limit_async(self, user_id, max_sessions=None, exclude_session_ids=None):
+        return self.get_oldest_session_ids_for_limit(
+            user_id,
+            max_sessions=max_sessions,
+            exclude_session_ids=exclude_session_ids,
+        )
+
     def delete_sessions_by_ids(self, user_id, session_ids):
         self.deleted_session_ids.append((user_id, list(session_ids)))
         deleted = set(session_ids)
@@ -131,11 +150,17 @@ class SequencingDB:
         ]
         return True
 
+    async def delete_sessions_by_ids_async(self, user_id, session_ids):
+        return self.delete_sessions_by_ids(user_id, session_ids)
+
     def create_session(self, user_id, **kwargs):
         self.created_sessions.append({"user_id": user_id, **kwargs})
         if self.create_session_result:
             self.active_session_id = self.create_session_result
         return self.create_session_result
+
+    async def create_session_async(self, user_id, *args, **kwargs):
+        return self.create_session(user_id, **kwargs)
 
 
 class DelayedOpenAI:
@@ -152,6 +177,12 @@ class DelayedOpenAI:
     def get_current_model(self, user_id, session_id=None):
         self.model_calls.append((user_id, session_id))
         return "gpt-test"
+
+    async def get_current_model_async(self, user_id, session_id=None):
+        return self.get_current_model(user_id, session_id=session_id)
+
+    async def should_force_non_stream_first_turn_async(self, chat_id, user_id):
+        return False
 
     async def get_chat_response(self, *, chat_id, query, **kwargs):
         self.requests.append({"chat_id": chat_id, "query": query, **kwargs})
@@ -645,6 +676,7 @@ async def test_busy_message_new_session_pruning_excludes_active_session():
         update=pending_update,
         context=_make_context(),
         message_id=10,
+        active_session_id="session-1",
     )
     db.active_session_id = "session-other"
     callback_update = FakeCallbackUpdate(f"busymsg:new_session:{token}", chat_id=1234, user_id=42)

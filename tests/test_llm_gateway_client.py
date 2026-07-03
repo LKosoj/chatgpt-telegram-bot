@@ -1,8 +1,11 @@
 import types
+import stat
 from pathlib import Path
 
+import httpx
 import pytest
 
+from bot import llm_gateway_client as llm_gateway_client_module
 from bot.llm_gateway_client import LLMGatewayClient, LLMGatewayError, extract_image_result
 from bot.plugins.stable_diffusion import StableDiffusionPlugin
 
@@ -52,6 +55,14 @@ class FakeErrorAsyncClient:
         return FakeErrorResponse()
 
 
+class FakeNetworkErrorAsyncClient:
+    async def post(self, *args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    async def get(self, *args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+
 @pytest.mark.asyncio
 async def test_image_edit_file_uses_multipart_payload():
     http_client = FakeAsyncClient()
@@ -85,7 +96,7 @@ def test_extract_image_result_keeps_http_url():
     assert result_format == "url"
 
 
-def test_extract_image_result_writes_data_image_url_to_path():
+def test_extract_image_result_writes_data_image_url_to_private_path():
     value, result_format = extract_image_result({"data": [{"url": "data:image/jpeg;base64,aGVsbG8="}]})
     path = Path(value)
 
@@ -93,8 +104,47 @@ def test_extract_image_result_writes_data_image_url_to_path():
         assert result_format == "path"
         assert path.suffix == ".jpg"
         assert path.read_bytes() == b"hello"
+        assert path.parent.name.startswith("llmgateway_images_")
+        assert path.parent.name != "llmgateway_images"
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_extract_image_result_recreates_missing_private_output_dir():
+    previous_output_dir = llm_gateway_client_module._IMAGE_OUTPUT_DIR
+    first_path = None
+    second_path = None
+    llm_gateway_client_module._IMAGE_OUTPUT_DIR = None
+
+    try:
+        first_value, first_format = extract_image_result({"data": [{"url": "data:image/png;base64,aGVsbG8="}]})
+        first_path = Path(first_value)
+        first_dir = first_path.parent
+        assert first_format == "path"
+        first_path.unlink()
+        first_dir.rmdir()
+
+        second_value, second_format = extract_image_result({"data": [{"url": "data:image/png;base64,d29ybGQ="}]})
+        second_path = Path(second_value)
+
+        assert second_format == "path"
+        assert second_path.parent != first_dir
+        assert second_path.parent.is_dir()
+        assert second_path.read_bytes() == b"world"
+        assert stat.S_IMODE(second_path.parent.stat().st_mode) == 0o700
+    finally:
+        if first_path is not None:
+            first_path.unlink(missing_ok=True)
+        if second_path is not None:
+            second_path.unlink(missing_ok=True)
+        current_output_dir = llm_gateway_client_module._IMAGE_OUTPUT_DIR
+        if current_output_dir is not None and current_output_dir != previous_output_dir:
+            try:
+                current_output_dir.rmdir()
+            except OSError:
+                pass
+        llm_gateway_client_module._IMAGE_OUTPUT_DIR = previous_output_dir
 
 
 def test_image_edit_requires_model():
@@ -169,14 +219,17 @@ async def test_stable_diffusion_edit_uses_configured_image_model():
 
 
 @pytest.mark.asyncio
-async def test_post_json_error_includes_full_response_text():
+async def test_post_json_error_caps_response_text():
     client = LLMGatewayClient("https://gateway.example/v1", "test-key")
     client._client = FakeErrorAsyncClient()
 
     with pytest.raises(LLMGatewayError) as exc_info:
         await client.post_json("/bad", {})
 
-    assert FakeErrorResponse.text in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "gateway-error-" in message
+    assert "[truncated]" in message
+    assert len(message) < len(FakeErrorResponse.text)
 
 
 @pytest.mark.asyncio
@@ -199,22 +252,38 @@ async def test_audio_voices_uses_get_with_model_query():
 
 
 @pytest.mark.asyncio
-async def test_post_multipart_error_includes_full_response_text():
+async def test_post_multipart_error_caps_response_text():
     client = LLMGatewayClient("https://gateway.example/v1", "test-key")
     client._client = FakeErrorAsyncClient()
 
     with pytest.raises(LLMGatewayError) as exc_info:
         await client.post_multipart("/bad", data={}, files=[])
 
-    assert FakeErrorResponse.text in str(exc_info.value)
+    assert "[truncated]" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
-async def test_get_json_error_includes_full_response_text():
+async def test_get_json_error_caps_response_text():
     client = LLMGatewayClient("https://gateway.example/v1", "test-key")
     client._client = FakeErrorAsyncClient()
 
     with pytest.raises(LLMGatewayError) as exc_info:
         await client.get_json("/bad")
 
-    assert FakeErrorResponse.text in str(exc_info.value)
+    assert "[truncated]" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name,args,kwargs", [
+    ("post_json", ("/bad", {}), {}),
+    ("get_json", ("/bad",), {}),
+    ("post_multipart", ("/bad",), {"data": {}, "files": []}),
+])
+async def test_httpx_errors_are_wrapped(method_name, args, kwargs):
+    client = LLMGatewayClient("https://gateway.example/v1", "test-key")
+    client._client = FakeNetworkErrorAsyncClient()
+
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await getattr(client, method_name)(*args, **kwargs)
+
+    assert "connection refused" in str(exc_info.value)

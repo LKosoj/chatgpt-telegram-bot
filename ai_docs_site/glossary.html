@@ -623,7 +623,7 @@
 <h3 id="docker-composeyml">docker-compose.yml</h3>
 <p>Сервис <code>chatgpt-telegram-bot</code> собирается из Dockerfile в текущей директории (контекст <code>.</code>). Volume-монтирование директории проекта в <code>/app</code> для горячей перезагрузки кода при разработке. Политика перезапуска: <code>unless-stopped</code> (автоматически при сбоях или перезагрузке системы, кроме ручной остановки).</p>
 <h3 id="dockerfile">Dockerfile</h3>
-<p>Базовый образ: <code>python:3.9-alpine</code>. Системный пакет: <code>ffmpeg</code>. Точка входа: <code>python -m bot</code>. Переменные окружения: <code>PYTHONFAULTHANDLER=1</code>, <code>PYTHONUNBUFFERED=1</code>, <code>PYTHONDONTWRITEBYTECODE=1</code>, <code>PIP_DISABLE_PIP_VERSION_CHECK=on</code>. Флаги <code>--no-cache</code> для <code>apk</code> и <code>--no-cache-dir</code> для <code>pip</code> — минимизация размера слоёв.</p>
+<p>Базовый образ: <code>python:3.12-slim</code>. Системные пакеты: <code>ffmpeg</code>, <code>default-jre-headless</code>, <code>graphviz</code>. Точка входа: <code>python -m bot</code>. Переменные окружения: <code>PYTHONFAULTHANDLER=1</code>, <code>PYTHONUNBUFFERED=1</code>, <code>PYTHONDONTWRITEBYTECODE=1</code>, <code>PIP_DISABLE_PIP_VERSION_CHECK=on</code>. Флаги <code>--no-cache-dir</code> для <code>pip</code> и очистка <code>/var/lib/apt/lists</code> минимизируют размер слоёв.</p>
 <h2 id="_13">Тестирование</h2>
 <h3 id="pytest">Конфигурация pytest</h3>
 <p><code>pytest.ini</code>: <code>asyncio_mode = auto</code>.</p>

@@ -13,32 +13,103 @@ import markdown2
 from bs4 import BeautifulSoup
 import traceback
 import uuid
-import json
 import time
 import glob
 import hashlib
+from urllib.parse import urlsplit
+
+from .runtime_paths import (
+    ensure_runtime_dir,
+    runtime_data_dir,
+    runtime_output_dir,
+    runtime_path,
+    runtime_plots_dir,
+)
+
+
+def _escape_html(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+_SAFE_HREF_SCHEMES = {"http", "https", "mailto", "tel"}
+_SAFE_SRC_SCHEMES = {"http", "https"}
+
+
+def _is_safe_url(value, *, allowed_schemes, allow_data_image=False) -> bool:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return False
+    if raw_value.startswith(("#", "/", "./", "../")):
+        return True
+    if allow_data_image and raw_value.lower().startswith("data:image/"):
+        return True
+    try:
+        scheme = urlsplit(raw_value).scheme.lower()
+    except ValueError:
+        return False
+    return not scheme or scheme in allowed_schemes
+
+
+def _sanitize_html_fragment(value) -> str:
+    soup = BeautifulSoup(str(value or ""), "html.parser")
+    for tag in soup.find_all(["script", "iframe", "object", "embed", "style", "link", "meta"]):
+        tag.decompose()
+    for tag in soup.find_all(True):
+        for attr in list(tag.attrs):
+            attr_name = attr.lower()
+            if attr_name.startswith("on") or attr_name in {"srcdoc"}:
+                del tag.attrs[attr]
+        for attr in ("href", "xlink:href", "formaction", "action"):
+            if tag.has_attr(attr) and not _is_safe_url(tag[attr], allowed_schemes=_SAFE_HREF_SCHEMES):
+                del tag.attrs[attr]
+        if tag.has_attr("src") and not _is_safe_url(
+            tag["src"],
+            allowed_schemes=_SAFE_SRC_SCHEMES,
+            allow_data_image=True,
+        ):
+            del tag.attrs["src"]
+        if tag.name == "a" and tag.has_attr("target"):
+            tag["rel"] = "noopener noreferrer"
+    return str(soup)
+
+
+def _normalize_mermaid_code(value) -> str:
+    mermaid_code = str(value or "")
+    mermaid_code = re.sub(r'&lt;br\s*/?&gt;', '\n', mermaid_code, flags=re.IGNORECASE)
+    mermaid_code = mermaid_code.replace('<br/>', '\n').replace('<br>', '\n')
+    mermaid_code = re.sub(r'&lt;/?(?:em|i|b|strong)&gt;', '', mermaid_code, flags=re.IGNORECASE)
+    mermaid_code = re.sub(r'</?(?:em|i|b|strong)>', '', mermaid_code, flags=re.IGNORECASE)
+    mermaid_code = mermaid_code.replace('&amp;', '&').replace('&gt;', '>')
+    mermaid_code = re.sub(r'&lt;(?=[-.=]+)', '<', mermaid_code)
+    return mermaid_code
+
 
 class HTMLVisualizer:
     """Утилита для создания расширенной HTML-визуализации"""
     
-    def __init__(self, plots_dir='output/plots'):
+    def __init__(self, plots_dir=None, output_dir=None, data_dir=None):
         """
         Инициализация визуализатора
 
         Args:
-            plots_dir (str, optional): Директория для сохранения графиков. По умолчанию 'output/plots'.
+            plots_dir (str, optional): Директория для сохранения графиков.
         """
-        self.plots_dir = plots_dir
+        self.output_dir = ensure_runtime_dir(runtime_path(output_dir, runtime_output_dir()))
+        self.data_dir = ensure_runtime_dir(runtime_path(data_dir, runtime_data_dir()))
+        self.plots_dir = ensure_runtime_dir(runtime_path(plots_dir, runtime_plots_dir()))
         self.diagrams_found = 0
-        os.makedirs(plots_dir, exist_ok=True)
         
         # Путь к JAR-файлу PlantUML
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.plantuml_jar = os.path.join(current_dir, 'plantuml.jar')
-        
-        # Проверяем существование файла
-        if not os.path.exists(self.plantuml_jar):
-            self.plantuml_jar = os.path.join(current_dir, '..', 'plantuml.jar')
+        plantuml_candidates = [
+            os.path.join(current_dir, 'plantuml.jar'),
+            os.path.join(current_dir, 'plugins', 'plantuml.jar'),
+            os.path.join(current_dir, '..', 'plantuml.jar'),
+        ]
+        self.plantuml_jar = next(
+            (path for path in plantuml_candidates if os.path.exists(path)),
+            plantuml_candidates[0],
+        )
         
         # Инициализация openai_helper
         self.openai_helper = None
@@ -53,7 +124,7 @@ class HTMLVisualizer:
             # Функция для сохранения HTML-контейнеров диаграмм
             def extract_mermaid_containers(match_obj):
                 container_id = f"MERMAID-CONTAINER-PLACEHOLDER-{len(mermaid_containers)}"
-                mermaid_containers[container_id] = match_obj.group(0)
+                mermaid_containers[container_id] = _sanitize_html_fragment(match_obj.group(0))
                 return container_id
             
             # Заменяем готовые HTML-контейнеры на временные маркеры
@@ -163,7 +234,7 @@ class HTMLVisualizer:
             html = html.replace('\\_', '_')
             
             # Парсим HTML
-            soup = BeautifulSoup(html, 'html.parser')
+            soup = BeautifulSoup(_sanitize_html_fragment(html), 'html.parser')
             
             # 1. Обрабатываем ссылки в формате [N] - сноски на источники
             if reference_links:
@@ -270,8 +341,9 @@ class HTMLVisualizer:
                 # Функция замены, которая преобразует найденный URL в тег <a>
                 def replace_with_link(match):
                     url = match.group(1)
+                    escaped_url = _escape_html(url)
                     # Создаем тег <a> с корректным отображением URL, включая символы подчеркивания
-                    return f'<a href="{url}" target="_blank" rel="noopener noreferrer" class="url-with-underscores">{url}</a>'
+                    return f'<a href="{escaped_url}" target="_blank" rel="noopener noreferrer" class="url-with-underscores">{escaped_url}</a>'
                 
                 # Заменяем все найденные URL на теги <a>
                 return re.sub(url_pattern, replace_with_link, html_content)
@@ -282,14 +354,6 @@ class HTMLVisualizer:
 
             # Пересоздаем soup из обновленного HTML
             soup = BeautifulSoup(result_html, 'html.parser')
-            
-            # Обрабатываем все блоки кода
-            for pre in soup.find_all('pre'):
-                # Удаляем экранирование внутри блоков кода
-                if pre.code:
-                    code_content = pre.code.string
-                    if code_content:
-                        pre.code.string = code_content.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
             
             # Находим все заголовки h1 и проверяем их длину
             for h1 in soup.find_all('h1'):
@@ -319,7 +383,7 @@ class HTMLVisualizer:
                     diagram_id = f"mermaid-diagram-{str(uuid.uuid4())[:8]}"
                     
                     # Создаем простой HTML-контейнер для mermaid-диаграммы
-                    simple_html = f'<div class="mermaid">{original_content}</div>'
+                    simple_html = f'<div class="mermaid">{_escape_html(original_content)}</div>'
                     
                     # Заменяем плейсхолдер напрямую, без использования BeautifulSoup
                     result_html = result_html.replace(placeholder, simple_html)
@@ -342,8 +406,9 @@ class HTMLVisualizer:
                 emphasized_part = match.group(2)
                 # Восстанавливаем полный URL для отображения
                 full_url = f"{base_url}_{emphasized_part}"
+                escaped_url = _escape_html(full_url)
                 # Создаем новый тег <a> с полным URL
-                return f'<a href="{full_url}" target="_blank" rel="noopener noreferrer">{full_url}</a>'
+                return f'<a href="{escaped_url}" target="_blank" rel="noopener noreferrer">{escaped_url}</a>'
             
             # Исправляем URL, разбитые на части из-за подчеркиваний
             result_html = re.sub(url_with_emphasis_pattern, fix_url_with_underscores, result_html)
@@ -359,7 +424,8 @@ class HTMLVisualizer:
                 if text_after and (href.endswith(url_part) or url_part.endswith(text_after)):
                     # Если это часть URL, создаем новую ссылку с полным URL
                     full_url = href
-                    return f'<a href="{full_url}" target="_blank" rel="noopener noreferrer">{full_url}</a>'
+                    escaped_url = _escape_html(full_url)
+                    return f'<a href="{escaped_url}" target="_blank" rel="noopener noreferrer">{escaped_url}</a>'
                 else:
                     # Если это не часть URL, оставляем как есть
                     return match.group(0)
@@ -376,7 +442,8 @@ class HTMLVisualizer:
                 # Проверяем, может ли это быть URL с подчеркиванием
                 combined = f"{before_text}_{emphasized_text}"
                 if re.match(r'https?://[^\s]+', combined):
-                    return f'<a href="{combined}" target="_blank" rel="noopener noreferrer">{combined}</a>'
+                    escaped_url = _escape_html(combined)
+                    return f'<a href="{escaped_url}" target="_blank" rel="noopener noreferrer">{escaped_url}</a>'
                 else:
                     return match.group(0)
             
@@ -419,7 +486,7 @@ class HTMLVisualizer:
                     # Создаем простой div с классом mermaid и оригинальным кодом диаграммы
                     # Оборачиваем код диаграммы в тег pre, чтобы предотвратить автоматическую конвертацию
                     # переносов строк в <br/> при отображении HTML
-                    mermaid_html = f'<div class="mermaid">{mermaid_content}</div>'
+                    mermaid_html = f'<div class="mermaid">{_escape_html(mermaid_content)}</div>'
                     result_html = result_html.replace(placeholder, mermaid_html)
                 
             # Восстанавливаем оригинальные HTML-контейнеры диаграмм
@@ -438,7 +505,7 @@ class HTMLVisualizer:
                 placeholder = f"<div id='{block_id}'></div>"
                 if placeholder in result_html:
                     # Создаем базовый контейнер без форматирования, с оригинальным кодом
-                    simple_html = f'<div class="mermaid">{original_content}</div>'
+                    simple_html = f'<div class="mermaid">{_escape_html(original_content)}</div>'
                     
                     # Заменяем плейсхолдер напрямую, без использования BeautifulSoup
                     result_html = result_html.replace(placeholder, simple_html)
@@ -447,10 +514,10 @@ class HTMLVisualizer:
             for container_id, container_html in mermaid_containers.items():
                 result_html = result_html.replace(container_id, container_html)
             
-            return result_html
+            return _sanitize_html_fragment(result_html)
         except Exception as e:
             logging.warning(f"___________Ошибка при обработке markdown: {str(e)}")
-            return processed_text
+            return _escape_html(locals().get("processed_text", text))
     
     def _sort_files_by_creation_time(self, files, directory):
         """
@@ -496,17 +563,7 @@ class HTMLVisualizer:
             str: HTML-код контейнера с диаграммой
         """
         try:
-            # Декодируем HTML-сущности
-            mermaid_code = mermaid_code.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
-            
-            # Удаляем HTML-теги, которые могли попасть в код диаграммы
-            mermaid_code = mermaid_code.replace('<br/>', '\n').replace('<br>', '\n')
-            
-            # Дополнительно удаляем теги <em> и другие, которые могут испортить код диаграммы
-            mermaid_code = re.sub(r'<\/?em>', '', mermaid_code)
-            mermaid_code = re.sub(r'<\/?i>', '', mermaid_code)
-            mermaid_code = re.sub(r'<\/?b>', '', mermaid_code)
-            mermaid_code = re.sub(r'<\/?strong>', '', mermaid_code)
+            mermaid_code = _normalize_mermaid_code(mermaid_code)
             
             # ВАЖНО: НЕ заменяем переносы строк тегами <br/>, так как это искажает код диаграммы
             # mermaid_code должен сохранять свой исходный формат
@@ -526,12 +583,15 @@ class HTMLVisualizer:
                 title_str = f"Mermaid Диаграмма {index+1}"
             else:
                 title_str = title
+            safe_title_str = _escape_html(title_str)
+            safe_creation_time_str = _escape_html(creation_time_str)
+            safe_mermaid_code = _escape_html(mermaid_code)
             
             # Формируем HTML контейнер для диаграммы
             html = [
                 f'<div class="mermaid-container" id="{diagram_id}">',
                 '    <div class="mermaid-header">',
-                f'        <h3 class="mermaid-title">{title_str} <span class="file-time">({creation_time_str})</span></h3>',
+                f'        <h3 class="mermaid-title">{safe_title_str} <span class="file-time">({safe_creation_time_str})</span></h3>',
                 '        <div class="mermaid-controls">',
                 f'            <select class="mermaid-theme-select" onchange="changeTheme(this.value, \'{content_id}\', \'{code_id}\')">',
                 '                <option value="default">Светлая тема</option>',
@@ -558,14 +618,14 @@ class HTMLVisualizer:
                 '        </div>',
                 '    </div>',
                 f'    <div class="mermaid-content" id="{content_id}">',
-                f'        <div class="mermaid">{mermaid_code}</div>',
+                f'        <div class="mermaid">{safe_mermaid_code}</div>',
                 '        <div class="zoom-controls">',
                 f'            <div class="zoom-btn" onclick="zoomIn(\'{content_id}\')">+</div>',
                 f'            <div class="zoom-btn" onclick="zoomOut(\'{content_id}\')">-</div>',
                 f'            <div class="zoom-btn" onclick="resetZoom(\'{content_id}\')">↺</div>',
                 '        </div>',
                 '    </div>',
-                f'    <pre class="mermaid-code" id="{code_id}">{mermaid_code}</pre>',
+                f'    <pre class="mermaid-code" id="{code_id}">{safe_mermaid_code}</pre>',
                 '</div>'
             ]
             
@@ -573,7 +633,7 @@ class HTMLVisualizer:
             
         except Exception as e:
             print(f"Ошибка при создании HTML-контейнера для mermaid диаграммы: {str(e)}")
-            return f'<div class="mermaid">{mermaid_code}</div>'
+            return f'<div class="mermaid">{_escape_html(mermaid_code)}</div>'
     
     def advanced_visualization(self, result, session_id, show=False):
         """
@@ -587,12 +647,11 @@ class HTMLVisualizer:
         Returns:
             str: Путь к созданному HTML-файлу
         """
-        output_path=f"output/interactive_plots_{session_id}.html"
-        os.makedirs("output", exist_ok=True)
+        output_path = self.output_dir / f"interactive_plots_{session_id}.html"
+        ensure_runtime_dir(self.output_dir)
         try:
             # Проверяем наличие директории с графиками
-            plots_dir = 'output/plots'
-            os.makedirs(plots_dir, exist_ok=True)
+            plots_dir = ensure_runtime_dir(self.plots_dir)
 
             # Добавляем MD файлы
             md_files = []
@@ -657,7 +716,7 @@ class HTMLVisualizer:
                 '            mermaid.initialize({',
                 '                startOnLoad: true,',
                 '                theme: "default",',
-                '                securityLevel: "loose",',
+                '                securityLevel: "strict",',
                 '                htmlLabels: true,',
                 '                flowchart: { useMaxWidth: false, htmlLabels: true },',
                 '                sequence: { useMaxWidth: false, htmlLabels: true },',
@@ -1065,10 +1124,13 @@ class HTMLVisualizer:
                         content_id = f"mermaid-content-{i}"
                         code_id = f"mermaid-code-{i}"
                     
+                        safe_mermaid_file = _escape_html(mermaid_file)
+                        safe_creation_time_str = _escape_html(creation_time_str)
+                        safe_mermaid_data = _escape_html(mermaid_data)
                         html_content.extend([
                             f'    <div class="mermaid-container" id="{diagram_id}">',
                             '        <div class="mermaid-header">',
-                            f'            <h3 class="mermaid-title">Файл: {mermaid_file} <span class="file-time">({creation_time_str})</span></h3>',
+                            f'            <h3 class="mermaid-title">Файл: {safe_mermaid_file} <span class="file-time">({safe_creation_time_str})</span></h3>',
                             '            <div class="mermaid-controls">',
                             f'                <select class="mermaid-theme-select" onchange="changeTheme(this.value, \'{content_id}\', \'{code_id}\')">',
                             '                    <option value="default">Светлая тема</option>',
@@ -1095,14 +1157,14 @@ class HTMLVisualizer:
                             '            </div>',
                             '        </div>',
                             f'        <div class="mermaid-content" id="{content_id}">',
-                            f'            <div class="mermaid">{mermaid_data}</div>',
+                            f'            <div class="mermaid">{safe_mermaid_data}</div>',
                             '            <div class="zoom-controls">',
                             f'                <div class="zoom-btn" onclick="zoomIn(\'{content_id}\')">+</div>',
                             f'                <div class="zoom-btn" onclick="zoomOut(\'{content_id}\')">-</div>',
                             f'                <div class="zoom-btn" onclick="resetZoom(\'{content_id}\')">↺</div>',
                             '            </div>',
                             '        </div>',
-                            f'        <pre class="mermaid-code" id="{code_id}">{mermaid_data}</pre>',
+                            f'        <pre class="mermaid-code" id="{code_id}">{safe_mermaid_data}</pre>',
                             '    </div>'
                         ])
                         logging.warning(f"Использован запасной метод отображения для файла {mermaid_file}")
@@ -1454,7 +1516,7 @@ class HTMLVisualizer:
                 '                mermaid.initialize({',
                 '                    theme: theme,',
                 '                    startOnLoad: true,',
-                '                    securityLevel: "loose",',
+                '                    securityLevel: "strict",',
                 '                    htmlLabels: true,',
                 '                    flowchart: { useMaxWidth: false, htmlLabels: true },',
                 '                    sequence: { useMaxWidth: false, htmlLabels: true },',
@@ -1613,7 +1675,7 @@ class HTMLVisualizer:
 
             logging.info(f"HTML страница с графиками сохранена в {output_path}")
             self.clean_data(session_id)            
-            return output_path
+            return str(output_path)
             
         except Exception as e:
             print(f"Ошибка при создании HTML-страницы: {str(e)}")
@@ -1622,207 +1684,24 @@ class HTMLVisualizer:
         finally:
             self.clean_data(session_id)
 
-
-    def _enhance_mermaid_code(self, code):
-        """
-        Улучшает код Mermaid диаграммы, добавляя дополнительные стили и форматирование.
-        
-        Args:
-            code (str): Исходный код Mermaid диаграммы
-            
-        Returns:
-            str: Улучшенный код диаграммы
-        """
-        # Добавляем стили и улучшения для различных типов диаграмм
-        enhanced_code = code.strip()
-        
-        # Добавляем отступы и улучшаем читаемость
-        lines = enhanced_code.split('\n')
-        enhanced_lines = [lines[0]]  # Сохраняем первую строку (тип диаграммы)
-        
-        for line in lines[1:]:
-            # Добавляем отступы и улучшаем форматирование
-            if line.strip():
-                enhanced_lines.append('    ' + line.strip())
-        
-        return '\n'.join(enhanced_lines)
-
-    def _enhance_flowchart(self, code):
-        """
-        Улучшает код флоучарта, добавляя цвета и стили.
-        
-        Args:
-            code (str): Исходный код флоучарта
-            
-        Returns:
-            str: Улучшенный код флоучарта
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        # Добавляем цвета для узлов
-        color_map = {
-            'start': 'fill:#2ecc71,stroke:#27ae60',
-            'process': 'fill:#3498db,stroke:#2980b9',
-            'decision': 'fill:#e74c3c,stroke:#c0392b',
-            'end': 'fill:#f39c12,stroke:#d35400'
-        }
-        
-        for node_type, style in color_map.items():
-            enhanced_code = enhanced_code.replace(f'class {node_type}', f'class {node_type} {style}')
-        
-        return enhanced_code
-
-    def _enhance_sequence_diagram(self, code):
-        """
-        Улучшает код диаграммы последовательности, добавляя стили и цвета.
-        
-        Args:
-            code (str): Исходный код диаграммы последовательности
-            
-        Returns:
-            str: Улучшенный код диаграммы последовательности
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        return enhanced_code
-        # Добавляем стили для участников
-        enhanced_code += '\n\n    %% Стили участников\n'
-        enhanced_code += '    classDef actor fill:#f1c40f,stroke:#f39c12;\n'
-        enhanced_code += '    classDef system fill:#3498db,stroke:#2980b9;\n'
-        
-        return enhanced_code
-
-    def _enhance_class_diagram(self, code):
-        """
-        Улучшает код диаграммы классов, добавляя цвета и стили.
-        
-        Args:
-            code (str): Исходный код диаграммы классов
-            
-        Returns:
-            str: Улучшенный код диаграммы классов
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        # Добавляем цвета для классов
-        enhanced_code += '\n\n    %% Стили классов\n'
-        enhanced_code += '    classDef publicClass fill:#2ecc71,stroke:#27ae60,color:#fff;\n'
-        enhanced_code += '    classDef privateClass fill:#e74c3c,stroke:#c0392b,color:#fff;\n'
-        enhanced_code += '    classDef abstractClass fill:#3498db,stroke:#2980b9,color:#fff,stroke-dasharray: 5 2;\n'
-        
-        return enhanced_code
-
-    def _enhance_gantt(self, code):
-        """
-        Улучшает код диаграммы Ганта, добавляя цвета и стили.
-        
-        Args:
-            code (str): Исходный код диаграммы Ганта
-            
-        Returns:
-            str: Улучшенный код диаграммы Ганта
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        # Добавляем стили для задач
-        enhanced_code += '\n\n    %% Стили задач\n'
-        enhanced_code += '    classDef active fill:#2ecc71,stroke:#27ae60;\n'
-        enhanced_code += '    classDef completed fill:#3498db,stroke:#2980b9;\n'
-        enhanced_code += '    classDef delayed fill:#e74c3c,stroke:#c0392b;\n'
-        
-        return enhanced_code
-
-    def _enhance_state_diagram(self, code):
-        """
-        Улучшает код диаграммы состояний, добавляя цвета и стили.
-        
-        Args:
-            code (str): Исходный код диаграммы состояний
-            
-        Returns:
-            str: Улучшенный код диаграммы состояний
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        # Добавляем цвета для состояний
-        color_map = {
-            'initial': 'fill:#2ecc71,stroke:#27ae60',
-            'final': 'fill:#e74c3c,stroke:#c0392b',
-            'active': 'fill:#3498db,stroke:#2980b9',
-            'waiting': 'fill:#f39c12,stroke:#d35400'
-        }
-        
-        for state_type, style in color_map.items():
-            enhanced_code = enhanced_code.replace(f'class {state_type}', f'class {state_type} {style}')
-        
-        return enhanced_code
-
-    def _enhance_pie_chart(self, code):
-        """
-        Улучшает код круговой диаграммы, добавляя цвета и стили.
-        
-        Args:
-            code (str): Исходный код круговой диаграммы
-            
-        Returns:
-            str: Улучшенный код круговой диаграммы
-        """
-        enhanced_code = self._enhance_mermaid_code(code)
-        
-        # Добавляем палитру цветов
-        colors = [
-            '#3498db', '#2ecc71', '#e74c3c', 
-            '#f39c12', '#9b59b6', '#1abc9c'
-        ]
-        
-        # Добавляем цвета для секторов
-        for i, color in enumerate(colors):
-            enhanced_code = enhanced_code.replace(
-                f'section {i+1}', 
-                f'section {i+1} fill:{color}'
-            )
-        
-        return enhanced_code
-
-    def _get_state_color(self, state_name):
-        """
-        Возвращает цвет для состояния.
-        
-        Args:
-            state_name (str): Название состояния
-            
-        Returns:
-            str: Цвет для состояния
-        """
-        color_map = {
-            'initial': '#2ecc71',     # Зеленый
-            'final': '#e74c3c',       # Красный
-            'active': '#3498db',      # Синий
-            'waiting': '#f39c12',     # Оранжевый
-            'error': '#c0392b',       # Темно-красный
-            'success': '#27ae60',     # Темно-зеленый
-            'pending': '#95a5a6'      # Серый
-        }
-        
-        return color_map.get(state_name.lower(), '#34495e')  # По умолчанию темно-синий
-
     def clean_data(self, session_id):
         #return
-        """Удаляет файлы с суффиксом _{session_id} в каталогах data и output/plots."""
-        for file in os.listdir('data'):
-            if f'_{session_id}' in file:
-                os.remove(os.path.join('data', file))
-        for file in os.listdir('output/plots'):
-            if f'_{session_id}' in file:
-                os.remove(os.path.join('output/plots', file))
+        """Удаляет файлы с суффиксом _{session_id} в runtime data/plots каталогах."""
+        for directory in (self.data_dir, self.plots_dir):
+            if not os.path.isdir(directory):
+                continue
+            for file in os.listdir(directory):
+                if f'_{session_id}' in file:
+                    os.remove(os.path.join(directory, file))
 
     def _generate_plantuml(self, session_id: str) -> str:
         """Генерирует изображение из PlantUML кода"""
 
-        plantuml_files = [f for f in os.listdir('output/plots') if f'_{session_id}.puml' in f]
+        plots_dir = ensure_runtime_dir(self.plots_dir)
+        plantuml_files = [f for f in os.listdir(plots_dir) if f'_{session_id}.puml' in f]
         if plantuml_files:
             for file_name in plantuml_files:
-                file_name = os.path.join('output/plots', file_name)
+                file_name = os.path.join(plots_dir, file_name)
                 # Запускаем PlantUML для генерации изображения
                 try:
                     result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', file_name], 
@@ -1852,56 +1731,6 @@ class HTMLVisualizer:
                 # Удаляем временный файл с кодом
                 #os.remove(file_name)
         return
-
-    def visualize_agent_execution(self, agent, output_file="agent_execution.html"):
-        """Создает HTML-визуализацию процесса выполнения агента"""
-        html = ["<html><head><title>Agent Execution</title>",
-                "<style>body{font-family:Arial;margin:20px}",
-                ".step{border:1px solid #ddd;margin:10px 0;padding:10px;border-radius:5px}",
-                ".input{background:#f0f8ff;padding:10px;margin:5px 0;border-radius:3px}",
-                ".output{background:#f0fff0;padding:10px;margin:5px 0;border-radius:3px}",
-                ".error{background:#fff0f0;padding:10px;margin:5px 0;border-radius:3px}",
-                "</style></head><body>",
-                f"<h1>Execution of Agent: {agent.name}</h1>"]
-        
-        # Проверяем, что agent.memory и agent.memory.steps существуют и не равны None
-        if not hasattr(agent, 'memory') or agent.memory is None:
-            html.append("<p>Агент не имеет памяти.</p>")
-        elif not hasattr(agent.memory, 'steps') or agent.memory.steps is None:
-            html.append("<p>Память агента не содержит шагов.</p>")
-        elif len(agent.memory.steps) == 0:
-            html.append("<p>Агент не выполнил ни одного шага.</p>")
-        else:
-            for i, step in enumerate(agent.memory.steps):
-                html.append(f"<div class='step'><h3>Step {i+1}</h3>")
-                
-                # Добавляем входные данные
-                if hasattr(step, 'input'):
-                    html.append(f"<div class='input'><strong>Input:</strong><pre>{step.input}</pre></div>")
-                
-                # Добавляем вызовы инструментов
-                if hasattr(step, 'tool_calls'):
-                    html.append("<div><strong>Tool Calls:</strong><ul>")
-                    for tool_call in step.tool_calls:
-                        html.append(f"<li>{tool_call.name} - Arguments: {tool_call.arguments}</li>")
-                    html.append("</ul></div>")
-                
-                # Добавляем выходные данные
-                if hasattr(step, 'output'):
-                    html.append(f"<div class='output'><strong>Output:</strong><pre>{step.output}</pre></div>")
-                
-                # Добавляем ошибки
-                if hasattr(step, 'error'):
-                    html.append(f"<div class='error'><strong>Error:</strong><pre>{step.error}</pre></div>")
-                
-                html.append("</div>")
-        
-        html.append("</body></html>")
-        
-        with open(f"output/{agent.name}_{output_file}", "w") as f:
-            f.write("\n".join(html))
-        
-        return f"Visualization saved to output/{agent.name}_{output_file}"
 
     def _detect_and_save_mermaid(self, result, session_id):
         """
@@ -2008,7 +1837,7 @@ class HTMLVisualizer:
                         html_result = html_result.replace(placeholder, html_container)
                     else:
                         # Если не удалось создать контейнер, используем простой div
-                        simple_html = f'<div class="mermaid">{mermaid_code}</div>'
+                        simple_html = f'<div class="mermaid">{_escape_html(mermaid_code)}</div>'
                         html_result = html_result.replace(placeholder, simple_html)
                         
                 except Exception as e:
@@ -2016,7 +1845,7 @@ class HTMLVisualizer:
                     # В случае ошибки используем простой div с оригинальным кодом
                     html_result = html_result.replace(
                         placeholder, 
-                        f'<div class="mermaid">{mermaid_blocks[placeholder]["code"]}</div>'
+                        f'<div class="mermaid">{_escape_html(mermaid_blocks[placeholder]["code"])}</div>'
                     )
             
             if mermaid_count > 0:
@@ -2036,29 +1865,3 @@ class HTMLVisualizer:
             logging.error(f"Ошибка при обработке Mermaid диаграмм: {str(e)}")
             traceback.print_exc()  # Добавляем полный стек-трейс для отладки
             return result
-
-
-
-def json_to_readable_text(data, indent=0):
-    """Преобразует JSON в читаемый текстовый формат"""
-    result = []
-    space = "  " * indent
-    
-    if isinstance(data, dict):
-        for key, value in data.items():
-            result.append(f"{space}🔹 {key}:")
-            if isinstance(value, (dict, list)):
-                result.extend(json_to_readable_text(value, indent + 1))
-            else:
-                result.append(f"{space}  {value}")
-    
-    elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, (dict, list)):
-                result.extend(json_to_readable_text(item, indent + 1))
-            else:
-                result.append(f"{space}• {item}")
-    
-    return result
-
-html_visualizer = HTMLVisualizer()

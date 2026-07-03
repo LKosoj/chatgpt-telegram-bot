@@ -67,13 +67,16 @@ def artifact_entries_from_tool_response(tool_name: str, value) -> tuple[dict, ..
     for key in ARTIFACT_PATH_KEYS:
         path = _artifact_path(source.get(key))
         if path:
-            entries.append({
+            entry = {
                 "tool": tool_name,
                 "kind": kind,
                 "path": path,
                 "format": source.get("format"),
                 "caption": source.get("caption") or source.get("add_value"),
-            })
+            }
+            if source.get("file_size") is not None:
+                entry["file_size"] = source.get("file_size")
+            entries.append(entry)
 
     artifacts = source.get("artifacts")
     if isinstance(artifacts, list):
@@ -84,13 +87,16 @@ def artifact_entries_from_tool_response(tool_name: str, value) -> tuple[dict, ..
             for key in ARTIFACT_PATH_KEYS:
                 path = _artifact_path(artifact.get(key))
                 if path:
-                    entries.append({
+                    entry = {
                         "tool": tool_name,
                         "kind": artifact_kind,
                         "path": path,
                         "format": artifact.get("format"),
                         "caption": artifact.get("caption") or artifact.get("add_value"),
-                    })
+                    }
+                    if artifact.get("file_size") is not None:
+                        entry["file_size"] = artifact.get("file_size")
+                    entries.append(entry)
 
     return tuple(entries)
 

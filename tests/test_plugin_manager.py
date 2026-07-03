@@ -1,7 +1,9 @@
+import asyncio
 import json
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -41,6 +43,8 @@ class ContextPlugin(Plugin):
         request_context = kwargs["request_context"]
         return {
             "chat_id": kwargs["chat_id"],
+            "user_id": kwargs["user_id"],
+            "message_id": kwargs["message_id"],
             "context_user_id": request_context.user_id,
             "context_message_id": request_context.message_id,
         }
@@ -130,6 +134,129 @@ class BadSpecPlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_cancel_plugin(path: Path):
+    code = """
+import asyncio
+
+from bot.plugins.plugin import Plugin
+
+class CancelPlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Cancel"
+
+    def get_spec(self):
+        return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        raise asyncio.CancelledError()
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
+def _write_request_context_probe_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class RequestContextProbePlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Probe"
+
+    def get_spec(self):
+        return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {
+            "has_request_context": "request_context" in kwargs,
+            "chat_id": kwargs.get("chat_id"),
+            "user_id": kwargs.get("user_id"),
+        }
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
+def _write_model_name_collision_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class RawNamePlugin(Plugin):
+    def get_source_name(self) -> str:
+        return "Raw"
+
+    def get_function_prefix(self) -> str:
+        return ""
+
+    def get_spec(self):
+        return [{"name": "alpha_do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"plugin": "raw", "function_name": function_name}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
+def _write_imported_class_plugin(tmp_path: Path, plugin_dir: Path):
+    (tmp_path / "foreign_plugin.py").write_text(textwrap.dedent("""
+        from bot.plugins.plugin import Plugin
+
+        class AImportedPlugin(Plugin):
+            def get_source_name(self) -> str:
+                return "Imported"
+
+            def get_spec(self):
+                return [{"name": "imported", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+            async def execute(self, function_name, helper, **kwargs):
+                return {"result": "imported"}
+    """), encoding="utf-8")
+    (plugin_dir / "local.py").write_text(textwrap.dedent("""
+        from foreign_plugin import AImportedPlugin
+        from bot.plugins.plugin import Plugin
+
+        class LocalPlugin(Plugin):
+            def get_source_name(self) -> str:
+                return "Local"
+
+            def get_spec(self):
+                return [{"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+            async def execute(self, function_name, helper, **kwargs):
+                return {"result": "local"}
+    """), encoding="utf-8")
+
+
+def test_config_none_uses_empty_config(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    pm = PluginManager(config=None, plugins_directory=str(plugin_dir))
+
+    assert pm.config == {}
+    assert pm.enabled_plugins == []
+
+
+def test_config_none_loads_all_plugins_by_default(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+
+    pm = PluginManager(config=None, plugins_directory=str(plugin_dir))
+
+    assert "alpha" in pm.plugins
+    specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
+    assert [spec["function"]["name"] for spec in specs] == ["alpha_do"]
+
+
+def test_register_plugin_ignores_imported_plugin_classes(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_imported_class_plugin(tmp_path, plugin_dir)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    assert pm.plugins["local"].__name__ == "LocalPlugin"
+
+
 def test_namespacing_and_collision(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
@@ -144,6 +271,29 @@ def test_namespacing_and_collision(tmp_path):
     assert "ddg_translate_translate" in names
     assert pm.to_canonical_function_name("deepl_translate") == "deepl.translate"
     assert pm.to_canonical_function_name("ddg_translate_translate") == "ddg_translate.translate"
+
+
+@pytest.mark.asyncio
+async def test_model_safe_function_name_collision_round_trips_to_correct_plugin(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    _write_model_name_collision_plugin(plugin_dir / "raw.py")
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
+    model_names = [spec["function"]["name"] for spec in specs]
+
+    raw_model_name = pm.to_model_function_name(".alpha_do")
+    assert "alpha_do" in model_names
+    assert raw_model_name in model_names
+    assert raw_model_name != "alpha_do"
+    assert pm.to_canonical_function_name("alpha_do") == "alpha.do"
+    assert pm.to_canonical_function_name(raw_model_name) == ".alpha_do"
+
+    result = await pm.call_function(raw_model_name, helper=None, arguments="{}")
+
+    assert json.loads(result) == {"plugin": "raw", "function_name": "alpha_do"}
 
 
 @pytest.mark.asyncio
@@ -259,14 +409,102 @@ async def test_call_function_passes_request_context_to_plugin_execute(tmp_path):
     result = await pm.call_function(
         "context.do",
         helper=None,
-        arguments=json.dumps({"chat_id": request_context.plugin_chat_id}),
+        arguments=json.dumps({
+            "chat_id": 999,
+            "user_id": 999,
+            "message_id": 999,
+            "request_context": {"user_id": 999},
+        }),
         request_context=request_context,
     )
 
     payload = json.loads(result)
     assert payload["chat_id"] == 77
+    assert payload["user_id"] == 42
+    assert payload["message_id"] == 123
     assert payload["context_user_id"] == 42
     assert payload["context_message_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_call_function_removes_model_supplied_request_context_without_request_context(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_request_context_probe_plugin(plugin_dir / "probe.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    result = await pm.call_function(
+        "probe.do",
+        helper=None,
+        arguments=json.dumps({
+            "chat_id": 77,
+            "user_id": 42,
+            "request_context": {"user_id": 999},
+        }),
+    )
+
+    assert json.loads(result) == {
+        "has_request_context": False,
+        "chat_id": 77,
+        "user_id": 42,
+    }
+
+
+@pytest.mark.asyncio
+async def test_call_function_propagates_cancelled_error_from_plugin_execute(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_cancel_plugin(plugin_dir / "cancel.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    with pytest.raises(asyncio.CancelledError):
+        await pm.call_function("cancel.do", helper=None, arguments="{}")
+
+
+@pytest.mark.asyncio
+async def test_call_function_returns_error_when_spec_missing_and_does_not_execute(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    plugin = pm.get_plugin("alpha")
+    plugin.execute = AsyncMock(return_value={"result": "should-not-run"})
+    monkeypatch.setattr(pm, "get_spec_by_function_name", lambda _function_name: None)
+
+    result = await pm.call_function("alpha.do", helper=None, arguments="{}")
+
+    assert "Function spec for alpha.do not found" in json.loads(result)["error"]
+    plugin.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_call_function_records_missing_spec_as_error_telemetry(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    plugin = pm.get_plugin("alpha")
+    plugin.execute = AsyncMock(return_value={"result": "should-not-run"})
+    monkeypatch.setattr(pm, "get_spec_by_function_name", lambda _function_name: None)
+    events = []
+
+    class FakeDB:
+        def record_tool_call_event(self, **kwargs):
+            events.append(kwargs)
+
+    result = await pm.call_function(
+        "alpha.do",
+        helper=SimpleNamespace(db=FakeDB()),
+        arguments=json.dumps({"chat_id": 77, "user_id": 42}),
+    )
+
+    assert "Function spec for alpha.do not found" in json.loads(result)["error"]
+    plugin.execute.assert_not_awaited()
+    assert len(events) == 1
+    assert events[0]["status"] == "error"
+    assert "Function spec for alpha.do not found" in events[0]["error"]
+    assert events[0]["chat_id"] == 77
+    assert events[0]["user_id"] == 42
 
 
 @pytest.mark.asyncio

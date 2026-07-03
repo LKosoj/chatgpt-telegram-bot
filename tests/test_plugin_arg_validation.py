@@ -1,9 +1,11 @@
-import asyncio
 import json
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from bot.plugin_manager import PluginManager
+from bot.request_context import RequestContext
 from bot.validation import validate_function_args
 
 
@@ -134,12 +136,19 @@ class StrictPlugin(Plugin):
         }]
 
     async def execute(self, function_name, helper, **kwargs):
-        return {"text": kwargs["text"], "chat_id": kwargs["chat_id"], "user_id": kwargs["user_id"]}
+        return {
+            "text": kwargs["text"],
+            "chat_id": kwargs["chat_id"],
+            "user_id": kwargs["user_id"],
+            "message_id": kwargs.get("message_id"),
+            "context_user_id": kwargs["request_context"].user_id,
+        }
 """
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
-def test_plugin_arg_validation(tmp_path):
+@pytest.mark.asyncio
+async def test_plugin_arg_validation(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
     _write_plugin(plugin_dir / "demo.py")
@@ -149,11 +158,12 @@ def test_plugin_arg_validation(tmp_path):
         plugins_directory=str(plugin_dir),
     )
     bad_args = json.dumps({"count": 1})
-    result = asyncio.run(pm.call_function("demo.do", None, bad_args))
+    result = await pm.call_function("demo.do", None, bad_args)
     assert "Missing required arg" in result
 
 
-def test_plugin_arg_validation_ignores_framework_args_for_strict_schema(tmp_path):
+@pytest.mark.asyncio
+async def test_plugin_arg_validation_ignores_framework_args_for_strict_schema(tmp_path):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
     _write_strict_plugin(plugin_dir / "strict.py")
@@ -162,10 +172,24 @@ def test_plugin_arg_validation_ignores_framework_args_for_strict_schema(tmp_path
         config={"plugins": []},
         plugins_directory=str(plugin_dir),
     )
-    result = asyncio.run(pm.call_function(
+    request_context = RequestContext(chat_id=77, user_id=42, message_id=123)
+    result = await pm.call_function(
         "strict.do",
         None,
-        json.dumps({"text": "ok", "chat_id": 10, "user_id": 42}),
-    ))
+        json.dumps({
+            "text": "ok",
+            "chat_id": 10,
+            "user_id": 999,
+            "message_id": 555,
+            "request_context": {"user_id": 999},
+        }),
+        request_context=request_context,
+    )
 
-    assert json.loads(result) == {"text": "ok", "chat_id": 10, "user_id": 42}
+    assert json.loads(result) == {
+        "text": "ok",
+        "chat_id": 77,
+        "user_id": 42,
+        "message_id": 123,
+        "context_user_id": 42,
+    }

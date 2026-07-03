@@ -11,6 +11,7 @@ import sys
 import yaml
 import re
 import weakref
+import warnings
 from collections import OrderedDict
 from typing import Dict
 from functools import lru_cache
@@ -22,9 +23,9 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResu
 from telegram import InputTextMessageContent, BotCommand, ForceReply
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
-    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, TypeHandler
+    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, TypeHandler, \
+    ConversationHandler
 
-from pydub import AudioSegment
 from PIL import Image
 
 from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
@@ -32,7 +33,8 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     get_reply_to_message_id, record_chat_tokens, record_image_request, record_vision_tokens, record_tts_request, \
     record_transcription_seconds, make_usage_tracker, error_handler, \
     is_direct_result, handle_direct_result, cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, \
-    direct_result_inline_fallback_text, should_send_text_as_file, render_markdown_message_entities
+    direct_result_inline_fallback_text, should_send_text_as_file, render_markdown_message_entities, \
+    log_exception_shape, log_json_shape, log_value_shape
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
@@ -54,6 +56,36 @@ from .user_settings import (
 #logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    raw_value = raw_value.strip()
+    if raw_value == "":
+        return default
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid %s value_shape=%s; falling back to %s",
+            name,
+            log_value_shape(raw_value, key="value"),
+            default,
+        )
+        return default
+    if value < 1:
+        logger.warning(
+            "Invalid %s value_shape=%s; falling back to %s",
+            name,
+            log_value_shape(raw_value, key="value"),
+            default,
+        )
+        return default
+    return value
+
+AudioSegment = None
+
 WAITING_PROMPT = 1
 DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
 LANGUAGE_MENU_PAGE_SIZE = 10
@@ -63,6 +95,21 @@ SETTINGS_MENU_PAGE_SIZE = 10
 def _read_file_bytes_for_telegram(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
+
+
+def _get_audio_segment_cls():
+    global AudioSegment
+    if AudioSegment is not None:
+        return AudioSegment
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="'audioop' is deprecated.*",
+            category=DeprecationWarning,
+        )
+        from pydub import AudioSegment as imported_audio_segment
+    AudioSegment = imported_audio_segment
+    return AudioSegment
 
 
 def _load_yaml_file(path: str):
@@ -164,7 +211,7 @@ class ChatGPTTelegramBot:
         self.plugin_command_index = {}
         self.plugin_menu_entries = []
         self._user_plugin_menu_entries: dict = {}
-        self.plugin_menu_page_size = int(os.getenv("PLUGIN_MENU_PAGE_SIZE", "8"))
+        self.plugin_menu_page_size = _positive_int_env("PLUGIN_MENU_PAGE_SIZE", 8)
         self._background_tasks = []
         self._transient_tasks: set[asyncio.Task] = set()
         self._cleanup_called = False
@@ -174,6 +221,8 @@ class ChatGPTTelegramBot:
     def _track_task(self, coro, *, name: str | None = None) -> asyncio.Task:
         # Why: asyncio.create_task без сохранения ссылки рискует GC до завершения task.
         task = asyncio.create_task(coro, name=name)
+        if not hasattr(self, '_transient_tasks'):
+            self._transient_tasks = set()
         self._transient_tasks.add(task)
         task.add_done_callback(self._transient_tasks.discard)
         return task
@@ -217,8 +266,35 @@ class ChatGPTTelegramBot:
         self._user_language_cache[user_id] = language
         return language
 
+    async def _get_user_language_async(self, update: Update) -> str:
+        user = getattr(update, 'effective_user', None)
+        user_id = getattr(user, 'id', None)
+        if user_id is None:
+            return self._configured_language()
+
+        cached_language = self._user_language_cache.get(user_id)
+        if cached_language:
+            return cached_language
+
+        settings = await self._db_call("get_user_settings", user_id) or {}
+        if not isinstance(settings, dict):
+            settings = {}
+
+        language = settings.get(USER_LANGUAGE_SETTING)
+        if language:
+            language = normalize_language(language)
+        elif self._is_auto_language_enabled():
+            language = self._detect_user_language(update)
+            settings[USER_LANGUAGE_SETTING] = language
+            await self._db_call("save_user_settings", user_id, settings)
+        else:
+            language = self._configured_language()
+
+        self._user_language_cache[user_id] = language
+        return language
+
     async def prepare_user_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        set_current_language(self._get_user_language(update))
+        set_current_language(await self._get_user_language_async(update))
 
     def get_chat_modes(self):
         """
@@ -238,10 +314,76 @@ class ChatGPTTelegramBot:
                 self._chat_modes_cache = _load_yaml_file(chat_modes_path) or {}
                 self._chat_modes_mtime = mtime
             except Exception as e:
-                logger.error(f"Ошибка загрузки chat_modes.yml: {e}")
+                logger.error("Failed to load chat_modes.yml error=%s", log_exception_shape(e))
                 if self._chat_modes_cache is None:
                     self._chat_modes_cache = {}
         return self._chat_modes_cache
+
+    def _system_message_from_session(self, session: dict | None) -> dict | None:
+        context = (session or {}).get('context')
+        if not isinstance(context, dict):
+            return None
+        messages = context.get('messages')
+        if not isinstance(messages, list):
+            return None
+        return next(
+            (msg for msg in messages if isinstance(msg, dict) and msg.get('role') == 'system'),
+            None,
+        )
+
+    def _mode_data_from_system_message(self, system_message: dict | None):
+        if not system_message:
+            return None, None
+
+        chat_modes = self.get_chat_modes()
+        mode_key = system_message.get('mode_key')
+        if isinstance(mode_key, str) and mode_key.strip():
+            mode_key = mode_key.strip()
+            mode_data = chat_modes.get(mode_key)
+            if isinstance(mode_data, dict):
+                return mode_key, mode_data
+
+        content = str(system_message.get('content') or '')
+        stripped_content = content.strip()
+        if stripped_content:
+            for candidate_key, mode_data in chat_modes.items():
+                if not isinstance(mode_data, dict):
+                    continue
+                if mode_data.get('prompt_start', '').strip() == stripped_content:
+                    return candidate_key, mode_data
+
+            normalized_content = content.lower()
+            for candidate_key, mode_data in chat_modes.items():
+                if not isinstance(mode_data, dict):
+                    continue
+                markers = mode_data.get('prompt_markers') or []
+                if markers and all(str(marker).lower() in normalized_content for marker in markers):
+                    return candidate_key, mode_data
+
+        registry = getattr(getattr(self, 'openai', None), 'chat_modes_registry', None)
+        get_mode_by_key = getattr(registry, 'get_mode_by_key', None)
+        if isinstance(mode_key, str) and mode_key and callable(get_mode_by_key):
+            mode_data = get_mode_by_key(mode_key)
+            if isinstance(mode_data, dict):
+                return mode_key, mode_data
+        get_mode_by_system_prompt = getattr(registry, 'get_mode_by_system_prompt', None)
+        if callable(get_mode_by_system_prompt):
+            mode_data = get_mode_by_system_prompt(content)
+            if isinstance(mode_data, dict):
+                return None, mode_data
+        return None, None
+
+    def _session_mode_display_name(self, session: dict | None) -> str | None:
+        mode_key, mode_data = self._mode_data_from_system_message(
+            self._system_message_from_session(session)
+        )
+        if not isinstance(mode_data, dict):
+            return None
+        display_name = mode_data.get('name') or mode_key
+        if display_name is None:
+            return None
+        display_name = str(display_name).strip()
+        return display_name or None
 
     def _image_file_id_from_message(self, message):
         if not message:
@@ -364,13 +506,16 @@ class ChatGPTTelegramBot:
                 if os.path.exists(local_path):
                     os.remove(local_path)
                 os.rmdir(temp_dir)
-            except OSError:
-                logger.debug("Could not clean up failed replied file download at %s", local_path, exc_info=True)
+            except OSError as exc:
+                logger.debug(
+                    "Could not clean up failed replied file download error=%s",
+                    log_exception_shape(exc),
+                )
             raise
         logger.info(
-            "Downloaded replied Telegram file for model use: file_id=%s path=%s",
-            document.file_id,
-            local_path,
+            "Downloaded replied Telegram file for model use: mime_type=%s file_size=%s",
+            getattr(document, 'mime_type', None) or "unknown",
+            getattr(document, 'file_size', None),
         )
         return {
             "local_path": local_path,
@@ -409,8 +554,8 @@ class ChatGPTTelegramBot:
             temp_dir = os.path.dirname(local_path)
             if temp_dir:
                 os.rmdir(temp_dir)
-        except OSError:
-            logger.debug("Could not clean up replied file context at %s", local_path, exc_info=True)
+        except OSError as exc:
+            logger.debug("Could not clean up replied file context error=%s", log_exception_shape(exc))
 
     def _reply_context_kind(self, update: Update) -> str | None:
         message = update.effective_message
@@ -450,11 +595,14 @@ class ChatGPTTelegramBot:
             logger.info("Classified reply intent as %s for %s context", intent, replied_message_kind)
             if intent in {"image_edit", "image_describe", "text_reply"}:
                 return intent
-        except Exception:
-            logger.warning("Failed to classify reply intent with light model", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to classify reply intent with light model error=%s",
+                log_exception_shape(exc),
+            )
         return None
 
-    def _remember_sent_image_messages(self, update: Update, sent_messages) -> None:
+    async def _remember_sent_image_messages(self, update: Update, sent_messages) -> None:
         if not sent_messages:
             return
         if not isinstance(sent_messages, (list, tuple)):
@@ -470,13 +618,18 @@ class ChatGPTTelegramBot:
             if not file_id:
                 continue
             try:
-                self.db.save_image(user.id, chat.id, file_id)
+                await self._db_call("save_image", user.id, chat.id, file_id)
                 self.openai.set_last_image_file_id(chat.id, file_id)
                 if user.id != chat.id:
                     self.openai.set_last_image_file_id(user.id, file_id)
                 logger.info("Stored sent image file_id for user %s chat %s", user.id, chat.id)
-            except Exception:
-                logger.warning("Failed to store sent image file_id for user %s chat %s", user.id, chat.id, exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to store sent image for user %s chat %s error=%s",
+                    user.id,
+                    chat.id,
+                    log_exception_shape(exc),
+                )
 
     def _build_plan_status_provider(self, chat_id, user_id):
         """
@@ -491,8 +644,8 @@ class ChatGPTTelegramBot:
         if callable(get_plugin):
             try:
                 agent_tools_plugin = get_plugin("agent_tools")
-            except Exception:
-                logger.debug("Failed to get agent_tools plugin", exc_info=True)
+            except Exception as exc:
+                logger.debug("Failed to get agent_tools plugin error=%s", log_exception_shape(exc))
                 agent_tools_plugin = None
         get_plan_tasks = getattr(agent_tools_plugin, "get_plan_tasks", None) if agent_tools_plugin else None
         if not callable(get_plan_tasks):
@@ -506,15 +659,21 @@ class ChatGPTTelegramBot:
 
         return _provider, 5.0
 
+    async def _should_force_non_stream_first_turn(self, chat_id: int, user_id: int | None) -> bool:
+        async_helper = getattr(self.openai, "should_force_non_stream_first_turn_async", None)
+        if not callable(async_helper):
+            raise RuntimeError("OpenAIHelper.should_force_non_stream_first_turn_async is required")
+        return bool(await async_helper(chat_id, user_id))
+
     async def _handle_direct_result(self, update: Update, response):
         sent_messages = []
         delivery_error: Exception | None = None
         try:
             sent_messages = await handle_direct_result(self.config, update, response)
-            self._remember_sent_image_messages(update, sent_messages)
+            await self._remember_sent_image_messages(update, sent_messages)
         except Exception as exc:
             delivery_error = exc
-            logger.exception("Failed to deliver direct_result to chat")
+            logger.error("Failed to deliver direct_result to chat error=%s", log_exception_shape(exc))
             try:
                 effective_message = update.effective_message
                 if effective_message is not None:
@@ -522,15 +681,21 @@ class ChatGPTTelegramBot:
                         localized_text(
                             "direct_result_delivery_error",
                             self.config['bot_language']
-                        ).format(error=exc)
+                        ).format(error=log_exception_shape(exc))
                     )
-            except Exception:
-                logger.exception("Failed to notify user about delivery error")
+            except Exception as notify_exc:
+                logger.error(
+                    "Failed to notify user about delivery error error=%s",
+                    log_exception_shape(notify_exc),
+                )
         finally:
             try:
                 await self._run_post_delivery_cleanup(response)
-            except Exception:
-                logger.exception("Post-delivery cleanup raised unexpectedly")
+            except Exception as cleanup_exc:
+                logger.error(
+                    "Post-delivery cleanup raised unexpectedly error=%s",
+                    log_exception_shape(cleanup_exc),
+                )
         if delivery_error is not None:
             return
         if not sent_messages:
@@ -645,8 +810,12 @@ class ChatGPTTelegramBot:
                 result = cleanup(directive)
                 if asyncio.iscoroutine(result):
                     await result
-            except Exception:
-                logger.exception("Post-delivery cleanup failed for %s", directive)
+            except Exception as exc:
+                logger.error(
+                    "Post-delivery cleanup failed directive_shape=%s error=%s",
+                    log_json_shape({"directive": directive}),
+                    log_exception_shape(exc),
+                )
 
     async def _dispatch_session_before_delete(self, user_id: int, session_id: str | None) -> int:
         """Fire ``on_session_before_delete`` so plugin subscribers can react.
@@ -660,14 +829,15 @@ class ChatGPTTelegramBot:
         if pm is None:
             return 0
         try:
-            context, _, _, _, _ = self.db.get_conversation_context(user_id, session_id)
+            context, _, _, _, _ = await self._db_call("get_conversation_context", user_id, session_id)
             messages = context.get('messages', []) if isinstance(context, dict) else []
             messages = [dict(message) for message in messages if isinstance(message, dict)]
-        except Exception:
-            logger.exception(
-                "Failed to snapshot session before delete dispatch for user_id=%s session_id=%s",
+        except Exception as exc:
+            logger.error(
+                "Failed to snapshot session before delete dispatch for user_id=%s session_id=%s error=%s",
                 user_id,
                 session_id,
+                log_exception_shape(exc),
             )
             raise
 
@@ -682,14 +852,92 @@ class ChatGPTTelegramBot:
                 payload,
                 user_id=user_id,
             )
-        except Exception:
-            logger.exception(
-                "on_session_before_delete dispatch failed for user_id=%s session_id=%s",
+        except Exception as exc:
+            logger.error(
+                "on_session_before_delete dispatch failed for user_id=%s session_id=%s error=%s",
                 user_id,
                 session_id,
+                log_exception_shape(exc),
             )
             return 0
         return 1
+
+    async def _db_call(self, method_name: str, *args, **kwargs):
+        async_method = getattr(self.db, f"{method_name}_async", None)
+        if not callable(async_method):
+            raise RuntimeError(f"Database.{method_name}_async is required in async Telegram flow")
+        return await async_method(*args, **kwargs)
+
+    def _retention_int_config(self, key: str, default: int) -> int:
+        try:
+            value = int(self.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
+
+    async def run_retention_cleanup_once(self) -> dict:
+        results = {
+            "tool_call_events": 0,
+            "images": 0,
+            "usage_trackers": 0,
+            "usage_events": 0,
+            "session_logs": 0,
+        }
+        tool_days = self._retention_int_config("tool_call_event_retention_days", 30)
+        image_days = self._retention_int_config("image_retention_days", 7)
+        usage_days = self._retention_int_config("usage_retention_days", 30)
+
+        try:
+            results["tool_call_events"] = await self._db_call("prune_tool_call_events", days=tool_days)
+        except Exception as exc:
+            logger.error("Failed to prune old tool call events error=%s", log_exception_shape(exc))
+
+        try:
+            results["images"] = await self._db_call("prune_old_images", days=image_days)
+        except Exception as exc:
+            logger.error("Failed to prune old images error=%s", log_exception_shape(exc))
+
+        for tracker in list(getattr(self, "usage", {}).values()):
+            prune_store = getattr(tracker, "prune_store", None)
+            if not callable(prune_store):
+                continue
+            try:
+                deleted = await asyncio.to_thread(
+                    prune_store,
+                    event_days=usage_days,
+                    history_days=usage_days,
+                )
+                results["usage_events"] += int(deleted or 0)
+                results["usage_trackers"] += 1
+            except Exception as exc:
+                logger.error("Failed to prune usage tracker store error=%s", log_exception_shape(exc))
+
+        session_logger = getattr(getattr(self, "openai", None), "session_logger", None)
+        cleanup_old_logs = getattr(session_logger, "cleanup_old_logs", None)
+        if callable(cleanup_old_logs):
+            try:
+                results["session_logs"] = await cleanup_old_logs()
+            except Exception as exc:
+                logger.error("Failed to prune old session logs error=%s", log_exception_shape(exc))
+
+        return results
+
+    async def retention_cleanup_loop(self):
+        interval = self._retention_int_config("retention_cleanup_interval_seconds", 3600)
+        if interval <= 0:
+            return
+        while True:
+            try:
+                results = await self.run_retention_cleanup_once()
+                logger.debug("Retention cleanup completed: %s", results)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Retention cleanup loop failed error=%s", log_exception_shape(exc))
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
 
     async def _dispatch_and_delete_oldest_sessions_for_limit(
         self,
@@ -697,7 +945,8 @@ class ChatGPTTelegramBot:
         max_sessions: int,
         exclude_session_ids: list[str] | None = None,
     ) -> None:
-        session_ids = self.db.get_oldest_session_ids_for_limit(
+        session_ids = await self._db_call(
+            "get_oldest_session_ids_for_limit",
             user_id,
             max_sessions=max_sessions,
             exclude_session_ids=exclude_session_ids,
@@ -706,7 +955,7 @@ class ChatGPTTelegramBot:
             return
         for session_id in session_ids:
             await self._dispatch_session_before_delete(user_id, session_id)
-        if not self.db.delete_sessions_by_ids(user_id, session_ids):
+        if not await self._db_call("delete_sessions_by_ids", user_id, session_ids):
             raise RuntimeError(f"Failed to delete old sessions for user {user_id}: {session_ids}")
 
     def _image_edit_source_file_id(
@@ -799,7 +1048,7 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = make_usage_tracker(self.config, user_id, update.effective_user.name)
             record_vision_tokens(self.usage, self.config, user_id, total_tokens)
         except Exception as e:
-            logger.exception(e)
+            logger.error("Initial vision interpretation failed error=%s", log_exception_shape(e))
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -821,10 +1070,12 @@ class ChatGPTTelegramBot:
             
             self._inline_cache_cleanup_time = current_time
 
-    async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
         """
+        if not await self._ensure_allowed(update, context):
+            return
         commands = self.group_commands if is_group_chat(update) else self.commands
         commands_description = [f'/{command.command} - {command.description}' for command in commands]
         bot_language = self.config['bot_language']
@@ -865,10 +1116,7 @@ class ChatGPTTelegramBot:
         Возвращает статистику использования токенов за текущий день и месяц,
         а также информацию о сессиях пользователя.
         """
-        if not await is_allowed(self.config, update, context):
-            logger.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                            'is not allowed to request their usage statistics')
-            await self.send_disallowed_message(update, context)
+        if not await self._ensure_allowed(update, context):
             return
 
         logger.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
@@ -880,7 +1128,7 @@ class ChatGPTTelegramBot:
         bot_language = self.config['bot_language']
 
         # Получаем информацию о сессиях пользователя
-        sessions = self.db.list_user_sessions(user_id)
+        sessions = await self._db_call("list_user_sessions", user_id)
         active_session = next((s for s in sessions if s['is_active']), None)
         
         # Формируем текст о текущей сессии
@@ -903,22 +1151,11 @@ class ChatGPTTelegramBot:
                     model=active_session.get('model', '')
                 ) + "\n"
             
-            # Добавляем информацию о режиме
-            if active_session['context'].get('messages'):
-                last_system_message = next(
-                    (msg for msg in active_session['context']['messages'] if msg.get('role') == 'system'),
-                    None
-                )
-                if last_system_message:
-                    # Используем кешированные режимы
-                    chat_modes = self.get_chat_modes()
-                    
-                    for mode_key, mode_data in chat_modes.items():
-                        if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
-                            text_current_session += localized_text('stats_session_mode', bot_language).format(
-                                mode=mode_data.get('name', mode_key)
-                            ) + "\n"
-                            break
+            mode_name = self._session_mode_display_name(active_session)
+            if mode_name:
+                text_current_session += localized_text('stats_session_mode', bot_language).format(
+                    mode=mode_name
+                ) + "\n"
             
             text_current_session += localized_text('stats_session_temperature', bot_language).format(
                 temperature=active_session['temperature']
@@ -1058,10 +1295,9 @@ class ChatGPTTelegramBot:
         """
         Resend the last request
         """
-        if not await is_allowed(self.config, update, context):
+        if not await self._ensure_allowed(update, context):
             logger.warning(f'User {update.message.from_user.name}  (id: {update.message.from_user.id})'
                             ' is not allowed to resend the message')
-            await self.send_disallowed_message(update, context)
             return
 
         chat_id = update.effective_chat.id
@@ -1083,16 +1319,15 @@ class ChatGPTTelegramBot:
         await self.prompt(update=update, context=context)
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await is_allowed(self.config, update, context):
-            await self.send_disallowed_message(update, context)
+        if not await self._ensure_allowed(update, context):
             return
 
-        set_current_language(self._get_user_language(update))
-        bot_language = self._get_user_language(update)
+        bot_language = await self._get_user_language_async(update)
+        set_current_language(bot_language)
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
-            text=self._settings_text(bot_language, user_id),
+            text=await self._settings_text_async(bot_language, user_id),
             reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
@@ -1101,17 +1336,18 @@ class ChatGPTTelegramBot:
         if not query:
             return
 
-        set_current_language(self._get_user_language(update))
-        bot_language = self._get_user_language(update)
+        if not await self._ensure_allowed(
+            update,
+            context,
+            deny_mode="callback_edit",
+            answer_callback=True,
+        ):
+            return
+
+        bot_language = await self._get_user_language_async(update)
+        set_current_language(bot_language)
         user = getattr(update, 'effective_user', None)
         user_id = getattr(user, 'id', None)
-
-        if not await is_allowed(self.config, update, context):
-            await query.answer()
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
-            return
 
         parts = str(query.data or '').split(':')
         action = parts[1] if len(parts) > 1 else 'root'
@@ -1124,7 +1360,7 @@ class ChatGPTTelegramBot:
         if action == 'root':
             await query.answer()
             await query.edit_message_text(
-                text=self._settings_text(bot_language, user_id),
+                text=await self._settings_text_async(bot_language, user_id),
                 reply_markup=await self._build_settings_menu(bot_language, user_id),
             )
             return
@@ -1152,16 +1388,16 @@ class ChatGPTTelegramBot:
                 await query.answer()
                 return
             new_language = normalize_language(parts[2])
-            settings = self.db.get_user_settings(user_id) or {}
+            settings = await self._db_call("get_user_settings", user_id) or {}
             if not isinstance(settings, dict):
                 settings = {}
             settings[USER_LANGUAGE_SETTING] = new_language
-            self.db.save_user_settings(user_id, settings)
+            await self._db_call("save_user_settings", user_id, settings)
             self._user_language_cache[user_id] = new_language
             set_current_language(new_language)
             await query.answer(localized_text('settings_language_saved', self.config['bot_language']))
             await query.edit_message_text(
-                text=self._settings_text(new_language, user_id),
+                text=await self._settings_text_async(new_language, user_id),
                 reply_markup=await self._build_settings_menu(new_language, user_id),
             )
             return
@@ -1191,7 +1427,7 @@ class ChatGPTTelegramBot:
             page = self._settings_page(parts)
             await query.edit_message_text(
                 text=localized_text('settings_plugins_choose', self.config['bot_language']),
-                reply_markup=self._build_plugin_settings_menu(page, user_id),
+                reply_markup=await self._build_plugin_settings_menu(page, user_id),
             )
             return
 
@@ -1204,7 +1440,7 @@ class ChatGPTTelegramBot:
             page = self._settings_page(parts)
             await query.edit_message_text(
                 text=localized_text('settings_skills_choose', self.config['bot_language']),
-                reply_markup=self._build_skill_settings_menu(page, user_id),
+                reply_markup=await self._build_skill_settings_menu(page, user_id),
             )
             return
 
@@ -1240,8 +1476,21 @@ class ChatGPTTelegramBot:
             return {}
         return get_user_settings(self.db, user_id)
 
+    async def _settings_for_user_async(self, user_id: int | None) -> dict:
+        if user_id is None or not getattr(self, 'db', None):
+            return {}
+        settings = await self._db_call("get_user_settings", user_id)
+        return settings if isinstance(settings, dict) else {}
+
     def _settings_text(self, bot_language: str, user_id: int | None = None) -> str:
         settings = self._settings_for_user(user_id)
+        return self._settings_text_from_settings(bot_language, settings)
+
+    async def _settings_text_async(self, bot_language: str, user_id: int | None = None) -> str:
+        settings = await self._settings_for_user_async(user_id)
+        return self._settings_text_from_settings(bot_language, settings)
+
+    def _settings_text_from_settings(self, bot_language: str, settings: dict) -> str:
         tts_model = str(settings.get(USER_TTS_MODEL_SETTING) or self.openai.config.get('tts_model', ''))
         tts_voice = str(settings.get(USER_TTS_VOICE_SETTING) or self.openai.config.get('tts_voice', ''))
         disabled_plugins = normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING))
@@ -1267,7 +1516,7 @@ class ChatGPTTelegramBot:
         )
 
     async def _build_settings_menu(self, bot_language: str, user_id: int | None = None) -> InlineKeyboardMarkup:
-        settings = self._settings_for_user(user_id)
+        settings = await self._settings_for_user_async(user_id)
         tts_model = str(settings.get(USER_TTS_MODEL_SETTING) or self.openai.config.get('tts_model', ''))
         tts_voice = str(settings.get(USER_TTS_VOICE_SETTING) or self.openai.config.get('tts_voice', ''))
         keyboard = [
@@ -1463,7 +1712,7 @@ class ChatGPTTelegramBot:
                 reply_markup=self._build_back_settings_menu(),
             )
             return
-        current_model = self.openai.get_user_tts_model(user_id)
+        current_model = await self.openai.get_user_tts_model_async(user_id)
         await query.edit_message_text(
             text=localized_text('settings_tts_model_choose', self.config['bot_language']),
             reply_markup=self._build_option_settings_menu(
@@ -1486,17 +1735,17 @@ class ChatGPTTelegramBot:
             await query.answer()
             await self._show_tts_model_settings(query, page, user_id)
             return
-        settings = self._settings_for_user(user_id)
+        settings = await self._settings_for_user_async(user_id)
         settings[USER_TTS_MODEL_SETTING] = models[index]
-        self.db.save_user_settings(user_id, settings)
+        await self._db_call("save_user_settings", user_id, settings)
         await query.answer(localized_text('settings_tts_model_saved', self.config['bot_language']))
         await query.edit_message_text(
-            text=self._settings_text(bot_language, user_id),
+            text=await self._settings_text_async(bot_language, user_id),
             reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
     async def _show_tts_voice_settings(self, query, page: int, user_id: int | None) -> None:
-        model = self.openai.get_user_tts_model(user_id)
+        model = await self.openai.get_user_tts_model_async(user_id)
         voices = await self.openai.get_available_tts_voices(model)
         if not voices:
             await query.edit_message_text(
@@ -1504,7 +1753,7 @@ class ChatGPTTelegramBot:
                 reply_markup=self._build_back_settings_menu(),
             )
             return
-        current_voice = self.openai.get_user_tts_voice(user_id)
+        current_voice = await self.openai.get_user_tts_voice_async(user_id)
         await query.edit_message_text(
             text=localized_text('settings_tts_voice_choose', self.config['bot_language']),
             reply_markup=self._build_option_settings_menu(
@@ -1522,17 +1771,19 @@ class ChatGPTTelegramBot:
             return
         page = self._settings_page(parts)
         index = self._settings_index(parts)
-        voices = await self.openai.get_available_tts_voices(self.openai.get_user_tts_model(user_id))
+        voices = await self.openai.get_available_tts_voices(
+            await self.openai.get_user_tts_model_async(user_id)
+        )
         if index is None or index >= len(voices):
             await query.answer()
             await self._show_tts_voice_settings(query, page, user_id)
             return
-        settings = self._settings_for_user(user_id)
+        settings = await self._settings_for_user_async(user_id)
         settings[USER_TTS_VOICE_SETTING] = voices[index]
-        self.db.save_user_settings(user_id, settings)
+        await self._db_call("save_user_settings", user_id, settings)
         await query.answer(localized_text('settings_tts_voice_saved', self.config['bot_language']))
         await query.edit_message_text(
-            text=self._settings_text(bot_language, user_id),
+            text=await self._settings_text_async(bot_language, user_id),
             reply_markup=await self._build_settings_menu(bot_language, user_id),
         )
 
@@ -1553,8 +1804,8 @@ class ChatGPTTelegramBot:
         available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
         return sorted(str(name) for name in available_skills.keys())
 
-    def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
-        settings = self._settings_for_user(user_id)
+    async def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
+        settings = await self._settings_for_user_async(user_id)
         plugins = self._available_plugin_names()
         if not plugins:
             return self._build_back_settings_menu()
@@ -1566,8 +1817,8 @@ class ChatGPTTelegramBot:
             toggle_action='plugin_toggle',
         )
 
-    def _build_skill_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
-        settings = self._settings_for_user(user_id)
+    async def _build_skill_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
+        settings = await self._settings_for_user_async(user_id)
         skills = self._available_skill_names()
         if not skills:
             return self._build_back_settings_menu()
@@ -1589,17 +1840,17 @@ class ChatGPTTelegramBot:
         if index is None or index >= len(plugins):
             await query.answer()
             return
-        settings = self._settings_for_user(user_id)
+        settings = await self._settings_for_user_async(user_id)
         disabled = plugins[index] not in set(normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)))
         set_disabled_value(settings, USER_DISABLED_PLUGINS_SETTING, plugins[index], disabled)
-        self.db.save_user_settings(user_id, settings)
+        await self._db_call("save_user_settings", user_id, settings)
         await query.answer(localized_text(
             'settings_plugin_disabled' if disabled else 'settings_plugin_enabled',
             self.config['bot_language'],
         ).format(plugin=plugins[index]))
         await query.edit_message_text(
             text=localized_text('settings_plugins_choose', self.config['bot_language']),
-            reply_markup=self._build_plugin_settings_menu(page, user_id),
+            reply_markup=await self._build_plugin_settings_menu(page, user_id),
         )
 
     async def _toggle_skill_setting(self, query, parts: list[str], user_id: int | None) -> None:
@@ -1612,17 +1863,17 @@ class ChatGPTTelegramBot:
         if index is None or index >= len(skills):
             await query.answer()
             return
-        settings = self._settings_for_user(user_id)
+        settings = await self._settings_for_user_async(user_id)
         disabled = skills[index] not in set(normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)))
         set_disabled_value(settings, USER_DISABLED_SKILLS_SETTING, skills[index], disabled)
-        self.db.save_user_settings(user_id, settings)
+        await self._db_call("save_user_settings", user_id, settings)
         await query.answer(localized_text(
             'settings_skill_disabled' if disabled else 'settings_skill_enabled',
             self.config['bot_language'],
         ).format(skill=skills[index]))
         await query.edit_message_text(
             text=localized_text('settings_skills_choose', self.config['bot_language']),
-            reply_markup=self._build_skill_settings_menu(page, user_id),
+            reply_markup=await self._build_skill_settings_menu(page, user_id),
         )
 
     def _build_back_settings_menu(self) -> InlineKeyboardMarkup:
@@ -1646,15 +1897,11 @@ class ChatGPTTelegramBot:
         
         # Получаем информацию о пользователе из callback_query или message
         if is_callback:
-            if not await is_allowed(self.config, update, context):
-                await update.callback_query.edit_message_text(
-                    text=localized_text('access_denied_command', self.config['bot_language'])
-                )
+            if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
                 return
         elif update.message:
             # Для обычных сообщений используем стандартную проверку
-            if not await is_allowed(self.config, update, context):
-                await self.send_disallowed_message(update, context)
+            if not await self._ensure_allowed(update, context):
                 return
         else:
             logger.error("Neither callback_query nor message found in update")
@@ -1675,10 +1922,7 @@ class ChatGPTTelegramBot:
         try:
             conversation_key = get_conversation_key(update)
             # Получаем список сессий текущего conversation key
-            sessions = self.db.list_user_sessions(conversation_key)
-            
-            # Используем кешированные режимы для определения имен режимов
-            chat_modes = self.get_chat_modes()
+            sessions = await self._db_call("list_user_sessions", conversation_key)
             
             # Создаем клавиатуру с кнопками управления сессиями
             keyboard = []
@@ -1702,19 +1946,7 @@ class ChatGPTTelegramBot:
                     # Добавляем маркер активной сессии и информацию о режиме
                     session_name = session['session_name']
                     
-                    # Определяем текущий режим сессии
-                    current_mode = None
-                    if session['context'].get('messages'):
-                        last_system_message = next(
-                            (msg for msg in session['context']['messages'] if msg.get('role') == 'system'),
-                            None
-                        )
-                        if last_system_message:
-                            # Ищем режим по системному сообщению
-                            for mode_key, mode_data in chat_modes.items():
-                                if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
-                                    current_mode = mode_data.get('name', mode_key)
-                                    break
+                    current_mode = self._session_mode_display_name(session)
                     
                     # Формируем имя сессии с информацией о режиме и модели
                     if session['is_active']:
@@ -1769,7 +2001,7 @@ class ChatGPTTelegramBot:
                     ) + "\n"
                     
                     # Добавляем информацию о модели сессии
-                    current_model = self.openai.get_current_model(
+                    current_model = await self.openai.get_current_model_async(
                         conversation_key,
                         session_id=active_session.get('session_id'),
                     )
@@ -1777,19 +2009,11 @@ class ChatGPTTelegramBot:
                         model=current_model
                     ) + "\n"
                     
-                    # Добавляем информацию о режиме активной сессии
-                    if active_session['context'].get('messages'):
-                        last_system_message = next(
-                            (msg for msg in active_session['context']['messages'] if msg.get('role') == 'system'),
-                            None
-                        )
-                        if last_system_message:
-                            for mode_key, mode_data in chat_modes.items():
-                                if mode_data.get('prompt_start', '').strip() == last_system_message.get('content', '').strip():
-                                    message_text += localized_text('session_mode_label', self.config['bot_language']).format(
-                                        mode=mode_data.get('name', mode_key)
-                                    ) + "\n"
-                                    break
+                    current_mode = self._session_mode_display_name(active_session)
+                    if current_mode:
+                        message_text += localized_text('session_mode_label', self.config['bot_language']).format(
+                            mode=current_mode
+                        ) + "\n"
                                     
                 message_text += "\n" + localized_text('stats_sessions_total', self.config['bot_language']).format(
                     current=len(sessions),
@@ -1816,7 +2040,7 @@ class ChatGPTTelegramBot:
                     raise
             
         except Exception as e:
-            logger.error(f"Error in reset: {str(e)}", exc_info=True)
+            logger.error("Error in reset error=%s", log_exception_shape(e))
             error_text = localized_text('session_management_error', self.config['bot_language'])
             if is_callback:
                 try:
@@ -1837,10 +2061,7 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
 
-        if not await is_allowed(self.config, update, context):
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
+        if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
             return
 
         conversation_key = get_conversation_key(update)
@@ -1921,14 +2142,15 @@ class ChatGPTTelegramBot:
                 mode = value
                 if mode in chat_modes:
                     # Получаем текущую активную сессию
-                    sessions = self.db.list_user_sessions(conversation_key, is_active=1)
+                    sessions = await self._db_call("list_user_sessions", conversation_key, is_active=1)
                     active_session = next((s for s in sessions if s['is_active']), None)
                     
                     if not active_session:
                         max_sessions = self.config.get('max_sessions', 5)
                         await self._dispatch_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
                         # Если нет активной сессии, создаем новую
-                        session_id = self.db.create_session(
+                        session_id = await self._db_call(
+                            "create_session",
                             user_id=conversation_key,
                             max_sessions=max_sessions,
                             openai_helper=self.openai,
@@ -1942,7 +2164,11 @@ class ChatGPTTelegramBot:
                     current_context = self.openai.conversations.get(conversation_key)
                     if current_context is None:
                         # Cold cache — load from DB to avoid wiping existing history
-                        saved_ctx, _, _, _, _ = self.db.get_conversation_context(conversation_key, session_id)
+                        saved_ctx, _, _, _, _ = await self._db_call(
+                            "get_conversation_context",
+                            conversation_key,
+                            session_id,
+                        )
                         if saved_ctx and 'messages' in saved_ctx:
                             strip_images = getattr(self.openai, '_messages_without_image_payloads', None)
                             if callable(strip_images):
@@ -1980,14 +2206,15 @@ class ChatGPTTelegramBot:
                             session_id,
                         )
                     else:
-                        await asyncio.to_thread(
-                            self.db.save_conversation_context,
+                        await self._db_call(
+                            "save_conversation_context",
                             conversation_key,
                             {'messages': current_context},
                             mode_data.get('parse_mode', 'HTML'),
                             mode_data.get('temperature', self.openai.config['temperature']),
                             mode_data.get('max_tokens_percent', 80),
                             session_id,
+                            self.openai,
                         )
                     
                     # Возвращаемся в главное меню сессий
@@ -2003,7 +2230,7 @@ class ChatGPTTelegramBot:
                     text=localized_text('generic_error_try_again', self.config['bot_language'])
                 )
         except Exception as e:
-            logger.error(f"Ошибка в handle_prompt_selection: {e}", exc_info=True)
+            logger.error("Error in handle_prompt_selection error=%s", log_exception_shape(e))
             await query.edit_message_text(
                 text=localized_text('error_with_details', self.config['bot_language']).format(error=str(e))
             )
@@ -2055,7 +2282,7 @@ class ChatGPTTelegramBot:
                 sys.exit(0)
                 
         except Exception as e:
-            logger.warning(f"Failed to restart systemd service: {e}")
+            logger.warning("Failed to restart systemd service error=%s", log_exception_shape(e))
         
         # Если не получилось перезапустить сервис, перезапускаем процесс Python
         os.execl(sys.executable, sys.executable, *sys.argv)
@@ -2095,12 +2322,12 @@ class ChatGPTTelegramBot:
                 else:
                     raise Exception(
                         f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
-                self._remember_sent_image_messages(update, sent_message)
+                await self._remember_sent_image_messages(update, sent_message)
                 user_id = update.message.from_user.id
                 record_image_request(self.usage, self.config, user_id, image_size)
 
             except Exception as e:
-                logger.exception(e)
+                logger.error("Image generation failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2132,7 +2359,7 @@ class ChatGPTTelegramBot:
         async def _generate():
             try:
                 user_id = update.message.from_user.id
-                tts_model = self.openai.get_user_tts_model(user_id)
+                tts_model = await self.openai.get_user_tts_model_async(user_id)
                 speech_file, text_length = await self.openai.generate_speech(text=tts_query, user_id=user_id)
 
                 audio_format = self.openai.config.get('tts_response_format', 'wav')
@@ -2154,7 +2381,7 @@ class ChatGPTTelegramBot:
                 record_tts_request(self.usage, self.config, user_id, text_length, tts_model)
 
             except Exception as e:
-                logger.exception(e)
+                logger.error("Speech generation failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2217,11 +2444,11 @@ class ChatGPTTelegramBot:
                             continue
                         raise
                     except Exception as e:
-                        logger.exception(e)
+                        logger.error("Transcribe media download attempt failed error=%s", log_exception_shape(e))
                         raise
                 except Exception as e:
                     if attempt == max_retries - 1:
-                        logger.exception(e)
+                        logger.error("Transcribe media download failed error=%s", log_exception_shape(e))
                         await update.effective_message.reply_text(
                             message_thread_id=get_thread_id(update),
                             reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2235,14 +2462,15 @@ class ChatGPTTelegramBot:
 
             try:
                 def _convert_audio():
-                    track = AudioSegment.from_file(file_path)
+                    track = _get_audio_segment_cls().from_file(file_path)
                     track.export(file_path_mp3, format="mp3")
-                await asyncio.to_thread(_convert_audio)
+                    return track.duration_seconds
+                audio_duration_seconds = await asyncio.to_thread(_convert_audio)
                 logger.info(f'New transcribe request received from user {update.message.from_user.name} '
-                             f'(id: {update.message.from_user.id})')
+                            f'(id: {update.message.from_user.id})')
 
             except Exception as e:
-                logger.exception(e)
+                logger.error("Transcribe media conversion failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2267,7 +2495,7 @@ class ChatGPTTelegramBot:
             try:
                 transcript = await self.openai.transcribe(file_path_mp3)
 
-                record_transcription_seconds(self.usage, self.config, user_id, audio_track.duration_seconds)
+                record_transcription_seconds(self.usage, self.config, user_id, audio_duration_seconds)
 
                 # check if transcript starts with any of the prefixes
                 response_to_transcription = any(transcript.lower().startswith(prefix.lower()) if prefix else False
@@ -2322,12 +2550,17 @@ class ChatGPTTelegramBot:
                         f"_{localized_text('transcript', bot_language)}:_\n\"{transcript}\"\n\n"
                         f"_{localized_text('answer', bot_language)}:_\n{response}"
                     )
-                    logger.info(f"Transcript output: {transcript_output}")
+                    logger.info(
+                        "Transcript response prepared transcript_chars=%d response_chars=%d total_chars=%d",
+                        len(transcript or ""),
+                        len(response or ""),
+                        len(transcript_output),
+                    )
                     chunks = split_into_chunks(transcript_output)
                     # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
                     if should_send_text_as_file(transcript_output, chunks):
                         # Получаем имя текущей сессии
-                        sessions = self.db.list_user_sessions(user_id, is_active=1)
+                        sessions = await self._db_call("list_user_sessions", user_id, is_active=1)
                         active_session = next((s for s in sessions if s['is_active']), None)
                         session_name = active_session['session_name'] if active_session else 'transcription'
                         
@@ -2342,7 +2575,7 @@ class ChatGPTTelegramBot:
                             )
 
             except Exception as e:
-                logger.exception(e)
+                logger.error("Transcribe response handling failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2358,7 +2591,7 @@ class ChatGPTTelegramBot:
 
         conversation_lock = await self._get_conversation_lock(conversation_key)
         async with conversation_lock:
-            session_id = self._pinned_session_id(conversation_key, None)
+            session_id = await self._pinned_session_id(conversation_key, None)
             self._remember_inflight_session(conversation_key, session_id)
             try:
                 await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
@@ -2400,7 +2633,10 @@ class ChatGPTTelegramBot:
             buffer_data = self.media_group_buffer.setdefault(key, {"items": [], "timer": None})
             buffer_data["items"].append(item)
             if buffer_data["timer"] is None or buffer_data["timer"].done():
-                buffer_data["timer"] = asyncio.create_task(self._delayed_process_vision_media_group(key))
+                buffer_data["timer"] = self._track_task(
+                    self._delayed_process_vision_media_group(key),
+                    name=f"vision_media_group_{key[0]}_{key[1]}",
+                )
 
     async def _delayed_process_vision_media_group(self, key) -> None:
         await asyncio.sleep(getattr(self, "media_group_timeout", getattr(self, "buffer_timeout", 1.0)))
@@ -2410,8 +2646,11 @@ class ChatGPTTelegramBot:
             return
         try:
             await self._process_vision_media_group(buffer_data["items"])
-        except Exception:
-            logger.exception("Failed to process Telegram vision media group")
+        except Exception as exc:
+            logger.error(
+                "Failed to process Telegram vision media group error=%s",
+                log_exception_shape(exc),
+            )
 
     async def _process_vision_media_group(self, items: list[dict]) -> None:
         if not items:
@@ -2424,7 +2663,7 @@ class ChatGPTTelegramBot:
         conversation_key = get_conversation_key(update)
         user_id = first_item["user_id"]
         prompt = self._normalize_vision_prompt(items)
-        session_id = self._pinned_session_id(conversation_key, None)
+        session_id = await self._pinned_session_id(conversation_key, None)
 
         if is_group_chat(update):
             if self.config.get('ignore_group_vision', False):
@@ -2443,7 +2682,7 @@ class ChatGPTTelegramBot:
                 return
 
         for item in items:
-            self.db.save_image(item["user_id"], item["chat_id"], item["file_id"])
+            await self._db_call("save_image", item["user_id"], item["chat_id"], item["file_id"])
 
         if self.config.get('enable_vision_follow_up_questions', True):
             last_file_id = items[-1]["file_id"]
@@ -2504,7 +2743,7 @@ class ChatGPTTelegramBot:
                     fileobjs.append(temp_file_png)
                     image_file_ids.append(item["file_id"])
             except Exception as e:
-                logger.exception(e)
+                logger.error("Vision media group download/convert failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2549,7 +2788,7 @@ class ChatGPTTelegramBot:
                         text=interpretation
                     )
             except Exception as e:
-                logger.exception(e)
+                logger.error("Vision media group interpretation failed error=%s", log_exception_shape(e))
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2589,12 +2828,12 @@ class ChatGPTTelegramBot:
         conversation_key = get_conversation_key(update)
         user_id = update.message.from_user.id
         prompt = update.message.caption
-        session_id = self._pinned_session_id(conversation_key, None)
+        session_id = await self._pinned_session_id(conversation_key, None)
         
         logger.info(f"Vision handler called for chat_id: {chat_id}, user_id: {user_id}")
 
         # Cleanup old images first
-        self.db.cleanup_old_images()
+        await self._db_call("cleanup_old_images")
 
         if getattr(update.message, "media_group_id", None):
             await self._queue_vision_media_group(update, context)
@@ -2610,8 +2849,8 @@ class ChatGPTTelegramBot:
         if len(update.message.photo) > 0:
             image = update.message.photo[-1]
             file_id = image.file_id
-            logger.info(f"Storing photo file_id: {file_id}")
-            self.db.save_image(user_id, chat_id, file_id)
+            logger.info("Storing photo for user_id=%s chat_id=%s", user_id, chat_id)
+            await self._db_call("save_image", user_id, chat_id, file_id)
             if self.config.get('enable_vision_follow_up_questions', True):
                 self.openai.set_last_image_file_id(chat_id, file_id)
                 if user_id != chat_id:
@@ -2619,8 +2858,8 @@ class ChatGPTTelegramBot:
         elif update.message.document and update.message.document.mime_type.startswith('image/'):
             image = update.message.document
             file_id = image.file_id
-            logger.info(f"Storing document file_id: {file_id}")
-            self.db.save_image(user_id, chat_id, file_id)
+            logger.info("Storing image document for user_id=%s chat_id=%s", user_id, chat_id)
+            await self._db_call("save_image", user_id, chat_id, file_id)
             if self.config.get('enable_vision_follow_up_questions', True):
                 self.openai.set_last_image_file_id(chat_id, file_id)
                 if user_id != chat_id:
@@ -2680,7 +2919,7 @@ class ChatGPTTelegramBot:
                     media_file = await self.application.bot.get_file(image.file_id)
                     temp_file = io.BytesIO(await media_file.download_as_bytearray())
                 except Exception as e:
-                    logger.exception(e)
+                    logger.error("Vision media download failed error=%s", log_exception_shape(e))
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2705,7 +2944,7 @@ class ChatGPTTelegramBot:
                                 f'(id: {update.message.from_user.id})')
 
                 except Exception as e:
-                    logger.exception(e)
+                    logger.error("Vision media conversion failed error=%s", log_exception_shape(e))
                     await update.effective_message.reply_text(
                         message_thread_id=get_thread_id(update),
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2760,10 +2999,10 @@ class ChatGPTTelegramBot:
                                                 context, chat_id, str(sent_message.message_id),
                                                 previous_chunk,
                                             )
-                                        except Exception:
+                                        except Exception as exc:
                                             logger.debug(
-                                                "vision stream: edit previous chunk failed",
-                                                exc_info=True,
+                                                "vision stream: edit previous chunk failed error=%s",
+                                                log_exception_shape(exc),
                                             )
                                     else:
                                         # Первое сообщение ещё не отправлено: публикуем
@@ -2773,20 +3012,20 @@ class ChatGPTTelegramBot:
                                                 message_thread_id=get_thread_id(update),
                                                 text=previous_chunk or "...",
                                             )
-                                        except Exception:
+                                        except Exception as exc:
                                             logger.debug(
-                                                "vision stream: initial reply for previous chunk failed",
-                                                exc_info=True,
+                                                "vision stream: initial reply for previous chunk failed error=%s",
+                                                log_exception_shape(exc),
                                             )
                                     try:
                                         sent_message = await update.effective_message.reply_text(
                                             message_thread_id=get_thread_id(update),
                                             text=content if len(content) > 0 else "..."
                                         )
-                                    except Exception:
+                                    except Exception as exc:
                                         logger.debug(
-                                            "vision stream: reply for new chunk failed",
-                                            exc_info=True,
+                                            "vision stream: reply for new chunk failed error=%s",
+                                            log_exception_shape(exc),
                                         )
                                     continue
 
@@ -2803,8 +3042,11 @@ class ChatGPTTelegramBot:
                                         reply_to_message_id=get_reply_to_message_id(self.config, update),
                                         text=content,
                                     )
-                                except Exception:
-                                    logger.debug("vision stream: initial reply failed", exc_info=True)
+                                except Exception as exc:
+                                    logger.debug(
+                                        "vision stream: initial reply failed error=%s",
+                                        log_exception_shape(exc),
+                                    )
                                     continue
 
                             elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -2869,14 +3111,17 @@ class ChatGPTTelegramBot:
                                         text=interpretation
                                     )
                                 except Exception as e:
-                                    logger.exception(e)
+                                    logger.error(
+                                        "Vision stream fallback reply failed error=%s",
+                                        log_exception_shape(e),
+                                    )
                                     await update.effective_message.reply_text(
                                         message_thread_id=get_thread_id(update),
                                         reply_to_message_id=get_reply_to_message_id(self.config, update),
                                         text=f"{localized_text('vision_fail', bot_language)}: {str(e)}"
                                     )
                         except Exception as e:
-                            logger.exception(e)
+                            logger.error("Vision stream reply failed error=%s", log_exception_shape(e))
                             await update.effective_message.reply_text(
                                 message_thread_id=get_thread_id(update),
                                 reply_to_message_id=get_reply_to_message_id(self.config, update),
@@ -2924,6 +3169,7 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
+        conversation_key = get_conversation_key(update)
         user_id = update.message.from_user.id
         prompt = message_text(update.message)
         if prompt and self._is_forwarded_message(update.message):
@@ -2934,15 +3180,16 @@ class ChatGPTTelegramBot:
 
         # Get last active image from database if follow-up image questions are enabled.
         if self.config.get('enable_vision_follow_up_questions', True):
-            user_images = self.db.get_user_images(user_id, chat_id, limit=1)
+            user_images = await self._db_call("get_user_images", user_id, chat_id, limit=1)
             if user_images:
                 last_image = user_images[0]
                 if last_image['status'] == 'active':
                     self.openai.set_last_image_file_id(chat_id, last_image['file_id'])
                     if user_id != chat_id:
                         self.openai.set_last_image_file_id(user_id, last_image['file_id'])
-                    logger.info(f"Found active image {last_image['file_id']} for user {user_id}")
+                    logger.info("Found active image for user_id=%s chat_id=%s", user_id, chat_id)
 
+        active_session_id = await self._db_call("get_active_session_id", conversation_key)
         async with self.buffer_lock:
             self._cleanup_pending_busy_messages()
             if self._is_message_processing_locked(chat_id, update):
@@ -2953,6 +3200,7 @@ class ChatGPTTelegramBot:
                     update=update,
                     context=context,
                     message_id=message_id,
+                    active_session_id=active_session_id,
                 )
                 reply_markup = self._busy_message_reply_markup(pending_token)
                 should_ask_busy_action = True
@@ -2974,8 +3222,9 @@ class ChatGPTTelegramBot:
 
                 # Запускаем таймер обработки буфера, если он не запущен
                 if buffer_data['timer'] is None or buffer_data['timer'].done():
-                    buffer_data['timer'] = asyncio.create_task(
-                        self._delayed_process_buffer(chat_id)
+                    buffer_data['timer'] = self._track_task(
+                        self._delayed_process_buffer(chat_id),
+                        name=f"message_buffer_{chat_id}",
                     )
 
         if should_ask_busy_action:
@@ -3068,15 +3317,10 @@ class ChatGPTTelegramBot:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         message_id: int,
+        active_session_id: str | None = None,
     ) -> str:
         token = uuid4().hex
         conversation_key = get_conversation_key(update)
-        get_active_session_id = getattr(self.db, "get_active_session_id", None)
-        active_session_id = (
-            get_active_session_id(conversation_key)
-            if callable(get_active_session_id)
-            else None
-        )
         self._ensure_pending_busy_messages()[token] = {
             'chat_id': chat_id,
             'user_id': user_id,
@@ -3118,8 +3362,9 @@ class ChatGPTTelegramBot:
             if not buffer_data['processing'] and (
                 buffer_data['timer'] is None or buffer_data['timer'].done()
             ):
-                buffer_data['timer'] = asyncio.create_task(
-                    self._delayed_process_buffer(chat_id)
+                buffer_data['timer'] = self._track_task(
+                    self._delayed_process_buffer(chat_id),
+                    name=f"message_buffer_{chat_id}",
                 )
 
     async def _start_pending_busy_message_in_new_session(self, pending: dict) -> str | None:
@@ -3127,7 +3372,10 @@ class ChatGPTTelegramBot:
         max_sessions = self.config.get('max_sessions', 5)
         mutation_lock = await self._get_conversation_lock(("session_mutation", conversation_key))
         async with mutation_lock:
-            active_session_id = pending.get('active_session_id') or self.db.get_active_session_id(conversation_key)
+            active_session_id = pending.get('active_session_id') or await self._db_call(
+                "get_active_session_id",
+                conversation_key,
+            )
             protected_session_ids = self._protected_session_ids(conversation_key)
             if active_session_id:
                 protected_session_ids.add(active_session_id)
@@ -3136,7 +3384,8 @@ class ChatGPTTelegramBot:
                 max_sessions,
                 exclude_session_ids=sorted(protected_session_ids) if protected_session_ids else None,
             )
-            session_id = self.db.create_session(
+            session_id = await self._db_call(
+                "create_session",
                 user_id=conversation_key,
                 max_sessions=max_sessions,
                 openai_helper=self.openai,
@@ -3147,7 +3396,7 @@ class ChatGPTTelegramBot:
         if not session_id:
             return None
         session_key = (conversation_key, session_id)
-        task = asyncio.create_task(
+        task = self._track_task(
             self._run_pending_busy_message_in_new_session(
                 pending,
                 session_id,
@@ -3253,10 +3502,11 @@ class ChatGPTTelegramBot:
                     max_sessions + 1,
                     exclude_session_ids=sorted(protected_session_ids) if protected_session_ids else None,
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to prune old sessions after parallel session completion for user_id=%s",
+            except Exception as exc:
+                logger.error(
+                    "Failed to prune old sessions after parallel session completion for user_id=%s error=%s",
                     conversation_key,
+                    log_exception_shape(exc),
                 )
 
     def _handle_pending_busy_message_task_done(self, task: asyncio.Task, pending: dict) -> None:
@@ -3278,8 +3528,8 @@ class ChatGPTTelegramBot:
                 )
             return
         logger.error(
-            "Pending busy message failed in background",
-            exc_info=(type(exc), exc, exc.__traceback__),
+            "Pending busy message failed in background error=%s",
+            log_exception_shape(exc),
         )
         self._track_task(
             self._release_and_notify_pending_busy_message_failed(pending, exc),
@@ -3312,17 +3562,17 @@ class ChatGPTTelegramBot:
                 parse_mode=constants.ParseMode.MARKDOWN,
                 reply_markup=self._busy_message_reply_markup(retry_token) if retry_token else None,
             )
-        except Exception:
-            logger.exception("Failed to notify user about pending busy message failure")
+        except Exception as notify_exc:
+            logger.error(
+                "Failed to notify user about pending busy message failure error=%s",
+                log_exception_shape(notify_exc),
+            )
 
     async def handle_busy_message_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
 
-        if not await is_allowed(self.config, update, context):
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
+        if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
             return
 
         data = (query.data or '').split(':', 2)
@@ -3352,9 +3602,9 @@ class ChatGPTTelegramBot:
         if action == 'queue':
             try:
                 await self._enqueue_pending_busy_message(pending)
-            except Exception:
+            except Exception as exc:
                 await self._release_pending_busy_message(token)
-                logger.exception("Failed to queue pending busy message")
+                logger.error("Failed to queue pending busy message error=%s", log_exception_shape(exc))
                 await query.edit_message_text(
                     text=localized_text('error', self.config['bot_language'])
                 )
@@ -3367,9 +3617,12 @@ class ChatGPTTelegramBot:
 
         try:
             session_id = await self._start_pending_busy_message_in_new_session(pending)
-        except Exception:
+        except Exception as exc:
             await self._release_pending_busy_message(token)
-            logger.exception("Failed to start pending busy message in a new session")
+            logger.error(
+                "Failed to start pending busy message in a new session error=%s",
+                log_exception_shape(exc),
+            )
             await query.edit_message_text(
                 text=localized_text('error', self.config['bot_language'])
             )
@@ -3470,13 +3723,13 @@ class ChatGPTTelegramBot:
                             request_started_at=first_msg['message_timestamp'],
                         )
                     except Exception as e:
-                        logger.error(f"Error processing message: {e}")
+                        logger.error("Error processing buffered message error=%s", log_exception_shape(e))
                         continue
 
                     await asyncio.sleep(0.1)  # Prevent flooding
 
         except Exception as e:
-            logger.error(f"Error in process_buffer: {e}")
+            logger.error("Error in process_buffer error=%s", log_exception_shape(e))
         finally:
             # Reset processing flag
             if started_processing:
@@ -3487,8 +3740,9 @@ class ChatGPTTelegramBot:
                         if buffer_data['messages'] and (
                             buffer_data['timer'] is None or buffer_data['timer'].done()
                         ):
-                            buffer_data['timer'] = asyncio.create_task(
-                                self._delayed_process_buffer(chat_id)
+                            buffer_data['timer'] = self._track_task(
+                                self._delayed_process_buffer(chat_id),
+                                name=f"message_buffer_{chat_id}",
                             )
                     
     @staticmethod
@@ -3513,7 +3767,7 @@ class ChatGPTTelegramBot:
         lock_key = conversation_lock_key or conversation_key
         conversation_lock = await self._get_conversation_lock(lock_key)
         async with conversation_lock:
-            pinned_session_id = self._pinned_session_id(conversation_key, session_id)
+            pinned_session_id = await self._pinned_session_id(conversation_key, session_id)
             self._remember_inflight_session(conversation_key, pinned_session_id)
 
             async def _run_locked():
@@ -3561,13 +3815,10 @@ class ChatGPTTelegramBot:
                 self._conversation_locks[conversation_key] = lock
             return lock
 
-    def _pinned_session_id(self, chat_id: int, session_id: str | None) -> str | None:
+    async def _pinned_session_id(self, chat_id: int, session_id: str | None) -> str | None:
         if session_id:
             return session_id
-        get_active_session_id = getattr(self.db, "get_active_session_id", None)
-        if not callable(get_active_session_id):
-            return None
-        session_id = get_active_session_id(chat_id)
+        session_id = await self._db_call("get_active_session_id", chat_id)
         if session_id:
             return session_id
         return None
@@ -3590,7 +3841,7 @@ class ChatGPTTelegramBot:
         message_id = update.message.message_id
         self.last_message[chat_id] = prompt
         request_id = f"{chat_id}_{message_id}"
-        session_id = self._pinned_session_id(conversation_key, session_id)
+        session_id = await self._pinned_session_id(conversation_key, session_id)
         request_started_at = (
             request_started_at
             if request_started_at is not None
@@ -3685,7 +3936,7 @@ class ChatGPTTelegramBot:
             if replied_file_context:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
-            model_to_use = self.openai.get_current_model(conversation_key, session_id=session_id)
+            model_to_use = await self.openai.get_current_model_async(conversation_key, session_id=session_id)
             await self.openai.plugin_manager.dispatch_observe(
                 "on_session_reset",
                 SessionResetPayload(
@@ -3697,12 +3948,7 @@ class ChatGPTTelegramBot:
                 user_id=user_id,
             )
                 
-            _force_non_stream_helper = getattr(
-                self.openai, "should_force_non_stream_first_turn", None
-            )
-            force_non_stream = bool(
-                _force_non_stream_helper and _force_non_stream_helper(chat_id, user_id)
-            )
+            force_non_stream = await self._should_force_non_stream_first_turn(chat_id, user_id)
             if (
                 self.config['stream']
                 and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY)
@@ -3766,10 +4012,10 @@ class ChatGPTTelegramBot:
                                         context, chat_id, str(sent_message.message_id),
                                         previous_chunk,
                                     )
-                                except Exception:
+                                except Exception as exc:
                                     logger.debug(
-                                        "chat stream: edit previous chunk failed",
-                                        exc_info=True,
+                                        "chat stream: edit previous chunk failed error=%s",
+                                        log_exception_shape(exc),
                                     )
                             else:
                                 # Первое сообщение ещё не отправлено: публикуем
@@ -3779,20 +4025,20 @@ class ChatGPTTelegramBot:
                                         message_thread_id=get_thread_id(update),
                                         text=previous_chunk or "...",
                                     )
-                                except Exception:
+                                except Exception as exc:
                                     logger.debug(
-                                        "chat stream: initial reply for previous chunk failed",
-                                        exc_info=True,
+                                        "chat stream: initial reply for previous chunk failed error=%s",
+                                        log_exception_shape(exc),
                                     )
                             try:
                                 sent_message = await update.effective_message.reply_text(
                                     message_thread_id=get_thread_id(update),
                                     text=content if len(content) > 0 else "..."
                                 )
-                            except Exception:
+                            except Exception as exc:
                                 logger.debug(
-                                    "chat stream: reply for new chunk failed",
-                                    exc_info=True,
+                                    "chat stream: reply for new chunk failed error=%s",
+                                    log_exception_shape(exc),
                                 )
                             continue
 
@@ -3817,16 +4063,22 @@ class ChatGPTTelegramBot:
                                 parse_mode=None,
                                 entities=initial_entities,
                             )
-                        except Exception:
-                            logger.error("Failed to send initial streaming message", exc_info=True)
+                        except Exception as exc:
+                            logger.error(
+                                "Failed to send initial streaming message error=%s",
+                                log_exception_shape(exc),
+                            )
                             try:
                                 await update.effective_message.reply_text(
                                     message_thread_id=get_thread_id(update),
                                     reply_to_message_id=get_reply_to_message_id(self.config, update),
                                     text=localized_text('chat_fail', self.config['bot_language'])
                                 )
-                            except Exception:
-                                logger.error("Failed to send streaming error message", exc_info=True)
+                            except Exception as error_reply_exc:
+                                logger.error(
+                                    "Failed to send streaming error message error=%s",
+                                    log_exception_shape(error_reply_exc),
+                                )
                             break
 
                     elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -3894,7 +4146,7 @@ class ChatGPTTelegramBot:
                         # Если ответ больше 3х частей, то формируем файл с ответом и отправлем его
                         if should_send_text_as_file(response, chunks):
                             # Получаем имя текущей сессии
-                            sessions = self.db.list_user_sessions(user_id, is_active=1)
+                            sessions = await self._db_call("list_user_sessions", user_id, is_active=1)
                             active_session = next((s for s in sessions if s['is_active']), None)
                             session_name = active_session['session_name'] if active_session else 'transcription'
 
@@ -3939,7 +4191,7 @@ class ChatGPTTelegramBot:
             #    await self.reset(update, context, True)
 
         except Exception as e:
-            logger.exception(e)
+            logger.error("Chat message processing failed error=%s", log_exception_shape(e))
             from .utils import escape_markdown
             error_message = escape_markdown(str(e))
             await update.effective_message.reply_text(
@@ -4094,13 +4346,15 @@ class ChatGPTTelegramBot:
                 request_id=request_id,
                 text=assistant_text,
                 tokens=0,
-                model=self.openai.get_current_model(chat_id, session_id=session_id),
+                model=await self.openai.get_current_model_async(chat_id, session_id=session_id),
                 ts=ts,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to mirror plugin '%s' exchange into session for chat_id=%s: %s",
-                plugin_name, chat_id, exc,
+                "Failed to mirror plugin '%s' exchange into session for chat_id=%s error=%s",
+                plugin_name,
+                chat_id,
+                log_exception_shape(exc),
             )
 
     async def _handle_plugin_prompt_result(self, result, update: Update) -> bool:
@@ -4171,7 +4425,10 @@ class ChatGPTTelegramBot:
 
             await update.inline_query.answer([inline_query_result], cache_time=0)
         except Exception as e:
-            logger.error(f'An error occurred while generating the result card for inline query {e}')
+            logger.error(
+                "An error occurred while generating the result card for inline query error=%s",
+                log_exception_shape(e),
+            )
 
     async def handle_callback_inline_query(self, update: Update, context: CallbackContext):
         """
@@ -4188,6 +4445,13 @@ class ChatGPTTelegramBot:
         loading_tr = localized_text("loading", bot_language)
 
         try:
+            if not await self.check_allowed_and_within_budget(update, context):
+                await update.callback_query.answer(
+                    localized_text('access_denied_command', bot_language),
+                    show_alert=True,
+                )
+                return
+
             if callback_data.startswith(callback_data_suffix):
                 unique_id = callback_data.split(':')[1]
                 total_tokens = 0
@@ -4208,7 +4472,7 @@ class ChatGPTTelegramBot:
                                                   is_inline=True)
                     return
 
-                model_to_use = self.openai.get_current_model(user_id)
+                model_to_use = await self.openai.get_current_model_async(user_id)
                 request_context = RequestContext(chat_id=user_id, user_id=user_id)
                 await self.openai.plugin_manager.dispatch_observe(
                     "on_session_reset",
@@ -4222,13 +4486,7 @@ class ChatGPTTelegramBot:
                 )
                     
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                _inline_force_non_stream_helper = getattr(
-                    self.openai, "should_force_non_stream_first_turn", None
-                )
-                inline_force_non_stream = bool(
-                    _inline_force_non_stream_helper
-                    and _inline_force_non_stream_helper(user_id, user_id)
-                )
+                inline_force_non_stream = await self._should_force_non_stream_first_turn(user_id, user_id)
                 if (
                     self.config['stream']
                     and model_to_use not in (O_MODELS + ANTHROPIC + GOOGLE + MISTRALAI + DEEPSEEK + PERPLEXITY)
@@ -4268,8 +4526,11 @@ class ChatGPTTelegramBot:
                                                                   message_id=inline_message_id,
                                                                   text=f'{query}\n\n{answer_tr}:\n{content}',
                                                                   is_inline=True)
-                            except Exception:
-                                logger.debug("inline stream: initial edit failed", exc_info=True)
+                            except Exception as exc:
+                                logger.debug(
+                                    "inline stream: initial edit failed error=%s",
+                                    log_exception_shape(exc),
+                                )
                                 continue
 
                         elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -4339,8 +4600,10 @@ class ChatGPTTelegramBot:
                     await self.reset(update, context, True)
 
         except Exception as e:
-            logger.error(f'Failed to respond to an inline query via button callback: {e}')
-            logger.exception(e)
+            logger.error(
+                "Failed to respond to an inline query via button callback error=%s",
+                log_exception_shape(e),
+            )
             localized_answer = localized_text('chat_fail', self.config['bot_language'])
             await edit_message_with_retry(context, chat_id=None, message_id=inline_message_id,
                                           text=f"{query}\n\n_{answer_tr}:_\n{localized_answer} {str(e)}",
@@ -4376,6 +4639,110 @@ class ChatGPTTelegramBot:
             return False
 
         return True
+
+    async def _ensure_allowed(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        is_inline: bool = False,
+        deny_mode: str = "reply",
+        answer_callback: bool = False,
+    ) -> bool:
+        """
+        Central allow-list guard for user-facing Telegram surfaces that do not
+        consume budget. Budgeted LLM/media paths should keep using
+        check_allowed_and_within_budget().
+        """
+        if await is_allowed(self.config, update, context, is_inline=is_inline):
+            return True
+
+        query = getattr(update, "callback_query", None)
+        if deny_mode == "callback_alert" and query:
+            await query.answer(
+                localized_text('disallowed', self.config['bot_language']),
+                show_alert=True,
+            )
+            return False
+
+        if answer_callback and query:
+            await query.answer()
+
+        if deny_mode == "callback_edit" and query:
+            await query.edit_message_text(
+                text=localized_text('access_denied_command', self.config['bot_language'])
+            )
+            return False
+
+        await self.send_disallowed_message(update, context, is_inline)
+        return False
+
+    async def _ensure_plugin_handler_allowed(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        plugin_name: str | None,
+    ) -> bool:
+        if not await self._ensure_allowed(update, context):
+            return False
+        if not plugin_name:
+            return True
+        user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
+        if not self.openai.plugin_manager.is_plugin_disabled_for_user(plugin_name, user_id):
+            return True
+
+        message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+        if message:
+            await message.reply_text(
+                localized_text('settings_plugin_disabled', self.config['bot_language']).format(
+                    plugin=plugin_name
+                )
+            )
+        return False
+
+    def _wrap_authorized_callback(
+        self,
+        callback,
+        *,
+        deny_mode: str = "reply",
+        answer_callback: bool = False,
+    ):
+        if getattr(callback, "_chatgpt_auth_wrapped", False) is True:
+            return callback
+
+        async def authorized_callback(update, context, *args, _callback=callback, **kwargs):
+            if not await self._ensure_allowed(
+                update,
+                context,
+                deny_mode=deny_mode,
+                answer_callback=answer_callback,
+            ):
+                return None
+            result = _callback(update, context, *args, **kwargs)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
+        authorized_callback.__name__ = getattr(callback, "__name__", "authorized_callback")
+        authorized_callback._chatgpt_auth_wrapped = True
+        return authorized_callback
+
+    def _authorized_command_handler(self, command, callback, **kwargs):
+        return CommandHandler(
+            command,
+            self._wrap_authorized_callback(callback),
+            **kwargs,
+        )
+
+    def _authorized_callback_query_handler(self, callback, **kwargs):
+        return CallbackQueryHandler(
+            self._wrap_authorized_callback(
+                callback,
+                deny_mode="callback_edit",
+                answer_callback=True,
+            ),
+            **kwargs,
+        )
 
     async def send_disallowed_message(self, update: Update, _: ContextTypes.DEFAULT_TYPE, is_inline=False):
         """
@@ -4429,7 +4796,10 @@ class ChatGPTTelegramBot:
         message_handlers = self.openai.plugin_manager.get_message_handlers()
         for handler_config in message_handlers:
             if 'handler' in handler_config and 'filters' not in handler_config:
-                handler = handler_config['handler']
+                handler = self._wrap_plugin_handler_with_authorization(
+                    handler_config['handler'],
+                    handler_config.get('plugin_name'),
+                )
                 try:
                     application.add_handler(handler)
                     logger.info(
@@ -4439,10 +4809,10 @@ class ChatGPTTelegramBot:
                     )
                 except TypeError as e:
                     logger.error(
-                        "Invalid handler type %s in %s: %s",
+                        "Invalid handler type %s in %s error=%s",
                         type(handler).__name__,
                         source,
-                        e,
+                        log_exception_shape(e),
                     )
                     continue
             elif 'filters' in handler_config:
@@ -4477,6 +4847,34 @@ class ChatGPTTelegramBot:
                 application.add_handler(handler)
 
         self._plugin_message_handlers_registered = True
+
+    def _wrap_plugin_handler_with_authorization(self, handler, plugin_name: str | None):
+        if isinstance(handler, ConversationHandler):
+            for child in handler.entry_points:
+                self._wrap_plugin_handler_with_authorization(child, plugin_name)
+            for state_handlers in handler.states.values():
+                for child in state_handlers:
+                    self._wrap_plugin_handler_with_authorization(child, plugin_name)
+            for child in handler.fallbacks:
+                self._wrap_plugin_handler_with_authorization(child, plugin_name)
+            return handler
+
+        callback = getattr(handler, "callback", None)
+        if not callable(callback) or getattr(callback, "_chatgpt_auth_wrapped", False) is True:
+            return handler
+
+        async def plugin_authorized_callback(update, context, *args, _callback=callback, **kwargs):
+            if not await self._ensure_plugin_handler_allowed(update, context, plugin_name):
+                return None
+            result = _callback(update, context, *args, **kwargs)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
+        plugin_authorized_callback.__name__ = getattr(callback, "__name__", "plugin_authorized_callback")
+        plugin_authorized_callback._chatgpt_auth_wrapped = True
+        handler.callback = plugin_authorized_callback
+        return handler
 
     def _register_message_tail_handlers(self, application: Application):
         if getattr(self, "_message_tail_handlers_registered", False):
@@ -4514,6 +4912,10 @@ class ChatGPTTelegramBot:
             self._background_tasks = [
                 asyncio.create_task(self.buffer_data_checker(), name="buffer_data_checker"),
             ]
+            if self._retention_int_config("retention_cleanup_interval_seconds", 3600) > 0:
+                self._background_tasks.append(
+                    asyncio.create_task(self.retention_cleanup_loop(), name="retention_cleanup_loop")
+                )
             await self.openai.plugin_manager.start_background_tasks(application)
 
         # Регистрируем команды от плагинов
@@ -4530,7 +4932,7 @@ class ChatGPTTelegramBot:
         for cmd in plugin_commands:
             # Регистрируем обработчик callback_query если он есть
             if 'callback_query_handler' in cmd and 'callback_pattern' in cmd:
-                handler = CallbackQueryHandler(
+                handler = self._authorized_callback_query_handler(
                     lambda update, context, cmd=cmd: self.handle_plugin_callback_query(update, context, cmd),
                     pattern=cmd['callback_pattern']
                 )
@@ -4541,7 +4943,7 @@ class ChatGPTTelegramBot:
             command_name = cmd.get('command')
             if not command_name:
                 continue
-            handler = CommandHandler(
+            handler = self._authorized_command_handler(
                 command_name,
                 lambda update, context, cmd=cmd: self.handle_plugin_command(update, context, cmd),
                 filters=filters.COMMAND
@@ -4559,13 +4961,25 @@ class ChatGPTTelegramBot:
         )
 
         # Регистрируем стандартные обработчики callback_query
-        application.add_handler(CallbackQueryHandler(self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"))
-        application.add_handler(CallbackQueryHandler(self.handle_session_callback, pattern="^session"))
-        application.add_handler(CallbackQueryHandler(self.handle_settings_callback, pattern="^settings"))
-        application.add_handler(CallbackQueryHandler(self.handle_busy_message_callback, pattern="^busymsg:"))
+        application.add_handler(self._authorized_callback_query_handler(
+            self.handle_prompt_selection, pattern="^prompt|promptgroup|promptback"
+        ))
+        application.add_handler(self._authorized_callback_query_handler(
+            self.handle_session_callback, pattern="^session"
+        ))
+        application.add_handler(self._authorized_callback_query_handler(
+            self.handle_settings_callback, pattern="^settings"
+        ))
+        application.add_handler(self._authorized_callback_query_handler(
+            self.handle_busy_message_callback, pattern="^busymsg:"
+        ))
         application.add_handler(CallbackQueryHandler(self.handle_callback_inline_query, pattern="^gpt:"))
-        application.add_handler(CallbackQueryHandler(self.handle_plugin_menu_callback, pattern="^pluginmenu:"))
-        application.add_handler(CommandHandler("plugins", self.handle_plugins_menu, filters=filters.COMMAND))
+        application.add_handler(self._authorized_callback_query_handler(
+            self.handle_plugin_menu_callback, pattern="^pluginmenu:"
+        ))
+        application.add_handler(self._authorized_command_handler(
+            "plugins", self.handle_plugins_menu, filters=filters.COMMAND
+        ))
 
         for plugin_instance in getattr(self.openai.plugin_manager, "plugin_instances", {}).values():
             startup_hook = getattr(plugin_instance, "on_startup", None)
@@ -4573,19 +4987,16 @@ class ChatGPTTelegramBot:
                 continue
             try:
                 await startup_hook(application)
-            except Exception:
-                logging.exception(
-                    "on_startup hook failed for plugin %s",
+            except Exception as exc:
+                logging.error(
+                    "on_startup hook failed for plugin %s error=%s",
                     plugin_instance.get_plugin_id(),
+                    log_exception_shape(exc),
                 )
 
     async def handle_plugin_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: Dict):
         query = update.callback_query
-        if not await is_allowed(self.config, update, context):
-            if query:
-                await query.edit_message_text(
-                    text=localized_text('access_denied_command', self.config['bot_language'])
-                )
+        if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
             return
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
         plugin_name = cmd.get('plugin_name')
@@ -4605,8 +5016,7 @@ class ChatGPTTelegramBot:
             update_for_handler = self._wrap_update_with_message(update)
             message = update_for_handler.effective_message or (update_for_handler.callback_query.message if update_for_handler.callback_query else None)
             # Проверяем права доступа
-            if not await is_allowed(self.config, update_for_handler, context):
-                await self.send_disallowed_message(update, context)
+            if not await self._ensure_allowed(update_for_handler, context):
                 return
 
             user_id = getattr(getattr(update_for_handler, 'effective_user', None), 'id', None)
@@ -4710,7 +5120,7 @@ class ChatGPTTelegramBot:
                     await message.reply_text(str(result))
 
         except Exception as e:
-            logger.error(f"Ошибка при обработке команды плагина: {e}")
+            logger.error("Plugin command handling failed error=%s", log_exception_shape(e))
             message = update.effective_message or (update.callback_query.message if update.callback_query else None)
             if message:
                 await message.reply_text(
@@ -4738,8 +5148,7 @@ class ChatGPTTelegramBot:
 
     async def handle_plugins_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает меню плагинов с командами."""
-        if not await is_allowed(self.config, update, context):
-            await self.send_disallowed_message(update, context)
+        if not await self._ensure_allowed(update, context):
             return
 
         bot_language = self.config['bot_language']
@@ -4768,10 +5177,7 @@ class ChatGPTTelegramBot:
         """Обработчик выбора команды из меню плагинов."""
         query = update.callback_query
         await query.answer()
-        if not await is_allowed(self.config, update, context):
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
+        if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
             return
 
         user_id = getattr(getattr(update, 'effective_user', None), 'id', None)
@@ -4900,7 +5306,7 @@ class ChatGPTTelegramBot:
         try:
             await self.handle_plugin_command(update, context, cmd)
         except Exception as e:
-            logger.error(f"Ошибка при выполнении команды из меню: {e}")
+            logger.error("Plugin menu command failed error=%s", log_exception_shape(e))
             await query.edit_message_text(
                 localized_text('plugins_menu_error', bot_language).format(error=str(e))
             )
@@ -4919,6 +5325,9 @@ class ChatGPTTelegramBot:
         if not is_plugin_menu_reply:
             if not filters.COMMAND.check_update(update):
                 await self.prompt(update, context)
+            return
+
+        if not await self._ensure_allowed(update, context):
             return
 
         plugin_name = pending.get("plugin")
@@ -5050,27 +5459,39 @@ class ChatGPTTelegramBot:
                 if hasattr(self, 'openai') and hasattr(self.openai, 'plugin_manager'):
                     await self.openai.plugin_manager.stop_background_tasks(timeout=10.0)
             except Exception as e:
-                logger.warning(f"Error stopping plugin background tasks: {e}")
-            # Stop all background tasks first
-            tasks = []
+                logger.warning("Error stopping plugin background tasks error=%s", log_exception_shape(e))
+            # Stop only tasks owned by this bot instance.
+            tasks = set()
             if hasattr(self, '_background_tasks'):
-                tasks.extend(self._background_tasks)
+                tasks.update(self._background_tasks)
+                self._background_tasks = []
+            tasks.update(getattr(self, '_transient_tasks', set()))
             
             # Get all buffer timers
             async with self.buffer_lock:
                 for buffer_data in self.message_buffer.values():
                     if buffer_data.get('timer'):
-                        tasks.append(buffer_data['timer'])
-                for buffer_data in getattr(self, "media_group_buffer", {}).values():
-                    if buffer_data.get('timer'):
-                        tasks.append(buffer_data['timer'])
-                
+                        tasks.add(buffer_data['timer'])
+
                 # Clear message buffers
                 self.message_buffer.clear()
+
+            if hasattr(self, "media_group_lock"):
+                async with self.media_group_lock:
+                    for buffer_data in getattr(self, "media_group_buffer", {}).values():
+                        if buffer_data.get('timer'):
+                            tasks.add(buffer_data['timer'])
+                    if hasattr(self, "media_group_buffer"):
+                        self.media_group_buffer.clear()
+            else:
+                for buffer_data in getattr(self, "media_group_buffer", {}).values():
+                    if buffer_data.get('timer'):
+                        tasks.add(buffer_data['timer'])
                 if hasattr(self, "media_group_buffer"):
                     self.media_group_buffer.clear()
 
-            # Cancel all tasks
+            current_task = asyncio.current_task()
+            tasks.discard(current_task)
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -5079,32 +5500,26 @@ class ChatGPTTelegramBot:
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
                     except Exception as e:
-                        logger.error(f"Error cancelling task: {e}")
-
-            # Cancel all running tasks except current
-            current_task = asyncio.current_task()
-            running_tasks = [t for t in asyncio.all_tasks() 
-                           if t is not current_task and not t.done()]
-            
-            if running_tasks:
-                logger.info(f"Cancelling {len(running_tasks)} remaining tasks...")
-                for task in running_tasks:
-                    task.cancel()
-                
-                await asyncio.gather(*running_tasks, return_exceptions=True)
+                        logger.error("Error cancelling task error=%s", log_exception_shape(e))
+            self._transient_tasks.clear()
 
             # Close any open resources
             if hasattr(self, 'openai'):
                 await self.openai.close()
-            if hasattr(self.openai, 'plugin_manager'):
+            if hasattr(self, 'openai') and hasattr(self.openai, 'plugin_manager'):
                 try:
                     await self.openai.plugin_manager.close_all_async()
                 except Exception as e:
-                    logger.warning(f"Error in plugin close_all_async: {e}")
+                    logger.warning("Error in plugin close_all_async error=%s", log_exception_shape(e))
                 self.openai.plugin_manager.close_all()
+            if hasattr(self, 'db') and self.db is not None:
+                try:
+                    self.db.shutdown()
+                except Exception as e:
+                    logger.warning("Error shutting down database error=%s", log_exception_shape(e))
 
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error("Error during cleanup error=%s", log_exception_shape(e))
             raise
 
     async def _post_shutdown(self, application: Application):
@@ -5123,13 +5538,14 @@ class ChatGPTTelegramBot:
                             # Why: не пересоздаём активный timer — это убьёт идущую обработку.
                             if existing is not None and not existing.done():
                                 continue
-                            buffer_data['timer'] = asyncio.create_task(
-                                self.process_buffer(chat_id)
+                            buffer_data['timer'] = self._track_task(
+                                self.process_buffer(chat_id),
+                                name=f"buffer_checker_{chat_id}",
                             )
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in buffer data checker: {e}")
+                logger.error("Error in buffer data checker error=%s", log_exception_shape(e))
 
             await asyncio.sleep(1)
 
@@ -5141,10 +5557,7 @@ class ChatGPTTelegramBot:
         query = update.callback_query
         await query.answer()
 
-        if not await is_allowed(self.config, update, context):
-            await query.edit_message_text(
-                text=localized_text('access_denied_command', self.config['bot_language'])
-            )
+        if not await self._ensure_allowed(update, context, deny_mode="callback_edit"):
             return
 
         conversation_key = get_conversation_key(update)
@@ -5182,7 +5595,7 @@ class ChatGPTTelegramBot:
             )
             return
 
-        current_model = self.openai.get_current_model(conversation_key)
+        current_model = await self.openai.get_current_model_async(conversation_key)
         keyboard = [
             [InlineKeyboardButton(
                 text=f"{'✓ ' if model == current_model else ''}{model}",
@@ -5217,7 +5630,7 @@ class ChatGPTTelegramBot:
             session_id = data[2]
             
             # Получаем детали сессии
-            session = self.db.get_session_details(conversation_key, session_id)
+            session = await self._db_call("get_session_details", conversation_key, session_id)
             if not session:
                 await query.edit_message_text(
                     localized_text('session_not_found', self.config['bot_language'])
@@ -5225,7 +5638,8 @@ class ChatGPTTelegramBot:
                 return
 
             # Получаем все сообщения сессии
-            context_messages = self.db.get_conversation_context(
+            context_messages = await self._db_call(
+                "get_conversation_context",
                 conversation_key,
                 session_id=session_id, 
                 openai_helper=self.openai
@@ -5286,7 +5700,8 @@ class ChatGPTTelegramBot:
                 max_sessions = self.config.get('max_sessions', 5)
                 await self._dispatch_and_delete_oldest_sessions_for_limit(conversation_key, max_sessions)
                 # Создаем новую сессию
-                session_id = self.db.create_session(
+                session_id = await self._db_call(
+                    "create_session",
                     user_id=conversation_key,
                     max_sessions=max_sessions,
                     openai_helper=self.openai,
@@ -5310,13 +5725,17 @@ class ChatGPTTelegramBot:
             elif action == "switch":
                 # Переключаемся на выбранную сессию
                 session_id = data[2]
-                if not self.db.switch_active_session(conversation_key, session_id):
+                if not await self._db_call("switch_active_session", conversation_key, session_id):
                     await query.edit_message_text(
                         localized_text('session_not_found', self.config['bot_language'])
                     )
                     return
                 # Загружаем контекст выбранной сессии
-                current_context, parse_mode, temperature, max_tokens_percent, _ = self.db.get_conversation_context(conversation_key, session_id)
+                current_context, parse_mode, temperature, max_tokens_percent, _ = await self._db_call(
+                    "get_conversation_context",
+                    conversation_key,
+                    session_id,
+                )
                 if current_context and 'messages' in current_context:
                     self.openai.conversations[conversation_key] = current_context['messages']
                     self.openai.loaded_conversation_sessions[conversation_key] = session_id
@@ -5326,10 +5745,15 @@ class ChatGPTTelegramBot:
                 # Удаляем сессию
                 session_id = data[2]
                 await self._dispatch_session_before_delete(conversation_key, session_id)
-                self.db.delete_session(conversation_key, session_id, openai_helper=self.openai)
+                await self._db_call("delete_session", conversation_key, session_id, openai_helper=self.openai)
                 # Получаем контекст активной сессии
-                session_id = self.db.get_active_session_id(conversation_key)
-                current_context, _, _, _, _ = self.db.get_conversation_context(conversation_key, session_id, openai_helper=self.openai)
+                session_id = await self._db_call("get_active_session_id", conversation_key)
+                current_context, _, _, _, _ = await self._db_call(
+                    "get_conversation_context",
+                    conversation_key,
+                    session_id,
+                    openai_helper=self.openai,
+                )
                 if current_context and 'messages' in current_context:
                     self.openai.conversations[conversation_key] = current_context['messages']
                     self.openai.loaded_conversation_sessions[conversation_key] = session_id
@@ -5382,7 +5806,7 @@ class ChatGPTTelegramBot:
                 if index < 0 or index >= len(models):
                     await self._show_session_model_selection(query, conversation_key)
                     return
-                self.db.save_user_model(conversation_key, models[index])
+                await self._db_call("save_user_model", conversation_key, models[index])
                 await self.reset(update, context)
                 
             elif action == "back":
@@ -5392,7 +5816,7 @@ class ChatGPTTelegramBot:
             elif action == "export":
                 # Экспортируем сессии в YAML
                 try:
-                    filepath = self.db.export_sessions_to_yaml(conversation_key)
+                    filepath = await self._db_call("export_sessions_to_yaml", conversation_key)
                     
                     if filepath:
                         # Why: передаём bytes (а не file handle), чтобы не блокировать loop sync open().
@@ -5409,7 +5833,7 @@ class ChatGPTTelegramBot:
                             localized_text('session_export_failed', self.config['bot_language'])
                         )
                 except Exception as e:
-                    logger.error(f"Ошибка экспорта сессий: {e}")
+                    logger.error("Session export failed error=%s", log_exception_shape(e))
                     await query.edit_message_text(
                         localized_text('session_export_error', self.config['bot_language'])
                     )
@@ -5417,7 +5841,7 @@ class ChatGPTTelegramBot:
                 # Возвращаемся к списку сессий
                 await self.reset(update, context)
         except Exception as e:
-            logger.error(f'Error in handle_session_callback: {e}', exc_info=True)
+            logger.error("Error in handle_session_callback error=%s", log_exception_shape(e))
             await query.edit_message_text(
                 text=localized_text('error_with_details', self.config['bot_language']).format(
                     error=str(e)
@@ -5428,15 +5852,23 @@ class ChatGPTTelegramBot:
         """
         Runs the bot indefinitely.
         """
+        created_loop = False
+        loop = None
         try:
             # Проверяем, есть ли уже запущенный event loop
             try:
                 loop = asyncio.get_running_loop()
                 logger.warning("Event loop is already running, using existing loop")
             except RuntimeError:
-                # Нет активного loop, создаем новый
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                policy = asyncio.get_event_loop_policy()
+                current_loop = getattr(getattr(policy, "_local", None), "_loop", None)
+                if current_loop is not None and not current_loop.is_closed():
+                    loop = current_loop
+                else:
+                    # Нет активного/current loop, создаем новый
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    created_loop = True
 
             builder = ApplicationBuilder() \
                 .token(self.config['token']) \
@@ -5463,14 +5895,14 @@ class ChatGPTTelegramBot:
 
             application.add_handler(TypeHandler(Update, self.prepare_user_language), group=-100)
             application.add_handler(CommandHandler('restart', self.restart))
-            application.add_handler(CommandHandler('reset', self.reset))
-            application.add_handler(CommandHandler('help', self.help))
-            application.add_handler(CommandHandler('settings', self.settings))
+            application.add_handler(self._authorized_command_handler('reset', self.reset))
+            application.add_handler(self._authorized_command_handler('help', self.help))
+            application.add_handler(self._authorized_command_handler('settings', self.settings))
             application.add_handler(CommandHandler('image', self.image))
             application.add_handler(CommandHandler('tts', self.tts))
-            application.add_handler(CommandHandler('start', self.help))
-            application.add_handler(CommandHandler('stats', self.stats))
-            application.add_handler(CommandHandler('resend', self.resend))
+            application.add_handler(self._authorized_command_handler('start', self.help))
+            application.add_handler(self._authorized_command_handler('stats', self.stats))
+            application.add_handler(self._authorized_command_handler('resend', self.resend))
             application.add_handler(CommandHandler(
                 'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
             )
@@ -5483,9 +5915,10 @@ class ChatGPTTelegramBot:
                 filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
                 self.transcribe))
 
-            application.run_polling()
+            application.run_polling(close_loop=created_loop)
         finally:
             # Завершаем выполнение задач в текущем событийном цикле
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
+            if loop is not None and not loop.is_closed() and not loop.is_running():
                 loop.run_until_complete(self.cleanup())
+            if created_loop and not loop.is_closed():
+                loop.close()

@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import types
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -86,7 +88,7 @@ async def test_timed_create_writes_llm_call_event(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '42', 'sess-abc.jsonl')
     assert os.path.exists(log_path), "jsonl log file was not created"
-    lines = [json.loads(l) for l in open(log_path).read().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
     llm_events = [e for e in lines if e.get('type') == 'llm_call']
     assert len(llm_events) == 1
     ev = llm_events[0]
@@ -96,6 +98,37 @@ async def test_timed_create_writes_llm_call_event(tmp_path):
     assert ev['completion_tokens'] == 5
     assert ev['finish_reason'] == 'stop'
     assert ev['tool_calls_returned'] == 0
+
+
+@pytest.mark.asyncio
+async def test_timed_create_redacts_normal_log_payload_but_keeps_session_payload(tmp_path, caplog):
+    helper = _make_helper(tmp_path)
+    secret_prompt = "secret prompt for session trace"
+
+    caplog.set_level(logging.INFO, logger="bot.openai_helper")
+
+    trace_token = set_trace(42, "sess-redact", uuid.uuid4().hex)
+    stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0.0, 'mutator_ms': 0.0, 'start': 0.0})
+    try:
+        await helper._timed_create(
+            kind='test_kind',
+            model='test-model',
+            messages=[{"role": "user", "content": secret_prompt}],
+            stream=False,
+        )
+    finally:
+        _TURN_STATS.reset(stats_token)
+        clear_trace(trace_token)
+
+    assert "payload_shape" in caplog.text
+    assert secret_prompt not in caplog.text
+
+    await helper.session_logger.drain()
+
+    log_path = os.path.join(str(tmp_path / 'session_logs'), '42', 'sess-redact.jsonl')
+    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    request_events = [e for e in lines if e.get('type') == 'llm_request']
+    assert request_events[0]['payload']['messages'][0]['content'] == secret_prompt
 
 
 @pytest.mark.asyncio
@@ -125,7 +158,7 @@ async def test_emit_turn_end_writes_turn_end_event(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '99', 'sess-end.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in open(log_path).read().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
     turn_end_events = [e for e in lines if e.get('type') == 'turn_end']
     assert len(turn_end_events) == 1
     ev = turn_end_events[0]
@@ -154,7 +187,7 @@ async def test_get_chat_response_emits_turn_lifecycle(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '7', 'sess-x.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in open(log_path).read().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
     by_type = {e['type']: e for e in lines}
 
     assert 'turn_start' in by_type
@@ -199,11 +232,94 @@ async def test_mutators_event_recorded(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '5', 'sess-m.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in open(log_path).read().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
     mut_events = [e for e in lines if e.get('type') == 'mutators']
     assert len(mut_events) == 1
     assert mut_events[0]['injected_count'] == 1
     assert mut_events[0]['duration_ms'] >= 0
+
+
+class _FakeHindsightPlugin:
+    is_active = True
+    auto_recall_enabled = True
+
+    def get_plugin_id(self):
+        return "hindsight_memory"
+
+    def is_hindsight_memory_message(self, message):
+        return isinstance(message, dict) and message.get("memory") is True
+
+
+@pytest.mark.asyncio
+async def test_session_memory_injection_persist_failure_logs_shape_only(tmp_path, caplog):
+    helper = _make_helper(tmp_path)
+    memory_message = {"role": "system", "content": "secret session memory", "memory": True}
+    helper._chat_state_key = lambda chat_id: "k"
+    helper._repair_tool_call_history = lambda state_key: None
+    helper._messages_with_language_instruction = lambda msgs: list(msgs)
+    helper.conversations = {"k": [{"role": "user", "content": "hi"}]}
+    helper.plugin_manager = MagicMock()
+    helper.plugin_manager.get_plugin.return_value = _FakeHindsightPlugin()
+    helper.plugin_manager.is_plugin_disabled_for_user.return_value = False
+    helper.plugin_manager.apply_mutators = AsyncMock(
+        return_value=[{"role": "user", "content": "hi"}, memory_message]
+    )
+
+    async def fail_save(*args, **kwargs):
+        raise RuntimeError("secret session-memory text")
+
+    helper._save_conversation_context = fail_save
+
+    caplog.set_level(logging.WARNING, logger="bot.openai_helper")
+    await helper._apply_before_chat_request_mutators(
+        chat_id=1,
+        user_id=5,
+        session_id="sess-m",
+        request_id="r",
+        persist=True,
+    )
+
+    assert "Failed to persist session-memory message" in caplog.text
+    assert "RuntimeError(message_chars=" in caplog.text
+    assert "secret session-memory text" not in caplog.text
+    assert "secret session memory" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_session_memory_removal_persist_failure_logs_shape_only(tmp_path, caplog):
+    helper = _make_helper(tmp_path)
+    memory_message = {"role": "system", "content": "secret session memory", "memory": True}
+    plugin = _FakeHindsightPlugin()
+    plugin.is_active = False
+    helper._chat_state_key = lambda chat_id: "k"
+    helper._repair_tool_call_history = lambda state_key: None
+    helper._messages_with_language_instruction = lambda msgs: list(msgs)
+    helper.conversations = {"k": [memory_message, {"role": "user", "content": "hi"}]}
+    helper.plugin_manager = MagicMock()
+    helper.plugin_manager.get_plugin.return_value = plugin
+    helper.plugin_manager.is_plugin_disabled_for_user.return_value = False
+    helper.plugin_manager.apply_mutators = AsyncMock(
+        return_value=[{"role": "user", "content": "hi"}]
+    )
+
+    async def fail_save(*args, **kwargs):
+        raise RuntimeError("secret session-memory text")
+
+    helper._save_conversation_context = fail_save
+
+    caplog.set_level(logging.WARNING, logger="bot.openai_helper")
+    await helper._apply_before_chat_request_mutators(
+        chat_id=1,
+        user_id=5,
+        session_id="sess-m",
+        request_id="r",
+        persist=True,
+    )
+
+    assert "Failed to persist removal of session-memory message" in caplog.text
+    assert "RuntimeError(message_chars=" in caplog.text
+    assert "secret session-memory text" not in caplog.text
+    assert "secret session memory" not in caplog.text
 
 
 @pytest.mark.asyncio
