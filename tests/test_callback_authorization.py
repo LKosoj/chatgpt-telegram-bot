@@ -218,7 +218,14 @@ class FakeDescribedPlugin:
         return [{"command": "alpha", "description": "Run alpha command"}]
 
     def get_spec(self):
-        return [{"name": "alpha.search", "description": "Search alpha records"}]
+        return [{
+            "name": "alpha.search",
+            "description": (
+                "Search alpha records with a deliberately long explanation that should remain visible "
+                "past the old one-hundred-eighty-character cutoff. This tail marker proves that the "
+                "settings description screen keeps useful details instead of replacing them with dots."
+            ),
+        }]
 
 
 class FakeSettingsPluginManager:
@@ -787,6 +794,7 @@ async def test_settings_plugin_info_shows_description_with_back_button():
     assert "Alpha help text" in text
     assert "/alpha: Run alpha command" in text
     assert "alpha.search: Search alpha records" in text
+    assert "tail marker proves" in text
     assert reply_markup.inline_keyboard[0][0].callback_data == "settings:plugins:0"
 
 

@@ -90,6 +90,7 @@ WAITING_PROMPT = 1
 DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
 LANGUAGE_MENU_PAGE_SIZE = 10
 SETTINGS_MENU_PAGE_SIZE = 10
+SETTINGS_DESCRIPTION_TEXT_MAX_CHARS = 3900
 
 
 def _read_file_bytes_for_telegram(path: str) -> bytes:
@@ -1932,13 +1933,13 @@ class ChatGPTTelegramBot:
         source = self._call_plugin_text(plugin, 'get_source_name')
         if source:
             sections.append(localized_text('settings_plugin_source_label', self.config['bot_language']).format(
-                source=self._settings_compact_text(source, 300)
+                source=self._settings_inline_text(source)
             ))
 
         help_text = self._call_plugin_text(plugin, 'get_help_text')
         if help_text:
             sections.append(localized_text('plugins_menu_description_label', self.config['bot_language']).format(
-                description=self._settings_compact_text(help_text, 900)
+                description=self._settings_inline_text(help_text)
             ))
 
         command_lines = self._plugin_command_description_lines(plugin)
@@ -1959,7 +1960,7 @@ class ChatGPTTelegramBot:
 
         if not sections:
             sections.append(localized_text('settings_description_unavailable', self.config['bot_language']))
-        return title + "\n\n" + "\n\n".join(sections)
+        return self._settings_description_message(title, sections)
 
     def _skill_description_text(self, skill_name: str) -> str:
         info = self._skill_info(skill_name)
@@ -1973,7 +1974,7 @@ class ChatGPTTelegramBot:
         description = str(info.get('description') or '').strip()
         if description:
             sections.append(localized_text('plugins_menu_description_label', self.config['bot_language']).format(
-                description=self._settings_compact_text(description, 1200)
+                description=self._settings_inline_text(description)
             ))
         else:
             sections.append(localized_text('settings_description_unavailable', self.config['bot_language']))
@@ -1991,7 +1992,7 @@ class ChatGPTTelegramBot:
                     + "\n".join(self._settings_bullet_lines(values, max_items=8, max_chars=120))
                 )
 
-        return title + "\n\n" + "\n\n".join(sections)
+        return self._settings_description_message(title, sections)
 
     def _get_plugin_for_description(self, plugin_name: str):
         plugin_manager = getattr(self.openai, 'plugin_manager', None)
@@ -2042,7 +2043,10 @@ class ChatGPTTelegramBot:
         try:
             commands = get_commands() or []
         except Exception as exc:
-            logger.warning("Failed to read plugin commands for settings description error=%s", log_exception_shape(exc))
+            logger.warning(
+                "Failed to read plugin commands for settings description error=%s",
+                log_exception_shape(exc),
+            )
             return []
         lines = []
         for command in commands:
@@ -2052,8 +2056,12 @@ class ChatGPTTelegramBot:
             description = str(command.get('description') or '').strip()
             if not name and not description:
                 continue
-            title = f"/{name}" if name else localized_text('settings_plugin_command_unknown', self.config['bot_language'])
-            lines.append(f"- {title}: {self._settings_compact_text(description, 180)}" if description else f"- {title}")
+            title = (
+                f"/{name}"
+                if name
+                else localized_text('settings_plugin_command_unknown', self.config['bot_language'])
+            )
+            lines.append(f"- {title}: {self._settings_inline_text(description)}" if description else f"- {title}")
         return self._settings_limited_lines(lines)
 
     def _plugin_spec_description_lines(self, plugin) -> list[str]:
@@ -2063,7 +2071,10 @@ class ChatGPTTelegramBot:
         try:
             specs = get_spec() or []
         except Exception as exc:
-            logger.warning("Failed to read plugin specs for settings description error=%s", log_exception_shape(exc))
+            logger.warning(
+                "Failed to read plugin specs for settings description error=%s",
+                log_exception_shape(exc),
+            )
             return []
         lines = []
         for spec in specs:
@@ -2075,15 +2086,25 @@ class ChatGPTTelegramBot:
             if not name and not description:
                 continue
             title = name or localized_text('settings_plugin_tool_unknown', self.config['bot_language'])
-            lines.append(f"- {title}: {self._settings_compact_text(description, 180)}" if description else f"- {title}")
+            lines.append(f"- {title}: {self._settings_inline_text(description)}" if description else f"- {title}")
         return self._settings_limited_lines(lines)
 
     @staticmethod
+    def _settings_inline_text(value: str) -> str:
+        return " ".join(str(value or "").split())
+
+    @staticmethod
     def _settings_compact_text(value: str, max_chars: int) -> str:
-        text = " ".join(str(value or "").split())
+        text = ChatGPTTelegramBot._settings_inline_text(value)
         if len(text) <= max_chars:
             return text
         return text[:max_chars - 3].rstrip() + "..."
+
+    def _settings_description_message(self, title: str, sections: list[str]) -> str:
+        text = title + "\n\n" + "\n\n".join(sections)
+        if len(text) <= SETTINGS_DESCRIPTION_TEXT_MAX_CHARS:
+            return text
+        return text[:SETTINGS_DESCRIPTION_TEXT_MAX_CHARS - 3].rstrip() + "..."
 
     def _settings_bullet_lines(self, values, *, max_items: int, max_chars: int) -> list[str]:
         lines = [
