@@ -182,50 +182,50 @@ class MCPServerPlugin(Plugin):
         specs.append({
             "name": "register_mcp_server",
             "description": (
-                "Регистрирует новый MCP сервер (HTTP или stdio) в реестре бота, чтобы его инструменты стали "
-                "доступны как функции модели. Вызывай только когда администратор явно просит подключить "
-                "конкретный MCP сервер; обычным пользователям регистрация запрещена."
+                "Register a new MCP server (HTTP or stdio) so its tools become available as model "
+                "functions. Call only when an administrator explicitly asks to connect a specific "
+                "MCP server; regular users may not register servers."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "server_name": {
                         "type": "string",
-                        "description": "Уникальный короткий идентификатор сервера, используется как префикс для имён его tools."
+                        "description": "Unique short server id, used as the prefix for its tool names."
                     },
                     "base_url": {
                         "type": "string",
-                        "description": "Базовый HTTP(S) URL MCP сервера; обязателен при transport='http'."
+                        "description": "Base HTTP(S) URL of the MCP server; required when transport='http'."
                     },
                     "api_key": {
                         "type": "string",
-                        "description": "Bearer-токен для HTTP-транспорта; опционален, передаётся в заголовке Authorization."
+                        "description": "Optional Bearer token for HTTP transport, sent in the Authorization header."
                     },
                     "description": {
                         "type": "string",
-                        "description": "Короткое описание назначения сервера для отображения в списке."
+                        "description": "Short purpose description shown in the server list."
                     },
                     "transport": {
                         "type": "string",
-                        "description": "Тип транспорта: 'http' для удалённых серверов, 'stdio' для локального процесса.",
+                        "description": "'http' for remote servers, 'stdio' for a local process.",
                         "enum": ["http", "stdio"]
                     },
                     "command": {
                         "type": "string",
-                        "description": "Исполняемая команда запуска для transport='stdio', например 'npx' или абсолютный путь к бинарю."
+                        "description": "Executable to launch for transport='stdio', e.g. 'npx' or an absolute binary path."
                     },
                     "args": {
                         "type": "array",
-                        "description": "Список аргументов командной строки для запускаемого stdio-процесса.",
+                        "description": "Command-line arguments for the stdio process.",
                         "items": {"type": "string"}
                     },
                     "env": {
                         "type": "object",
-                        "description": "Дополнительные переменные окружения для stdio-процесса в виде объекта ключ→значение."
+                        "description": "Extra environment variables for the stdio process, as a key→value object."
                     },
                     "user_id": {
                         "type": "integer",
-                        "description": "Telegram user id вызывающего; проверяется по списку администраторов."
+                        "description": "Telegram user id of the caller; checked against the admin list."
                     }
                 },
                 "required": ["server_name", "user_id"]
@@ -235,16 +235,15 @@ class MCPServerPlugin(Plugin):
         specs.append({
             "name": "list_mcp_servers",
             "description": (
-                "Возвращает список всех зарегистрированных MCP серверов с их URL/транспортом и числом "
-                "загруженных tools. Вызывай когда нужно показать пользователю или администратору, какие "
-                "MCP-источники сейчас подключены."
+                "Return all registered MCP servers with their URL/transport and loaded tool count. "
+                "Call to show which MCP sources are currently connected."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "user_id": {
                         "type": "integer",
-                        "description": "Telegram user id вызывающего; используется для логирования действия."
+                        "description": "Telegram user id of the caller; used for logging."
                     }
                 },
                 "required": ["user_id"]
@@ -254,20 +253,19 @@ class MCPServerPlugin(Plugin):
         specs.append({
             "name": "remove_mcp_server",
             "description": (
-                "Удаляет ранее зарегистрированный MCP сервер из реестра и отключает все его tools. Вызывай "
-                "только по явной просьбе администратора, обычно после list_mcp_servers, чтобы убедиться в "
-                "точном имени удаляемого сервера."
+                "Remove a registered MCP server and disable all its tools. Call only on an explicit "
+                "admin request, using the exact name shown by list_mcp_servers."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "server_name": {
                         "type": "string",
-                        "description": "Имя сервера в реестре, ровно как оно показано в list_mcp_servers."
+                        "description": "Server name exactly as shown in list_mcp_servers."
                     },
                     "user_id": {
                         "type": "integer",
-                        "description": "Telegram user id вызывающего; проверяется по списку администраторов."
+                        "description": "Telegram user id of the caller; checked against the admin list."
                     }
                 },
                 "required": ["server_name", "user_id"]

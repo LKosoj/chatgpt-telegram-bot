@@ -34,9 +34,8 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "shops",
                 "description": (
-                    "Search VkusVill (Russian grocery chain) stores. Returns address, coordinates, "
-                    "contacts, opening hours, and features. Call with page=1 to get the list of "
-                    "available filters."
+                    "Search VkusVill (Russian grocery chain) stores: address, coordinates, contacts, "
+                    "opening hours, and features. Call with page=1 to list available filters."
                 ),
                 "parameters": {
                     "type": "object",
@@ -57,7 +56,7 @@ class VkusVillPlugin(Plugin):
                 "name": "products_search",
                 "description": (
                     "Search VkusVill products by text query. Returns id, xml_id, description, "
-                    "price, rating, ingredients, nutrition (calories, protein, fat, carbs), and photos."
+                    "price, rating, ingredients, nutrition, and photos."
                 ),
                 "parameters": {
                     "type": "object",
@@ -89,7 +88,7 @@ class VkusVillPlugin(Plugin):
                 "name": "product_details",
                 "description": (
                     "Detailed info about a VkusVill product by id from products_search: "
-                    "ingredients, nutrition (calories, protein, fat, carbs), photos, rating, and price."
+                    "ingredients, nutrition, photos, rating, and price."
                 ),
                 "parameters": {
                     "type": "object",
@@ -121,8 +120,8 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "products_discount",
                 "description": (
-                    "List VkusVill products on promotion: loyalty-card discount or quantity discount. "
-                    "Returns id, xml_id, description, price, rating, ingredients, nutrition, and photos."
+                    "List VkusVill products on promotion (loyalty-card or quantity discount). "
+                    "Returns the same fields as products_search."
                 ),
                 "parameters": {
                     "type": "object",
@@ -198,11 +197,9 @@ class VkusVillPlugin(Plugin):
             "spec": {
                 "name": "recipes",
                 "description": (
-                    "Search the VkusVill recipe catalog by query and filters. Returns ingredients, "
-                    "nutrition, step-by-step instructions, and photos. Real recipes with ingredients "
-                    "linkable to a shopping cart via cart_link_create. Use when the user wants to "
-                    "cook from VkusVill products, build a shopping list, or asks for popular/seasonal "
-                    "recipes from the catalog. Call with page=1 to get the list of available filters."
+                    "Search VkusVill recipes by query and filters. Returns ingredients, nutrition, "
+                    "step-by-step instructions, and photos; ingredients can be sent to a shopping "
+                    "cart via cart_link_create. Call with page=1 to list available filters."
                 ),
                 "parameters": {
                     "type": "object",

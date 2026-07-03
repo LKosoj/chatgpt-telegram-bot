@@ -475,12 +475,10 @@ class SkillsPlugin(Plugin):
             {
                 "name": "install_skill",
                 "description": (
-                    "Install a skill into SKILLS_DIR from a package id, GitHub/git URL, http(s) URL, "
-                    "file:// URL, local directory, markdown file, or .zip/.tar* archive, then refresh "
+                    "Install a skill into SKILLS_DIR from a source given in package, then refresh "
                     "the local skill registry. Call only after the user has explicitly approved this "
-                    "exact source — confirmed=true must reflect that approval. Gated by "
-                    "SKILLS_ALLOW_INSTALLS (default on) and the SKILLS_INSTALL_ADMIN_USER_IDS allow-list "
-                    "(default '*')."
+                    "exact source (confirmed=true). Gated by SKILLS_ALLOW_INSTALLS and the "
+                    "SKILLS_INSTALL_ADMIN_USER_IDS allow-list."
                 ),
                 "parameters": {
                     "type": "object",
@@ -520,11 +518,9 @@ class SkillsPlugin(Plugin):
             {
                 "name": "create_skill",
                 "description": (
-                    "Create a new local skill directory under SKILLS_DIR with a generated SKILL.md "
-                    "(frontmatter plus instruction body). Call when the user explicitly asks to author a "
-                    "fresh skill from scratch instead of installing an existing one — confirmed=true must "
-                    "follow that approval. Same gating as install_skill: SKILLS_ALLOW_INSTALLS and "
-                    "SKILLS_INSTALL_ADMIN_USER_IDS apply."
+                    "Create a new local skill directory under SKILLS_DIR with a generated SKILL.md. "
+                    "Call when the user explicitly asks to author a fresh skill instead of installing "
+                    "an existing one (confirmed=true after approval). Same gating as install_skill."
                 ),
                 "parameters": {
                     "type": "object",
@@ -661,12 +657,11 @@ class SkillsPlugin(Plugin):
             {
                 "name": "run_skill_agent",
                 "description": (
-                    "Run a tool-capable subagent declared by an active skill under its agents/*.yaml "
-                    "profile, using the active skill's stored context as the subtask brief. Call when "
-                    "the skill exposes a specialist agent profile that fits the current subtask better "
-                    "than running the work inline. Store the detailed brief first with activate_skill "
-                    "or update_skill_progress; do not pass long task text in this call. "
-                    "Fails with a clear error if the subagent runtime is unavailable in the current chat mode."
+                    "Run a tool-capable subagent declared by an active skill's agents/*.yaml profile, "
+                    "using the skill's stored context as the subtask brief. Call when that specialist "
+                    "profile fits the subtask better than inline work; store the brief first via "
+                    "activate_skill or update_skill_progress. Fails if the subagent runtime is "
+                    "unavailable in the current chat mode."
                 ),
                 "parameters": {
                     "type": "object",

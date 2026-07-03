@@ -445,14 +445,10 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "manage_plan_tasks",
                 "description": (
-                    "Manage the current Telegram chat's durable task plan and Definition of Done. "
-                    "Call before starting work that needs more than two steps: record goal, success "
-                    "criteria, verification checks, and the task list. Skip the durable plan for "
-                    "one- or two-step requests. Keep task ids stable: update existing tasks instead "
-                    "of inserting semantic duplicates. Use depends_on to model a task DAG; a task may "
-                    "start only after its dependencies close. Without depends_on, preserve list order "
-                    "and do not start later tasks while earlier tasks are still pending. Only one "
-                    "task may be in_progress."
+                    "Manage this chat's durable task plan and Definition of Done. Call before "
+                    "work that needs more than two steps; skip it for shorter requests. Keep "
+                    "task ids stable, use depends_on when a task blocks another, otherwise "
+                    "work in list order. Only one task may be in_progress."
                 ),
                 "parameters": {
                     "type": "object",
@@ -464,7 +460,7 @@ class AgentToolsPlugin(Plugin):
                         },
                         "tasks": {
                             "type": "array",
-                            "description": "Tasks for add/update actions. Include depends_on when one task blocks another.",
+                            "description": "Tasks for add/update actions.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -485,8 +481,7 @@ class AgentToolsPlugin(Plugin):
                         "definition_of_done": {
                             "type": "object",
                             "description": (
-                                "Required when adding tasks to a durable plan: goal, success criteria, "
-                                "and verification checks. Store it before or with the task plan."
+                                "Required when adding tasks: goal, success criteria, and verification checks."
                             ),
                             "properties": {
                                 "goal": {"type": "string"},
@@ -515,9 +510,8 @@ class AgentToolsPlugin(Plugin):
                 "name": "ask_telegram_user",
                 "description": (
                     "Send the Telegram user a question with inline-button choices and wait for their reply. "
-                    "Call when explicit confirmation, a choice between alternatives, or missing user "
-                    "input is required before proceeding. Answer variants go in options, not in the "
-                    "question text."
+                    "Call when confirmation or missing input is required before proceeding; answer "
+                    "variants go in options, not in the question text."
                 ),
                 "parameters": {
                     "type": "object",
@@ -537,10 +531,9 @@ class AgentToolsPlugin(Plugin):
                         "multi_select": {
                             "type": "boolean",
                             "description": (
-                                "If true, the user can pick several options. Each tap toggles a "
-                                "selection; the user finalizes with the Confirm button. The answer "
-                                "is returned as a comma-separated string. Free-text answers are "
-                                "disabled in multi-select mode."
+                                "If true, taps toggle selections and the user finalizes with the "
+                                "Confirm button; the answer returns as a comma-separated string. "
+                                "Disables free-text answers."
                             ),
                         },
                         "timeout_seconds": {
@@ -555,9 +548,8 @@ class AgentToolsPlugin(Plugin):
                 "name": "update_working_checkpoint",
                 "description": (
                     "Store, inspect, or clear a short working checkpoint for the current agent task. "
-                    "Use it after meaningful progress, verified findings, or a change of next step. "
-                    "This is operational scratch state, not long-term memory; do not store secrets, "
-                    "credentials, or unverified user-private data."
+                    "Use after meaningful progress or a change of next step; operational scratch "
+                    "state only — no secrets, credentials, or unverified user-private data."
                 ),
                 "parameters": {
                     "type": "object",
@@ -623,9 +615,8 @@ class AgentToolsPlugin(Plugin):
                 "name": "deliver_to_user",
                 "description": (
                     "Publish the agent's final answer to the Telegram user as one message with optional "
-                    "text and zero or more local files, ending the agent loop. Call exactly once when "
-                    "the task is finished or cannot continue; this is the only sanctioned way to address "
-                    "the user — do not produce a plain assistant reply alongside it."
+                    "text and local files, ending the agent loop. Call exactly once when the task is "
+                    "finished or cannot continue; do not produce a plain assistant reply alongside it."
                 ),
                 "parameters": {
                     "type": "object",
@@ -638,15 +629,13 @@ class AgentToolsPlugin(Plugin):
                             "type": "string",
                             "enum": ["completed", "blocked"],
                             "description": (
-                                "Machine-readable final state. Use completed when the task is done; "
-                                "use blocked when work cannot continue or finish."
+                                "Use completed when the task is done, blocked when work cannot continue."
                             ),
                         },
                         "verification_summary": {
                             "type": "string",
                             "description": (
-                                "Concise summary of checks performed before delivery, for example "
-                                "validated generated files or reviewed tool outputs."
+                                "Concise summary of checks performed before delivery."
                             ),
                         },
                         "blocked_reason": {
@@ -656,8 +645,7 @@ class AgentToolsPlugin(Plugin):
                         "artifacts": {
                             "type": "array",
                             "description": (
-                                "Optional list of local files to send. Each item must be an "
-                                "object with file_path (absolute path) and an optional caption."
+                                "Optional list of local files to send."
                             ),
                             "items": {
                                 "type": "object",
@@ -681,11 +669,9 @@ class AgentToolsPlugin(Plugin):
                 "name": "run_subagents",
                 "description": (
                     "Fan out independent, bounded subtasks to tool-capable subagents that run in parallel "
-                    "and return structured findings to the parent. Call when the work has two or more "
-                    "independent investigation branches and you want them executed concurrently with their "
-                    "own tool budgets. Subagents cannot ask Telegram questions, publish final artifacts, "
-                    "or spawn nested subagents; give each one an explicit output contract (what to inspect, "
-                    "what evidence to return, what files it may touch)."
+                    "and return findings to the parent. Call when the work has two or more independent "
+                    "branches. Subagents cannot ask Telegram questions, publish final artifacts, or spawn "
+                    "nested subagents; give each an explicit output contract."
                 ),
                 "parameters": {
                     "type": "object",
@@ -697,25 +683,24 @@ class AgentToolsPlugin(Plugin):
                         "max_rounds": {
                             "type": "integer",
                             "description": (
-                                f"Optional per-subagent tool-call rounds budget. "
-                                f"Default is {SUBAGENT_DEFAULT_TOOL_ROUNDS}; floor is "
-                                f"{MIN_SUBAGENT_TOOL_ROUNDS}; pass a higher value "
-                                "for harder tasks. Each round is one model call followed by parallel tool execution."
+                                f"Optional per-subagent tool-call rounds budget (one model call plus "
+                                f"tool execution per round). Default {SUBAGENT_DEFAULT_TOOL_ROUNDS}, "
+                                f"floor {MIN_SUBAGENT_TOOL_ROUNDS}."
                             ),
                         },
                         "background": {
                             "type": "boolean",
                             "description": (
-                                "When true, schedule subagents and return immediately. Use only for non-user-facing "
-                                "background reflection or cleanup work."
+                                "When true, schedule subagents and return immediately; only for "
+                                "non-user-facing background work."
                             ),
                             "default": False,
                         },
                         "map_reduce": {
                             "type": "object",
                             "description": (
-                                "Optional map-reduce contract. Use when subagents are parallel map workers "
-                                "and the parent will synthesize, compare, rank, or deduplicate their findings."
+                                "Optional map-reduce contract for when the parent will synthesize, "
+                                "compare, rank, or deduplicate worker findings."
                             ),
                             "properties": {
                                 "enabled": {
@@ -779,23 +764,21 @@ class AgentToolsPlugin(Plugin):
                                     "temperature": {
                                         "type": "number",
                                         "description": (
-                                            "Optional sampling temperature for this subagent only. "
-                                            f"Defaults to {DEFAULT_SUBAGENT_TEMPERATURE}."
+                                            f"Optional sampling temperature; defaults to {DEFAULT_SUBAGENT_TEMPERATURE}."
                                         ),
                                     },
                                     "max_rounds": {
                                         "type": "integer",
                                         "description": (
-                                            f"Optional per-subagent rounds budget overriding the parent value. "
-                                            f"Floor is {MIN_SUBAGENT_TOOL_ROUNDS}."
+                                            f"Optional rounds budget overriding the parent value; "
+                                            f"floor {MIN_SUBAGENT_TOOL_ROUNDS}."
                                         ),
                                     },
                                     "model": {
                                         "type": "string",
                                         "description": (
-                                            "Optional model override for this subagent only. "
-                                            "Must be one of the configured OPENAI_MODEL entries. "
-                                            "Defaults to the parent's current model."
+                                            "Optional model override; must be one of the configured "
+                                            "OPENAI_MODEL entries."
                                         ),
                                     },
                                 },
@@ -809,9 +792,9 @@ class AgentToolsPlugin(Plugin):
             {
                 "name": "manage_goal_runs",
                 "description": (
-                    "Start, list, inspect, or cancel controlled background goal runs for this Telegram chat. "
-                    "Use for long-running objectives that should continue outside the current request. "
-                    "Runs are DB-backed, scoped to the chat/user, and have explicit runtime/token limits."
+                    "Start, list, inspect, or cancel background goal runs for this Telegram chat. "
+                    "Use for long-running objectives that continue outside the current request, "
+                    "with explicit runtime/token limits."
                 ),
                 "parameters": {
                     "type": "object",
