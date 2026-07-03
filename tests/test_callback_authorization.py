@@ -207,16 +207,48 @@ def _make_openai():
     )
 
 
+class FakeDescribedPlugin:
+    def get_source_name(self):
+        return "Alpha source"
+
+    def get_help_text(self):
+        return "Alpha help text"
+
+    def get_commands(self):
+        return [{"command": "alpha", "description": "Run alpha command"}]
+
+    def get_spec(self):
+        return [{"name": "alpha.search", "description": "Search alpha records"}]
+
+
 class FakeSettingsPluginManager:
     plugins = {"alpha": object(), "beta": object(), "skills": object()}
 
     def __init__(self):
-        self.skills_plugin = SimpleNamespace(available_skills={"docx": {}, "pptx": {}})
+        self.alpha_plugin = FakeDescribedPlugin()
+        self.skills_plugin = SimpleNamespace(available_skills={
+            "docx": {
+                "name": "docx",
+                "description": "Work with Word documents",
+                "scripts": [],
+                "agents": [],
+                "references": [],
+            },
+            "pptx": {
+                "name": "PowerPoint",
+                "description": "Create and edit presentations",
+                "scripts": ["qa-pptx.sh"],
+                "agents": [{"id": "deck_generator"}],
+                "references": ["references/checklist.md"],
+            },
+        })
 
     def has_plugin(self, plugin_name):
         return plugin_name in self.plugins
 
     def get_plugin(self, plugin_name):
+        if plugin_name == "alpha":
+            return self.alpha_plugin
         if plugin_name == "skills":
             return self.skills_plugin
         return None
@@ -726,6 +758,39 @@ async def test_settings_plugin_toggle_saves_disabled_plugins():
 
 
 @pytest.mark.asyncio
+async def test_settings_plugin_menu_has_description_button():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    bot.db.get_user_settings.return_value = {}
+
+    markup = await bot._build_plugin_settings_menu(page=0, user_id=999)
+
+    first_row = markup.inline_keyboard[0]
+    assert first_row[0].text == "On: alpha"
+    assert first_row[0].callback_data == "settings:plugin_toggle:0:0"
+    assert first_row[1].text == "ℹ️"
+    assert first_row[1].callback_data == "settings:plugin_info:0:0"
+
+
+@pytest.mark.asyncio
+async def test_settings_plugin_info_shows_description_with_back_button():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    update = FakeCallbackUpdate("settings:plugin_info:0:0", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    text = update.callback_query.edit_message_text.await_args.kwargs["text"]
+    reply_markup = update.callback_query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert "Plugin: alpha" in text
+    assert "Alpha source" in text
+    assert "Alpha help text" in text
+    assert "/alpha: Run alpha command" in text
+    assert "alpha.search: Search alpha records" in text
+    assert reply_markup.inline_keyboard[0][0].callback_data == "settings:plugins:0"
+
+
+@pytest.mark.asyncio
 async def test_settings_plugin_toggle_can_reenable_plugin():
     bot = _make_bot(allowed_user_ids="*")
     bot.openai.plugin_manager = FakeSettingsPluginManager()
@@ -749,3 +814,36 @@ async def test_settings_skill_toggle_saves_disabled_skills():
 
     bot.db.save_user_settings.assert_called_with(999, {"disabled_skills": ["pptx"]})
     update.callback_query.answer.assert_any_await("Skill disabled: pptx")
+
+
+@pytest.mark.asyncio
+async def test_settings_skill_menu_has_description_button():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    bot.db.get_user_settings.return_value = {}
+
+    markup = await bot._build_skill_settings_menu(page=0, user_id=999)
+
+    first_row = markup.inline_keyboard[0]
+    assert first_row[0].text == "On: docx"
+    assert first_row[0].callback_data == "settings:skill_toggle:0:0"
+    assert first_row[1].text == "ℹ️"
+    assert first_row[1].callback_data == "settings:skill_info:0:0"
+
+
+@pytest.mark.asyncio
+async def test_settings_skill_info_shows_description_with_back_button():
+    bot = _make_bot(allowed_user_ids="*")
+    bot.openai.plugin_manager = FakeSettingsPluginManager()
+    update = FakeCallbackUpdate("settings:skill_info:0:1", user_id=999)
+
+    await bot.handle_settings_callback(update, _make_context())
+
+    text = update.callback_query.edit_message_text.await_args.kwargs["text"]
+    reply_markup = update.callback_query.edit_message_text.await_args.kwargs["reply_markup"]
+    assert "Skill: PowerPoint (pptx)" in text
+    assert "Create and edit presentations" in text
+    assert "qa-pptx.sh" in text
+    assert "deck_generator" in text
+    assert "references/checklist.md" in text
+    assert reply_markup.inline_keyboard[0][0].callback_data == "settings:skill_page:0"

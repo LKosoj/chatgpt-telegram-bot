@@ -1435,6 +1435,10 @@ class ChatGPTTelegramBot:
             await self._toggle_plugin_setting(query, parts, user_id)
             return
 
+        if action == 'plugin_info' and len(parts) >= 4:
+            await self._show_plugin_description_setting(query, parts, user_id)
+            return
+
         if action in {'skills', 'skill_page'}:
             await query.answer()
             page = self._settings_page(parts)
@@ -1446,6 +1450,10 @@ class ChatGPTTelegramBot:
 
         if action == 'skill_toggle' and len(parts) >= 4:
             await self._toggle_skill_setting(query, parts, user_id)
+            return
+
+        if action == 'skill_info' and len(parts) >= 4:
+            await self._show_skill_description_setting(query, parts, user_id)
             return
 
         await query.answer()
@@ -1681,6 +1689,43 @@ class ChatGPTTelegramBot:
         self._append_settings_nav_rows(keyboard, page, total_pages, page_action)
         return InlineKeyboardMarkup(keyboard)
 
+    def _build_described_toggle_settings_menu(
+        self,
+        items: list[str],
+        *,
+        page: int,
+        disabled_values: list[str],
+        page_action: str,
+        toggle_action: str,
+        info_action: str,
+    ) -> InlineKeyboardMarkup:
+        page_size = SETTINGS_MENU_PAGE_SIZE
+        total_pages = max(1, (len(items) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        page_items = items[start:start + page_size]
+        disabled = set(disabled_values)
+
+        keyboard = []
+        for offset, item in enumerate(page_items):
+            global_index = start + offset
+            status_key = 'settings_toggle_disabled' if item in disabled else 'settings_toggle_enabled'
+            keyboard.append([
+                InlineKeyboardButton(
+                    localized_text(status_key, self.config['bot_language']).format(
+                        item=self._settings_label(item)
+                    ),
+                    callback_data=f"settings:{toggle_action}:{page}:{global_index}",
+                ),
+                InlineKeyboardButton(
+                    "ℹ️",
+                    callback_data=f"settings:{info_action}:{page}:{global_index}",
+                ),
+            ])
+
+        self._append_settings_nav_rows(keyboard, page, total_pages, page_action)
+        return InlineKeyboardMarkup(keyboard)
+
     def _append_settings_nav_rows(self, keyboard: list, page: int, total_pages: int, page_action: str) -> None:
         nav_row = []
         if page > 0:
@@ -1703,6 +1748,14 @@ class ChatGPTTelegramBot:
                 callback_data='settings:root',
             )
         ])
+
+    def _build_description_back_settings_menu(self, list_action: str, page: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                localized_text('settings_back', self.config['bot_language']),
+                callback_data=f'settings:{list_action}:{page}',
+            )
+        ]])
 
     async def _show_tts_model_settings(self, query, page: int, user_id: int | None) -> None:
         models = await self.openai.get_available_tts_models()
@@ -1793,28 +1846,32 @@ class ChatGPTTelegramBot:
         return sorted(str(name) for name in plugins.keys())
 
     def _available_skill_names(self) -> list[str]:
+        skills_plugin = self._settings_skills_plugin()
+        available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
+        return sorted(str(name) for name in available_skills.keys())
+
+    def _settings_skills_plugin(self):
         plugin_manager = getattr(self.openai, 'plugin_manager', None)
         has_plugin = getattr(plugin_manager, 'has_plugin', None)
         get_plugin = getattr(plugin_manager, 'get_plugin', None)
-        skills_plugin = (
-            get_plugin('skills')
-            if callable(has_plugin) and callable(get_plugin) and has_plugin('skills')
-            else None
-        )
-        available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
-        return sorted(str(name) for name in available_skills.keys())
+        if not callable(get_plugin):
+            return None
+        if callable(has_plugin) and not has_plugin('skills'):
+            return None
+        return get_plugin('skills')
 
     async def _build_plugin_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
         settings = await self._settings_for_user_async(user_id)
         plugins = self._available_plugin_names()
         if not plugins:
             return self._build_back_settings_menu()
-        return self._build_toggle_settings_menu(
+        return self._build_described_toggle_settings_menu(
             plugins,
             page=page,
             disabled_values=normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING)),
             page_action='plugin_page',
             toggle_action='plugin_toggle',
+            info_action='plugin_info',
         )
 
     async def _build_skill_settings_menu(self, page: int, user_id: int | None) -> InlineKeyboardMarkup:
@@ -1822,13 +1879,226 @@ class ChatGPTTelegramBot:
         skills = self._available_skill_names()
         if not skills:
             return self._build_back_settings_menu()
-        return self._build_toggle_settings_menu(
+        return self._build_described_toggle_settings_menu(
             skills,
             page=page,
             disabled_values=normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING)),
             page_action='skill_page',
             toggle_action='skill_toggle',
+            info_action='skill_info',
         )
+
+    async def _show_plugin_description_setting(self, query, parts: list[str], user_id: int | None) -> None:
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        plugins = self._available_plugin_names()
+        if index is None or index >= len(plugins):
+            await query.answer()
+            await query.edit_message_text(
+                text=localized_text('settings_plugins_choose', self.config['bot_language']),
+                reply_markup=await self._build_plugin_settings_menu(page, user_id),
+            )
+            return
+        await query.answer()
+        await query.edit_message_text(
+            text=self._plugin_description_text(plugins[index]),
+            reply_markup=self._build_description_back_settings_menu('plugins', page),
+        )
+
+    async def _show_skill_description_setting(self, query, parts: list[str], user_id: int | None) -> None:
+        page = self._settings_page(parts)
+        index = self._settings_index(parts)
+        skills = self._available_skill_names()
+        if index is None or index >= len(skills):
+            await query.answer()
+            await query.edit_message_text(
+                text=localized_text('settings_skills_choose', self.config['bot_language']),
+                reply_markup=await self._build_skill_settings_menu(page, user_id),
+            )
+            return
+        await query.answer()
+        await query.edit_message_text(
+            text=self._skill_description_text(skills[index]),
+            reply_markup=self._build_description_back_settings_menu('skill_page', page),
+        )
+
+    def _plugin_description_text(self, plugin_name: str) -> str:
+        title = localized_text('settings_plugin_description_title', self.config['bot_language']).format(
+            plugin=self._format_plugin_title(plugin_name)
+        )
+        plugin = self._get_plugin_for_description(plugin_name)
+        sections = []
+
+        source = self._call_plugin_text(plugin, 'get_source_name')
+        if source:
+            sections.append(localized_text('settings_plugin_source_label', self.config['bot_language']).format(
+                source=self._settings_compact_text(source, 300)
+            ))
+
+        help_text = self._call_plugin_text(plugin, 'get_help_text')
+        if help_text:
+            sections.append(localized_text('plugins_menu_description_label', self.config['bot_language']).format(
+                description=self._settings_compact_text(help_text, 900)
+            ))
+
+        command_lines = self._plugin_command_description_lines(plugin)
+        if command_lines:
+            sections.append(
+                localized_text('settings_plugin_commands_label', self.config['bot_language'])
+                + "\n"
+                + "\n".join(command_lines)
+            )
+
+        spec_lines = self._plugin_spec_description_lines(plugin)
+        if spec_lines:
+            sections.append(
+                localized_text('settings_plugin_tools_label', self.config['bot_language'])
+                + "\n"
+                + "\n".join(spec_lines)
+            )
+
+        if not sections:
+            sections.append(localized_text('settings_description_unavailable', self.config['bot_language']))
+        return title + "\n\n" + "\n\n".join(sections)
+
+    def _skill_description_text(self, skill_name: str) -> str:
+        info = self._skill_info(skill_name)
+        display_name = str(info.get('name') or skill_name)
+        title_name = display_name if display_name == skill_name else f"{display_name} ({skill_name})"
+        title = localized_text('settings_skill_description_title', self.config['bot_language']).format(
+            skill=title_name
+        )
+        sections = []
+
+        description = str(info.get('description') or '').strip()
+        if description:
+            sections.append(localized_text('plugins_menu_description_label', self.config['bot_language']).format(
+                description=self._settings_compact_text(description, 1200)
+            ))
+        else:
+            sections.append(localized_text('settings_description_unavailable', self.config['bot_language']))
+
+        for label_key, values_key in (
+            ('settings_skill_scripts_label', 'scripts'),
+            ('settings_skill_agents_label', 'agents'),
+            ('settings_skill_references_label', 'references'),
+        ):
+            values = self._skill_description_values(info.get(values_key) or [])
+            if values:
+                sections.append(
+                    localized_text(label_key, self.config['bot_language'])
+                    + "\n"
+                    + "\n".join(self._settings_bullet_lines(values, max_items=8, max_chars=120))
+                )
+
+        return title + "\n\n" + "\n\n".join(sections)
+
+    def _get_plugin_for_description(self, plugin_name: str):
+        plugin_manager = getattr(self.openai, 'plugin_manager', None)
+        get_plugin = getattr(plugin_manager, 'get_plugin', None)
+        if callable(get_plugin):
+            plugin = get_plugin(plugin_name)
+            if plugin:
+                return plugin
+        instances = getattr(plugin_manager, 'plugin_instances', {}) or {}
+        return instances.get(plugin_name)
+
+    def _skill_info(self, skill_name: str) -> dict:
+        skills_plugin = self._settings_skills_plugin()
+        available_skills = getattr(skills_plugin, 'available_skills', {}) or {}
+        info = available_skills.get(skill_name)
+        return info if isinstance(info, dict) else {}
+
+    @staticmethod
+    def _skill_description_values(values) -> list[str]:
+        result = []
+        for value in values:
+            if isinstance(value, dict):
+                value = value.get('id') or value.get('name') or ""
+            text = str(value or "").strip()
+            if text:
+                result.append(text)
+        return result
+
+    def _call_plugin_text(self, plugin, method_name: str) -> str:
+        method = getattr(plugin, method_name, None)
+        if not callable(method):
+            return ""
+        try:
+            value = method()
+        except Exception as exc:
+            logger.warning(
+                "Failed to read plugin setting description method=%s error=%s",
+                method_name,
+                log_exception_shape(exc),
+            )
+            return ""
+        return str(value or "").strip()
+
+    def _plugin_command_description_lines(self, plugin) -> list[str]:
+        get_commands = getattr(plugin, 'get_commands', None)
+        if not callable(get_commands):
+            return []
+        try:
+            commands = get_commands() or []
+        except Exception as exc:
+            logger.warning("Failed to read plugin commands for settings description error=%s", log_exception_shape(exc))
+            return []
+        lines = []
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            name = str(command.get('command') or command.get('name') or '').strip()
+            description = str(command.get('description') or '').strip()
+            if not name and not description:
+                continue
+            title = f"/{name}" if name else localized_text('settings_plugin_command_unknown', self.config['bot_language'])
+            lines.append(f"- {title}: {self._settings_compact_text(description, 180)}" if description else f"- {title}")
+        return self._settings_limited_lines(lines)
+
+    def _plugin_spec_description_lines(self, plugin) -> list[str]:
+        get_spec = getattr(plugin, 'get_spec', None)
+        if not callable(get_spec):
+            return []
+        try:
+            specs = get_spec() or []
+        except Exception as exc:
+            logger.warning("Failed to read plugin specs for settings description error=%s", log_exception_shape(exc))
+            return []
+        lines = []
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            function_spec = spec.get('function') if isinstance(spec.get('function'), dict) else spec
+            name = str(function_spec.get('name') or '').strip()
+            description = str(function_spec.get('description') or '').strip()
+            if not name and not description:
+                continue
+            title = name or localized_text('settings_plugin_tool_unknown', self.config['bot_language'])
+            lines.append(f"- {title}: {self._settings_compact_text(description, 180)}" if description else f"- {title}")
+        return self._settings_limited_lines(lines)
+
+    @staticmethod
+    def _settings_compact_text(value: str, max_chars: int) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars - 3].rstrip() + "..."
+
+    def _settings_bullet_lines(self, values, *, max_items: int, max_chars: int) -> list[str]:
+        lines = [
+            f"- {self._settings_compact_text(str(value), max_chars)}"
+            for value in values
+            if str(value).strip()
+        ]
+        return self._settings_limited_lines(lines, max_items=max_items)
+
+    @staticmethod
+    def _settings_limited_lines(lines: list[str], max_items: int = 8) -> list[str]:
+        if len(lines) <= max_items:
+            return lines
+        remaining = len(lines) - max_items
+        return lines[:max_items] + [f"- ... +{remaining}"]
 
     async def _toggle_plugin_setting(self, query, parts: list[str], user_id: int | None) -> None:
         if user_id is None:
