@@ -554,7 +554,7 @@ async def test_get_chat_response_rate_limit_does_not_duplicate_user_message(monk
 
 
 @pytest.mark.asyncio
-async def test_get_chat_response_provider_failure_redacts_lower_and_upper_logs(caplog):
+async def test_get_chat_response_provider_failure_logs_debug_values(caplog):
     class FailingClient(DummyClient):
         async def _create(self, **kwargs):
             self.calls += 1
@@ -575,10 +575,10 @@ async def test_get_chat_response_provider_failure_redacts_lower_and_upper_logs(c
     assert "LLM request failed kind=main" in log_text
     assert "Unexpected error in chat response generation" in log_text
     assert "Error in get_chat_response" in log_text
-    assert "payload_shape" in log_text
-    assert "RuntimeError(message_chars=" in log_text
-    assert "secret user prompt" not in log_text
-    assert "provider secret request fragment" not in log_text
+    assert "payload=" in log_text
+    assert "RuntimeError: provider secret request fragment" in log_text
+    assert "secret user prompt" in log_text
+    assert "provider secret request fragment" in log_text
 
 
 def test_get_current_model_prefers_explicit_session_model():
@@ -1254,7 +1254,7 @@ async def test_tts_options_are_loaded_from_api():
 
 
 @pytest.mark.asyncio
-async def test_tts_option_api_failures_are_redacted_from_normal_logs(caplog):
+async def test_tts_option_api_failures_log_provider_text(caplog):
     class FailingModelsClient(DummyClient):
         async def _list_models(self):
             raise RuntimeError("secret model provider text")
@@ -1273,9 +1273,8 @@ async def test_tts_option_api_failures_are_redacted_from_normal_logs(caplog):
 
     assert "Failed to load TTS models from API" in caplog.text
     assert "Failed to load TTS voices from API" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
-    assert "secret model provider text" not in caplog.text
-    assert "secret voice provider text" not in caplog.text
+    assert "RuntimeError: secret model provider text" in caplog.text
+    assert "RuntimeError: secret voice provider text" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1536,7 @@ async def test_tool_batch_cancellation_skips_delivery_phase():
 
 
 @pytest.mark.asyncio
-async def test_invalid_tool_arguments_redacts_normal_logs_but_keeps_session_event(caplog):
+async def test_invalid_tool_arguments_logs_debug_values_and_keeps_sanitized_session_event(caplog):
     from bot.session_logger import clear_trace, set_trace
 
     class CaptureSessionLogger:
@@ -1582,8 +1581,8 @@ async def test_invalid_tool_arguments_redacts_normal_logs_but_keeps_session_even
     assert "LLM request payload kind=chat_completion" in log_text
     assert "call-debug-1" in log_text
     assert "skills_run_skill_agent" in log_text
-    assert "arguments_shape" in log_text
-    assert bad_arguments not in log_text
+    assert "arguments=" in log_text
+    assert bad_arguments in log_text
     assert any(
         event.get("type") == "tool_calls_received"
         and event["tool_calls"][0]["tool_call_id"] == "call-debug-1"
@@ -1610,7 +1609,7 @@ async def test_invalid_tool_arguments_redacts_normal_logs_but_keeps_session_even
 
 
 @pytest.mark.asyncio
-async def test_tool_arguments_and_response_are_redacted_from_normal_logs(caplog):
+async def test_tool_arguments_and_response_are_visible_in_normal_logs(caplog):
     secret_arguments = '{"needle":"private search phrase"}'
     secret_tool_result = {"result": "private tool response"}
     helper = _make_helper(
@@ -1635,12 +1634,12 @@ async def test_tool_arguments_and_response_are_redacted_from_normal_logs(caplog)
     log_text = caplog.text
     assert out.choices[0].message.content == "done"
     assert set(tools_used) == {"p1.do"}
-    assert "arguments_shape" in log_text
-    assert "response_shape" in log_text
+    assert "arguments=" in log_text
+    assert "response:" in log_text
     assert "call-redact" in log_text
     assert "p1.do" in log_text
-    assert "private search phrase" not in log_text
-    assert "private tool response" not in log_text
+    assert "private search phrase" in log_text
+    assert "private tool response" in log_text
     assert any(
         "private tool response" in str(message.get("content") or "")
         for message in helper.conversations[1]
@@ -1648,7 +1647,7 @@ async def test_tool_arguments_and_response_are_redacted_from_normal_logs(caplog)
 
 
 @pytest.mark.asyncio
-async def test_streaming_api_error_log_redacts_error_text(monkeypatch, caplog):
+async def test_streaming_api_error_log_includes_error_text(monkeypatch, caplog):
     class DummyAPIError(Exception):
         pass
 
@@ -1673,12 +1672,11 @@ async def test_streaming_api_error_log_redacts_error_text(monkeypatch, caplog):
     assert out is response
     assert tools_used == ()
     assert "API Error in function call streaming" in caplog.text
-    assert "DummyAPIError(message_chars=" in caplog.text
-    assert "secret streaming api error" not in caplog.text
+    assert "DummyAPIError: secret streaming api error" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_streaming_plain_text_tool_intent_buffer_api_error_log_redacts_error_text(monkeypatch, caplog):
+async def test_streaming_plain_text_tool_intent_buffer_api_error_log_includes_error_text(monkeypatch, caplog):
     class DummyAPIError(Exception):
         pass
 
@@ -1703,8 +1701,7 @@ async def test_streaming_plain_text_tool_intent_buffer_api_error_log_redacts_err
     assert await _collect_stream_content(out) == "plain text"
     assert tools_used == ()
     assert "API Error while buffering plain-text tool intent stream" in caplog.text
-    assert "DummyAPIError(message_chars=" in caplog.text
-    assert "secret buffering api error" not in caplog.text
+    assert "DummyAPIError: secret buffering api error" in caplog.text
 
 
 def test_repair_tool_call_history_emits_synthetic_tool_result():

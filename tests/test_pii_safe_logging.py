@@ -67,7 +67,7 @@ def _raw_exception_reference(node: ast.AST) -> str | None:
     return None
 
 
-def test_log_json_shape_redacts_sensitive_payload_values():
+def test_log_json_shape_preserves_payload_values():
     secret_prompt = "prompt with private details"
     secret_argument = '{"token":"private-token"}'
     secret_result = "private tool result"
@@ -90,12 +90,12 @@ def test_log_json_shape_redacts_sensitive_payload_values():
         max_depth=5,
     )
 
-    assert "private details" not in shape
-    assert "private-token" not in shape
-    assert "private tool result" not in shape
+    assert "private details" in shape
+    assert "private-token" in shape
+    assert "private tool result" in shape
     assert "messages" in shape
     assert "arguments" in shape
-    assert "redacted" in shape
+    assert "redacted" not in shape
 
 
 def test_touched_runtime_logs_do_not_use_raw_exception_logging_patterns():
@@ -123,7 +123,7 @@ def test_touched_runtime_logs_do_not_use_raw_exception_logging_patterns():
 
 
 @pytest.mark.asyncio
-async def test_busy_status_message_failures_log_exception_shape_only(caplog):
+async def test_busy_status_message_failures_log_exception_value(caplog):
     class FailingMessage:
         async def delete(self):
             raise RuntimeError("private-delete-secret")
@@ -138,12 +138,11 @@ async def test_busy_status_message_failures_log_exception_shape_only(caplog):
 
     await status.stop()
 
-    assert "Failed to delete busy status message error=RuntimeError(message_chars=" in caplog.text
-    assert "private-delete-secret" not in caplog.text
+    assert "Failed to delete busy status message error=RuntimeError: private-delete-secret" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_wrap_with_indicator_chat_action_failure_logs_shape_only(caplog):
+async def test_wrap_with_indicator_chat_action_failure_logs_exception_value(caplog):
     class FailingChat:
         async def send_action(self, *_args, **_kwargs):
             raise RuntimeError("private-chat-action-secret")
@@ -166,12 +165,11 @@ async def test_wrap_with_indicator_chat_action_failure_logs_shape_only(caplog):
     result = await wrap_with_indicator(update, context, work, chat_action="typing")
 
     assert result == "ok"
-    assert "Error sending chat action error=RuntimeError(message_chars=" in caplog.text
-    assert "private-chat-action-secret" not in caplog.text
+    assert "Error sending chat action error=RuntimeError: private-chat-action-secret" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_edit_message_with_retry_failure_logs_shape_only(caplog):
+async def test_edit_message_with_retry_failure_logs_exception_value(caplog):
     secret = "private-edit-secret"
     bot = SimpleNamespace(
         edit_message_text=AsyncMock(
@@ -192,13 +190,12 @@ async def test_edit_message_with_retry_failure_logs_shape_only(caplog):
             text="private message text",
         )
 
-    assert "Failed to edit message error=RuntimeError(message_chars=" in caplog.text
-    assert secret not in caplog.text
+    assert "Failed to edit message error=RuntimeError: private-edit-secret" in caplog.text
     assert "private message text" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_error_handler_logs_shape_only(caplog):
+async def test_error_handler_logs_exception_value(caplog):
     caplog.set_level(logging.ERROR)
 
     await error_handler(
@@ -206,5 +203,4 @@ async def test_error_handler_logs_shape_only(caplog):
         SimpleNamespace(error=RuntimeError("private-error-handler-secret")),
     )
 
-    assert "Exception while handling an update error=RuntimeError(message_chars=" in caplog.text
-    assert "private-error-handler-secret" not in caplog.text
+    assert "Exception while handling an update error=RuntimeError: private-error-handler-secret" in caplog.text

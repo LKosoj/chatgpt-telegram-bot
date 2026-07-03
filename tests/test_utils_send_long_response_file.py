@@ -141,8 +141,8 @@ async def test_send_long_response_as_file_read_failure_logs_path_shape(tmp_path,
     message.reply_document.assert_not_called()
     assert "Failed to read generated HTML file" in caplog.text
     assert "output_shape" in caplog.text
-    assert "FileNotFoundError(message_chars=" in caplog.text
-    assert "secret-response-path" not in caplog.text
+    assert "FileNotFoundError:" in caplog.text
+    assert "secret-response-path" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -181,6 +181,5 @@ async def test_send_long_response_as_file_remove_failure_logs_path_shape(tmp_pat
     message.reply_document.assert_awaited_once()
     assert "Failed to delete generated HTML file" in caplog.text
     assert "output_shape" in caplog.text
-    assert "OSError(message_chars=" in caplog.text
-    assert "secret-remove-path" not in caplog.text
-    assert "secret unlink failure" not in caplog.text
+    assert "OSError: secret unlink failure" in caplog.text
+    assert "secret-remove-path" in caplog.text

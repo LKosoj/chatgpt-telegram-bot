@@ -91,7 +91,7 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _json_for_log(value: Any) -> str:
-    return log_json_shape(value)
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 # skills_agent first-turn planner gate: information-only tools that are safe to
 # call BEFORE the model has called manage_plan_tasks. Anything not in this set is
@@ -455,7 +455,7 @@ class OpenAIHelper:
                 'payload': kwargs,
             })
         logger.info(
-            "LLM request payload kind=%s payload_shape=%s",
+            "LLM request payload kind=%s payload=%s",
             kind,
             _json_for_log(kwargs),
         )
@@ -463,7 +463,7 @@ class OpenAIHelper:
             response = await self._create_chat_completion_with_rate_limit_retry(kind=kind, **kwargs)
         except Exception as exc:
             logger.error(
-                "LLM request failed kind=%s error=%s payload_shape=%s",
+                "LLM request failed kind=%s error=%s payload=%s",
                 kind,
                 log_exception_shape(exc),
                 _json_for_log(kwargs),
@@ -1366,7 +1366,7 @@ class OpenAIHelper:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
 
-            logger.info("common_args shape = %s", _json_for_log(common_args))
+            logger.info("common_args = %s", _json_for_log(common_args))
 
             # skills_agent first-turn planner gate. Only runs on non-streaming
             # first turns; the streaming dispatch path is expected to route to
@@ -1654,7 +1654,7 @@ class OpenAIHelper:
             for call in tool_calls
         ]
         logger.info(
-            "Appending assistant tool calls to history chat_id=%s state_key=%s count=%d payload_shape=%s",
+            "Appending assistant tool calls to history chat_id=%s state_key=%s count=%d payload=%s",
             chat_id,
             state_key,
             len(history_tool_calls),

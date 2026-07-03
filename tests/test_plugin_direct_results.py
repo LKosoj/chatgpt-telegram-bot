@@ -281,7 +281,7 @@ async def test_handle_direct_result_final_does_not_send_text_when_artifact_is_no
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_final_not_delivered_error_redacts_artifact_payload(tmp_path, caplog):
+async def test_handle_direct_result_final_not_delivered_error_includes_artifact_payload(tmp_path, caplog):
     secret_path = tmp_path / "secret-client-path.pptx"
     message = FakeMessage()
 
@@ -305,15 +305,15 @@ async def test_handle_direct_result_final_not_delivered_error_redacts_artifact_p
     error_text = str(exc_info.value)
     assert "final artifact was not delivered" in error_text
     assert "artifact_shape" in error_text
-    assert "redacted" in error_text
-    assert "secret-client-path" not in error_text
-    assert "secret-client-path" not in caplog.text
+    assert "redacted" not in error_text
+    assert "secret-client-path" in error_text
+    assert "secret-client-path" in caplog.text
     message.reply_text.assert_not_called()
     message.reply_document.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_photo_path_failure_logs_shape_only(tmp_path, monkeypatch, caplog):
+async def test_handle_direct_result_photo_path_failure_logs_values(tmp_path, monkeypatch, caplog):
     import bot.utils as utils
 
     secret_path = tmp_path / "secret-image-path.png"
@@ -344,13 +344,12 @@ async def test_handle_direct_result_photo_path_failure_logs_shape_only(tmp_path,
     message.reply_photo.assert_awaited_once()
     assert "Error handling photo direct result" in caplog.text
     assert "value_shape" in caplog.text
-    assert "OSError(message_chars=" in caplog.text
-    assert "secret-image-path" not in caplog.text
-    assert "secret image path leaked" not in caplog.text
+    assert "OSError: secret image path leaked by PIL" in caplog.text
+    assert "secret-image-path" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_file_path_read_failure_logs_value_shape_only(tmp_path, caplog):
+async def test_handle_direct_result_file_path_read_failure_logs_value(tmp_path, caplog):
     secret_path = tmp_path / "secret-report-path.pdf"
     message = FakeMessage()
 
@@ -370,12 +369,12 @@ async def test_handle_direct_result_file_path_read_failure_logs_value_shape_only
 
     assert "Handling direct result" in caplog.text
     assert "value_shape" in caplog.text
-    assert "secret-report-path" not in caplog.text
+    assert "secret-report-path" in caplog.text
     message.reply_document.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_handle_direct_result_text_reply_failure_logs_shape_only(caplog):
+async def test_handle_direct_result_text_reply_failure_logs_values(caplog):
     message = FakeMessage()
     message.reply_text.side_effect = [
         RuntimeError("secret direct result chunk"),
@@ -398,9 +397,9 @@ async def test_handle_direct_result_text_reply_failure_logs_shape_only(caplog):
     assert [message.message_id for message in sent_messages] == [200]
     assert message.reply_text.await_count == 2
     assert "Unexpected error in handle_direct_result" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
+    assert "RuntimeError: secret direct result chunk" in caplog.text
     assert "chunk_shape" in caplog.text
-    assert "secret direct result chunk" not in caplog.text
+    assert "secret direct result chunk" in caplog.text
 
 
 @pytest.mark.asyncio

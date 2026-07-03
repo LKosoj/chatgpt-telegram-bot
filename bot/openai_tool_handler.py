@@ -25,7 +25,7 @@ from .tool_result import (
     normalize_tool_result,
 )
 from .session_logger import get_trace
-from .utils import compute_scope_key, log_exception_shape, log_json_shape, log_value_shape
+from .utils import compute_scope_key, log_exception_shape
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +437,7 @@ def _filter_tools_to_names(tools, allowed_names: set[str], plugin_manager=None):
 
 
 def _json_for_log(value) -> str:
-    return log_json_shape(value)
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def _tool_calls_payload(tool_calls: list[dict]) -> list[dict]:
@@ -471,7 +471,7 @@ def _log_model_tool_calls(
         for call in tool_calls
     ]
     logger.info(
-        "Model tool calls received chat_id=%s model=%s stream=%s count=%d names=%s payload_shape=%s",
+        "Model tool calls received chat_id=%s model=%s stream=%s count=%d names=%s payload=%s",
         chat_id,
         model_to_use,
         stream,
@@ -1239,22 +1239,22 @@ async def handle_function_call(
             arguments = call["arguments"]
             canonical_arguments = _canonical_tool_arguments(arguments)
             logger.info(
-                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments_shape=%s",
+                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments=%s",
                 chat_id,
                 tool_call_id,
                 model_tool_name,
                 tool_name,
-                log_value_shape(arguments, key="arguments"),
+                arguments,
             )
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
                 logger.warning(
-                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments_shape=%s",
+                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments=%s",
                     error,
                     chat_id,
                     tool_call_id,
                     model_tool_name,
-                    log_value_shape(arguments, key="arguments"),
+                    arguments,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
@@ -1285,24 +1285,24 @@ async def handle_function_call(
                 prepared.append((tool_name, arguments, _canonical_tool_arguments(arguments), tool_call_id))
             except json.JSONDecodeError as exc:
                 logger.error(
-                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments_shape=%s",
+                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
                     log_exception_shape(exc),
-                    log_value_shape(arguments, key="arguments"),
+                    arguments,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
             except TypeError as exc:
                 logger.error(
-                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments_shape=%s",
+                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
                     log_exception_shape(exc),
-                    log_value_shape(arguments, key="arguments"),
+                    arguments,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
 
@@ -1349,9 +1349,9 @@ async def handle_function_call(
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             tool_result = normalize_tool_result(tool_response, tool_name=tool_name)
             logger.info(
-                "Function %s response_shape=%s",
+                "Function %s response: %s",
                 tool_name,
-                log_value_shape(tool_result.content, key="response"),
+                tool_result.content,
             )
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
@@ -1506,7 +1506,7 @@ async def handle_function_call(
         session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
 
         logger.info(
-            "Function calls completed. conversation_shape=%s session_id=%s",
+            "Function calls completed. conversation: %s session_id=%s",
             _json_for_log(helper.conversations.get(_chat_state_key(helper, chat_id))),
             session_id,
         )

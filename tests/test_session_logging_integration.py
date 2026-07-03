@@ -101,7 +101,7 @@ async def test_timed_create_writes_llm_call_event(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_timed_create_redacts_normal_log_payload_but_keeps_session_payload(tmp_path, caplog):
+async def test_timed_create_logs_payload_and_keeps_session_payload(tmp_path, caplog):
     helper = _make_helper(tmp_path)
     secret_prompt = "secret prompt for session trace"
 
@@ -120,8 +120,8 @@ async def test_timed_create_redacts_normal_log_payload_but_keeps_session_payload
         _TURN_STATS.reset(stats_token)
         clear_trace(trace_token)
 
-    assert "payload_shape" in caplog.text
-    assert secret_prompt not in caplog.text
+    assert "payload=" in caplog.text
+    assert secret_prompt in caplog.text
 
     await helper.session_logger.drain()
 
@@ -280,13 +280,11 @@ async def test_session_memory_injection_persist_failure_logs_shape_only(tmp_path
     )
 
     assert "Failed to persist session-memory message" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
-    assert "secret session-memory text" not in caplog.text
-    assert "secret session memory" not in caplog.text
+    assert "RuntimeError: secret session-memory text" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_session_memory_removal_persist_failure_logs_shape_only(tmp_path, caplog):
+async def test_session_memory_removal_persist_failure_logs_values(tmp_path, caplog):
     helper = _make_helper(tmp_path)
     memory_message = {"role": "system", "content": "secret session memory", "memory": True}
     plugin = _FakeHindsightPlugin()
@@ -317,9 +315,7 @@ async def test_session_memory_removal_persist_failure_logs_shape_only(tmp_path, 
     )
 
     assert "Failed to persist removal of session-memory message" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
-    assert "secret session-memory text" not in caplog.text
-    assert "secret session memory" not in caplog.text
+    assert "RuntimeError: secret session-memory text" in caplog.text
 
 
 @pytest.mark.asyncio

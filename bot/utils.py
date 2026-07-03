@@ -24,127 +24,19 @@ from .tool_result import direct_result_payload
 
 _GROUP_MEMBERSHIP_CACHE: dict[tuple[int, str], tuple[float, bool]] = {}
 _GROUP_MEMBERSHIP_CACHE_TTL_SECONDS = 60.0
-_LOG_SHAPE_REDACTED_KEYS = frozenset({
-    "add_value",
-    "arguments",
-    "artifact_path",
-    "caption",
-    "content",
-    "data",
-    "file_id",
-    "file_path",
-    "image_url",
-    "input",
-    "local_path",
-    "messages",
-    "output_path",
-    "path",
-    "payload",
-    "prompt",
-    "query",
-    "response",
-    "text",
-    "transcript",
-    "url",
-    "value",
-})
-_LOG_SHAPE_MAX_ITEMS = 8
-
-
-def _log_shape_key(key) -> str:
-    return str(key).lower()
-
-
-def _redacted_log_shape(value):
-    if isinstance(value, str):
-        return f"<redacted str chars={len(value)}>"
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return f"<redacted bytes bytes={len(value)}>"
-    if isinstance(value, dict):
-        return f"<redacted dict keys={len(value)}>"
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return f"<redacted {type(value).__name__} items={len(value)}>"
-    if value is None:
-        return None
-    return f"<redacted {type(value).__name__}>"
-
-
-def _message_log_shape(messages):
-    roles = []
-    for message in messages:
-        if isinstance(message, dict):
-            role = message.get("role")
-            roles.append(str(role) if role is not None else "unknown")
-        else:
-            roles.append(type(message).__name__)
-    return {
-        "type": "messages",
-        "count": len(messages),
-        "roles": roles[:_LOG_SHAPE_MAX_ITEMS],
-        "truncated": len(roles) > _LOG_SHAPE_MAX_ITEMS,
-    }
 
 
 def log_value_shape(value, *, key=None, max_depth: int = 3):
-    key_name = _log_shape_key(key) if key is not None else ""
-    if key_name == "messages" and isinstance(value, list):
-        return _message_log_shape(value)
-    if key_name in _LOG_SHAPE_REDACTED_KEYS:
-        return _redacted_log_shape(value)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return f"<str chars={len(value)}>"
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return f"<bytes bytes={len(value)}>"
-    if max_depth <= 0:
-        if isinstance(value, dict):
-            return f"<dict keys={len(value)}>"
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return f"<{type(value).__name__} items={len(value)}>"
-        return f"<{type(value).__name__}>"
-    if isinstance(value, dict):
-        items = {}
-        for index, (item_key, item_value) in enumerate(value.items()):
-            if index >= _LOG_SHAPE_MAX_ITEMS:
-                break
-            item_key_str = str(item_key)
-            items[item_key_str] = log_value_shape(
-                item_value,
-                key=item_key_str,
-                max_depth=max_depth - 1,
-            )
-        return {
-            "type": "dict",
-            "keys": len(value),
-            "items": items,
-            "truncated": len(value) > _LOG_SHAPE_MAX_ITEMS,
-        }
-    if isinstance(value, (list, tuple, set, frozenset)):
-        sequence = list(value)
-        return {
-            "type": type(value).__name__,
-            "items": len(sequence),
-            "sample": [
-                log_value_shape(item, max_depth=max_depth - 1)
-                for item in sequence[:_LOG_SHAPE_MAX_ITEMS]
-            ],
-            "truncated": len(sequence) > _LOG_SHAPE_MAX_ITEMS,
-        }
-    return f"<{type(value).__name__}>"
+    return value
 
 
 def log_json_shape(value, *, max_depth: int = 3) -> str:
-    return json.dumps(
-        log_value_shape(value, max_depth=max_depth),
-        ensure_ascii=False,
-        default=str,
-    )
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def log_exception_shape(exc: BaseException) -> str:
     message = str(exc)
-    return f"{type(exc).__name__}(message_chars={len(message)})"
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def message_text(message: Message) -> str:
@@ -1096,14 +988,14 @@ async def handle_direct_result(config, update: Update, response: any):
     result = response.get('direct_result') if isinstance(response, dict) else None
     if not isinstance(result, dict):
         logging.warning(
-            "handle_direct_result called without a direct_result payload response_shape=%s",
+            "handle_direct_result called without a direct_result payload response=%s",
             log_json_shape(response),
         )
         return []
     kind = result.get('kind')
     if not kind:
         logging.warning(
-            "handle_direct_result payload missing 'kind' payload_shape=%s",
+            "handle_direct_result payload missing 'kind' payload=%s",
             log_json_shape(result),
         )
         return []

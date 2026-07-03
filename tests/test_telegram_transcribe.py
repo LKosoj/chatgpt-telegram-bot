@@ -170,7 +170,7 @@ async def test_transcribe_records_audio_duration_after_conversion(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_transcribe_model_failure_logs_shape_without_provider_text(tmp_path, monkeypatch, caplog):
+async def test_transcribe_model_failure_logs_provider_text(tmp_path, monkeypatch, caplog):
     async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
         await coroutine()
 
@@ -190,8 +190,7 @@ async def test_transcribe_model_failure_logs_shape_without_provider_text(tmp_pat
 
     update.message.reply_text.assert_awaited_once()
     assert "Transcribe response handling failed" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
-    assert "secret provider transcript text" not in caplog.text
+    assert "RuntimeError: secret provider transcript text" in caplog.text
     assert "telegram-file-id" not in caplog.text
 
 

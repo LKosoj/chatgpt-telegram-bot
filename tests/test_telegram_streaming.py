@@ -503,7 +503,7 @@ async def test_process_message_routes_to_rag_when_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_plugin_exchange_mirror_failure_logs_shape_only(monkeypatch, caplog):
+async def test_plugin_exchange_mirror_failure_logs_exception_value(monkeypatch, caplog):
     async def immediate_indicator(update, context, coroutine, chat_action="", is_inline=False):
         return await coroutine()
 
@@ -527,8 +527,7 @@ async def test_plugin_exchange_mirror_failure_logs_shape_only(monkeypatch, caplo
 
     assert message.reply_text_calls[0]["text"] == "RAG answer"
     assert "Failed to mirror plugin 'text_document_qa' exchange" in caplog.text
-    assert "RuntimeError(message_chars=" in caplog.text
-    assert "secret plugin mirror prompt text" not in caplog.text
+    assert "RuntimeError: secret plugin mirror prompt text" in caplog.text
     assert "secret user plugin prompt" not in caplog.text
 
 
@@ -1429,5 +1428,4 @@ async def test_streaming_reply_text_failure_is_logged_and_does_not_retry_each_ch
     assert len(message.reply_text_calls) < 3
     assert not edit_message.await_args_list
     assert "Failed to send initial streaming message" in caplog.text
-    assert "RuntimeError(message_chars=20)" in caplog.text
-    assert "telegram send failed" not in caplog.text
+    assert "RuntimeError: telegram send failed" in caplog.text
