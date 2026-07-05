@@ -1093,6 +1093,7 @@ class AgentToolsPlugin(Plugin):
                 reply_to_message_id=job.get("reply_to_message_id"),
                 message_thread_id=job.get("message_thread_id"),
                 title=f"Background job `{job_id}` completed.",
+                config=getattr(helper, "config", None),
             )
         except asyncio.CancelledError:
             job["status"] = "cancelled"
@@ -1111,6 +1112,7 @@ class AgentToolsPlugin(Plugin):
                 text=f"Background job `{job_id}` failed: {exc}",
                 reply_to_message_id=job.get("reply_to_message_id"),
                 message_thread_id=job.get("message_thread_id"),
+                config=getattr(locals().get("helper"), "config", None),
             )
 
     @staticmethod
@@ -1490,6 +1492,7 @@ class AgentToolsPlugin(Plugin):
                     reply_to_message_id=row.get("reply_to_message_id"),
                     message_thread_id=row.get("message_thread_id"),
                     title=f"Goal run `{run_id}` {status}.",
+                    config=getattr(helper, "config", None),
                 )
         except asyncio.TimeoutError:
             await self._finish_goal_run(run_id, "budget_exhausted", error="Goal run exceeded max_runtime_seconds")

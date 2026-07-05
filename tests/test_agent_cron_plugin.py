@@ -19,15 +19,21 @@ from bot.plugins.agent_cron import AgentCronPlugin
 class FakeBot:
     def __init__(self):
         self.messages = []
+        self.posts = []
 
     async def send_message(self, **kwargs):
         self.messages.append(kwargs)
         return SimpleNamespace(message_id=len(self.messages))
 
+    async def _post(self, endpoint, data=None, **kwargs):
+        self.posts.append((endpoint, data, kwargs))
+        return SimpleNamespace(message_id=len(self.posts))
+
 
 class FakeHelper:
     def __init__(self):
         self.requests = []
+        self.config = {}
 
     async def get_chat_response(self, **kwargs):
         self.requests.append(kwargs)
@@ -75,6 +81,51 @@ async def test_agent_cron_manual_run_delivers_result(tmp_path):
     assert bot.messages[0]["chat_id"] == 100
     assert "Cron job" in bot.messages[0]["text"]
     assert "cron result" in bot.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_agent_cron_failure_uses_rich_config(tmp_path):
+    class FailingHelper(FakeHelper):
+        def __init__(self):
+            super().__init__()
+            self.config["telegram_rich_messages"] = "auto"
+
+        async def get_chat_response(self, **kwargs):
+            self.requests.append(kwargs)
+            raise RuntimeError("cron failed")
+
+    plugin = AgentCronPlugin()
+    helper = FailingHelper()
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    bot = FakeBot()
+    parsed = plugin._parse_schedule("daily at 09:30")
+    job = plugin._create_job(
+        chat_id=100,
+        user_id=42,
+        schedule="daily at 09:30",
+        prompt="make a brief",
+        parsed=parsed,
+        reply_to_message_id=77,
+    )
+
+    await plugin._run_job(bot, job["scope"], job["id"], manual=True)
+
+    stored = plugin.jobs[job["scope"]][job["id"]]
+    assert stored["status"] == "failed"
+    assert bot.messages == []
+    assert bot.posts == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 100,
+                "rich_message": {
+                    "markdown": f"Cron job `{job['id']}` failed: cron failed"
+                },
+                "reply_parameters": {"message_id": 77},
+            },
+            {"api_kwargs": None},
+        )
+    ]
 
 
 # --- Tests for surgical bugfixes ---

@@ -424,8 +424,26 @@ class FakeUpdate:
         self.effective_user = message.from_user
 
 
-def _make_context(telegram_file=None):
-    bot = SimpleNamespace(
+class FakeContextBot:
+    def __init__(self, result=None, error=None, error_after=None):
+        self.id = 999
+        self.delete_message = AsyncMock()
+        self.calls = []
+        self.result = result if result is not None else {"ok": True}
+        self.error = error
+        self.error_after = error_after
+
+    async def _post(self, endpoint, data=None, **kwargs):
+        self.calls.append((endpoint, data, kwargs))
+        if self.error is not None:
+            raise self.error
+        if self.error_after is not None and len(self.calls) > self.error_after:
+            raise RuntimeError("rich unavailable")
+        return self.result
+
+
+def _make_context(telegram_file=None, bot=None):
+    bot = bot or SimpleNamespace(
         id=999,
         delete_message=AsyncMock(),
     )
@@ -760,6 +778,43 @@ async def test_nonstream_response_uses_entities_without_parse_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_nonstream_response_uses_rich_markdown_when_enabled(monkeypatch):
+    async def direct_wrap(_update, _context, coroutine, _chat_action, is_inline=False):
+        return await coroutine()
+
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", direct_wrap)
+
+    bot = _make_bot(
+        chunks=[],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["stream"] = False
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.openai = FakeOpenAINonStream("**Bold** and [link](https://example.com)")
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    final_legacy_replies = [
+        call
+        for call in update.effective_message.reply_text_calls
+        if call["text"] == "Bold and link"
+    ]
+    assert final_legacy_replies == []
+    assert context_bot.calls == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 1234,
+                "rich_message": {"markdown": "**Bold** and [link](https://example.com)"},
+            },
+            {"api_kwargs": None},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_direct_result_clears_plan_after_success(monkeypatch):
     agent_tools = FakeAgentTools()
     bot = object.__new__(ChatGPTTelegramBot)
@@ -1068,6 +1123,330 @@ async def test_streaming_initial_reply_uses_plain_text_without_parse_mode(monkey
 
     assert len(update.effective_message.reply_text_calls) == 1
     assert update.effective_message.reply_text_calls[0]["parse_mode"] is None
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_uses_rich_draft_and_final_message(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello **world**", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert [endpoint for endpoint, _data, _kwargs in context_bot.calls] == [
+        "sendRichMessageDraft",
+        "sendRichMessage",
+    ]
+    draft_payload = context_bot.calls[0][1]
+    assert draft_payload["chat_id"] == 1234
+    assert draft_payload["draft_id"] != 0
+    assert draft_payload["rich_message"] == {"markdown": "Hello"}
+    assert context_bot.calls[1][1] == {
+        "chat_id": 1234,
+        "rich_message": {"markdown": "Hello **world**"},
+    }
+    assert update.effective_message.reply_text_calls == []
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_drafts_reuse_same_draft_id(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    second = "Hello " + ("x" * 100)
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            (second, "not_finished"),
+            (second + " done", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", FakeUpdate(FakeMessage()), _make_context(bot=context_bot))
+
+    draft_payloads = [
+        data for endpoint, data, _kwargs in context_bot.calls
+        if endpoint == "sendRichMessageDraft"
+    ]
+    assert len(draft_payloads) == 2
+    assert draft_payloads[0]["draft_id"] == draft_payloads[1]["draft_id"]
+    assert draft_payloads[0]["draft_id"] != 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_auto_failure_falls_back_to_legacy(monkeypatch, caplog):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot(error=RuntimeError("rich unavailable"))
+
+    caplog.set_level(logging.WARNING)
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls[0][0] == "sendRichMessageDraft"
+    assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
+    assert "Telegram rich draft delivery failed; falling back to legacy streaming" in caplog.text
+    edit_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_auto_late_failure_publishes_full_legacy_snapshot(monkeypatch, caplog):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    full_response = "x" * 15000
+    bot = _make_bot(
+        chunks=[
+            ("draft", "not_finished"),
+            (full_response, "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot(error_after=1)
+
+    caplog.set_level(logging.WARNING)
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert [endpoint for endpoint, _data, _kwargs in context_bot.calls] == [
+        "sendRichMessageDraft",
+        "sendRichMessage",
+    ]
+    delivered = "".join(call["text"] for call in update.effective_message.reply_text_calls)
+    assert delivered == full_response
+    assert "Telegram rich draft delivery failed; falling back to legacy streaming" in caplog.text
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_required_failure_does_not_fallback_to_legacy(monkeypatch, caplog):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "required"
+    bot.config["telegram_rich_drafts"] = True
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot(error=RuntimeError("rich unavailable"))
+
+    caplog.set_level(logging.ERROR)
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls[0][0] == "sendRichMessageDraft"
+    assert all(call["text"] != "Hello" for call in update.effective_message.reply_text_calls)
+    assert "Chat message processing failed" in caplog.text
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_drafts_disabled_uses_legacy(monkeypatch, caplog):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = False
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot()
+
+    caplog.set_level(logging.WARNING)
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls == []
+    assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
+    assert (
+        "Telegram rich drafts unavailable; falling back to legacy streaming "
+        "reason=drafts_disabled"
+    ) in caplog.text
+    edit_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_required_with_drafts_disabled_sends_final_rich(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "required"
+    bot.config["telegram_rich_drafts"] = False
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 1234,
+                "rich_message": {"markdown": "Hello world"},
+            },
+            {"api_kwargs": None},
+        )
+    ]
+    assert update.effective_message.reply_text_calls == []
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_messages_off_uses_legacy(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "off"
+    bot.config["telegram_rich_drafts"] = True
+    update = FakeUpdate(FakeMessage())
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls == []
+    assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
+    edit_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_group_chat_uses_legacy(monkeypatch, caplog):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    bot.config["group_trigger_keyword"] = ""
+    update = FakeUpdate(FakeMessage())
+    update.effective_chat.type = telegram_bot.constants.ChatType.GROUP
+    context_bot = FakeContextBot()
+
+    caplog.set_level(logging.WARNING)
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls == []
+    assert update.effective_message.reply_text_calls[0]["text"] == "Hello"
+    assert (
+        "Telegram rich drafts unavailable; falling back to legacy streaming "
+        "reason=non_private_chat"
+    ) in caplog.text
+    edit_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_required_group_chat_sends_final_rich(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["telegram_rich_messages"] = "required"
+    bot.config["telegram_rich_drafts"] = True
+    bot.config["group_trigger_keyword"] = ""
+    update = FakeUpdate(FakeMessage())
+    update.effective_chat.type = telegram_bot.constants.ChatType.GROUP
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", update, _make_context(bot=context_bot))
+
+    assert context_bot.calls == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 1234,
+                "rich_message": {"markdown": "Hello world"},
+                "reply_parameters": {"message_id": 7},
+            },
+            {"api_kwargs": None},
+        )
+    ]
+    assert update.effective_message.reply_text_calls == []
+    edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_rich_final_message_includes_reply_parameters_when_quoting(monkeypatch):
+    edit_message = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "edit_message_with_retry", edit_message)
+
+    bot = _make_bot(
+        chunks=[
+            ("Hello", "not_finished"),
+            ("Hello world", "3"),
+        ],
+        conversation_context=({"messages": []}, "HTML", 0.8, 80, "session-1"),
+    )
+    bot.config["enable_quoting"] = True
+    bot.config["telegram_rich_messages"] = "auto"
+    bot.config["telegram_rich_drafts"] = True
+    context_bot = FakeContextBot()
+
+    await bot.process_message("hello", FakeUpdate(FakeMessage()), _make_context(bot=context_bot))
+
+    assert context_bot.calls[1][0] == "sendRichMessage"
+    assert context_bot.calls[1][1]["reply_parameters"] == {"message_id": 7}
     edit_message.assert_not_awaited()
 
 

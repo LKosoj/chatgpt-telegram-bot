@@ -237,6 +237,7 @@ class AgentCronPlugin(Plugin):
                 reply_to_message_id=job.get("reply_to_message_id"),
                 message_thread_id=job.get("message_thread_id"),
                 title=f"Cron job `{job_id}` completed.",
+                config=getattr(helper, "config", None),
             )
         except Exception as exc:
             logger.exception("Agent cron job %s failed", job_id)
@@ -255,6 +256,7 @@ class AgentCronPlugin(Plugin):
                 text=f"Cron job `{job_id}` failed: {exc}",
                 reply_to_message_id=job.get("reply_to_message_id"),
                 message_thread_id=job.get("message_thread_id"),
+                config=getattr(locals().get("helper"), "config", None),
             )
 
     def _load_jobs(self) -> None:

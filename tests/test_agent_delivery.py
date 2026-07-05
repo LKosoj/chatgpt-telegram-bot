@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -7,11 +8,18 @@ from bot.agent_delivery import send_agent_response, send_text_chunks
 
 
 class FakeBot:
-    def __init__(self):
+    def __init__(self, *, rich_exception=None):
         self.calls = []
+        self.rich_exception = rich_exception
 
     async def send_message(self, **kwargs):
         self.calls.append(("message", kwargs))
+        return SimpleNamespace(message_id=len(self.calls))
+
+    async def _post(self, endpoint, data=None, **kwargs):
+        self.calls.append(("post", {"endpoint": endpoint, "data": data, "kwargs": kwargs}))
+        if self.rich_exception is not None:
+            raise self.rich_exception
         return SimpleNamespace(message_id=len(self.calls))
 
     async def send_document(self, **kwargs):
@@ -164,3 +172,65 @@ async def test_send_text_chunks_uses_entities_for_markdown():
     assert kwargs["text"] == "hello"
     assert kwargs["parse_mode"] is None
     assert all(isinstance(entity, MessageEntity) for entity in kwargs["entities"])
+
+
+@pytest.mark.asyncio
+async def test_send_agent_response_rich_enabled_sends_single_rich_message():
+    bot = FakeBot()
+
+    sent = await send_agent_response(
+        bot,
+        chat_id=123,
+        response="**hello**",
+        reply_to_message_id=77,
+        message_thread_id=88,
+        config={"telegram_rich_messages": "auto"},
+    )
+
+    assert [kind for kind, _kwargs in bot.calls] == ["post"]
+    assert sent[0].message_id == 1
+    call = bot.calls[0][1]
+    assert call["endpoint"] == "sendRichMessage"
+    assert call["data"] == {
+        "chat_id": 123,
+        "message_thread_id": 88,
+        "rich_message": {"markdown": "**hello**"},
+        "reply_parameters": {"message_id": 77},
+    }
+    assert call["kwargs"] == {"api_kwargs": None}
+
+
+@pytest.mark.asyncio
+async def test_send_text_chunks_rich_auto_failure_falls_back_with_warning(caplog):
+    bot = FakeBot(rich_exception=RuntimeError("boom"))
+    caplog.set_level(logging.WARNING, logger="bot.agent_delivery")
+
+    sent = await send_text_chunks(
+        bot,
+        chat_id=123,
+        text="**hello**",
+        config={"telegram_rich_messages": "auto"},
+    )
+
+    assert [kind for kind, _kwargs in bot.calls] == ["post", "message"]
+    assert sent[0].message_id == 2
+    kwargs = bot.calls[1][1]
+    assert kwargs["text"] == "hello"
+    assert kwargs["parse_mode"] is None
+    assert all(isinstance(entity, MessageEntity) for entity in kwargs["entities"])
+    assert "Rich markdown delivery failed; falling back to legacy text delivery" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_text_chunks_rich_required_failure_raises():
+    bot = FakeBot(rich_exception=RuntimeError("boom"))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await send_text_chunks(
+            bot,
+            chat_id=123,
+            text="**hello**",
+            config={"telegram_rich_messages": "required"},
+        )
+
+    assert [kind for kind, _kwargs in bot.calls] == ["post"]

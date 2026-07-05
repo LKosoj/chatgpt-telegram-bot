@@ -320,6 +320,8 @@ def _set_required_env(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL", "llmgateway/high")
     monkeypatch.delenv("TELEGRAM_LOCAL_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_BASE_URL", raising=False)
+    monkeypatch.delenv("TELEGRAM_RICH_MESSAGES", raising=False)
+    monkeypatch.delenv("TELEGRAM_RICH_DRAFTS", raising=False)
 
 
 def _run_main_with_fake_dependencies(monkeypatch):
@@ -413,6 +415,10 @@ def test_main_defaults_telegram_local_bot_api_config(monkeypatch):
 
     assert bot.config["telegram_local_mode"] is True
     assert bot.config["telegram_base_url"] == "http://localhost:8081/bot"
+    assert bot.config["telegram_rich_messages"] == "auto"
+    assert bot.config["telegram_rich_drafts"] is True
+    assert bot.openai.config["telegram_rich_messages"] == "auto"
+    assert bot.openai.config["telegram_rich_drafts"] is True
     assert bot.run_calls == 1
 
 
@@ -668,6 +674,34 @@ def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):
     assert bot.run_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("auto", "auto"),
+        ("required", "required"),
+        ("off", "off"),
+        ("true", "required"),
+        ("on", "required"),
+        ("yes", "required"),
+        ("1", "required"),
+        ("false", "off"),
+        ("no", "off"),
+        ("0", "off"),
+    ],
+)
+def test_main_parses_explicit_telegram_rich_messages(monkeypatch, raw, expected):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_RICH_MESSAGES", raw)
+    monkeypatch.setenv("TELEGRAM_RICH_DRAFTS", "false")
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.config["telegram_rich_messages"] == expected
+    assert bot.config["telegram_rich_drafts"] is False
+    assert bot.openai.config["telegram_rich_messages"] == expected
+    assert bot.openai.config["telegram_rich_drafts"] is False
+
+
 def test_telegram_builder_uses_custom_local_base_url(monkeypatch):
     builder, application = _run_bot_with_fake_builder(
         monkeypatch,
@@ -743,6 +777,16 @@ def test_invalid_telegram_local_mode_rejected_before_polling(monkeypatch):
     monkeypatch.setenv("TELEGRAM_LOCAL_MODE", "sometimes")
 
     with pytest.raises(ValueError, match="TELEGRAM_LOCAL_MODE"):
+        _run_main_with_fake_dependencies(monkeypatch)
+
+    assert CapturingTelegramBot.instances == []
+
+
+def test_invalid_telegram_rich_mode_rejected_before_polling(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_RICH_MESSAGES", "sometimes")
+
+    with pytest.raises(ValueError, match="TELEGRAM_RICH_MESSAGES"):
         _run_main_with_fake_dependencies(monkeypatch)
 
     assert CapturingTelegramBot.instances == []

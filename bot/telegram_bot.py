@@ -34,7 +34,15 @@ from .utils import is_group_chat, get_thread_id, message_text, wrap_with_indicat
     record_transcription_seconds, make_usage_tracker, error_handler, \
     is_direct_result, handle_direct_result, cleanup_intermediate_files, send_long_response_as_file, BusyStatusMessage, \
     direct_result_inline_fallback_text, should_send_text_as_file, render_markdown_message_entities, \
-    log_exception_shape, log_json_shape, log_value_shape
+    log_exception_shape, log_json_shape, log_value_shape, try_send_rich_markdown_response
+from .telegram_rich import (
+    MAX_RICH_MARKDOWN_BYTES,
+    rich_markdown_fits,
+    rich_messages_enabled,
+    rich_messages_required,
+    send_rich_markdown,
+    send_rich_markdown_draft,
+)
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
@@ -666,11 +674,24 @@ class ChatGPTTelegramBot:
             raise RuntimeError("OpenAIHelper.should_force_non_stream_first_turn_async is required")
         return bool(await async_helper(chat_id, user_id))
 
+    def _should_stream_rich_drafts(self, update: Update) -> bool:
+        if not rich_messages_enabled(self.config):
+            return False
+        if not self.config.get("telegram_rich_drafts", True):
+            return False
+        chat = getattr(update, "effective_chat", None)
+        return getattr(chat, "type", None) == constants.ChatType.PRIVATE
+
+    @staticmethod
+    def _new_rich_draft_id() -> int:
+        return (uuid4().int % 2147483647) + 1
+
     async def _handle_direct_result(self, update: Update, response):
         sent_messages = []
         delivery_error: Exception | None = None
         try:
-            sent_messages = await handle_direct_result(self.config, update, response)
+            application_bot = getattr(getattr(self, "application", None), "bot", None)
+            sent_messages = await handle_direct_result(self.config, update, response, bot=application_bot)
             await self._remember_sent_image_messages(update, sent_messages)
         except Exception as exc:
             delivery_error = exc
@@ -4268,6 +4289,50 @@ class ChatGPTTelegramBot:
                 # отдельное сообщение. Растущий tail-чанк публикуется отдельно.
                 last_published_chunk = 0
                 last_stream_content = ''
+                rich_stream_active = self._should_stream_rich_drafts(update)
+                rich_stream_required = rich_messages_required(self.config)
+                rich_stream_final_only = rich_stream_required and not rich_stream_active
+                rich_draft_id = self._new_rich_draft_id() if rich_stream_active else None
+                if (
+                    rich_messages_enabled(self.config)
+                    and not rich_stream_active
+                    and not rich_stream_required
+                ):
+                    chat = getattr(update, "effective_chat", None)
+                    reason = (
+                        "drafts_disabled"
+                        if not self.config.get("telegram_rich_drafts", True)
+                        else "non_private_chat"
+                        if getattr(chat, "type", None) != constants.ChatType.PRIVATE
+                        else "unknown"
+                    )
+                    logger.warning(
+                        "Telegram rich drafts unavailable; falling back to legacy streaming reason=%s",
+                        reason,
+                    )
+
+                async def _publish_legacy_stream_snapshot(snapshot: str, token_state) -> None:
+                    nonlocal sent_message, last_published_chunk, prev
+                    snapshot = str(snapshot or "")
+                    if token_state != 'not_finished':
+                        parts = render_markdown_message_entities(snapshot)
+                    else:
+                        parts = [(chunk, None) for chunk in split_into_chunks(snapshot)]
+                    if not parts:
+                        return
+                    for index, (chunk, entities) in enumerate(parts):
+                        kwargs = {
+                            "message_thread_id": get_thread_id(update),
+                            "text": chunk or "...",
+                            "parse_mode": None,
+                        }
+                        if index == 0:
+                            kwargs["reply_to_message_id"] = get_reply_to_message_id(self.config, update)
+                        if entities:
+                            kwargs["entities"] = entities
+                        sent_message = await update.effective_message.reply_text(**kwargs)
+                    prev = parts[-1][0]
+                    last_published_chunk = max(0, len(split_into_chunks(snapshot)) - 1)
 
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
@@ -4290,6 +4355,95 @@ class ChatGPTTelegramBot:
                     if len(content.strip()) == 0:
                         continue
                     last_stream_content = content
+
+                    if rich_stream_active:
+                        cutoff = get_stream_cutoff_values(update, content)
+                        cutoff += backoff
+                        should_send_draft = i == 0 or abs(len(content) - len(prev)) > cutoff
+                        try:
+                            if not rich_markdown_fits(content):
+                                raise ValueError(
+                                    "Telegram rich markdown exceeds "
+                                    f"{MAX_RICH_MARKDOWN_BYTES} bytes"
+                                )
+                            if tokens != 'not_finished':
+                                sent_message = await send_rich_markdown(
+                                    context.bot,
+                                    chat_id=chat_id,
+                                    markdown=content,
+                                    message_thread_id=get_thread_id(update),
+                                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                                )
+                                total_tokens = int(tokens)
+                                prev = content
+                                i += 1
+                                continue
+                            if should_send_draft:
+                                await send_rich_markdown_draft(
+                                    context.bot,
+                                    chat_id=chat_id,
+                                    draft_id=rich_draft_id,
+                                    markdown=content,
+                                    message_thread_id=get_thread_id(update),
+                                )
+                                prev = content
+                            i += 1
+                            continue
+                        except RetryAfter as e:
+                            if rich_stream_required:
+                                raise
+                            backoff += 5
+                            await asyncio.sleep(e.retry_after)
+                            rich_stream_active = False
+                            i = 0 if sent_message is None else i
+                            prev = '' if sent_message is None else prev
+                            logger.warning(
+                                "Telegram rich draft delivery rate-limited; falling back to legacy streaming "
+                                "error=%s text_chars=%s",
+                                log_exception_shape(e),
+                                len(content),
+                            )
+                            if sent_message is None:
+                                await _publish_legacy_stream_snapshot(content, tokens)
+                                if tokens != 'not_finished':
+                                    total_tokens = int(tokens)
+                                i += 1
+                                continue
+                        except Exception as exc:
+                            if rich_stream_required:
+                                raise
+                            rich_stream_active = False
+                            i = 0 if sent_message is None else i
+                            prev = '' if sent_message is None else prev
+                            logger.warning(
+                                "Telegram rich draft delivery failed; falling back to legacy streaming "
+                                "error=%s text_chars=%s",
+                                log_exception_shape(exc),
+                                len(content),
+                            )
+                            if sent_message is None:
+                                await _publish_legacy_stream_snapshot(content, tokens)
+                                if tokens != 'not_finished':
+                                    total_tokens = int(tokens)
+                                i += 1
+                                continue
+                    elif rich_stream_final_only:
+                        if not rich_markdown_fits(content):
+                            raise ValueError(
+                                "Telegram rich markdown exceeds "
+                                f"{MAX_RICH_MARKDOWN_BYTES} bytes"
+                            )
+                        if tokens != 'not_finished':
+                            sent_message = await send_rich_markdown(
+                                context.bot,
+                                chat_id=chat_id,
+                                markdown=content,
+                                message_thread_id=get_thread_id(update),
+                                reply_to_message_id=get_reply_to_message_id(self.config, update),
+                            )
+                            total_tokens = int(tokens)
+                        i += 1
+                        continue
 
                     stream_chunks = split_into_chunks(content)
                     if len(stream_chunks) > 1:
@@ -4431,6 +4585,18 @@ class ChatGPTTelegramBot:
                             return await self._handle_direct_result(update, response)
 
                         assistant_response_text = response
+                        rich_messages = await try_send_rich_markdown_response(
+                            self.config,
+                            bot=context.bot,
+                            message=update.effective_message,
+                            chat_id=chat_id,
+                            text=response,
+                            message_thread_id=get_thread_id(update),
+                            reply_to_message_id=get_reply_to_message_id(self.config, update),
+                            fallback_label="chat non-stream response",
+                        )
+                        if rich_messages:
+                            return
                         # Split into chunks of 4096 characters (Telegram's message limit)
                         chunks = split_into_chunks(response)
 

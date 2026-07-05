@@ -7,6 +7,13 @@ from typing import Any
 import telegram
 from telegram import constants
 
+from .telegram_rich import (
+    MAX_RICH_MARKDOWN_BYTES,
+    rich_markdown_fits,
+    rich_messages_enabled,
+    rich_messages_required,
+    send_rich_markdown,
+)
 from .tool_result import direct_result_payload
 from .utils import (
     cleanup_intermediate_files,
@@ -31,9 +38,37 @@ async def send_text_chunks(
     reply_to_message_id: int | None = None,
     message_thread_id: int | None = None,
     parse_mode=constants.ParseMode.MARKDOWN,
+    config: dict[str, Any] | None = None,
 ):
     sent = []
     text = str(text or "")
+    if parse_mode == constants.ParseMode.MARKDOWN and rich_messages_enabled(config):
+        rich_required = rich_messages_required(config)
+        if rich_markdown_fits(text):
+            try:
+                return [await send_rich_markdown(
+                    bot,
+                    chat_id=chat_id,
+                    markdown=text,
+                    message_thread_id=message_thread_id,
+                    reply_to_message_id=reply_to_message_id,
+                )]
+            except Exception:
+                if rich_required:
+                    raise
+                logger.warning(
+                    "Rich markdown delivery failed; falling back to legacy text delivery",
+                    exc_info=True,
+                )
+        elif rich_required:
+            raise ValueError(f"Rich markdown message exceeds {MAX_RICH_MARKDOWN_BYTES} bytes")
+        else:
+            logger.warning(
+                "Rich markdown delivery skipped; falling back to legacy text delivery "
+                "text_bytes=%s limit=%s",
+                len(text.encode("utf-8")),
+                MAX_RICH_MARKDOWN_BYTES,
+            )
     if parse_mode == constants.ParseMode.MARKDOWN:
         message_parts = render_markdown_message_entities(text)
     else:
@@ -67,6 +102,7 @@ async def send_agent_response(
     reply_to_message_id: int | None = None,
     message_thread_id: int | None = None,
     title: str | None = None,
+    config: dict[str, Any] | None = None,
 ):
     if is_direct_result(response):
         payload = _direct_result_payload(response)
@@ -77,6 +113,7 @@ async def send_agent_response(
             reply_to_message_id=reply_to_message_id,
             message_thread_id=message_thread_id,
             title=title,
+            config=config,
         )
     text = str(response or "").strip()
     if title:
@@ -87,6 +124,7 @@ async def send_agent_response(
         text=text or "Done.",
         reply_to_message_id=reply_to_message_id,
         message_thread_id=message_thread_id,
+        config=config,
     )
 
 
@@ -98,6 +136,7 @@ async def _send_direct_payload(
     reply_to_message_id: int | None = None,
     message_thread_id: int | None = None,
     title: str | None = None,
+    config: dict[str, Any] | None = None,
 ):
     sent = []
     kind = payload.get("kind")
@@ -112,6 +151,7 @@ async def _send_direct_payload(
                     payload=artifact_payload,
                     reply_to_message_id=reply_to_message_id,
                     message_thread_id=message_thread_id,
+                    config=config,
                 ))
         text = str(payload.get("text") or "").strip()
         if title or text:
@@ -122,6 +162,7 @@ async def _send_direct_payload(
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id,
                 parse_mode=constants.ParseMode.MARKDOWN,
+                config=config,
             ))
         return sent
 
@@ -136,6 +177,7 @@ async def _send_direct_payload(
             reply_to_message_id=reply_to_message_id,
             message_thread_id=message_thread_id,
             parse_mode=constants.ParseMode.MARKDOWN if payload.get("format") == "markdown" else None,
+            config=config,
         )
 
     common = {"chat_id": chat_id}

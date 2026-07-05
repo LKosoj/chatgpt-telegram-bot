@@ -21,6 +21,13 @@ from .i18n import localized_text
 from .usage_tracker import UsageTracker
 from .html_utils import HTMLVisualizer
 from .tool_result import direct_result_payload
+from .telegram_rich import (
+    MAX_RICH_MARKDOWN_BYTES,
+    rich_markdown_fits,
+    rich_messages_enabled,
+    rich_messages_required,
+    send_rich_markdown,
+)
 
 _GROUP_MEMBERSHIP_CACHE: dict[tuple[int, str], tuple[float, bool]] = {}
 _GROUP_MEMBERSHIP_CACHE_TTL_SECONDS = 60.0
@@ -457,6 +464,88 @@ def should_send_text_as_file(text: str, chunks: list[str] | None = None, *, forc
         or (force_html_file and len(chunks) > 1)
         or (looks_like_markdown_table(text) and (len(chunks) > 1 or len(str(text or "")) > 1500))
     )
+
+
+def _message_bot(message):
+    get_bot = getattr(message, "get_bot", None)
+    if callable(get_bot):
+        try:
+            return get_bot()
+        except Exception as exc:
+            logging.debug("Could not resolve message bot for rich delivery error=%s", log_exception_shape(exc))
+    return getattr(message, "bot", None)
+
+
+async def try_send_rich_markdown_response(
+    config: dict | None,
+    *,
+    bot=None,
+    message=None,
+    chat_id: int | str | None = None,
+    text: str,
+    reply_to_message_id: int | None = None,
+    message_thread_id: int | None = None,
+    fallback_label: str = "telegram response",
+):
+    if not rich_messages_enabled(config):
+        return []
+
+    text = str(text or "")
+    required = rich_messages_required(config)
+    if not rich_markdown_fits(text):
+        error = ValueError(
+            "Telegram rich markdown exceeds "
+            f"{MAX_RICH_MARKDOWN_BYTES} bytes"
+        )
+        if required:
+            raise error
+        logging.warning(
+            "Telegram rich delivery skipped; falling back to legacy delivery "
+            "label=%s text_bytes=%s limit=%s",
+            fallback_label,
+            len(text.encode("utf-8")),
+            MAX_RICH_MARKDOWN_BYTES,
+        )
+        return []
+
+    if bot is None and message is not None:
+        bot = _message_bot(message)
+    if chat_id is None and message is not None:
+        chat_id = getattr(message, "chat_id", None)
+    if bot is None or chat_id is None:
+        error = RuntimeError("Telegram rich delivery requires bot and chat_id")
+        if required:
+            raise error
+        logging.warning(
+            "Telegram rich delivery unavailable; falling back to legacy delivery "
+            "label=%s bot_available=%s chat_id_available=%s",
+            fallback_label,
+            bot is not None,
+            chat_id is not None,
+        )
+        return []
+
+    try:
+        sent_message = await send_rich_markdown(
+            bot,
+            chat_id=chat_id,
+            markdown=text,
+            message_thread_id=message_thread_id,
+            reply_to_message_id=reply_to_message_id,
+        )
+        return [sent_message]
+    except Exception as exc:
+        if required:
+            raise
+        logging.warning(
+            "Telegram rich delivery failed; falling back to legacy delivery "
+            "label=%s error=%s text_chars=%s",
+            fallback_label,
+            log_exception_shape(exc),
+            len(text),
+        )
+        return []
+
 
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
                             chat_action: constants.ChatAction = "", is_inline=False):
@@ -978,7 +1067,7 @@ def resize_image_if_needed(image_path: str, max_dimension: int = 10000) -> tuple
         
         return output, format
 
-async def handle_direct_result(config, update: Update, response: any):
+async def handle_direct_result(config, update: Update, response: any, *, bot=None):
     """
     Handles a direct result from a plugin
     """
@@ -1037,7 +1126,7 @@ async def handle_direct_result(config, update: Update, response: any):
                 )
             artifact_payload = dict(artifact)
             artifact_payload["preserve_after_delivery"] = True
-            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload})
+            artifact_messages = await handle_direct_result(config, update, {"direct_result": artifact_payload}, bot=bot)
             if not artifact_messages:
                 raise RuntimeError(
                     "final artifact was not delivered "
@@ -1055,7 +1144,7 @@ async def handle_direct_result(config, update: Update, response: any):
                     "force_html_file": True,
                 }
             }
-            text_messages = await handle_direct_result(config, update, text_result)
+            text_messages = await handle_direct_result(config, update, text_result, bot=bot)
             if text_messages:
                 sent_messages.extend(text_messages)
         return sent_messages
@@ -1123,17 +1212,31 @@ async def handle_direct_result(config, update: Update, response: any):
 
     if add_value or kind == 'text':
         # Split long messages into chunks
-        text = add_value if add_value else value
+        text = str((add_value if add_value else value) or "")
         chunks = split_into_chunks(text)
+        rich_messages = []
         if result_format == 'markdown':
-            message_parts = render_markdown_message_entities(text)
+            rich_messages = await try_send_rich_markdown_response(
+                config,
+                bot=bot,
+                message=message,
+                chat_id=getattr(getattr(update, "effective_chat", None), "id", None),
+                text=text,
+                message_thread_id=get_thread_id(update),
+                reply_to_message_id=get_reply_to_message_id(config, update),
+                fallback_label="direct_result markdown",
+            )
+            message_parts = [] if rich_messages else render_markdown_message_entities(text)
+            sent_messages.extend(rich_messages)
         else:
             message_parts = [(chunk, None) for chunk in chunks]
 
         # Отправляем как файл если: 
         # - ответ больше 3х частей ИЛИ 
         # - (ответ больше одной части И содержит вставки кода)
-        if should_send_text_as_file(
+        if rich_messages:
+            pass
+        elif should_send_text_as_file(
             text,
             chunks,
             force_html_file=bool(result.get("force_html_file")),

@@ -33,6 +33,22 @@ def parse_bool_env(name, default):
     raise ValueError(f'{name} must be a boolean value')
 
 
+def parse_telegram_rich_mode_env(name='TELEGRAM_RICH_MESSAGES', default='auto'):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in ('auto', 'required', 'off'):
+        return normalized
+    if normalized in ('1', 'true', 'yes', 'on'):
+        return 'required'
+    if normalized in ('0', 'false', 'no', 'off'):
+        return 'off'
+
+    raise ValueError(f'{name} must be one of auto, required, or off')
+
+
 def _parse_numeric_env(name, default, cast, *, minimum=None):
     """Parse a numeric env var without aborting startup on malformed input.
 
@@ -177,6 +193,8 @@ def main():
     api_key = os.environ['OPENAI_API_KEY']
     bot_language = configured_language(os.environ.get('BOT_LANGUAGE', 'auto'))
     max_sessions = _parse_numeric_env('MAX_SESSIONS', 5, int)
+    telegram_rich_messages = parse_telegram_rich_mode_env()
+    telegram_rich_drafts = parse_bool_env('TELEGRAM_RICH_DRAFTS', True)
     if os.environ.get('GUEST_BUDGET') is None:
         guest_budget_default = _parse_numeric_env('MONTHLY_GUEST_BUDGET', 100.0, float)
     else:
@@ -189,6 +207,8 @@ def main():
         'stream': os.environ.get('STREAM', 'true').lower() == 'true',
         'proxy': os.environ.get('PROXY', None) or os.environ.get('OPENAI_PROXY', None),
         'proxy_web': os.environ.get('PROXY_WEB', None),
+        'telegram_rich_messages': telegram_rich_messages,
+        'telegram_rich_drafts': telegram_rich_drafts,
         'max_history_size': _parse_numeric_env('MAX_HISTORY_SIZE', 15, int),
         'max_conversation_age_minutes': _parse_numeric_env('MAX_CONVERSATION_AGE_MINUTES', 180, int),
         'assistant_prompt': os.environ.get('ASSISTANT_PROMPT', 'You are a helpful assistant.'),
@@ -269,6 +289,8 @@ def main():
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
         'telegram_local_mode': telegram_local_mode,
         'telegram_base_url': telegram_base_url,
+        'telegram_rich_messages': telegram_rich_messages,
+        'telegram_rich_drafts': telegram_rich_drafts,
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
         'enable_quoting': os.environ.get('ENABLE_QUOTING', 'true').lower() == 'true',

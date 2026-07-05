@@ -34,10 +34,15 @@ class FakeBot:
     def __init__(self):
         self.messages = []
         self.markup_edits = []
+        self.posts = []
 
     async def send_message(self, **kwargs):
         self.messages.append(kwargs)
         return SimpleNamespace(message_id=len(self.messages))
+
+    async def _post(self, endpoint, data=None, **kwargs):
+        self.posts.append((endpoint, data, kwargs))
+        return SimpleNamespace(message_id=len(self.posts))
 
     async def edit_message_reply_markup(self, **kwargs):
         self.markup_edits.append(kwargs)
@@ -1618,6 +1623,49 @@ async def test_background_job_runs_and_delivers_to_chat(tmp_path):
     assert bot.messages[0]["chat_id"] == 100
     assert "Background job" in bot.messages[0]["text"]
     assert "background done" in bot.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_background_job_failure_uses_rich_config(tmp_path):
+    class FailingBackgroundHelper(FakeBackgroundHelper):
+        def __init__(self):
+            super().__init__()
+            self.config["telegram_rich_messages"] = "auto"
+
+        async def get_chat_response(self, **kwargs):
+            self.requests.append(kwargs)
+            raise RuntimeError("background failed")
+
+    plugin = AgentToolsPlugin()
+    helper = FailingBackgroundHelper()
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    bot = FakeBot()
+
+    job = plugin._create_background_job(
+        chat_id=100,
+        user_id=42,
+        prompt="do background work",
+        reply_to_message_id=555,
+        message_thread_id=None,
+    )
+    await plugin._run_background_job(bot, job["scope"], job["id"])
+
+    stored = plugin.background_jobs[job["scope"]][job["id"]]
+    assert stored["status"] == "failed"
+    assert bot.messages == []
+    assert bot.posts == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 100,
+                "rich_message": {
+                    "markdown": f"Background job `{job['id']}` failed: background failed"
+                },
+                "reply_parameters": {"message_id": 555},
+            },
+            {"api_kwargs": None},
+        )
+    ]
 
 
 @pytest.mark.asyncio

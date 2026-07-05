@@ -71,7 +71,20 @@ class FakeUpdate:
         self.message = message
         self.effective_message = message
         self.callback_query = None
-        self.effective_chat = SimpleNamespace(type="private")
+        self.effective_chat = SimpleNamespace(id=123, type="private")
+
+
+class FakeRichBot:
+    def __init__(self, result=None, error=None):
+        self.calls = []
+        self.result = result if result is not None else {"ok": True}
+        self.error = error
+
+    async def _post(self, endpoint, data=None, **kwargs):
+        self.calls.append((endpoint, data, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 @pytest.mark.asyncio
@@ -130,6 +143,85 @@ async def test_handle_direct_result_text_branch_replies_with_entities():
     assert all(isinstance(entity, MessageEntity) for entity in kwargs["entities"])
     assert {entity.type for entity in kwargs["entities"]} >= {"bold", "text_link"}
     assert sent_messages == [message.reply_text.return_value]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_text_branch_uses_rich_markdown():
+    message = FakeMessage()
+    bot = FakeRichBot()
+
+    sent_messages = await handle_direct_result(
+        {"enable_quoting": False, "telegram_rich_messages": "auto"},
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "value": "**hello**",
+            }
+        },
+        bot=bot,
+    )
+
+    message.reply_text.assert_not_called()
+    assert bot.calls == [
+        (
+            "sendRichMessage",
+            {
+                "chat_id": 123,
+                "rich_message": {"markdown": "**hello**"},
+            },
+            {"api_kwargs": None},
+        )
+    ]
+    assert sent_messages == [{"ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_text_branch_rich_auto_falls_back_with_warning(caplog):
+    message = FakeMessage()
+    bot = FakeRichBot(error=RuntimeError("rich unavailable"))
+
+    caplog.set_level(logging.WARNING)
+    sent_messages = await handle_direct_result(
+        {"enable_quoting": False, "telegram_rich_messages": "auto"},
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "text",
+                "format": "markdown",
+                "value": "**hello**",
+            }
+        },
+        bot=bot,
+    )
+
+    message.reply_text.assert_awaited_once()
+    assert message.reply_text.await_args.kwargs["text"] == "hello"
+    assert sent_messages == [message.reply_text.return_value]
+    assert "Telegram rich delivery failed; falling back to legacy delivery" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_text_branch_rich_required_raises():
+    message = FakeMessage()
+    bot = FakeRichBot(error=RuntimeError("rich unavailable"))
+
+    with pytest.raises(RuntimeError, match="rich unavailable"):
+        await handle_direct_result(
+            {"enable_quoting": False, "telegram_rich_messages": "required"},
+            FakeUpdate(message),
+            {
+                "direct_result": {
+                    "kind": "text",
+                    "format": "markdown",
+                    "value": "**hello**",
+                }
+            },
+            bot=bot,
+        )
+
+    message.reply_text.assert_not_called()
 
 
 @pytest.mark.asyncio
