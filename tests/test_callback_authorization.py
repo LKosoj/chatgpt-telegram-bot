@@ -51,10 +51,10 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
-from bot.telegram_bot import ChatGPTTelegramBot
-from bot.i18n import localized_text
-from bot.utils import is_allowed
-import bot.utils as utils_module
+from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from bot.i18n import localized_text  # noqa: E402
+from bot.utils import is_allowed  # noqa: E402
+import bot.utils as utils_module  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)

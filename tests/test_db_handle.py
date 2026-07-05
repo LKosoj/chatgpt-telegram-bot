@@ -291,7 +291,6 @@ async def test_handle_routes_through_db_worker(db, handle):
 
     async def patched(func, *args):
         # Запоминаем tid потока, в котором выполняется func.
-        result_holder: list = []
 
         def wrapper():
             worker_threads.add(threading.current_thread().ident)

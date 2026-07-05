@@ -1,7 +1,7 @@
 import os
 import logging
 import urllib.parse
-from typing import Dict, List, Optional
+from typing import Dict, List
 import httpx
 
 from .plugin import Plugin

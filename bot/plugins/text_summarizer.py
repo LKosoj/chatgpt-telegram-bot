@@ -1,5 +1,4 @@
 from typing import Dict
-import os
 import logging
 import httpx
 import readability

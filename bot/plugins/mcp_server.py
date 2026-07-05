@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 import httpx
 import json
 import asyncio
@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from mcp.client.stdio import stdio_client, StdioServerParameters
-from mcp import ClientSession, types
+from mcp import ClientSession
 
 from .plugin import Plugin
 

@@ -3,7 +3,7 @@ import os
 import json
 import random
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 
 from .plugin import Plugin
 

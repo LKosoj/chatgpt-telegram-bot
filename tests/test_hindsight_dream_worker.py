@@ -186,7 +186,6 @@ async def test_dream_tick_advances_watermark_after_max_attempts(plugin):
 
 async def test_dream_tick_resets_fail_count_on_success(plugin):
     """A successful run resets fail_count and retry_after to 0/NULL."""
-    from bot.plugins.hindsight_memory import HINDSIGHT_DREAM_MAX_ATTEMPTS
     plugin.openai.content = json.dumps({
         "documents": [{
             "path": "profile/pref.md",

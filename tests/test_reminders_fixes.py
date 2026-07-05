@@ -5,10 +5,9 @@
 """
 import sys
 import os
-import json
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 # Гарантируем, что корень проекта в sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -175,8 +174,7 @@ async def test_fire_at_utc_computed_correctly(tmp_path):
     plugin = _make_plugin(tmp_path)
 
     # Симулируем UTC+3: current_time (локальное) = UTC + 3ч
-    # utc_now фиксируем через patch, чтобы тест был детерминированным
-    fake_utc_now = datetime(2030, 1, 1, 6, 0, 0)  # 06:00 UTC
+    # utc_now фиксируем через mock_dt.now(...), чтобы тест был детерминированным
     fake_local_now = datetime(2030, 1, 1, 9, 0, 0)  # 09:00 по UTC+3
     target_local = datetime(2030, 1, 1, 10, 0, 0)   # 10:00 по UTC+3 → 07:00 UTC
 

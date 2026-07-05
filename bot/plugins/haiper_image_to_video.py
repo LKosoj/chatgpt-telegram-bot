@@ -10,7 +10,6 @@ import asyncio
 from typing import Dict, List, Optional
 from PIL import Image
 from datetime import datetime, timedelta
-import contextlib
 from asyncio import Queue, Task
 from dataclasses import dataclass
 from enum import Enum
@@ -19,9 +18,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    Update,
-    ForceReply, 
-    ReplyKeyboardRemove
+    Update
 )
 from telegram.ext import ContextTypes, ConversationHandler, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import hashlib
@@ -814,11 +811,9 @@ class HaiperImageToVideoPlugin(Plugin):
             caption = message.caption
             if caption and caption.lower().startswith('/animate'):
                 # Если в caption есть команда /animate, обрабатываем её
-                prompt = caption[8:].strip()  # Убираем '/animate ' из начала
                 await self.handle_animate_command(update, context)
             else:
                 # Если нет команды, показываем кнопку для анимации
-                file_id = message.photo[-1].file_id
                 # Получаем хеш из БД
                 user_images = await self._get_user_images(
                     message.from_user.id,
@@ -1142,7 +1137,7 @@ class HaiperImageToVideoPlugin(Plugin):
         await query.message.delete()
         
         # Отправляем сообщение с запросом дополнительного текста
-        sent_message = await query.message.reply_text(
+        await query.message.reply_text(
             self.t(
                 "haiper_prompt_generated_message",
                 base_prompt=base_prompt

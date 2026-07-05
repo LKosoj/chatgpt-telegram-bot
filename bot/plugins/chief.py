@@ -1,13 +1,11 @@
 from typing import Dict, List, Tuple, Optional
 import os
 import json
-import requests
 from jsonschema import validate, ValidationError
 import logging
 from .plugin import Plugin
 import aiohttp
 import asyncio
-from functools import lru_cache
 import time
 import random
 
@@ -222,7 +220,7 @@ class ChiefPlugin(Plugin):
                     validate(instance=result, schema=self.query_schema)
                     return result, tokens_used
 
-            except (ValidationError, json.JSONDecodeError) as e:
+            except (ValidationError, json.JSONDecodeError):
                 if attempt == retries - 1:
                     raise
                 continue

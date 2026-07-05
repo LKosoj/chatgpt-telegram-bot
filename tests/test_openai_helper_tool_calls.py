@@ -49,6 +49,9 @@ _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
 from bot.openai_helper import EMPTY_MODEL_RESPONSE_ERROR, OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.ai_events import AIMessage, AIToolCall, AIUsage  # noqa: E402
+from bot.ai_provider import AIProviderChoice, AIProviderResponse  # noqa: E402
+from bot.ai_providers.openai_compatible import stream_chunk_text_delta  # noqa: E402
 import bot.openai_helper as openai_helper_module  # noqa: E402
 import bot.openai_tool_handler as openai_tool_handler_module  # noqa: E402
 from bot.openai_tool_handler import (  # noqa: E402
@@ -325,6 +328,17 @@ class DummyVoiceGateway:
         return [{"voice": voice} for voice in self.voices]
 
 
+class CaptureSessionLogger:
+    def __init__(self):
+        self.events = []
+
+    def record(self, event):
+        self.events.append(dict(event))
+
+    def schedule_flush_summary(self, user_id, session_id):
+        return None
+
+
 class FakeSkillsPlugin:
     active_skills = {"chat:1": {"pptx": {}}}
     available_skills = {"pptx": {"scripts": ["build.py"]}}
@@ -359,15 +373,39 @@ class FakeResponse:
         )
 
 
+class FakeStreamToolCallDelta:
+    def __init__(self, index, id=None, name=None, arguments=None):
+        self.index = index
+        self.id = id
+        self.function = types.SimpleNamespace(name=name, arguments=arguments)
+
+
 class FakeStreamChoice:
-    def __init__(self, content):
-        self.delta = types.SimpleNamespace(content=content, tool_calls=None)
-        self.finish_reason = None
+    def __init__(self, content=None, finish_reason=None, tool_calls=None):
+        self.delta = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+        self.finish_reason = finish_reason
 
 
 class FakeStreamItem:
-    def __init__(self, content):
-        self.choices = [FakeStreamChoice(content)]
+    def __init__(self, content=None, finish_reason=None, tool_calls=None):
+        self.choices = [FakeStreamChoice(content, finish_reason, tool_calls)]
+
+
+class FakeClosableAsyncStream:
+    def __init__(self, items):
+        self._items = list(items)
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+    async def aclose(self):
+        self.closed = True
 
 
 async def _fake_stream(contents):
@@ -375,11 +413,22 @@ async def _fake_stream(contents):
         yield FakeStreamItem(content)
 
 
+def _fake_tool_call_stream():
+    return FakeClosableAsyncStream([
+        FakeStreamItem(tool_calls=[
+            FakeStreamToolCallDelta(0, id="call-stream-1", name="p.do", arguments='{"x"'),
+        ]),
+        FakeStreamItem(tool_calls=[
+            FakeStreamToolCallDelta(0, arguments=": 1}"),
+        ]),
+        FakeStreamItem(finish_reason="tool_calls"),
+    ])
+
+
 async def _collect_stream_content(response):
     content = ""
     async for item in response:
-        if item.choices and item.choices[0].delta.content:
-            content += item.choices[0].delta.content
+        content += stream_chunk_text_delta(item)
     return content
 
 
@@ -515,6 +564,290 @@ async def test_timed_create_retries_rate_limit_at_sdk_boundary(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("enabled", "stream", "expected_path"),
+    [
+        (True, False, "provider"),
+        (False, False, "legacy"),
+        (True, True, "provider"),
+        (False, True, "legacy"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_chat_response_completion_gate(monkeypatch, enabled, stream, expected_path):
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient())
+    helper.config["chat_run_variant_b_enabled"] = enabled
+    calls = []
+
+    async def fake_provider(*, kind, **kwargs):
+        calls.append(("provider", kind, kwargs))
+        return "provider-response"
+
+    async def fake_legacy(*, kind, **kwargs):
+        calls.append(("legacy", kind, kwargs))
+        return "legacy-response"
+
+    monkeypatch.setattr(helper, "_timed_create_via_ai_provider", fake_provider)
+    monkeypatch.setattr(helper, "_timed_create", fake_legacy)
+
+    result = await helper._create_chat_response_completion(
+        kind="unit",
+        model="llmgateway/high",
+        messages=[],
+        stream=stream,
+    )
+
+    assert result == f"{expected_path}-response"
+    assert [call[0] for call in calls] == [expected_path]
+
+
+@pytest.mark.asyncio
+async def test_timed_create_via_provider_wraps_stream_without_consuming(monkeypatch):
+    from bot.session_logger import clear_trace, set_trace
+
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient())
+    helper.session_logger = CaptureSessionLogger()
+
+    async def fake_legacy(*, kind, **kwargs):
+        assert kind == "unit"
+        assert kwargs == {"model": "llmgateway/high", "messages": [], "stream": True}
+        return _fake_stream(["Hel", "lo"])
+
+    monkeypatch.setattr(helper, "_timed_create", fake_legacy)
+
+    token = set_trace(1, "stream-session", "stream-turn")
+    try:
+        response = await helper._timed_create_via_ai_provider(
+            kind="unit",
+            model="llmgateway/high",
+            messages=[],
+            stream=True,
+        )
+        assert await _collect_stream_content(response) == "Hello"
+    finally:
+        clear_trace(token)
+
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert provider_events == [{
+        "type": "ai_provider_response",
+        "kind": "unit",
+        "provider": "chat-run-openai-compatible",
+        "text_chars": len("Hello"),
+        "tool_call_count": 0,
+        "error_count": 0,
+        "finish_reason": None,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_streamed_tool_call_records_provider_response_on_terminal_chunk():
+    from bot.session_logger import clear_trace, set_trace
+
+    pm = DummyPluginManager({"p.do": "tool ok"})
+    tool_stream = _fake_tool_call_stream()
+    helper = _make_helper(
+        pm,
+        client=DummyClient([
+            tool_stream,
+            _fake_stream(["done"]),
+        ]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+
+    token = set_trace(1, "stream-tool-session", "stream-tool-turn")
+    try:
+        response = await helper._timed_create_via_ai_provider(
+            kind="main",
+            model="llmgateway/high",
+            messages=[],
+            stream=True,
+        )
+        response, tools_used = await helper._OpenAIHelper__handle_function_call(
+            chat_id=1,
+            response=response,
+            stream=True,
+            allowed_plugins=["All"],
+            user_id=1,
+            model_to_use="llmgateway/high",
+        )
+        assert await _collect_stream_content(response) == "done"
+    finally:
+        clear_trace(token)
+
+    assert tools_used == ("p.do",)
+    assert tool_stream.closed is True
+    assert pm.calls == [("p.do", '{"x": 1, "chat_id": 1, "user_id": 1}')]
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert {
+        "type": "ai_provider_response",
+        "kind": "main",
+        "provider": "chat-run-openai-compatible",
+        "text_chars": 0,
+        "tool_call_count": 1,
+        "error_count": 0,
+        "finish_reason": "tool_calls",
+    } in provider_events
+
+
+@pytest.mark.asyncio
+async def test_provider_event_errors_are_logged_and_non_recoverable_errors_raise(monkeypatch):
+    from bot.ai_events import AIProviderError
+    import bot.ai_provider as ai_provider_module
+    from bot.session_logger import clear_trace, set_trace
+
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient())
+    helper.session_logger = CaptureSessionLogger()
+
+    async def fake_collect(_events):
+        return types.SimpleNamespace(
+            text="",
+            tool_calls=(),
+            errors=(
+                AIProviderError(
+                    message="provider event says stop",
+                    recoverable=False,
+                    data={"kind": "unit"},
+                ),
+            ),
+            finish_reason=None,
+        )
+
+    monkeypatch.setattr(ai_provider_module, "collect_ai_response", fake_collect)
+
+    token = set_trace(1, "provider-session", "provider-turn")
+    try:
+        with pytest.raises(RuntimeError, match="provider event says stop"):
+            await helper._timed_create_via_ai_provider(
+                kind="unit",
+                model="llmgateway/high",
+                messages=[],
+                stream=False,
+            )
+    finally:
+        clear_trace(token)
+
+    assert helper.session_logger.events == [{
+        "type": "provider_error",
+        "message": "provider event says stop",
+        "recoverable": False,
+        "data": {"kind": "unit"},
+    }]
+
+
+@pytest.mark.asyncio
+async def test_timed_create_via_provider_returns_provider_response_not_raw_sdk():
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="normalized answer")]),
+    )
+
+    response = await helper._timed_create_via_ai_provider(
+        kind="unit",
+        model="llmgateway/high",
+        messages=[],
+        stream=False,
+    )
+
+    assert isinstance(response, AIProviderResponse)
+    assert response.text == "normalized answer"
+    assert response.choices[0].message.content == "normalized answer"
+    assert response.usage == AIUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3)
+
+
+@pytest.mark.asyncio
+async def test_handle_function_call_accepts_provider_response_tool_calls():
+    tool_call = AIToolCall(
+        id="call-skills",
+        name="skills.list_skills",
+        model_name="skills.list_skills",
+        arguments="{}",
+    )
+    pm = DummyPluginManager({"skills.list_skills": {"success": True, "skills": []}})
+    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
+    response = AIProviderResponse(
+        tool_calls=(tool_call,),
+        finish_reason="tool_calls",
+        choices=(
+            AIProviderChoice(
+                message=AIMessage(role="assistant", content=None, tool_calls=(tool_call,)),
+                finish_reason="tool_calls",
+            ),
+        ),
+    )
+
+    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        chat_id=1,
+        response=response,
+        stream=False,
+        allowed_plugins=["All"],
+        user_id=1,
+        model_to_use="llmgateway/high",
+    )
+
+    assert tools_used == ("skills.list_skills",)
+    assert pm.calls == [("skills.list_skills", '{"chat_id": 1, "user_id": 1}')]
+    assert isinstance(out, AIProviderResponse)
+    assert out.choices[0].message.content == "done"
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_uses_provider_wrapper_by_default():
+    from bot.session_logger import clear_trace, set_trace
+
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content='{"intent":"image_question"}')]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+
+    token = set_trace(1, "reply-session", "reply-turn")
+    try:
+        intent = await helper.classify_reply_intent("describe it", "photo")
+    finally:
+        clear_trace(token)
+
+    assert intent == "image_describe"
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert [event["kind"] for event in provider_events] == ["reply_intent"]
+
+
+@pytest.mark.asyncio
+async def test_reply_intent_can_roll_back_to_legacy_timed_create():
+    from bot.session_logger import clear_trace, set_trace
+
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content='{"intent":"text_reply"}')]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = False
+
+    token = set_trace(1, "reply-session", "reply-turn")
+    try:
+        intent = await helper.classify_reply_intent("answer", "text")
+    finally:
+        clear_trace(token)
+
+    assert intent == "text_reply"
+    assert not any(
+        event["type"] == "ai_provider_response"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "reply_intent"
+        for event in helper.session_logger.events
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_chat_response_rate_limit_does_not_duplicate_user_message(monkeypatch):
     class DummyRateLimitError(Exception):
@@ -579,6 +912,43 @@ async def test_get_chat_response_provider_failure_logs_debug_values(caplog):
     assert "RuntimeError: provider secret request fragment" in log_text
     assert "secret user prompt" in log_text
     assert "provider secret request fragment" in log_text
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_provider_failure_logs_provider_error_event():
+    class FailingClient(DummyClient):
+        async def _create(self, **kwargs):
+            self.calls += 1
+            self.create_kwargs.append(kwargs)
+            raise RuntimeError("provider event failure")
+
+    helper = _make_helper(DummyPluginManager({}), client=FailingClient())
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = True
+
+    with pytest.raises(Exception):
+        await helper.get_chat_response(
+            chat_id=1,
+            query="hello",
+            user_id=1,
+        )
+
+    provider_errors = [
+        event for event in helper.session_logger.events
+        if event["type"] == "provider_error"
+    ]
+    assert len(provider_errors) == 1
+    assert provider_errors[0]["message"] == "provider event failure"
+    assert provider_errors[0]["recoverable"] is False
+    assert provider_errors[0]["data"] == {
+        "kind": "main",
+        "provider": "chat-run-openai-compatible",
+    }
+    run_end_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "run_end"
+    ]
+    assert run_end_events == [{"type": "run_end", "reason": "error"}]
 
 
 def test_get_current_model_prefers_explicit_session_model():
@@ -680,6 +1050,174 @@ async def test_interpret_images_sends_multiple_images_and_saves_text_marker():
     assert not any(
         isinstance(message.get("content"), list)
         for message in helper.conversations[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_uses_provider_wrapper_by_default():
+    from bot.session_logger import clear_trace, set_trace
+
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="vision answer")]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+
+    token = set_trace(1, "vision-session", "vision-turn")
+    try:
+        answer, total_tokens = await helper.interpret_image(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-1",
+        )
+    finally:
+        clear_trace(token)
+
+    assert answer == "vision answer"
+    assert total_tokens == 3
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert [event["kind"] for event in provider_events] == ["vision"]
+    assert helper.client.create_kwargs[0]["stream"] is False
+    assert any(
+        item.get("type") == "image_url"
+        for item in helper.client.create_kwargs[0]["messages"][-1]["content"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_can_roll_back_to_legacy_timed_create():
+    from bot.session_logger import clear_trace, set_trace
+
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="legacy vision")]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = False
+
+    token = set_trace(1, "vision-session", "vision-turn")
+    try:
+        answer, total_tokens = await helper.interpret_image(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-1",
+        )
+    finally:
+        clear_trace(token)
+
+    assert answer == "legacy vision"
+    assert total_tokens == 3
+    assert not any(
+        event["type"] == "ai_provider_response"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "vision"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        item.get("type") == "image_url"
+        for item in helper.client.create_kwargs[0]["messages"][-1]["content"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_stream_uses_provider_wrapper_by_default():
+    from bot.session_logger import clear_trace, set_trace
+
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([_fake_stream(["vision ", "stream"])]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+
+    token = set_trace(1, "vision-stream-session", "vision-stream-turn")
+    try:
+        chunks = []
+        async for chunk in helper.interpret_image_stream(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-1",
+        ):
+            chunks.append(chunk)
+    finally:
+        clear_trace(token)
+
+    assert chunks[:2] == [
+        ("vision ", "not_finished"),
+        ("vision stream", "not_finished"),
+    ]
+    assert chunks[-1][0] == "vision stream"
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert provider_events == [{
+        "type": "ai_provider_response",
+        "kind": "vision",
+        "provider": "chat-run-openai-compatible",
+        "text_chars": len("vision stream"),
+        "tool_call_count": 0,
+        "error_count": 0,
+        "finish_reason": None,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_interpret_image_stream_can_roll_back_to_legacy_timed_create():
+    from bot.session_logger import clear_trace, set_trace
+
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([_fake_stream(["legacy vision"])]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = False
+
+    token = set_trace(1, "vision-stream-session", "vision-stream-turn")
+    try:
+        chunks = []
+        async for chunk in helper.interpret_image_stream(
+            1,
+            io.BytesIO(png_1x1),
+            prompt="describe",
+            user_id=1,
+            image_file_id="image-1",
+        ):
+            chunks.append(chunk)
+    finally:
+        clear_trace(token)
+
+    assert chunks[0] == ("legacy vision", "not_finished")
+    assert chunks[-1][0] == "legacy vision"
+    assert not any(
+        event["type"] == "ai_provider_response"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "vision" and event["stream"] is True
+        for event in helper.session_logger.events
     )
 
 
@@ -1306,9 +1844,62 @@ async def test_stream_without_tool_calls_preserves_first_chunk():
 
     chunks = []
     async for item in response:
-        chunks.append(item.choices[0].delta.content)
+        chunks.append(stream_chunk_text_delta(item))
     assert chunks == ["Hel", "lo"]
     assert tools_used == ()
+
+
+@pytest.mark.asyncio
+async def test_chat_response_stream_uses_provider_wrapper_by_default():
+    client = DummyClient([_fake_stream(["Hel", "lo"])])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+    helper.session_logger = CaptureSessionLogger()
+
+    chunks = []
+    async for chunk in helper.get_chat_response_stream(1, "hello", user_id=1):
+        chunks.append(chunk)
+
+    assert chunks[:2] == [("Hel", "not_finished"), ("Hello", "not_finished")]
+    assert chunks[-1][0] == "Hello"
+    assert chunks[-1][1] != "not_finished"
+    assert helper.conversations[1][-1] == {"role": "assistant", "content": "Hello"}
+    assert client.create_kwargs[0]["stream"] is True
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert provider_events == [{
+        "type": "ai_provider_response",
+        "kind": "main",
+        "provider": "chat-run-openai-compatible",
+        "text_chars": len("Hello"),
+        "tool_call_count": 0,
+        "error_count": 0,
+        "finish_reason": None,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_chat_response_stream_can_roll_back_to_legacy_timed_create():
+    client = DummyClient([_fake_stream(["old"])])
+    helper = _make_helper(DummyPluginManager({}), client=client)
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = False
+
+    chunks = []
+    async for chunk in helper.get_chat_response_stream(1, "hello", user_id=1):
+        chunks.append(chunk)
+
+    assert chunks[0] == ("old", "not_finished")
+    assert chunks[-1][0] == "old"
+    assert not any(
+        event["type"] == "ai_provider_response"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "main" and event["stream"] is True
+        for event in helper.session_logger.events
+    )
 
 
 @pytest.mark.asyncio
@@ -1330,6 +1921,196 @@ async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     assert answer == "done"
     assert total_tokens is not None
     assert pm.spec_calls == [["weather"]]
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_returns_plain_chat_response():
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="evented answer")]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+
+    assert helper.config["chat_run_variant_b_enabled"] is True
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    )
+
+    assert answer == "evented answer"
+    assert total_tokens == 3
+    assert helper.conversations[1][-1] == {
+        "role": "assistant",
+        "content": "evented answer",
+    }
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert provider_events == [{
+        "type": "ai_provider_response",
+        "kind": "main",
+        "provider": "chat-run-openai-compatible",
+        "text_chars": len("evented answer"),
+        "tool_call_count": 0,
+        "error_count": 0,
+        "finish_reason": None,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_false_uses_legacy_non_stream_path(monkeypatch):
+    from bot.chat_run import ChatRun
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("ChatRun should not run when Variant B is disabled")
+
+    monkeypatch.setattr(ChatRun, "run_non_stream", fail_if_called)
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([FakeResponse(content="legacy answer")]),
+    )
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = False
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="hello",
+        user_id=1,
+    )
+
+    assert answer == "legacy answer"
+    assert total_tokens == 3
+    assert not any(
+        event["type"] in {"ai_provider_response", "provider_error", "run_end"}
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "main"
+        for event in helper.session_logger.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_preserves_tool_call_flow():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"success": True, "skills": []}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")], content=None),
+        FakeResponse(content="final answer"),
+    ])
+    helper = _make_helper(pm, client=client)
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = True
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use skills",
+        user_id=1,
+    )
+
+    assert answer == "final answer"
+    assert total_tokens == 6
+    assert pm.calls[0][0] == "skills.list_skills"
+    assert json.loads(pm.calls[0][1]) == {"chat_id": 1, "user_id": 1}
+    assert client.calls == 2
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert [event["kind"] for event in provider_events] == ["main", "chat_completion"]
+    assert provider_events[0]["tool_call_count"] == 1
+    assert provider_events[1]["text_chars"] == len("final answer")
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_direct_result_short_circuits():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "p1.do",
+            "description": "Direct result",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"p1.do": {"direct_result": {"kind": "text", "format": "markdown", "value": "ok"}}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")]),
+        FakeResponse(content="should not be called"),
+    ])
+    helper = _make_helper(pm, client=client)
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = True
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use direct tool",
+        user_id=1,
+    )
+
+    assert answer["direct_result"]["value"] == "ok"
+    assert total_tokens == 3
+    assert client.calls == 1
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert [event["kind"] for event in provider_events] == ["main"]
+    assert provider_events[0]["tool_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_run_variant_b_logs_retry_and_run_end():
+    tool_spec = {
+        "type": "function",
+        "function": {
+            "name": "skills.list_skills",
+            "description": "List skills",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    pm = DummyPluginManager(
+        {"skills.list_skills": {"success": True, "skills": []}},
+        specs=[tool_spec],
+    )
+    client = DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("skills.list_skills", "{}")], content=None),
+        FakeResponse(content=None),
+        FakeResponse(content="final answer"),
+    ])
+    helper = _make_helper(pm, client=client)
+    helper.session_logger = CaptureSessionLogger()
+    helper.config["chat_run_variant_b_enabled"] = True
+
+    answer, total_tokens = await helper.get_chat_response(
+        chat_id=1,
+        query="use skills",
+        user_id=1,
+    )
+
+    assert answer == "final answer"
+    assert total_tokens == 9
+    retry_events = [event for event in helper.session_logger.events if event["type"] == "retry"]
+    run_end_events = [event for event in helper.session_logger.events if event["type"] == "run_end"]
+    assert [event["data"]["stage"] for event in retry_events] == [
+        "after_tool_calls_with_tools",
+    ]
+    assert run_end_events[-1]["reason"] == "completed"
 
 
 @pytest.mark.asyncio

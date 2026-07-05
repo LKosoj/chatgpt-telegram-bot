@@ -14,7 +14,6 @@ import weakref
 import warnings
 from collections import OrderedDict
 from typing import Dict
-from functools import lru_cache
 import httpx
 
 from uuid import uuid4
@@ -46,7 +45,6 @@ from .telegram_rich import (
 from .openai_helper import OpenAIHelper, O_MODELS, ANTHROPIC, GOOGLE, MISTRALAI, DEEPSEEK, PERPLEXITY
 from .plugins.hooks import AssistantResponsePayload, HookEvent, SessionBeforeDeletePayload, SessionResetPayload, SettingsMenuPayload, StatsBlockPayload, UserMessagePayload
 from .i18n import DEFAULT_LANGUAGE, is_auto_language, language_name, localized_text, normalize_language, set_current_language, supported_languages
-from .plugins.haiper_image_to_video import WAITING_PROMPT
 from .database import Database
 from .conversation_key import get_conversation_key
 from .request_context import RequestContext
@@ -1204,16 +1202,7 @@ class ChatGPTTelegramBot:
         characters_today, characters_month = self.usage[user_id].get_current_tts_usage()
         current_cost = self.usage[user_id].get_current_cost()
 
-        chat_id = update.effective_chat.id
-        chat_messages, chat_token_length = await self.openai.get_conversation_stats(chat_id)
         remaining_budget = get_remaining_budget(self.config, self.usage, update)
-
-        text_current_conversation = (
-            f"*{localized_text('stats_conversation', bot_language)[0]}*:\n"
-            f"{chat_messages} {localized_text('stats_conversation', bot_language)[1]}\n"
-            f"{chat_token_length} {localized_text('stats_conversation', bot_language)[2]}\n"
-            "----------------------------\n"
-        )
 
         # Check if image generation is enabled and, if so, generate the image statistics for today
         text_today_images = ""
@@ -2573,7 +2562,6 @@ class ChatGPTTelegramBot:
         
         # Пробуем перезапустить systemd сервис
         try:
-            import subprocess
             service_name = os.environ.get('SYSTEMD_SERVICE_NAME', 'tg_bot')
             
             # Проверяем статус сервиса
@@ -2719,7 +2707,6 @@ class ChatGPTTelegramBot:
 
         chat_id = update.effective_chat.id
         conversation_key = get_conversation_key(update)
-        user_id = update.message.from_user.id
         filename = update.message.effective_attachment.file_unique_id
         file_unique_id = filename
         filename_mp3 = None
@@ -4643,7 +4630,7 @@ class ChatGPTTelegramBot:
                 ts=request_started_at,
             )
 
-            result = record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+            record_chat_tokens(self.usage, self.config, user_id, total_tokens)
             #if not result:
             #    await self.reset(update, context, True)
 

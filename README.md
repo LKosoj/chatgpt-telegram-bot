@@ -281,6 +281,7 @@ by the runtime. **Bold** rows are required.
 | `FREQUENCY_PENALTY` | `0.0` | float | OpenAI frequency penalty. |
 | `N_CHOICES` | `1` | int | Number of completions returned. |
 | `STREAM` | `true` | bool | Stream chat responses to Telegram. |
+| `CHAT_RUN_VARIANT_B_ENABLED` | `true` | bool | Use the provider/event compatibility wrapper for chat-completion requests, including streaming; set `false` for legacy rollback. |
 | `SHOW_USAGE` | `false` | bool | Append token-usage footer to responses. |
 | `SHOW_PLUGINS_USED` | `false` | bool | Append a list of plugins/tools that were called. |
 | `ASSISTANT_PROMPT` | `You are a helpful assistant.` | string | Default system prompt before chat-mode application. |

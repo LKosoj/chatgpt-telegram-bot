@@ -1,13 +1,10 @@
 """Stage 2 — RemindersPlugin migrated to BackgroundTask framework."""
-import asyncio
-import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
-import pytest
 
 from bot.plugin_manager import PluginManager
 from bot.plugins.background import BackgroundTask

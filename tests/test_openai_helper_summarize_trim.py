@@ -15,6 +15,7 @@ reset_chat_history`` overflow handler in ``OpenAIHelper``:
 
 from __future__ import annotations
 
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,6 +23,7 @@ import pytest
 pytest.importorskip("tiktoken")
 
 from bot.openai_helper import OpenAIHelper
+from bot.session_logger import clear_trace, set_trace
 
 
 def _base_config() -> dict:
@@ -44,6 +46,118 @@ def _make_helper(config: dict | None = None) -> OpenAIHelper:
     helper.conversations = {}
     helper._last_summary_at = {}
     return helper
+
+
+class CaptureSessionLogger:
+    def __init__(self):
+        self.events = []
+
+    def record(self, event):
+        self.events.append(dict(event))
+
+
+def _summary_response(content: str = "compact summary"):
+    return types.SimpleNamespace(
+        choices=[
+            types.SimpleNamespace(
+                message=types.SimpleNamespace(content=content),
+                finish_reason=None,
+            )
+        ],
+        usage=types.SimpleNamespace(
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_summarise_window_calls_chat_response_wrapper():
+    helper = _make_helper()
+    calls = []
+
+    async def fake_completion(*, kind, **kwargs):
+        calls.append((kind, kwargs))
+        return types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(content="compact summary")
+                )
+            ]
+        )
+
+    helper._create_chat_response_completion = fake_completion
+
+    summary = await helper._summarise_window([
+        {"role": "user", "content": "old user message"},
+    ])
+
+    assert summary == "compact summary"
+    assert calls[0][0] == "summary"
+    assert calls[0][1]["model"] == "cheap-model"
+    assert calls[0][1]["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_summarise_window_uses_provider_wrapper_by_default():
+    helper = _make_helper()
+    helper.session_logger = CaptureSessionLogger()
+    calls = []
+
+    async def fake_sdk_create(*, kind, **kwargs):
+        calls.append((kind, kwargs))
+        return _summary_response()
+
+    helper._create_chat_completion_with_rate_limit_retry = fake_sdk_create
+
+    token = set_trace(1, "summary-session", "summary-turn")
+    try:
+        summary = await helper._summarise_window([
+            {"role": "user", "content": "old user message"},
+        ])
+    finally:
+        clear_trace(token)
+
+    assert summary == "compact summary"
+    assert calls[0][0] == "summary"
+    provider_events = [
+        event for event in helper.session_logger.events
+        if event["type"] == "ai_provider_response"
+    ]
+    assert [event["kind"] for event in provider_events] == ["summary"]
+
+
+@pytest.mark.asyncio
+async def test_summarise_window_can_roll_back_to_legacy_timed_create():
+    config = _base_config()
+    config["chat_run_variant_b_enabled"] = False
+    helper = _make_helper(config)
+    helper.session_logger = CaptureSessionLogger()
+
+    async def fake_sdk_create(*, kind, **_kwargs):
+        assert kind == "summary"
+        return _summary_response("legacy summary")
+
+    helper._create_chat_completion_with_rate_limit_retry = fake_sdk_create
+
+    token = set_trace(1, "summary-session", "summary-turn")
+    try:
+        summary = await helper._summarise_window([
+            {"role": "user", "content": "old user message"},
+        ])
+    finally:
+        clear_trace(token)
+
+    assert summary == "legacy summary"
+    assert not any(
+        event["type"] == "ai_provider_response"
+        for event in helper.session_logger.events
+    )
+    assert any(
+        event["type"] == "llm_call" and event["kind"] == "summary"
+        for event in helper.session_logger.events
+    )
 
 
 @pytest.mark.asyncio

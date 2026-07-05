@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, List
 from .plugin import Plugin
 from .background import BackgroundTask
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update

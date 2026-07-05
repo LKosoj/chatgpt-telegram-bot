@@ -11,18 +11,26 @@ import openai
 
 from .i18n import localized_text
 from .skill_script_routing import (
-    SCRIPT_FILE_CREATION_RE,
-    SKILL_SCRIPT_PATH_RE,
-    _active_skill_scripts,
     _is_skills_agent_mode,
-    _refers_to_active_script,
     _skill_script_routing_error,
-    _skill_script_routing_payload,
     _system_message,
 )
 from .tool_result import (
     direct_result_payload as _normalized_direct_result_payload,
     normalize_tool_result,
+)
+from .ai_events import (
+    AIToolCall,
+    AIToolExecutionEnd,
+    AIToolExecutionStart,
+    AIToolResult,
+    event_to_log_dict,
+)
+from .ai_providers.openai_compatible import (
+    stream_chunk_finish_reason,
+    stream_chunk_has_choice,
+    stream_chunk_text_delta,
+    stream_chunk_tool_call_deltas,
 )
 from .session_logger import get_trace
 from .utils import compute_scope_key, log_exception_shape
@@ -30,6 +38,13 @@ from .utils import compute_scope_key, log_exception_shape
 logger = logging.getLogger(__name__)
 
 FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "request_context"}
+
+
+def _compact_event_content(value, limit: int = 1000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "... [truncated]"
 
 
 def _strip_framework_tool_args(args: dict) -> None:
@@ -65,7 +80,15 @@ def _tool_call_semaphore(helper) -> asyncio.Semaphore:
     return sem
 
 
-async def _call_function_bounded(helper, name, args, request_context, semaphore):
+async def _call_function_bounded(
+    helper,
+    name,
+    args,
+    request_context,
+    semaphore,
+    tool_call_id=None,
+    model_name=None,
+):
     async with semaphore:
         without_chat_lock = getattr(helper, "_without_chat_lock", None)
         tool_chat_id = None
@@ -80,15 +103,32 @@ async def _call_function_bounded(helper, name, args, request_context, semaphore)
         start = time.monotonic()
         ok = True
         error = None
+        result_content = ""
+        tool_call_id_text = str(tool_call_id) if tool_call_id is not None else ""
+        arguments = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False, default=str)
+        _record_session_event(
+            helper,
+            event_to_log_dict(AIToolExecutionStart(
+                tool_call=AIToolCall(
+                    id=tool_call_id_text,
+                    name=name,
+                    arguments=arguments,
+                    model_name=model_name,
+                )
+            )),
+        )
         try:
             if callable(without_chat_lock) and tool_chat_id is not None:
                 with without_chat_lock(tool_chat_id):
-                    return await helper.plugin_manager.call_function(
+                    result = await helper.plugin_manager.call_function(
                         name, helper, args, request_context=request_context
                     )
-            return await helper.plugin_manager.call_function(
-                name, helper, args, request_context=request_context
-            )
+            else:
+                result = await helper.plugin_manager.call_function(
+                    name, helper, args, request_context=request_context
+                )
+            result_content = _compact_event_content(result)
+            return result
         except Exception as exc:
             ok = False
             error = str(exc)
@@ -96,6 +136,19 @@ async def _call_function_bounded(helper, name, args, request_context, semaphore)
         finally:
             if slog is not None and get_trace() is not None:
                 duration_ms = int((time.monotonic() - start) * 1000)
+                _record_session_event(
+                    helper,
+                    event_to_log_dict(AIToolExecutionEnd(
+                        result=AIToolResult(
+                            tool_call_id=tool_call_id_text or None,
+                            name=name,
+                            ok=ok,
+                            content=result_content,
+                            error=error,
+                        ),
+                        duration_ms=duration_ms,
+                    )),
+                )
                 slog.record({'type': 'tool_exec', 'name': name,
                              'arguments': args, 'duration_ms': duration_ms,
                              'ok': ok, 'error': error})
@@ -111,8 +164,16 @@ async def _execute_prepared_tool_calls(helper, prepared, request_context, semaph
         if not phase:
             continue
         tasks = [
-            _call_function_bounded(helper, name, args, request_context, semaphore)
-            for _idx, (name, args, _canonical_args, _tool_call_id) in phase
+            _call_function_bounded(
+                helper,
+                name,
+                args,
+                request_context,
+                semaphore,
+                tool_call_id=_tool_call_id,
+                model_name=model_name,
+            )
+            for _idx, (name, model_name, args, _canonical_args, _tool_call_id) in phase
         ]
         phase_results = await asyncio.gather(*tasks, return_exceptions=True)
         for (idx, _item), result in zip(phase, phase_results):
@@ -334,12 +395,7 @@ async def _replay_stream_items(items):
 
 
 def _stream_item_content(item) -> str:
-    choices = getattr(item, "choices", None)
-    if not choices:
-        return ""
-    delta = getattr(choices[0], "delta", None)
-    content = getattr(delta, "content", "")
-    return content if isinstance(content, str) else ""
+    return stream_chunk_text_delta(item)
 
 
 def _response_total_tokens(response) -> int:
@@ -450,6 +506,26 @@ def _tool_calls_payload(tool_calls: list[dict]) -> list[dict]:
         }
         for call in tool_calls
     ]
+
+
+def _tool_call_to_dict(helper, tool_call, index: int) -> dict:
+    if isinstance(tool_call, AIToolCall):
+        model_name = tool_call.model_name or tool_call.name
+        return {
+            "id": tool_call.id or f"call_{index}",
+            "model_name": model_name,
+            "name": _to_canonical_tool_name(helper.plugin_manager, tool_call.name),
+            "arguments": tool_call.arguments or "",
+        }
+
+    function = getattr(tool_call, "function", None)
+    model_name = getattr(function, "name", None) or ""
+    return {
+        "id": getattr(tool_call, "id", None) or f"call_{index}",
+        "model_name": model_name,
+        "name": _to_canonical_tool_name(helper.plugin_manager, model_name),
+        "arguments": getattr(function, "arguments", None) or "",
+    }
 
 
 def _record_session_event(helper, event: dict) -> None:
@@ -1083,43 +1159,49 @@ async def handle_function_call(
             try:
                 tool_call_parts = {}
                 async for item in response:
-                    if not item.choices:
+                    if not stream_chunk_has_choice(item):
                         continue
-                    if len(item.choices) > 0:
-                        first_choice = item.choices[0]
-                        if first_choice.delta and first_choice.delta.tool_calls:
-                            logger.info("found tool calls")
-                            for tc in first_choice.delta.tool_calls:
-                                idx = getattr(tc, "index", 0)
-                                entry = tool_call_parts.setdefault(
-                                    idx,
-                                    {"id": "", "model_name": "", "name": "", "arguments": ""},
+                    tool_call_deltas = stream_chunk_tool_call_deltas(item)
+                    if tool_call_deltas:
+                        logger.info("found tool calls")
+                        for tc in tool_call_deltas:
+                            idx = tc.index
+                            entry = tool_call_parts.setdefault(
+                                idx,
+                                {"id": "", "model_name": "", "name": "", "arguments": ""},
+                            )
+                            # id/name приходят одним куском в первой дельте;
+                            # дублирующие чанки (reconnect/quirks провайдера)
+                            # при `+=` склеивались бы в "call_abc1call_abc1"
+                            # и ломали tool_call_id matching на стороне OpenAI.
+                            if tc.id and not entry["id"]:
+                                entry["id"] = tc.id
+                            if tc.name and not entry["model_name"]:
+                                entry["model_name"] = tc.name
+                                entry["name"] = _to_canonical_tool_name(helper.plugin_manager, tc.name)
+                            if tc.arguments:
+                                entry["arguments"] += tc.arguments
+                    elif stream_chunk_finish_reason(item) == 'tool_calls':
+                        record_completed = getattr(response, "record_completed", None)
+                        if callable(record_completed):
+                            record_completed()
+                        close_stream = getattr(response, "aclose", None)
+                        if callable(close_stream):
+                            try:
+                                await close_stream()
+                            except Exception as exc:
+                                logger.debug(
+                                    "Stream close after tool_calls finish failed error=%s",
+                                    log_exception_shape(exc),
                                 )
-                                # id/name приходят одним куском в первой дельте;
-                                # дублирующие чанки (reconnect/quirks провайдера)
-                                # при `+=` склеивались бы в "call_abc1call_abc1"
-                                # и ломали tool_call_id matching на стороне OpenAI.
-                                if getattr(tc, "id", None) and not entry["id"]:
-                                    entry["id"] = tc.id
-                                if tc.function.name and not entry["model_name"]:
-                                    entry["model_name"] = tc.function.name
-                                    entry["name"] = _to_canonical_tool_name(helper.plugin_manager, tc.function.name)
-                                if tc.function.arguments:
-                                    entry["arguments"] += tc.function.arguments
-                        elif first_choice.finish_reason and first_choice.finish_reason == 'tool_calls':
-                            break
-                        else:
-                            enforced = await enforce_delivery_contract_if_needed()
-                            if enforced is not None:
-                                return enforced
-                            repaired = await retry_stream_plain_text_tool_intent_or_replay(item)
-                            if repaired is not None:
-                                return repaired
-                            return _prepend_stream_item(item, response), tools_used
+                        break
                     else:
                         enforced = await enforce_delivery_contract_if_needed()
                         if enforced is not None:
                             return enforced
+                        repaired = await retry_stream_plain_text_tool_intent_or_replay(item)
+                        if repaired is not None:
+                            return repaired
                         return _prepend_stream_item(item, response), tools_used
             except openai.APIError as e:
                 logger.error(
@@ -1144,17 +1226,13 @@ async def handle_function_call(
                     bool(getattr(first_message, "tool_calls", None)),
                     type(first_message).__name__,
                 )
-                if first_choice.message.tool_calls:
+                raw_tool_calls = getattr(first_message, "tool_calls", None) or ()
+                if raw_tool_calls:
                     logger.info("found tool calls")
-                    for tc in first_choice.message.tool_calls:
-                        tool_calls.append({
-                            "id": getattr(tc, "id", None) or f"call_{len(tool_calls)}",
-                            "model_name": tc.function.name or "",
-                            "name": _to_canonical_tool_name(helper.plugin_manager, tc.function.name or ""),
-                            "arguments": tc.function.arguments or "",
-                        })
+                    for tc in raw_tool_calls:
+                        tool_calls.append(_tool_call_to_dict(helper, tc, len(tool_calls)))
                 else:
-                    plain_text = getattr(first_choice.message, "content", None)
+                    plain_text = getattr(first_message, "content", None)
                     enforced = await enforce_delivery_contract_if_needed(plain_text)
                     if enforced is not None:
                         return enforced
@@ -1282,7 +1360,13 @@ async def handle_function_call(
                     ))
                     continue
                 arguments = json.dumps(args, ensure_ascii=False)
-                prepared.append((tool_name, arguments, _canonical_tool_arguments(arguments), tool_call_id))
+                prepared.append((
+                    tool_name,
+                    model_tool_name,
+                    arguments,
+                    _canonical_tool_arguments(arguments),
+                    tool_call_id,
+                ))
             except json.JSONDecodeError as exc:
                 logger.error(
                     "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
@@ -1342,7 +1426,7 @@ async def handle_function_call(
         repeated_failures: list[tuple[str, str]] = []
         prior_failure_fingerprints = set(failure_escalation_state.get("seen") or set())
         batch_failure_fingerprints: set[tuple[str, str, str]] = set()
-        for (tool_name, _, canonical_arguments, tool_call_id), tool_response in zip(prepared, results):
+        for (tool_name, _model_tool_name, _, canonical_arguments, tool_call_id), tool_response in zip(prepared, results):
             if isinstance(tool_response, asyncio.CancelledError):
                 raise tool_response
             if isinstance(tool_response, Exception):

@@ -24,13 +24,13 @@ _markdown2 = types.ModuleType("markdown2")
 _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
-from bot.utils import (
+from bot.utils import (  # noqa: E402
     direct_result_inline_fallback_text,
     handle_direct_result,
     is_direct_result,
     should_send_text_as_file,
 )
-from bot.plugins.reaction import ReactionPlugin
+from bot.plugins.reaction import ReactionPlugin  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)

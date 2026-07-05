@@ -1,4 +1,7 @@
-import os, requests, random, string
+import os
+import requests
+import random
+import string
 from typing import Dict
 from .plugin import Plugin
 
@@ -53,7 +56,7 @@ class WebshotPlugin(Plugin):
                 }
             else:
                 return {'result': 'Unable to screenshot website'}
-        except:
+        except Exception:
             if 'image_file_path' in locals():
                 os.remove(image_file_path)
                 

@@ -322,6 +322,7 @@ def _set_required_env(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BASE_URL", raising=False)
     monkeypatch.delenv("TELEGRAM_RICH_MESSAGES", raising=False)
     monkeypatch.delenv("TELEGRAM_RICH_DRAFTS", raising=False)
+    monkeypatch.delenv("CHAT_RUN_VARIANT_B_ENABLED", raising=False)
 
 
 def _run_main_with_fake_dependencies(monkeypatch):
@@ -672,6 +673,23 @@ def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):
     assert bot.config["telegram_local_mode"] is True
     assert bot.config["telegram_base_url"] == "http://telegram-api.local/bot"
     assert bot.run_calls == 1
+
+
+def test_main_enables_chat_run_variant_b_by_default(monkeypatch):
+    _set_required_env(monkeypatch)
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.openai.config["chat_run_variant_b_enabled"] is True
+
+
+def test_main_can_disable_chat_run_variant_b_flag(monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("CHAT_RUN_VARIANT_B_ENABLED", "false")
+
+    bot = _run_main_with_fake_dependencies(monkeypatch)
+
+    assert bot.openai.config["chat_run_variant_b_enabled"] is False
 
 
 @pytest.mark.parametrize(

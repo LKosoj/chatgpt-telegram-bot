@@ -4,8 +4,8 @@ import logging
 import os
 import asyncio
 import uuid
-import re
 import time
+import inspect
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
@@ -19,9 +19,7 @@ from functools import lru_cache
 import json
 import httpx
 import io
-from calendar import monthrange
 from PIL import Image
-import yaml
 
 from .tool_result import artifact_entries_from_tool_response, tool_result_content
 from .utils import (
@@ -58,6 +56,15 @@ from .plugins.hooks import (
     SessionBeforeDeletePayload,
 )
 from .chat_modes_registry import ChatModesRegistry
+from .chat_response_utils import (
+    EMPTY_MODEL_RESPONSE_ERROR,
+    first_choice_or_raise as _first_choice_or_raise,
+    required_choice_message_text as _required_choice_message_text,
+    response_has_message_text as _response_has_message_text,
+    response_total_tokens as _response_total_tokens,
+)
+from .ai_events import AIToolCall
+from .ai_providers.openai_compatible import stream_chunk_has_choice, stream_chunk_text_delta
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
 from .i18n import get_current_language, language_name, localized_text
@@ -71,19 +78,86 @@ from .user_settings import (
 
 logger = logging.getLogger(__name__)
 
-EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
 VISION_MAX_ATTEMPTS = 3
 LLM_RATE_LIMIT_RETRY_ATTEMPTS = 3
 LLM_RATE_LIMIT_RETRY_WAIT_SECONDS = 20
-THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
-THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
-RAW_TOOL_RESULT_RE = re.compile(r"^Function\s+[\w.\-]+\s+returned:\s*", re.IGNORECASE)
 TTS_OPTIONS_CACHE_SECONDS = 300
 TOOL_RESULTS_KEEP_FULL = 5
 TOOL_RESULT_SUMMARY_CHARS = 240
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 _TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
+
+
+class _AIProviderStreamProxy:
+    def __init__(self, raw_response: Any, *, kind: str, provider: str, session_logger: Any):
+        self._raw_response = raw_response
+        self._kind = kind
+        self._provider = provider
+        self._session_logger = session_logger
+        self._iterator = None
+        self._completed = False
+        from .ai_providers.openai_compatible import OpenAIStreamEventRecorder
+
+        self._recorder = OpenAIStreamEventRecorder()
+
+    def __aiter__(self):
+        if self._iterator is None:
+            self._iterator = self._raw_response.__aiter__()
+        return self
+
+    def _record(self, event: dict[str, Any]) -> None:
+        if self._session_logger is not None and get_trace() is not None:
+            self._session_logger.record(event)
+
+    async def __anext__(self):
+        from .ai_events import AIProviderError, event_to_log_dict
+
+        if self._iterator is None:
+            self._iterator = self._raw_response.__aiter__()
+        try:
+            chunk = await self._iterator.__anext__()
+        except StopAsyncIteration:
+            self.record_completed()
+            raise
+        except Exception as exc:
+            self._record(event_to_log_dict(AIProviderError(
+                message=str(exc),
+                recoverable=False,
+                data={
+                    "kind": self._kind,
+                    "provider": self._provider,
+                },
+            )))
+            raise
+        self._recorder.record_chunk(chunk)
+        return chunk
+
+    async def aclose(self) -> None:
+        close = None
+        if self._iterator is not None:
+            close = getattr(self._iterator, "aclose", None)
+        if close is None:
+            close = getattr(self._raw_response, "aclose", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+    def record_completed(self) -> None:
+        if self._completed:
+            return
+        self._completed = True
+        tool_calls = self._recorder.tool_calls()
+        self._record({
+            "type": "ai_provider_response",
+            "kind": self._kind,
+            "provider": self._provider,
+            "text_chars": len("".join(self._recorder.content_parts)),
+            "tool_call_count": len(tool_calls),
+            "error_count": 0,
+            "finish_reason": self._recorder.finish_reason,
+        })
 
 
 def _reject_json_constant(value: str) -> None:
@@ -116,52 +190,6 @@ INFORMATION_ONLY_TOOLS: frozenset[str] = frozenset({
 })
 _SKILLS_AGENT_MODE_KEY = "skills_agent"
 
-
-def _choice_message_text(choice) -> str:
-    message = getattr(choice, "message", None)
-    content = getattr(message, "content", None)
-    if not isinstance(content, str):
-        return ""
-    content = THINK_BLOCK_RE.sub("", content)
-    content = THINK_TAG_RE.sub("\n", content)
-    content = content.strip()
-    if RAW_TOOL_RESULT_RE.match(content):
-        return ""
-    return content
-
-
-def _required_choice_message_text(choice) -> str:
-    content = _choice_message_text(choice)
-    if content:
-        return content
-    message = getattr(choice, "message", None)
-    tool_calls = getattr(message, "tool_calls", None)
-    logger.warning(
-        "Model returned empty assistant content; finish_reason=%s tool_call_count=%s",
-        getattr(choice, "finish_reason", None),
-        len(tool_calls) if tool_calls else 0,
-    )
-    raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
-
-
-def _response_has_message_text(response) -> bool:
-    return any(_choice_message_text(choice) for choice in getattr(response, "choices", []) or [])
-
-
-def _response_total_tokens(response) -> int:
-    tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
-    try:
-        return int(tokens)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _first_choice_or_raise(response):
-    choices = getattr(response, "choices", None) or []
-    if not choices:
-        logger.warning("Model response has no choices")
-        raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
-    return choices[0]
 
 REPLY_INTENT_CLASSIFIER_PROMPT = """Classify a Telegram user's reply intent.
 Return only JSON in this exact shape: {"intent":"<one of: image_edit, image_describe, text_reply>"}
@@ -289,6 +317,7 @@ class OpenAIHelper:
         self.config.setdefault('session_log_dir', './log')
         self.config.setdefault('session_log_max_bytes', 10 * 1024 * 1024)
         self.config.setdefault('session_log_retention_days', 30)
+        self.config.setdefault('chat_run_variant_b_enabled', True)
         self.session_logger = SessionLogger(
             self.config['session_log_enabled'],
             self.config['session_log_dir'],
@@ -314,7 +343,7 @@ class OpenAIHelper:
                 + "\n\nReturn the classification as JSON.",
             },
         ]
-        response = await self._timed_create(
+        response = await self._create_chat_response_completion(
             kind='reply_intent',
             model=self.config.get('light_model') or self.config.get('model'),
             messages=messages,
@@ -397,7 +426,7 @@ class OpenAIHelper:
         extra_headers: dict | None = None,
         **extra,
     ):
-        """Low-level chat completion. Returns the raw SDK response object.
+        """Low-level chat completion through the configured chat-response path.
 
         Does not mutate history, does not synthesize messages, does not pick
         the model. For high-level chat interactions use ``ask`` or
@@ -421,7 +450,7 @@ class OpenAIHelper:
         )
         if extra:
             kwargs.update(extra)
-        return await self._timed_create(kind='chat_completion', **kwargs)
+        return await self._create_chat_response_completion(kind='chat_completion', **kwargs)
 
     async def _create_chat_completion_with_rate_limit_retry(self, *, kind, **kwargs):
         for attempt in range(1, LLM_RATE_LIMIT_RETRY_ATTEMPTS + 1):
@@ -518,6 +547,116 @@ class OpenAIHelper:
                     pass
             slog.record(event)
         return response
+
+    def _ai_provider_request_from_kwargs(self, kwargs: dict[str, Any]):
+        from .ai_provider import AIProviderRequest
+
+        known_keys = {
+            "model",
+            "messages",
+            "stream",
+            "tools",
+            "tool_choice",
+            "temperature",
+            "max_tokens",
+            "response_format",
+            "extra_headers",
+        }
+        extra = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in known_keys and value is not None
+        }
+        return AIProviderRequest(
+            model=kwargs["model"],
+            messages=tuple(kwargs.get("messages") or ()),
+            stream=bool(kwargs.get("stream", False)),
+            tools=kwargs.get("tools"),
+            tool_choice=kwargs.get("tool_choice"),
+            temperature=kwargs.get("temperature"),
+            max_tokens=kwargs.get("max_tokens"),
+            response_format=kwargs.get("response_format"),
+            extra_headers=kwargs.get("extra_headers"),
+            extra=extra,
+        )
+
+    async def _timed_create_via_ai_provider(self, *, kind, **kwargs):
+        from .ai_events import AIProviderError, event_to_log_dict
+        from .ai_provider import collect_ai_response
+        from .ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        async def create_chat_completion(**provider_kwargs):
+            return await self._timed_create(kind=kind, **provider_kwargs)
+
+        provider = OpenAICompatibleProvider(
+            create_chat_completion,
+            provider_name="chat-run-openai-compatible",
+        )
+        request = self._ai_provider_request_from_kwargs(kwargs)
+        slog = getattr(self, 'session_logger', None)
+        if kwargs.get("stream"):
+            try:
+                raw_response = await provider.create_response(request)
+            except Exception as exc:
+                if slog is not None and get_trace() is not None:
+                    slog.record(event_to_log_dict(AIProviderError(
+                        message=str(exc),
+                        recoverable=False,
+                        data={
+                            "kind": kind,
+                            "provider": provider.provider_name,
+                        },
+                    )))
+                raise
+            return _AIProviderStreamProxy(
+                raw_response,
+                kind=kind,
+                provider=provider.provider_name,
+                session_logger=slog,
+            )
+        try:
+            provider_response = await collect_ai_response(
+                provider.stream_response(request)
+            )
+        except Exception as exc:
+            if slog is not None and get_trace() is not None:
+                slog.record(event_to_log_dict(AIProviderError(
+                    message=str(exc),
+                    recoverable=False,
+                    data={
+                        "kind": kind,
+                        "provider": provider.provider_name,
+                    },
+                )))
+            raise
+        non_recoverable_errors = []
+        if slog is not None and get_trace() is not None:
+            for error in provider_response.errors:
+                slog.record(event_to_log_dict(error))
+                if not error.recoverable:
+                    non_recoverable_errors.append(error)
+        else:
+            non_recoverable_errors = [
+                error for error in provider_response.errors if not error.recoverable
+            ]
+        if non_recoverable_errors:
+            raise RuntimeError(non_recoverable_errors[0].message)
+        if slog is not None and get_trace() is not None:
+            slog.record({
+                "type": "ai_provider_response",
+                "kind": kind,
+                "provider": provider.provider_name,
+                "text_chars": len(provider_response.text or ""),
+                "tool_call_count": len(provider_response.tool_calls),
+                "error_count": len(provider_response.errors),
+                "finish_reason": provider_response.finish_reason,
+            })
+        return provider_response
+
+    async def _create_chat_response_completion(self, *, kind, **kwargs):
+        if self.config.get('chat_run_variant_b_enabled', True):
+            return await self._timed_create_via_ai_provider(kind=kind, **kwargs)
+        return await self._timed_create(kind=kind, **kwargs)
 
     async def _save_conversation_context(
         self,
@@ -746,6 +885,18 @@ class OpenAIHelper:
         **kwargs,
     ):
         try:
+            if self.config.get('chat_run_variant_b_enabled', True):
+                from .chat_run import ChatRun
+
+                return await ChatRun(self).run_non_stream(
+                    chat_id=chat_id,
+                    query=query,
+                    session_id=session_id,
+                    user_id=user_id,
+                    request_context=request_context,
+                    **kwargs,
+                )
+
             state_key = self._chat_state_key(chat_id)
             # Reset per-request skills_agent gate flag so it doesn't persist
             # across user-initiated requests.
@@ -1025,13 +1176,11 @@ class OpenAIHelper:
                 
             try:
                 async for chunk in response:
-                    if not chunk.choices:
+                    if not stream_chunk_has_choice(chunk):
                         continue
-                    if len(chunk.choices) == 0:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        answer += delta.content
+                    content_delta = stream_chunk_text_delta(chunk)
+                    if content_delta:
+                        answer += content_delta
                         yield answer, 'not_finished'
             except Exception as e:
                 logger.error("Error processing response stream error=%s", log_exception_shape(e))
@@ -1388,7 +1537,7 @@ class OpenAIHelper:
             )
             gate_fired = self._gate_fired.get(state_key, False)
 
-            response = await self._timed_create(kind='main', **common_args)
+            response = await self._create_chat_response_completion(kind='main', **common_args)
 
             if gate_active and not gate_fired:
                 try:
@@ -1396,16 +1545,19 @@ class OpenAIHelper:
                     message = getattr(first_choice, "message", None) if first_choice else None
                     raw_tool_calls = getattr(message, "tool_calls", None) or []
                     to_canonical_name = getattr(self.plugin_manager, "to_canonical_function_name", None)
-                    tool_calls_normalized = [
-                        {
+                    tool_calls_normalized = []
+                    for tc in raw_tool_calls:
+                        if isinstance(tc, AIToolCall):
+                            model_name = tc.name
+                        else:
+                            model_name = getattr(getattr(tc, "function", None), "name", None)
+                        tool_calls_normalized.append({
                             "name": (
-                                to_canonical_name(getattr(getattr(tc, "function", None), "name", None))
+                                to_canonical_name(model_name)
                                 if callable(to_canonical_name)
-                                else getattr(getattr(tc, "function", None), "name", None)
+                                else model_name
                             )
-                        }
-                        for tc in raw_tool_calls
-                    ]
+                        })
                 except Exception as exc:
                     logger.debug(
                         "skills_agent gate: failed to read tool_calls error=%s",
@@ -1423,7 +1575,10 @@ class OpenAIHelper:
                         retry_args.get('tools') or []
                     )
                     self._gate_fired[state_key] = True
-                    response = await self._timed_create(kind='planner_gate_retry', **retry_args)
+                    response = await self._create_chat_response_completion(
+                        kind='planner_gate_retry',
+                        **retry_args,
+                    )
 
             if stream:
                 # For streaming responses, return the stream directly
@@ -1978,7 +2133,7 @@ class OpenAIHelper:
             kwargs.get('max_tokens') or kwargs.get('max_completion_tokens'),
             bool(kwargs.get('tools')),
         )
-        response = await self._timed_create(kind='empty_retry', **kwargs)
+        response = await self._create_chat_response_completion(kind='empty_retry', **kwargs)
         logger.warning(
             "Empty response retry request finished kind=%s choices=%s",
             retry_kind,
@@ -2304,7 +2459,7 @@ class OpenAIHelper:
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
             
-            return await self._timed_create(kind='vision', **common_args)
+            return await self._create_chat_response_completion(kind='vision', **common_args)
 
         except openai.RateLimitError as e:
             raise e
@@ -2630,11 +2785,11 @@ class OpenAIHelper:
         answer = ''
         try:
             async for chunk in response:
-                if len(chunk.choices) == 0:
+                if not stream_chunk_has_choice(chunk):
                     continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    answer += delta.content
+                content_delta = stream_chunk_text_delta(chunk)
+                if content_delta:
+                    answer += content_delta
                     yield answer, 'not_finished'
         except Exception as e:
             logger.error("Error processing vision response stream error=%s", log_exception_shape(e))
@@ -3449,7 +3604,7 @@ class OpenAIHelper:
         rendered = self._serialize_messages_for_summary(messages_to_summarize)
         summary_model = self.config.get('summary_model') or self.config.get('light_model') or self.config.get('model')
         max_tokens = int(self.config.get('summary_max_tokens', 400) or 400)
-        response = await self._timed_create(
+        response = await self._create_chat_response_completion(
             kind='summary',
             model=summary_model,
             messages=[

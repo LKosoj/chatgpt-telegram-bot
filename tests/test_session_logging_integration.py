@@ -1,11 +1,9 @@
 """Integration test for T2: session-logging events emitted by OpenAIHelper."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import types
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -13,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from bot.openai_helper import OpenAIHelper, _TURN_STATS
-from bot.session_logger import SessionLogger, set_trace, clear_trace, get_trace
+from bot.session_logger import SessionLogger, set_trace, clear_trace
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +86,7 @@ async def test_timed_create_writes_llm_call_event(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '42', 'sess-abc.jsonl')
     assert os.path.exists(log_path), "jsonl log file was not created"
-    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines() if line.strip()]
     llm_events = [e for e in lines if e.get('type') == 'llm_call']
     assert len(llm_events) == 1
     ev = llm_events[0]
@@ -126,7 +124,7 @@ async def test_timed_create_logs_payload_and_keeps_session_payload(tmp_path, cap
     await helper.session_logger.drain()
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '42', 'sess-redact.jsonl')
-    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines() if line.strip()]
     request_events = [e for e in lines if e.get('type') == 'llm_request']
     assert request_events[0]['payload']['messages'][0]['content'] == secret_prompt
 
@@ -158,7 +156,7 @@ async def test_emit_turn_end_writes_turn_end_event(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '99', 'sess-end.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines() if line.strip()]
     turn_end_events = [e for e in lines if e.get('type') == 'turn_end']
     assert len(turn_end_events) == 1
     ev = turn_end_events[0]
@@ -187,7 +185,7 @@ async def test_get_chat_response_emits_turn_lifecycle(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '7', 'sess-x.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines() if line.strip()]
     by_type = {e['type']: e for e in lines}
 
     assert 'turn_start' in by_type
@@ -232,7 +230,7 @@ async def test_mutators_event_recorded(tmp_path):
 
     log_path = os.path.join(str(tmp_path / 'session_logs'), '5', 'sess-m.jsonl')
     assert os.path.exists(log_path)
-    lines = [json.loads(l) for l in Path(log_path).read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [json.loads(line) for line in Path(log_path).read_text(encoding='utf-8').splitlines() if line.strip()]
     mut_events = [e for e in lines if e.get('type') == 'mutators']
     assert len(mut_events) == 1
     assert mut_events[0]['injected_count'] == 1

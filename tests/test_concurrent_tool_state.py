@@ -21,11 +21,11 @@ _markdown2 = types.ModuleType("markdown2")
 _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
-from bot.openai_tool_handler import handle_function_call
-from bot.plugins.language_learning import LanguageLearningPlugin
-from bot.plugins.reminders import RemindersPlugin
-from bot.plugins.task_management import TaskManagementPlugin
-from bot.request_context import RequestContext
+from bot.openai_tool_handler import handle_function_call  # noqa: E402
+from bot.plugins.language_learning import LanguageLearningPlugin  # noqa: E402
+from bot.plugins.reminders import RemindersPlugin  # noqa: E402
+from bot.plugins.task_management import TaskManagementPlugin  # noqa: E402
+from bot.request_context import RequestContext  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)

@@ -8,7 +8,7 @@ declare what they want to run by returning a list of ``BackgroundTask`` from
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 
 @dataclass(frozen=True)

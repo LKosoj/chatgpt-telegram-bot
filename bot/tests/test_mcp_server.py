@@ -3,9 +3,7 @@ import json
 import pytest
 
 pytest.importorskip("mcp")
-import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
-import httpx
 
 # Импортируем класс плагина
 from bot.plugins.mcp_server import MCPServerPlugin

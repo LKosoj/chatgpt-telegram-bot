@@ -14,7 +14,6 @@ import sys
 import types
 from types import SimpleNamespace
 
-import pytest
 
 
 _INSERTED_MODULES = []

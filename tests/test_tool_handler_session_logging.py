@@ -61,7 +61,15 @@ async def test_success_records_tool_exec(tmp_path):
     helper = _FakeHelper(slog)
     token = set_trace(user_id=1, session_id='s1', turn_id='t1')
     try:
-        await _call_function_bounded(helper, 'my_tool', '{}', None, asyncio.Semaphore(1))
+        await _call_function_bounded(
+            helper,
+            'my_tool',
+            '{}',
+            None,
+            asyncio.Semaphore(1),
+            tool_call_id='call_1',
+            model_name='model_my_tool',
+        )
     finally:
         clear_trace(token)
 
@@ -73,6 +81,18 @@ async def test_success_records_tool_exec(tmp_path):
     assert evt['ok'] is True
     assert evt['error'] is None
     assert evt['duration_ms'] >= 0
+    start_events = [e for e in events if e.get('type') == 'tool_execution_start']
+    end_events = [e for e in events if e.get('type') == 'tool_execution_end']
+    assert len(start_events) == 1
+    assert len(end_events) == 1
+    assert start_events[0]['tool_call']['name'] == 'my_tool'
+    assert start_events[0]['tool_call']['model_name'] == 'model_my_tool'
+    assert start_events[0]['tool_call']['id'] == 'call_1'
+    assert end_events[0]['result']['name'] == 'my_tool'
+    assert end_events[0]['result']['tool_call_id'] == 'call_1'
+    assert end_events[0]['result']['ok'] is True
+    assert end_events[0]['result']['content'] == '{"result": "ok"}'
+    assert end_events[0]['duration_ms'] >= 0
 
 
 async def test_failing_call_function_raises_and_records_failure(tmp_path):
@@ -92,6 +112,10 @@ async def test_failing_call_function_raises_and_records_failure(tmp_path):
     evt = tool_events[0]
     assert evt['ok'] is False
     assert 'boom' in evt['error']
+    end_events = [e for e in events if e.get('type') == 'tool_execution_end']
+    assert len(end_events) == 1
+    assert end_events[0]['result']['ok'] is False
+    assert 'boom' in end_events[0]['result']['error']
 
 
 async def test_no_trace_no_event(tmp_path):
@@ -104,6 +128,8 @@ async def test_no_trace_no_event(tmp_path):
     events = await _drain_and_read_events(slog, tmp_path)
     tool_events = [e for e in events if e.get('type') == 'tool_exec']
     assert tool_events == []
+    assert [e for e in events if e.get('type') == 'tool_execution_start'] == []
+    assert [e for e in events if e.get('type') == 'tool_execution_end'] == []
 
 
 async def test_no_session_logger_does_not_raise(tmp_path):

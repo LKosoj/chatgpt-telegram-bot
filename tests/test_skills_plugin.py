@@ -2316,7 +2316,7 @@ def test_entrypoint_subpath_is_allowed(tmp_path, monkeypatch):
 # ----------------- on_before_chat_request: skills catalog injection -----------------
 
 
-from bot.plugins.hooks import BeforeChatRequestPayload
+from bot.plugins.hooks import BeforeChatRequestPayload  # noqa: E402
 
 
 def _skills_agent_system_message(content: str = "skills_agent prompt") -> dict:
@@ -2369,7 +2369,6 @@ async def test_on_before_chat_request_lists_scripts_for_active_skills(tmp_path, 
     content = new_messages[1]["content"]
     assert "Активные skills в этой сессии" in content
     assert "demo:" in content
-    expected_abs = str((tmp_path / "skills" / "demo" / "scripts" / "echo.py").resolve())
     # as_posix() output is what we render
     assert (tmp_path / "skills" / "demo" / "scripts" / "echo.py").as_posix() in content
     # Active-skill scripts section is irrelevant to other scopes
@@ -2405,7 +2404,6 @@ async def test_on_before_chat_request_does_not_mutate_input(tmp_path, monkeypatc
 async def test_skill_script_timeout_kills_process_group(tmp_path, monkeypatch):
     """Timeout must kill the entire process group, not just the direct child."""
     import os
-    import signal
 
     plugin = _make_plugin(tmp_path, monkeypatch, allow_scripts=True, admin_ids="*")
     plugin.script_timeout = 2

@@ -4,7 +4,6 @@ import json
 import logging
 from pathlib import Path
 
-import pytest
 
 from bot.plugin_manager import PluginManager
 from bot.plugins.conversation_analytics import ConversationAnalyticsPlugin

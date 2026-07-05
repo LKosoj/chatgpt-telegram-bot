@@ -1,7 +1,6 @@
 """Stage 4B — on_before_chat_request mutator behaviour."""
-from typing import Any, Dict, List
+from typing import List
 
-import pytest
 
 from bot.plugins.hindsight_memory import (
     HINDSIGHT_DYNAMIC_MEMORY_MARKER,

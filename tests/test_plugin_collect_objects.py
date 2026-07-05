@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from bot.plugin_manager import PluginManager
 from bot.plugins.plugin import Plugin

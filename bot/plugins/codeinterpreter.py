@@ -1,12 +1,11 @@
 import asyncio
 from contextlib import contextmanager
-import datetime
 from functools import wraps
+import httpx
 import os
 from typing import Any, Dict, Optional, List
 import numpy as np
 import pandas as pd
-import subprocess
 import sys
 import logging
 import signal
@@ -14,7 +13,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import ast
 import plotly.express as px
-import json
 from io import StringIO
 matplotlib.use("Agg")
 import uuid
@@ -171,7 +169,6 @@ class CodeInterpreterPlugin(Plugin):
             session_id = str(uuid.uuid4())[:8]
             code_prompt = kwargs.get('code_prompt')
             data_path = kwargs.get('data_path', None)
-            user_id = kwargs.get('user_id', None)
 
             if not code_prompt:
                 return {

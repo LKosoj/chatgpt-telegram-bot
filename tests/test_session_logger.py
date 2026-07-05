@@ -117,7 +117,7 @@ async def test_record_appends_multiple_lines(tmp_path):
     await logger.drain()
 
     path = tmp_path / 'u1' / 's1.jsonl'
-    lines = [l for l in path.read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
     assert len(lines) == 3
 
 
@@ -219,7 +219,7 @@ async def test_drain_waits_for_writes(tmp_path):
     await logger.drain()
 
     path = tmp_path / 'u2' / 's2.jsonl'
-    lines = [l for l in path.read_text(encoding='utf-8').splitlines() if l.strip()]
+    lines = [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
     assert len(lines) == 5
 
 

@@ -855,7 +855,7 @@ class PluginManager:
             if not plugin_instance:
                 return None
             return self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-        except:
+        except Exception:
             return None
 
     def has_plugin(self, plugin_name: str) -> bool:

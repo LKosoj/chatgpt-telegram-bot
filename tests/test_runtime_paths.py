@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from bot.runtime_paths import (
     REPO_ROOT,

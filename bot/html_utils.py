@@ -1,21 +1,13 @@
 import os
 import logging
 import re
-import base64
 import html
 from datetime import datetime
-from typing import Union, List
 import subprocess
-import tempfile
-import re
-from pathlib import Path
 import markdown2
 from bs4 import BeautifulSoup
 import traceback
 import uuid
-import time
-import glob
-import hashlib
 from urllib.parse import urlsplit
 
 from .runtime_paths import (
@@ -1783,7 +1775,7 @@ class HTMLVisualizer:
                             
                             if "Here is the final answer" in mermaid_code:
                                 # Удаляем диаграмму, если она содержит "Here is the final answer"
-                                print(f"Удаляем диаграмму, если она содержит 'Here is the final answer'")
+                                print("Удаляем диаграмму, если она содержит 'Here is the final answer'")
                                 processed_text = processed_text.replace(full_match, "")
                                 continue
                             

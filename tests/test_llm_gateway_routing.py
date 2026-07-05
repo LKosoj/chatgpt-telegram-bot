@@ -2,11 +2,7 @@ import types
 
 import pytest
 
-from bot.model_constants import (
-    LLMGATEWAY_BIG_CONTEXT_MODEL,
-    LLMGATEWAY_HIGH_MODEL,
-    LLMGATEWAY_LIGHT_MODEL,
-)
+from bot.model_constants import LLMGATEWAY_LIGHT_MODEL
 from bot.openai_helper import are_functions_available
 from bot.plugins.web_research import WebResearchPlugin
 
@@ -48,6 +44,9 @@ class FakeHelper:
 
     async def _timed_create(self, kind, **kwargs):
         return await self.chat_completion(**kwargs)
+
+    async def _create_chat_response_completion(self, kind, **kwargs):
+        return await self._timed_create(kind=kind, **kwargs)
 
 
 def _assert_user_message_mentions_json(messages):

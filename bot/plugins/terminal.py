@@ -218,7 +218,6 @@ class TerminalPlugin(Plugin):
         deadline = asyncio.get_event_loop().time() + timeout
         pending = {stdout_task, stderr_task}
         timed_out = False
-        over_limit = False
         while pending:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -231,7 +230,6 @@ class TerminalPlugin(Plugin):
             # If any reader hit the limit, kill the process and cancel the rest
             for t in done:
                 if not t.cancelled() and not t.exception() and t.result()[1]:
-                    over_limit = True
                     _kill_process_group(process.pid)
                     for p in pending:
                         p.cancel()

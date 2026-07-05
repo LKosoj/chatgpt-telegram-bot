@@ -1,7 +1,6 @@
 import importlib.util
 import sys
 import types
-from pathlib import Path
 
 from bs4 import BeautifulSoup
 import pytest
@@ -41,7 +40,7 @@ _plotly_express = types.ModuleType("plotly.express")
 _install_module_if_missing("plotly", _plotly)
 _install_module_if_missing("plotly.express", _plotly_express)
 
-from bot.plugins.codeinterpreter import CodeInterpreterPlugin
+from bot.plugins.codeinterpreter import CodeInterpreterPlugin  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)

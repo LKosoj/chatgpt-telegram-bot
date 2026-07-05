@@ -445,10 +445,14 @@ class ConversationAnalyticsPlugin(Plugin):
         }
         
         for msg in messages:
-            if 'text' in msg: formats['text'] += 1
-            if 'code' in str(msg.get('text', '')): formats['code'] += 1
-            if msg.get('has_image'): formats['images'] += 1
-            if msg.get('has_voice'): formats['voice'] += 1
+            if 'text' in msg:
+                formats['text'] += 1
+            if 'code' in str(msg.get('text', '')):
+                formats['code'] += 1
+            if msg.get('has_image'):
+                formats['images'] += 1
+            if msg.get('has_voice'):
+                formats['voice'] += 1
             
         return formats
 

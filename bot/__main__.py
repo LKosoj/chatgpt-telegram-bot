@@ -209,6 +209,7 @@ def main():
         'proxy_web': os.environ.get('PROXY_WEB', None),
         'telegram_rich_messages': telegram_rich_messages,
         'telegram_rich_drafts': telegram_rich_drafts,
+        'chat_run_variant_b_enabled': parse_bool_env('CHAT_RUN_VARIANT_B_ENABLED', True),
         'max_history_size': _parse_numeric_env('MAX_HISTORY_SIZE', 15, int),
         'max_conversation_age_minutes': _parse_numeric_env('MAX_CONVERSATION_AGE_MINUTES', 180, int),
         'assistant_prompt': os.environ.get('ASSISTANT_PROMPT', 'You are a helpful assistant.'),
