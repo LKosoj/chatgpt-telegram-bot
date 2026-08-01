@@ -32,6 +32,9 @@ from .ai_providers.openai_compatible import (
     stream_chunk_text_delta,
     stream_chunk_tool_call_deltas,
 )
+from .chat_response_utils import (
+    response_prompt_completion_tokens as _response_prompt_completion_tokens,
+)
 from .session_logger import get_trace
 from .utils import compute_scope_key, log_exception_shape
 
@@ -886,6 +889,7 @@ async def _retry_missing_delivery_tool(
     suppressed_reentry_tools=None,
     token_accumulator=None,
     failure_escalation_state=None,
+    usage_accumulator=None,
 ):
     if not _delivery_tool_is_allowed(helper, allowed_plugins):
         logger.error("Delivery contract is required, but %s is not allowed", DELIVERY_TOOL_NAME)
@@ -959,6 +963,7 @@ async def _retry_missing_delivery_tool(
         suppressed_reentry_tools=suppressed_reentry_tools,
         token_accumulator=token_accumulator,
         failure_escalation_state=failure_escalation_state,
+        usage_accumulator=usage_accumulator,
     )
 
 
@@ -978,6 +983,7 @@ async def _retry_plain_text_tool_intent(
     tool_intent_repair_attempts=0,
     token_accumulator=None,
     failure_escalation_state=None,
+    usage_accumulator=None,
 ):
     plain_text_preview = str(plain_text or "").strip()[:_TEXT_PREVIEW_LIMIT]
     _conversation_messages(helper, chat_id).append({
@@ -1036,6 +1042,7 @@ async def _retry_plain_text_tool_intent(
         tool_intent_repair_attempts=tool_intent_repair_attempts + 1,
         token_accumulator=token_accumulator,
         failure_escalation_state=failure_escalation_state,
+        usage_accumulator=usage_accumulator,
     )
 
 
@@ -1058,6 +1065,7 @@ async def handle_function_call(
     tool_intent_repair_attempts=0,
     token_accumulator=None,
     failure_escalation_state=None,
+    usage_accumulator=None,
 ):
     tool_calls = []
     try:
@@ -1065,6 +1073,10 @@ async def handle_function_call(
             tokens = _response_total_tokens(response)
             if tokens:
                 token_accumulator.append(tokens)
+        if usage_accumulator is not None:
+            split = _response_prompt_completion_tokens(response)
+            if split is not None:
+                usage_accumulator.append(split)
         artifact_manifest = list(artifact_manifest or [])
         suppressed_reentry_tools = set(suppressed_reentry_tools or ())
         if failure_escalation_state is None:
@@ -1104,6 +1116,7 @@ async def handle_function_call(
                 suppressed_reentry_tools,
                 token_accumulator,
                 failure_escalation_state,
+                usage_accumulator=usage_accumulator,
             )
 
         async def retry_plain_text_tool_intent_if_needed(plain_text=None):
@@ -1129,6 +1142,7 @@ async def handle_function_call(
                 tool_intent_repair_attempts,
                 token_accumulator,
                 failure_escalation_state,
+                usage_accumulator=usage_accumulator,
             )
 
         async def retry_stream_plain_text_tool_intent_or_replay(first_item):
@@ -1641,6 +1655,7 @@ async def handle_function_call(
             tool_intent_repair_attempts,
             token_accumulator,
             failure_escalation_state,
+            usage_accumulator=usage_accumulator,
         )
     except Exception as exc:
         logger.error('Error in function call handling error=%s', log_exception_shape(exc))

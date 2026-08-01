@@ -1,4 +1,8 @@
 """Stage 4B — on_before_chat_request mutator behaviour."""
+import asyncio
+import json
+import logging
+from types import SimpleNamespace
 from typing import List
 
 
@@ -8,6 +12,7 @@ from bot.plugins.hindsight_memory import (
     HINDSIGHT_MEMORY_MARKER,
 )
 from bot.plugins.hooks import BeforeChatRequestPayload
+from bot.session_logger import clear_trace, set_trace
 
 
 class FakeHindsight:
@@ -24,7 +29,37 @@ class FakeHindsight:
         return self._result
 
 
-def _make_plugin(client, **cfg_overrides) -> HindsightMemoryPlugin:
+class FakeGateOpenAI:
+    """Fake OpenAIHelper stand-in for retrieval-gate ``chat_completion`` calls."""
+
+    def __init__(self, *, content=None, raise_exc=None, delay=None):
+        self.config = {"light_model": "fake-light"}
+        self.content = content
+        self.raise_exc = raise_exc
+        self.delay = delay
+        self.calls: List[dict] = []
+        self.session_logger = None
+
+    async def chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.raise_exc:
+            raise self.raise_exc
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))]
+        )
+
+
+class FakeSessionLogger:
+    def __init__(self):
+        self.events: List[dict] = []
+
+    def record(self, event):
+        self.events.append(event)
+
+
+def _make_plugin(client, openai=None, **cfg_overrides) -> HindsightMemoryPlugin:
     plugin = HindsightMemoryPlugin()
     cfg = {
         'hindsight_base_url': 'http://x',
@@ -32,7 +67,7 @@ def _make_plugin(client, **cfg_overrides) -> HindsightMemoryPlugin:
         'hindsight_auto_recall': True,
         **cfg_overrides,
     }
-    plugin.initialize(plugin_config=cfg)
+    plugin.initialize(openai=openai, plugin_config=cfg)
     plugin.client = client
     return plugin
 
@@ -191,3 +226,167 @@ async def test_dynamic_recall_skips_non_persistent_retry_payload():
 
     assert new is None
     assert plugin.client.recall_calls == []
+
+
+# --- A1: retrieval gate ------------------------------------------------------
+
+async def test_retrieval_gate_enabled_by_default_consults_gate():
+    """Feature is on by default: the gate is asked, and a 'retrieve' verdict recalls as before."""
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": True, "query": "q", "reason": "asks about project"}))
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "Hello"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert any(plugin.is_hindsight_memory_message(m) for m in new)
+    assert len(gate_openai.calls) == 1
+
+
+async def test_retrieval_gate_explicitly_disabled_skips_gate_call():
+    """The off switch still works: zero chat_completion calls, recall runs unconditionally."""
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": False, "query": "q", "reason": "n/a"}))
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai, hindsight_retrieval_gate_enabled=False)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "Hello"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert any(plugin.is_hindsight_memory_message(m) for m in new)
+    assert gate_openai.calls == []
+
+
+async def test_retrieval_gate_skip_blocks_dynamic_recall():
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": False, "query": "q", "reason": "small talk"}))
+    plugin = _make_plugin(
+        FakeHindsight(), openai=gate_openai,
+        hindsight_dynamic_recall=True, hindsight_retrieval_gate_enabled=True,
+    )
+    messages = [
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "thanks"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is None
+    assert plugin.client.recall_calls == []
+    assert len(gate_openai.calls) == 1
+
+
+async def test_retrieval_gate_retrieve_allows_dynamic_recall():
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": True, "query": "q", "reason": "asks about project"}))
+    plugin = _make_plugin(
+        FakeHindsight(), openai=gate_openai,
+        hindsight_dynamic_recall=True, hindsight_retrieval_gate_enabled=True,
+    )
+    messages = [
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "what did I say about my project"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert plugin.client.recall_calls
+    assert any(
+        isinstance(m.get("content"), str) and m["content"].startswith(HINDSIGHT_DYNAMIC_MEMORY_MARKER)
+        for m in new
+    )
+
+
+async def test_retrieval_gate_skip_blocks_baseline_recall():
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": False, "query": "q", "reason": "greeting"}))
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai, hindsight_retrieval_gate_enabled=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is None
+    assert plugin.client.recall_calls == []
+    assert len(gate_openai.calls) == 1
+
+
+async def test_retrieval_gate_exception_fails_open(caplog):
+    gate_openai = FakeGateOpenAI(raise_exc=RuntimeError("boom"))
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai, hindsight_retrieval_gate_enabled=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="bot.plugins.hindsight_memory"):
+        new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert plugin.client.recall_calls
+    assert any("Hindsight retrieval gate failed" in r.message for r in caplog.records)
+
+
+async def test_retrieval_gate_invalid_json_fails_open(caplog):
+    gate_openai = FakeGateOpenAI(content="not json")
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai, hindsight_retrieval_gate_enabled=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="bot.plugins.hindsight_memory"):
+        new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert plugin.client.recall_calls
+    assert any("Hindsight retrieval gate failed" in r.message for r in caplog.records)
+
+
+async def test_retrieval_gate_timeout_fails_open(caplog):
+    gate_openai = FakeGateOpenAI(content=json.dumps({"retrieve": False}), delay=0.2)
+    plugin = _make_plugin(
+        FakeHindsight(), openai=gate_openai,
+        hindsight_retrieval_gate_enabled=True,
+        hindsight_retrieval_gate_timeout_seconds=0.01,
+    )
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="bot.plugins.hindsight_memory"):
+        new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert plugin.client.recall_calls
+    assert any("Hindsight retrieval gate failed" in r.message for r in caplog.records)
+
+
+async def test_retrieval_gate_records_session_log_event():
+    gate_openai = FakeGateOpenAI(
+        content=json.dumps({"retrieve": True, "query": "q", "reason": "asks about memory"})
+    )
+    gate_openai.session_logger = FakeSessionLogger()
+    plugin = _make_plugin(FakeHindsight(), openai=gate_openai, hindsight_retrieval_gate_enabled=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "user", "content": "what do you remember about me"},
+    ]
+
+    token = set_trace(123, "sess-1", "turn-1")
+    try:
+        await plugin.on_before_chat_request(messages, _payload())
+    finally:
+        clear_trace(token)
+
+    assert len(gate_openai.session_logger.events) == 1
+    event = gate_openai.session_logger.events[0]
+    assert event["decision"] == "retrieve"
+    assert "reason" in event
+    assert "duration_ms" in event

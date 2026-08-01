@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from .model_constants import (
     MAX_OUTPUT_TOKENS,
 )
+from .pricing import load_model_token_prices
 from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from .telegram_bot import ChatGPTTelegramBot
@@ -205,6 +206,7 @@ def main():
         'api_key': api_key,
         'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
         'stream': os.environ.get('STREAM', 'true').lower() == 'true',
+        'stream_include_usage': os.environ.get('STREAM_INCLUDE_USAGE', 'false').lower() == 'true',
         'proxy': os.environ.get('PROXY', None) or os.environ.get('OPENAI_PROXY', None),
         'proxy_web': os.environ.get('PROXY_WEB', None),
         'telegram_rich_messages': telegram_rich_messages,
@@ -260,6 +262,9 @@ def main():
             'SESSION_LOG_MAX_BYTES', 10 * 1024 * 1024, int, minimum=0,
         ),
         'session_log_retention_days': _parse_numeric_env('SESSION_LOG_RETENTION_DAYS', 30, int, minimum=0),
+        'session_log_otel_endpoint': os.environ.get('SESSION_LOG_OTEL_ENDPOINT', ''),
+        'session_log_otel_service_name': os.environ.get('SESSION_LOG_OTEL_SERVICE_NAME', 'chatgpt-telegram-bot'),
+        'session_log_otel_insecure': parse_bool_env('SESSION_LOG_OTEL_INSECURE', True),
         'data_dir': os.environ.get('BOT_DATA_DIR', ''),
         'output_dir': os.environ.get('BOT_OUTPUT_DIR', ''),
         'plots_dir': os.environ.get('BOT_PLOTS_DIR', ''),
@@ -310,6 +315,7 @@ def main():
         'ignore_group_vision': os.environ.get('IGNORE_GROUP_VISION', 'true').lower() == 'true',
         'group_trigger_keyword': os.environ.get('GROUP_TRIGGER_KEYWORD', ''),
         'token_price': _parse_numeric_env('TOKEN_PRICE', 0.002, float),
+        'model_token_prices': load_model_token_prices(os.environ.get('MODEL_TOKEN_PRICES', '')),
         'image_prices': _parse_numeric_list_env('IMAGE_PRICES', [0.016, 0.018, 0.02], float),
         'vision_token_price': _parse_numeric_env('VISION_TOKEN_PRICE', 0.01, float),
         'image_receive_mode': os.environ.get('IMAGE_FORMAT', "photo"),

@@ -304,7 +304,8 @@ def _make_helper_ask():
     helper = object.__new__(OpenAIHelper)
     helper.conversations = {}
     helper.loaded_conversation_sessions = {}
-    helper.config = {'max_sessions': 5, 'light_model': 'test-model'}
+    # light_model is kept here on purpose: ask() must ignore it and pick 'model'.
+    helper.config = {'max_sessions': 5, 'light_model': 'light-model', 'model': 'main-model'}
     helper.plugin_manager = SimpleNamespace(dispatch_blocking=AsyncMock())
     helper.db = _with_async_db_facade(SimpleNamespace(
         create_session=MagicMock(return_value="s1"),
@@ -362,3 +363,26 @@ async def test_ask_outside_active_turn_writes_history_twice():
     calls = helper._OpenAIHelper__add_to_history.call_args_list
     assert calls[0].kwargs.get('role') == 'user' or calls[0].args[1] == 'user'
     assert calls[1].kwargs.get('role') == 'assistant' or calls[1].args[1] == 'assistant'
+
+
+@pytest.mark.asyncio
+async def test_ask_defaults_to_the_main_model():
+    """No model= argument means the main model, not light_model.
+
+    ask() returns an answer meant for the user; callers that only need a cheap
+    classification pass model= explicitly (see bot/plugins/chief.py).
+    """
+    helper = _make_helper_ask()
+
+    await helper.ask("test prompt", user_id=7)
+
+    assert helper.chat_completion.await_args.kwargs['model'] == 'main-model'
+
+
+@pytest.mark.asyncio
+async def test_ask_honours_an_explicit_model_argument():
+    helper = _make_helper_ask()
+
+    await helper.ask("test prompt", user_id=7, model='light-model')
+
+    assert helper.chat_completion.await_args.kwargs['model'] == 'light-model'

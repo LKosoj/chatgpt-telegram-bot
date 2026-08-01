@@ -29,3 +29,4 @@ presentation_analysis_*.txt
 .ai_docs_cache/
 .ai-docs/
 .attachments/
+.cli-proxy/runtime/

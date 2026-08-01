@@ -55,8 +55,6 @@ PENDING_AUDIT_PLUGINS: frozenset[str] = frozenset({
     "crypto",
     "ddg_image_search",
     "ddg_translate",
-    "deepl",
-    "dice",
     "github_analysis",
     "haiper_image_to_video",
     "iplocation",

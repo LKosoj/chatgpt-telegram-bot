@@ -165,6 +165,7 @@ Startup order:
 | `bot/chat_modes.yml` | User-facing chat modes, per-mode allowed plugin IDs |
 | `bot/database.py` | SQLite singleton, sessions, conversation context, image refs, usage tracking |
 | `bot/usage_tracker.py` | Token / image / TTS / transcription cost tracking and budget windows |
+| `bot/pricing.py` | Per-model chat token prices and the `price_source` (`model_split` / `model_blended` / `legacy_fallback`) behind one completion's cost |
 | `bot/plugins/hindsight_memory.py` | Hindsight plugin and embedded HTTP client (recall, retain, list, stats, clear) |
 | `bot/request_context.py` | Frozen `RequestContext` dataclass passed through tool execution |
 | `bot/skill_script_routing.py` | Router that nudges skill scripts toward `terminal` vs. `codeinterpreter` |
@@ -174,10 +175,13 @@ Startup order:
 | `bot/i18n.py` | Bot localization helper |
 | `bot/html_utils.py` | Markdown / HTML conversion utilities |
 | `bot/model_constants.py` | Legacy model family constants used for capability checks and token limits |
+| `bot/session_logger.py` | Structured per-turn diagnostics: JSONL session events, per-session summaries, rotation and retention |
+| `bot/session_otel.py` | Optional OpenTelemetry bridge exporting the same session events as spans; a no-op unless `SESSION_LOG_OTEL_ENDPOINT` is set |
 | `bot/prompts/subagent_system.md` | System prompt for spawned subagents |
 | `examples/` | Sample MCP server / client (`mcp_server_example.py`, `mcp_stdio_*.py`) |
 | `tests/` | Top-level pytest suite |
 | `bot/tests/` | MCP-specific tests |
+| `evals/` | LLM-as-judge quality evals; deliberately outside the deterministic suites (see [`evals/README.md`](evals/README.md)) |
 | `data/` | Default plugin storage root (created on startup; ignored by git) |
 
 The repository also keeps a generated codebase map under
@@ -281,6 +285,7 @@ by the runtime. **Bold** rows are required.
 | `FREQUENCY_PENALTY` | `0.0` | float | OpenAI frequency penalty. |
 | `N_CHOICES` | `1` | int | Number of completions returned. |
 | `STREAM` | `true` | bool | Stream chat responses to Telegram. |
+| `STREAM_INCLUDE_USAGE` | `false` | bool | Send `stream_options={'include_usage': true}` so streaming turns end with a real prompt/completion token split instead of a local estimate. Off by default: not every OpenAI-compatible gateway accepts the parameter, and an unsupported one fails the whole request. |
 | `CHAT_RUN_VARIANT_B_ENABLED` | `true` | bool | Use the provider/event compatibility wrapper for chat-completion requests, including streaming; set `false` for legacy rollback. |
 | `SHOW_USAGE` | `false` | bool | Append token-usage footer to responses. |
 | `SHOW_PLUGINS_USED` | `false` | bool | Append a list of plugins/tools that were called. |
@@ -329,6 +334,9 @@ by the runtime. **Bold** rows are required.
 | `SESSION_LOG_DIR` | `./log` | path | Base directory for session logs; one subdirectory per `user_id`, session events as JSONL plus `<session_id>.summary.json`. |
 | `SESSION_LOG_MAX_BYTES` | `10485760` | int | Rotate a session JSONL file before appending when it would exceed this size. `0` disables rotation. |
 | `SESSION_LOG_RETENTION_DAYS` | `30` | int | Delete session JSONL/summary files older than this many days. `0` disables cleanup. |
+| `SESSION_LOG_OTEL_ENDPOINT` | `` | url | OTLP/gRPC collector endpoint for exporting the same session traces on top of the JSONL files, e.g. `http://localhost:4317`. Empty (the default) means the `opentelemetry-*` packages are never imported. Requires `SESSION_LOG_ENABLED=true` and the `opentelemetry-*` packages, which `requirements.txt` deliberately leaves uninstalled (see the install line there). |
+| `SESSION_LOG_OTEL_SERVICE_NAME` | `chatgpt-telegram-bot` | string | `service.name` resource attribute on exported spans. |
+| `SESSION_LOG_OTEL_INSECURE` | `true` | bool | Use a plaintext gRPC channel to the collector. Set `false` for a TLS endpoint. |
 | `BOT_DATA_DIR` | `<repo>/data` | path | Runtime data root used by HTML/file delivery and code-interpreter data files. Relative values are resolved from the repository root. |
 | `BOT_OUTPUT_DIR` | `<repo>/output` | path | Runtime output root for generated HTML reports. Relative values are resolved from the repository root. |
 | `BOT_PLOTS_DIR` | `<BOT_OUTPUT_DIR>/plots` | path | Runtime plot/artifact root scanned by HTML report generation. Relative values are resolved from the repository root. |
@@ -340,7 +348,8 @@ by the runtime. **Bold** rows are required.
 | `BUDGET_PERIOD` | `monthly` | string | `daily`, `weekly`, `monthly`, or `total`. |
 | `USER_BUDGETS` | `*` | csv / `*` | Per-user budget caps. `*` disables the cap. |
 | `GUEST_BUDGET` | `100.0` | float | Budget for guests when group chats are addressed by an allowed user. |
-| `TOKEN_PRICE` | `0.002` | float | USD per 1K tokens. |
+| `TOKEN_PRICE` | `0.002` | float | USD per 1K tokens. Used for any model absent from `MODEL_TOKEN_PRICES`. |
+| `MODEL_TOKEN_PRICES` | `` | csv `model=in:out` | Per-model chat prices in USD per 1K tokens, prompt and completion billed separately, e.g. `llmgateway/high=0.005:0.015`. Invalid or negative entries are skipped with a warning. Empty by default because the models in tree are gateway aliases whose real prices depend on the installation. |
 | `IMAGE_PRICES` | `0.016,0.018,0.02` | csv floats | Per-size image costs (small, medium, large). |
 | `TTS_PRICES` | `0.015,0.030` | csv floats | TTS cost tiers. |
 | `TRANSCRIPTION_PRICE` | `0.006` | float | USD per minute. |
@@ -430,6 +439,9 @@ Hindsight is auto-enabled when both `HINDSIGHT_BASE_URL` and
 | `HINDSIGHT_DREAM_MAX_DOCUMENTS` | `5` | int | Max candidate memory documents produced per dream run. |
 | `HINDSIGHT_DYNAMIC_RECALL` | `false` | bool | Add per-request ephemeral recall after baseline memory exists in the session. |
 | `HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS` | `1024` | int | Max tokens for dynamic recall. |
+| `HINDSIGHT_RETRIEVAL_GATE_ENABLED` | `true` | bool | Ask the light model whether a turn needs long-term memory at all, skipping recall for greetings, thanks, and questions answerable from the current chat. Fail-open: any gate failure resolves to recalling. Set `LIGHT_MODEL`, or the gate falls back to `OPENAI_MODEL` and costs more than it saves. |
+| `HINDSIGHT_RETRIEVAL_GATE_TIMEOUT_SECONDS` | `3.0` | float | Timeout for the gate call; on expiry the recall proceeds. |
+| `HINDSIGHT_RETRIEVAL_GATE_MAX_TOKENS` | `600` | int | Max output tokens for the gate's JSON verdict. |
 
 ### Plugin-Specific Keys
 
@@ -441,9 +453,7 @@ non-empty `PLUGINS`, only listed plugins are loaded.
 |---|---|---|
 | `JINA_API_KEY` | `jina_web_search` | Jina Search API key. |
 | `GOOGLE_API_KEY`, `GOOGLE_CSE_ID` | `google_web_search` | Google Programmable Search. |
-| `DEEPL_API_KEY` | `deepl` | DeepL translation. |
 | `WOLFRAM_APP_ID` | `wolfram_alpha` | WolframAlpha App ID. |
-| `WORLDTIME_DEFAULT_TIMEZONE` | `worldtimeapi` | Fallback time zone (e.g. `Europe/Moscow`). |
 | `TMDB_API_KEY` | `movie_info` | TMDb API key. |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | `spotify` | Spotify OAuth. |
 | `EDAMAM_APP_ID`, `EDAMAM_APP_KEY` | `chief` | Edamam recipes. |
@@ -608,7 +618,7 @@ By default every plugin in `bot/plugins` is loaded. Set `PLUGINS` only to
 restrict loading to an allow-list:
 
 ```env
-PLUGINS=ddg_web_search,ddg_image_search,deepl,gtts_text_to_speech,auto_tts,\
+PLUGINS=ddg_web_search,ddg_image_search,ddg_translate,auto_tts,\
 website_content,stable_diffusion,github_analysis,youtube_transcript,\
 prompt_perfect,reminders,show_me_diagrams,chief,vkusvill,codeinterpreter,\
 mcp_server,text_document_qa,hindsight_memory,skills,terminal,agent_tools,\
@@ -631,7 +641,6 @@ agent_cron,web_research
 
 | Plugin | Tools | Notes |
 |---|---|---|
-| `deepl` | `translate` | DeepL Free/Pro auto-detect. |
 | `ddg_translate` | `translate` | DuckDuckGo translation library (gateway-backed compatibility). |
 
 ### Images, Video, Speech
@@ -640,7 +649,6 @@ agent_cron,web_research
 |---|---|---|
 | `stable_diffusion` | `stable_diffusion`, `edit_image` | Gateway image generation/edit (Klein backends). |
 | `haiper_image_to_video` | `generate_video` | vsegpt.ru-backed image-to-video. |
-| `gtts_text_to_speech` | `google_translate_text_to_speech` | Gateway Silero TTS. |
 | `auto_tts` | `translate_text_to_speech` | Auto-TTS for outputs (uses OpenAI-compatible audio API). |
 
 ### Knowledge And Data
@@ -652,8 +660,6 @@ agent_cron,web_research
 | `iplocation` | `iplocation` | IP geolocation / ASN. |
 | `weather` | `get_current_weather`, `get_forecast_weather` | Open Meteo. |
 | `pravo_gov_ru_api` | `search_documents` | Official publication.pravo.gov.ru legal act search; no API key required. |
-| `worldtimeapi` | `worldtimeapi` | Time zone clock; `WORLDTIME_DEFAULT_TIMEZONE` is required for fallbacks. |
-| `whois_` | `get_whois` | python-whois. |
 | `text_summarizer` | `summarize_text` | Yandex summarisation; needs `YANDEX_API_TOKEN`. |
 | `prompt_perfect` | `optimize_prompt` | Self-rewrites prompts via the helper. |
 | `movie_info` | `get_new_movies`, `get_movie_recommendations` | TMDb; needs `TMDB_API_KEY`. |
@@ -684,22 +690,24 @@ standard conversation path.
 | `agent_cron` | `create_cron_job` | Separate scheduled agent tasks via `/cron add <schedule> \| <prompt>`, list/pause/resume/run/remove. |
 | `skills` | `list_skills`, `get_skill`, `get_skill_status`, `list_active_skills`, `activate_skill`, `deactivate_skill`, `update_skill_progress`, `record_skill_reflection`, `run_skill_script`, `run_skill_agent` | See [Skills Runtime](#skills-runtime). |
 | `mcp_server` | dynamic | See [MCP Integration](#mcp-integration). |
-| `hindsight_memory` | `recall`, `list_memories`, `stats` | Manual Hindsight inspection; `/memory` exposes status, search, export, and clear when Hindsight is configured. |
+| `hindsight_memory` | `recall`, `list_memories`, `stats` | Manual Hindsight inspection; `/memory` exposes status, search, report, export, and clear when Hindsight is configured. |
 | `terminal` | `terminal` | Direct shell execution; pair with `skills.run_skill_script`. |
 | `codeinterpreter` | `deep_analysis` | Sandboxed Python with pandas / numpy / matplotlib / plotly. |
 | `github_analysis` | `analyze_github_code` | Reads and summarises GitHub repos with syntax highlighting. |
 | `show_me_diagrams` | `create_diagram` | PlantUML diagrams; requires Java, Graphviz `dot`, and `bot/plugins/plantuml.jar`. |
 | `chief` | `get_recipe`, `plan_menu` | Edamam recipes / meal planning. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | VkusVill grocery integration. |
-| `dice` | `send_dice` | Animated Telegram dice. |
 | `reaction` | `react_with_emoji` | Reactions on assistant messages. |
 | `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | Persistent JSON-backed reminders. |
 | `task_management` | `create_task`, `list_tasks`, `update_task` | User-visible task list (separate from `agent_tools.manage_plan_tasks`). |
 | `language_learning` | `daily_practice`, `track_progress` | Vocabulary / grammar / conversation drills. |
 | `conversation_analytics` | `analyze_conversation`, `get_personalized_recommendations` | Rolling conversation analytics. |
 
-> **Note.** Tool function names are namespaced. For example, `deepl.translate`
-> and `ddg_translate.translate` co-exist without collision.
+> **Note.** Tool function names are namespaced: `ddg_translate` declares a spec
+> named `translate`, which becomes the canonical name `ddg_translate.translate`
+> internally and reaches the model as `ddg_translate_translate` — a model-facing
+> name has to match `^[A-Za-z0-9_-]+$`, so the dot is replaced. Two plugins
+> declaring the same short name therefore never collide.
 
 ---
 
@@ -854,11 +862,27 @@ When `HINDSIGHT_DYNAMIC_RECALL=true`, the plugin may add an extra ephemeral
 memory block for the latest request after baseline session memory already
 exists. Dynamic blocks are not persisted into the saved session context.
 
+A cheap light-model call runs first and decides whether the turn needs
+long-term memory at all, so greetings, thanks, and questions answerable from
+the current chat skip the recall round-trip entirely. This gate is on by
+default; set `HINDSIGHT_RETRIEVAL_GATE_ENABLED=false` to recall
+unconditionally. It only pays off when `LIGHT_MODEL` is configured — otherwise
+the gate falls back to `OPENAI_MODEL` and spends the expensive model to save
+the expensive model. The gate is fail-open by design: a timeout, a transport
+error, or a malformed verdict all resolve to "retrieve", so it can never
+suppress a recall that would otherwise have happened.
+
+`/memory report` renders the same memories as human-readable Markdown, grouped
+by kind, and is sent as a file when too long for one message. It is distinct
+from `/memory export`, which ships the raw JSON dump: the report runs every item
+through a second PII filter and withholds anything that still looks sensitive,
+so it is the safe one to read or forward.
+
 The `hindsight_memory` plugin (`recall`, `list_memories`, `stats`) is also
 available as a regular tool when manual memory inspection is needed. When the
 plugin is enabled and Hindsight is configured, `/memory` and Settings show
-status, memory count, pending candidates, manual search, export, and clear
-actions.
+status, memory count, pending candidates, manual search, report, export, and
+clear actions.
 
 ---
 
@@ -934,6 +958,20 @@ Useful focused suites:
 | `ask_your_pdf` | `tests/test_ask_your_pdf.py` |
 | `codeinterpreter` | `tests/test_codeinterpreter_plugin.py` |
 | MCP | `bot/tests/test_mcp_server.py` |
+
+`evals/` is a separate category and is deliberately not part of the suites above:
+those are deterministic (pass/fail) and fully mocked, while `evals/judge` sends
+real requests to a real model and has a second model score the reply 0–10 against
+a rubric. That is non-deterministic, needs network access, and costs money, so
+`pytest.ini` sets `testpaths = tests bot/tests` (a bare `pytest` never collects
+`evals/`) and every eval is additionally gated on `RUN_LLM_JUDGE_EVALS=1` plus
+`OPENAI_API_KEY`. Never wire it into CI or pre-commit; run it by hand:
+
+```bash
+RUN_LLM_JUDGE_EVALS=1 OPENAI_API_KEY=... python -m pytest evals/judge -q
+```
+
+See [`evals/README.md`](evals/README.md) for the per-run cost and the rest of the rationale.
 
 For syntax-only checks of the largest modules:
 

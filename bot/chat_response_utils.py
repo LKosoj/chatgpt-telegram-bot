@@ -51,6 +51,44 @@ def response_total_tokens(response: Any) -> int:
         return 0
 
 
+def response_prompt_completion_tokens(response: Any) -> dict[str, int] | None:
+    """Prompt/completion split for one response, or None when unavailable.
+
+    Mirrors response_total_tokens' shape but for the per-direction split
+    used by bot.pricing.resolve_chat_cost. An honest None (rather than a
+    guessed 0/0) is returned when the response has no usable split.
+    """
+    usage = getattr(response, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    try:
+        return {"prompt": int(prompt_tokens), "completion": int(completion_tokens)}
+    except (TypeError, ValueError):
+        return None
+
+
+def aggregate_usage_split(token_accumulator, usage_accumulator) -> tuple[int, int] | None:
+    """Combine a parallel usage_accumulator (list of {'prompt', 'completion'}
+    dicts, appended in lockstep with token_accumulator) into a single
+    (prompt_tokens, completion_tokens) split.
+
+    Returns None when usage_accumulator does not have an entry for every
+    round trip counted in token_accumulator (e.g. one round trip's response
+    had no usage split, or a synthetic extra-tokens entry with no response
+    at all) -- an incomplete split is reported as unknown rather than
+    guessed.
+    """
+    if not usage_accumulator or not token_accumulator:
+        return None
+    if len(usage_accumulator) != len(token_accumulator):
+        return None
+    prompt_total = sum(entry.get("prompt", 0) for entry in usage_accumulator)
+    completion_total = sum(entry.get("completion", 0) for entry in usage_accumulator)
+    return prompt_total, completion_total
+
+
 def first_choice_or_raise(response: Any) -> Any:
     choices = getattr(response, "choices", None) or []
     if not choices:

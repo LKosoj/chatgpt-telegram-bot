@@ -10,8 +10,6 @@ wolframalpha~=5.0.0
 duckduckgo_search
 spotipy~=2.23.0
 pytube~=15.0.0
-gtts~=2.5.1
-whois~=0.9.27
 Pillow~=10.3.0
 httpx==0.27.0
 readability-lxml==0.8.1
@@ -61,3 +59,9 @@ beautifulsoup4
 markdown2
 pdfminer.six
 mcp>=1.0.0
+# Optional: only needed when SESSION_LOG_OTEL_ENDPOINT is set. Left uninstalled by
+# default because the grpc exporter pulls ~19 MB of wheels that nothing imports while
+# the endpoint is empty; without them the bot logs sessions to JSONL as usual and
+# build_otel_bridge() warns once and falls back to the no-op bridge. To enable:
+#   pip install 'opentelemetry-api>=1.27,<2' 'opentelemetry-sdk>=1.27,<2' \
+#       'opentelemetry-exporter-otlp-proto-grpc>=1.27,<2'

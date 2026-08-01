@@ -12,6 +12,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .session_otel import build_otel_bridge
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -183,6 +185,10 @@ class SessionLogger:
         max_file_bytes: int = 0,
         retention_seconds: int = 0,
         cleanup_interval_seconds: int = 3600,
+        otel_endpoint: str | None = None,
+        otel_service_name: str = 'chatgpt-telegram-bot',
+        otel_headers: dict | None = None,
+        otel_insecure: bool = True,
     ):
         self.enabled = enabled
         self.base_dir = base_dir
@@ -196,6 +202,17 @@ class SessionLogger:
         self._summary_dirty: set[tuple[str, str]] = set()
         self._last_cleanup_monotonic: float | None = None
         self._closed = False
+        # Distinct from _closed: set the moment a close() starts, so a second
+        # concurrent close() can bail out before enqueueing its own _StopItem.
+        # _closed keeps its old meaning (fully closed, stop accepting records)
+        # and is still set only after the drain, which flush-rerun logic reads.
+        self._closing = False
+        self._otel = build_otel_bridge(
+            otel_endpoint,
+            service_name=otel_service_name,
+            headers=otel_headers,
+            insecure=otel_insecure,
+        )
 
     def _ensure_writer(self) -> asyncio.Queue:
         asyncio.get_running_loop()
@@ -234,11 +251,31 @@ class SessionLogger:
                 elif isinstance(item, _StopItem):
                     if not item.future.done():
                         item.future.set_result(None)
+                    self._release_pending_waiters()
                     return
             except Exception as exc:
                 logger.debug("session log writer failed", exc_info=True)
                 if isinstance(item, (_DrainItem, _StopItem)) and not item.future.done():
                     item.future.set_exception(exc)
+            finally:
+                self._queue.task_done()
+
+    def _release_pending_waiters(self) -> None:
+        """Resolve futures still queued when the writer stops.
+
+        A concurrent close()/drain() can enqueue its item in the window between
+        the writer picking up the _StopItem and returning. Nothing would ever
+        consume that item, so its awaiting caller would hang forever.
+        """
+        while True:
+            try:
+                pending = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                future = getattr(pending, 'future', None)
+                if future is not None and not future.done():
+                    future.set_result(None)
             finally:
                 self._queue.task_done()
 
@@ -302,6 +339,8 @@ class SessionLogger:
             _cleanup_old_logs(self.base_dir, self.retention_seconds)
             _write_line(path, line, self.max_file_bytes)
 
+        self._otel.on_event(event, user_id, session_id, get_trace().turn_id if get_trace() else None)
+
     async def flush_summary(self, user_id, session_id) -> None:
         if not self.enabled:
             return
@@ -319,6 +358,10 @@ class SessionLogger:
         summary = stats.to_dict(user_id, session_id)
         path = os.path.join(self.base_dir, safe_uid, f'{safe_sid}.summary.json')
         await asyncio.to_thread(_write_summary, path, summary)
+        # flush_summary already runs as a background task (scheduled from
+        # _emit_turn_end), never on the user response path, so awaiting the
+        # OTel flush here adds no latency to the reply.
+        await self._otel.force_flush()
         return True
 
     def schedule_flush_summary(self, user_id, session_id) -> bool:
@@ -384,23 +427,41 @@ class SessionLogger:
         await self._drain_summary_tasks()
 
     async def close(self) -> None:
-        if not self.enabled:
-            return
-        if self._closed:
+        # try/finally so the OTel shutdown (orphaned-span close + flush) runs
+        # on every early-return branch below, not just the final line. The
+        # `enabled` check lives inside the try because a bridge is built from
+        # otel_endpoint alone, independently of `enabled`.
+        try:
+            if not self.enabled:
+                return
+            # Claim the close synchronously, before the first await, so a second
+            # concurrent close() never enqueues a _StopItem of its own: the
+            # writer consumes only the first one and returns, and _closed alone
+            # cannot gate this (both callers would still be suspended in drain()
+            # when they check it). It has to be a separate flag -- setting
+            # _closed this early would stop record()/schedule_flush_summary()
+            # from accepting the work drain() is about to flush.
+            # The queue is swept on the writer's way out too
+            # (_release_pending_waiters), which covers the remaining window
+            # where a drain() enqueues just as the writer is returning.
+            if self._closing:
+                await self.drain()
+                return
+            self._closing = True
             await self.drain()
-            return
-        await self.drain()
-        self._closed = True
-        if self._queue is None:
-            return
-        writer = self._writer_task
-        if writer is None or writer.done():
-            return
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        await self._queue.put(_StopItem(future))
-        await future
-        await writer
+            self._closed = True
+            if self._queue is None:
+                return
+            writer = self._writer_task
+            if writer is None or writer.done():
+                return
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            await self._queue.put(_StopItem(future))
+            await future
+            await writer
+        finally:
+            await self._otel.shutdown()
 
     async def cleanup_old_logs(self) -> int:
         if not self.enabled or self.retention_seconds <= 0:

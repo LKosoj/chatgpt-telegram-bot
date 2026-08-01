@@ -629,16 +629,22 @@ class UsageTracker:
 
     # token usage functions:
 
-    def add_chat_tokens(self, tokens, tokens_price=None):
+    def add_chat_tokens(self, tokens, tokens_price=None, cost=None, metadata=None):
         """Adds used tokens from a request to a users usage history and updates current cost
         :param tokens: total tokens used in last request
-        :param tokens_price: price per 1000 tokens; falls back to self.prices['token_price']
+        :param tokens_price: price per 1000 tokens; falls back to self.prices['token_price'].
+            Ignored when ``cost`` is given.
+        :param cost: precomputed USD cost for this request (e.g. from
+            bot.pricing.resolve_chat_cost); when given, ``tokens_price`` is not used.
+        :param metadata: optional dict merged into the recorded usage_events row
+            (e.g. model / prompt_tokens / completion_tokens / price_source).
         """
-        if tokens_price is None:
-            tokens_price = self.prices['token_price']
+        if cost is None:
+            if tokens_price is None:
+                tokens_price = self.prices['token_price']
+            cost = round(float(tokens) * tokens_price / 1000, 6)
         today = date.today()
-        token_cost = round(float(tokens) * tokens_price / 1000, 6)
-        self._record_usage_event("chat_tokens", int(tokens), token_cost, event_date=str(today))
+        self._record_usage_event("chat_tokens", int(tokens), cost, metadata=metadata, event_date=str(today))
 
     def get_current_token_usage(self):
         """Get token amounts used for today and this month

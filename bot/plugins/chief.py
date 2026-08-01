@@ -132,49 +132,6 @@ class ChiefPlugin(Plugin):
         if not all([self.edamam_app_id, self.edamam_app_key, self.edamam_user_id]):
             raise ValueError("Edamam credentials not set (APP_ID, APP_KEY, USER_ID required)")
 
-    def _translate_meal_type(self, meal_type: str) -> str:
-        """Переводит тип приема пищи с русского на английский"""
-        translations = {
-            "завтрак": "breakfast",
-            "обед": "lunch",
-            "ужин": "dinner",
-            "десерт": "dessert",
-            "перекус": "snack",
-            "другое": "other"
-        }
-        return translations.get(meal_type.lower(), "other")
-
-    async def _translate_ingredients(self, ingredients: List[str], helper, user_id) -> Tuple[List[str], int]:
-        """Переводит ингредиенты с русского на английский"""
-        prompt = f"""Переведи следующие ингредиенты на английский язык. Верни только JSON массив с переводами:
-        {ingredients}
-        """
-        response, tokens_used = await helper.ask(
-            prompt,
-            user_id,
-            "Перевод ингредиентов",
-            json_mode=True,
-        )
-        
-        try:
-            # Пытаемся найти JSON массив в ответе
-            import re
-            json_match = re.search(r'\[(.*?)\]', response)
-            if json_match:
-                translated = json.loads(f"[{json_match.group(1)}]")
-            else:
-                # Если не нашли JSON массив, пробуем загрузить весь ответ как JSON
-                translated = json.loads(response)
-            
-            if isinstance(translated, list):
-                return translated, tokens_used
-            elif isinstance(translated, dict):
-                return list(translated.values()), tokens_used
-            else:
-                return ingredients, tokens_used
-        except json.JSONDecodeError:
-            return ingredients, tokens_used
-
     async def _parse_with_retry(self, user_query: str, helper, user_id: int, retries=3) -> Tuple[Dict, int]:
         """Парсит запрос пользователя с несколькими попытками"""
         prompt = f"""Проанализируй запрос пользователя о приготовлении блюда и верни только JSON с такими полями:
@@ -188,10 +145,14 @@ class ChiefPlugin(Plugin):
 
         for attempt in range(retries):
             try:
+                # Это классификация: результат парсится как JSON и пользователю не
+                # показывается, поэтому берём дешёвую модель явно. Пустая LIGHT_MODEL
+                # означает откат на основную модель внутри ask().
                 response, tokens_used = await helper.ask(
                     prompt,
                     user_id,
                     "Анализ кулинарного запроса",
+                    model=helper.config.get('light_model'),
                     json_mode=True,
                 )
 
@@ -462,10 +423,12 @@ class ChiefPlugin(Plugin):
         Предпочтения пользователя: {preferences_str}
         """
         
+        # Та же классификация, что и в _parse_with_retry: разбор предпочтений в JSON.
         response, tokens_used = await helper.ask(
             prompt,
             user_id,
             "Анализ предпочтений для меню",
+            model=helper.config.get('light_model'),
             json_mode=True,
         )
         

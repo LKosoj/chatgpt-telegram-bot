@@ -253,6 +253,9 @@ async def test_recalled_hindsight_memory_is_persisted_once_per_session():
     plugin = helper.plugin_manager.get_plugin("hindsight_memory")
     fake = FakeHindsight()
     plugin.client = fake
+    # Subject here is recall persistence, not the gate. Left on, the gate's own
+    # chat_completion would take calls[0] and shift the chat request this asserts on.
+    plugin.config["hindsight_retrieval_gate_enabled"] = False
 
     answer, tokens = await helper.get_chat_response(chat_id=1, query="How should you answer me?", user_id=123)
 

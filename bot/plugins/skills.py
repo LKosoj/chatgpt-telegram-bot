@@ -2646,10 +2646,6 @@ class SkillsPlugin(Plugin):
             return "", "skill_name must not contain hidden path segments"
         return "/".join(parts), None
 
-    def _validate_skill_dir_name(self, value: str) -> str | None:
-        _, error = self._normalize_skill_target_name(value)
-        return error
-
     def _strip_ansi(self, value: str) -> str:
         return ANSI_ESCAPE_RE.sub("", value or "")
 

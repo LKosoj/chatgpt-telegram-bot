@@ -19,6 +19,7 @@ from telegram.ext import CallbackContext, ContextTypes
 from .i18n import localized_text
 
 from .usage_tracker import UsageTracker
+from .pricing import resolve_chat_cost
 from .html_utils import HTMLVisualizer
 from .tool_result import direct_result_payload
 from .telegram_rich import (
@@ -841,13 +842,39 @@ def _positive_int_usage(value, label):
         return None
     return value
 
-def record_chat_tokens(usage, config, user_id, used_tokens):
+# Legacy per-model-price fallback is expected and logged, but must not spam
+# the log on every message -- one warning per model per process.
+_LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS: set = set()
+
+def record_chat_tokens(usage, config, user_id, used_tokens, *, model=None,
+                        prompt_tokens=None, completion_tokens=None):
     used_tokens = _positive_int_usage(used_tokens, 'chat tokens')
     if used_tokens is None:
         return False
+    cost, price_source = resolve_chat_cost(
+        model=model,
+        total_tokens=used_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        fallback_price_per_1k=config.get('token_price'),
+        table=config.get('model_token_prices') or {},
+    )
+    if price_source == 'legacy_fallback' and model not in _LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS:
+        _LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS.add(model)
+        logging.warning(
+            'No per-model price configured for model=%s; falling back to legacy '
+            'TOKEN_PRICE=%s for chat token cost',
+            model, config.get('token_price'),
+        )
+    metadata = {
+        'model': model,
+        'prompt_tokens': prompt_tokens,
+        'completion_tokens': completion_tokens,
+        'price_source': price_source,
+    }
     return _charge_user_and_guest(
         usage, config, user_id,
-        lambda t: t.add_chat_tokens(used_tokens),
+        lambda t: t.add_chat_tokens(used_tokens, cost=cost, metadata=metadata),
     )
 
 def record_image_request(usage, config, user_id, image_size):
@@ -1185,8 +1212,6 @@ async def handle_direct_result(config, update: Update, response: any, *, bot=Non
         elif result_format == 'path':
             with open(value, 'rb') as fh:
                 sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
-    elif kind == 'dice':
-        sent_messages.append(await message.reply_dice(**common_args, emoji=value))
     elif kind == 'reaction':
         target_message = getattr(message, 'reply_to_message', None)
         set_reaction = getattr(target_message, 'set_reaction', None) if target_message else None

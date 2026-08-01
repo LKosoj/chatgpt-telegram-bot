@@ -17,7 +17,6 @@ dependencies:
   - uvicorn
   - pydub~=0.25.1
   - pytube~=15.0.0
-  - gtts~=2.5.1
   - youtube-transcript-api=0.6.2
   - readability-lxml=0.8.1
   - lxml-html-clean=0.1.1

@@ -33,6 +33,44 @@ GOAL_RUN_CLOSED_STATUSES = {
     "interrupted",
     "budget_exhausted",
 }
+
+
+def describe_plan_lifecycle() -> Dict[str, Any]:
+    """Data-shaped description of the plan task lifecycle.
+
+    Single source of truth for documentation/tests: it reads ``TASK_STATUSES``/
+    ``CLOSED_STATUSES`` directly instead of holding a separate copy, so it cannot
+    drift from what ``_manage_plan_tasks``/``_validate_plan_tasks`` actually
+    enforce. Not consumed by ``get_spec()`` — costs zero prompt tokens.
+    """
+    return {
+        "statuses": sorted(TASK_STATUSES),
+        "closed_statuses": sorted(CLOSED_STATUSES),
+        "open_statuses": sorted(TASK_STATUSES - CLOSED_STATUSES),
+        "invariants": [
+            "task ids are unique within a plan",
+            "a task cannot list its own id in depends_on",
+            "depends_on must reference task ids that exist in the same plan",
+            "the depends_on graph must not contain a cycle",
+            "at most one task may have status in_progress at a time",
+            "a task can only move to in_progress once its declared dependencies "
+            "are closed, or, when it has none, once every earlier task in list "
+            "order is closed",
+            "at most one open (non-closed) delivery-shaped task may exist at a time",
+        ],
+        "side_effects": {
+            "blocked": (
+                "schedules a one-shot re-plan trigger, delivered as a system "
+                "message on the next on_before_chat_request"
+            ),
+            "completed": (
+                "schedules a one-shot verify trigger, delivered as a system "
+                "message on the next on_before_chat_request"
+            ),
+        },
+    }
+
+
 GOAL_RUN_DEFAULT_LIMITS = {
     "max_runtime_seconds": 1800,
 }

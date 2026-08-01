@@ -54,7 +54,6 @@ from .user_settings import (
     USER_LANGUAGE_SETTING,
     USER_TTS_MODEL_SETTING,
     USER_TTS_VOICE_SETTING,
-    get_user_settings,
     normalize_string_list,
     set_disabled_value,
 )
@@ -797,6 +796,20 @@ class ChatGPTTelegramBot:
             user_id=user_id,
         )
 
+    def _record_chat_usage(self, chat_id, user_id, total_tokens):
+        """record_chat_tokens wrapper that also passes the model actually
+        used for this turn and its prompt/completion split when known, so
+        bot.pricing can price per-model instead of always falling back to
+        the flat TOKEN_PRICE.
+        """
+        last_split = self.openai.get_last_chat_usage_split(chat_id)
+        return record_chat_tokens(
+            self.usage, self.config, user_id, total_tokens,
+            model=self.openai.get_last_chat_model(chat_id),
+            prompt_tokens=last_split[0] if last_split else None,
+            completion_tokens=last_split[1] if last_split else None,
+        )
+
     async def _run_post_delivery_cleanup(self, response):
         try:
             payload = response if isinstance(response, dict) else json.loads(response)
@@ -1490,20 +1503,11 @@ class ChatGPTTelegramBot:
             return value
         return value[:max_chars - 3] + "..."
 
-    def _settings_for_user(self, user_id: int | None) -> dict:
-        if not getattr(self, 'db', None):
-            return {}
-        return get_user_settings(self.db, user_id)
-
     async def _settings_for_user_async(self, user_id: int | None) -> dict:
         if user_id is None or not getattr(self, 'db', None):
             return {}
         settings = await self._db_call("get_user_settings", user_id)
         return settings if isinstance(settings, dict) else {}
-
-    def _settings_text(self, bot_language: str, user_id: int | None = None) -> str:
-        settings = self._settings_for_user(user_id)
-        return self._settings_text_from_settings(bot_language, settings)
 
     async def _settings_text_async(self, bot_language: str, user_id: int | None = None) -> str:
         settings = await self._settings_for_user_async(user_id)
@@ -1661,39 +1665,6 @@ class ChatGPTTelegramBot:
                 row.append(InlineKeyboardButton(
                     f"{prefix}{self._settings_label(item)}",
                     callback_data=f"settings:{set_action}:{page}:{global_index}",
-                ))
-            keyboard.append(row)
-
-        self._append_settings_nav_rows(keyboard, page, total_pages, page_action)
-        return InlineKeyboardMarkup(keyboard)
-
-    def _build_toggle_settings_menu(
-        self,
-        items: list[str],
-        *,
-        page: int,
-        disabled_values: list[str],
-        page_action: str,
-        toggle_action: str,
-    ) -> InlineKeyboardMarkup:
-        page_size = SETTINGS_MENU_PAGE_SIZE
-        total_pages = max(1, (len(items) + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-        start = page * page_size
-        page_items = items[start:start + page_size]
-        disabled = set(disabled_values)
-
-        keyboard = []
-        for index in range(0, len(page_items), 2):
-            row = []
-            for offset, item in enumerate(page_items[index:index + 2]):
-                global_index = start + index + offset
-                status_key = 'settings_toggle_disabled' if item in disabled else 'settings_toggle_enabled'
-                row.append(InlineKeyboardButton(
-                    localized_text(status_key, self.config['bot_language']).format(
-                        item=self._settings_label(item)
-                    ),
-                    callback_data=f"settings:{toggle_action}:{page}:{global_index}",
                 ))
             keyboard.append(row)
 
@@ -2839,7 +2810,7 @@ class ChatGPTTelegramBot:
                         **kwargs,
                     )
 
-                    record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+                    self._record_chat_usage(chat_id, user_id, total_tokens)
 
                     if is_direct_result(response):
                         return await self._handle_direct_result(update, response)
@@ -4336,7 +4307,7 @@ class ChatGPTTelegramBot:
                             model=model_to_use,
                             ts=request_started_at,
                         )
-                        record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+                        self._record_chat_usage(chat_id, user_id, total_tokens)
                         return
 
                     if len(content.strip()) == 0:
@@ -4630,7 +4601,7 @@ class ChatGPTTelegramBot:
                 ts=request_started_at,
             )
 
-            record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+            self._record_chat_usage(chat_id, user_id, total_tokens)
             #if not result:
             #    await self.reset(update, context, True)
 
@@ -4955,7 +4926,7 @@ class ChatGPTTelegramBot:
                                                           message_id=inline_message_id,
                                                           text=f'{query}\n\n_{answer_tr}:_\n{fallback_text}',
                                                           is_inline=True)
-                            record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+                            self._record_chat_usage(user_id, user_id, total_tokens)
                             return
 
                         if len(content.strip()) == 0:
@@ -5039,7 +5010,7 @@ class ChatGPTTelegramBot:
                     await wrap_with_indicator(update, context, _send_inline_query_response,
                                               constants.ChatAction.TYPING, is_inline=True)
 
-                result = record_chat_tokens(self.usage, self.config, user_id, total_tokens)
+                result = self._record_chat_usage(user_id, user_id, total_tokens)
                 if not result:
                     await self.reset(update, context, True)
 

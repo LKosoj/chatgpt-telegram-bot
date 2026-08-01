@@ -315,6 +315,25 @@ async def test_close_waits_for_scheduled_summary(tmp_path):
     assert data['llm_calls']['total'] == 1
 
 
+async def test_concurrent_close_does_not_hang(tmp_path):
+    """Two close() calls racing must both return, not deadlock.
+
+    Both used to get past the `self._closed` check while suspended inside
+    drain(), so both enqueued a _StopItem; the writer consumed the first and
+    returned, and the second caller awaited a future nobody would resolve.
+    asyncio.wait_for turns that hang into a failure instead of a stuck run.
+    """
+    logger = SessionLogger(enabled=True, base_dir=str(tmp_path))
+    logger.record({'type': 'llm_call', 'user_id': 'u11', 'session_id': 's11', 'duration_ms': 5})
+
+    await asyncio.wait_for(
+        asyncio.gather(logger.close(), logger.close()),
+        timeout=5,
+    )
+
+    assert logger._closed is True
+
+
 async def test_schedule_flush_summary_coalesces_pending_session_task(tmp_path, monkeypatch):
     from bot import session_logger as sl
 

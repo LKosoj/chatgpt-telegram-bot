@@ -220,6 +220,11 @@ async def test_call_mcp_function(mcp_plugin, mock_env_vars):
     
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
+    # call_mcp_function uses `async with httpx.AsyncClient(...) as client`
+    # (bot/plugins/mcp_server.py:715), so without this the client bound inside
+    # the block is __aenter__'s own auto-generated AsyncMock -- .json() would
+    # then return a coroutine instead of the payload below.
+    mock_client.__aenter__.return_value = mock_client
     
     # Вызываем функцию с моком httpx клиента
     with patch('httpx.AsyncClient', return_value=mock_client):
@@ -236,8 +241,8 @@ async def test_call_mcp_function(mcp_plugin, mock_env_vars):
     mock_client.post.assert_called_once()
     call_args = mock_client.post.call_args[1]
     
-    # Проверяем URL
-    assert "http://example.com/execute" in call_args['url']
+    # Проверяем URL (передаётся позиционно: bot/plugins/mcp_server.py:716-717)
+    assert "http://example.com/execute" in mock_client.post.call_args[0][0]
     
     # Проверяем заголовки
     assert call_args['headers']['Authorization'] == "Bearer test_key"

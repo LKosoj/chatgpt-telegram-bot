@@ -172,6 +172,7 @@ LLMGateway-маршрутизации, управляемых tool calls, име
 | `bot/chat_modes.yml` | Чат-режимы для пользователя, allow-list плагинов на режим |
 | `bot/database.py` | Singleton SQLite, сессии, контекст разговора, image-references, учёт использования |
 | `bot/usage_tracker.py` | Учёт стоимости токенов / изображений / TTS / транскрипции и окна бюджетов |
+| `bot/pricing.py` | Цены токенов чата по моделям и `price_source` (`model_split` / `model_blended` / `legacy_fallback`), по которому посчитана стоимость одного completion |
 | `bot/plugins/hindsight_memory.py` | Hindsight-плагин и встроенный HTTP-клиент (recall, retain, list, stats, clear) |
 | `bot/request_context.py` | Frozen-dataclass `RequestContext`, передаётся в инструменты при выполнении |
 | `bot/skill_script_routing.py` | Роутер, нацеливающий запуск скилов на `terminal` или `codeinterpreter` |
@@ -181,10 +182,13 @@ LLMGateway-маршрутизации, управляемых tool calls, име
 | `bot/i18n.py` | Локализация UI |
 | `bot/html_utils.py` | Конвертация Markdown / HTML |
 | `bot/model_constants.py` | Legacy-константы семейств моделей для capability checks и лимитов токенов |
+| `bot/session_logger.py` | Структурная диагностика по каждому turn'у: события сессии в JSONL, summary по сессии, ротация и retention |
+| `bot/session_otel.py` | Опциональный мост в OpenTelemetry, экспортирующий те же события сессии как span'ы; no-op, пока не задан `SESSION_LOG_OTEL_ENDPOINT` |
 | `bot/prompts/subagent_system.md` | Системный промпт для субагентов |
 | `examples/` | Пример MCP-сервера / клиента (`mcp_server_example.py`, `mcp_stdio_*.py`) |
 | `tests/` | Основной набор pytest |
 | `bot/tests/` | MCP-специфичные тесты |
+| `evals/` | LLM-as-judge проверки качества; намеренно вне детерминированных наборов (см. [`evals/README.md`](evals/README.md)) |
 | `data/` | Дефолтный storage root для плагинов (создаётся при старте, в git не коммитится) |
 
 В репозитории также лежит сгенерированная карта кодбазы под
@@ -281,6 +285,7 @@ Bot API сервер недоступен из контейнера, задай 
 | `LIGHT_MODEL` | `llmgateway/light_model` | csv strings | Список быстрых моделей для классификации, маршрутизации, нейминга, распознавания намерений. Используется первая запись. |
 | `BIG_MODEL_TO_USE` | `llmgateway/big_context` | csv strings | Список моделей для большого контекста (используется при компактизации истории и как фолбэк для vision). Используется первая запись. |
 | `MAX_TOKENS` | зависит от модели | int | Лимит выходных токенов на ответ. |
+| `MODEL_CONTEXT_WINDOWS` | `` | csv `model=tokens` | Переопределение размера контекстного окна для конкретных моделей, например `custom/model=128000,large/model=1000000`. Некорректные и неположительные записи пропускаются с warning'ом. |
 | `MAX_HISTORY_SIZE` | `15` | int | Сколько сообщений истории держать в памяти до суммаризации. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Возраст разговора, после которого он сбрасывается. |
 | `TEMPERATURE` | `1.0` | float | Sampling temperature. |
@@ -288,6 +293,8 @@ Bot API сервер недоступен из контейнера, задай 
 | `FREQUENCY_PENALTY` | `0.0` | float | OpenAI frequency penalty. |
 | `N_CHOICES` | `1` | int | Сколько completion-ов запрашивать. |
 | `STREAM` | `true` | bool | Стримить ответы в Telegram. |
+| `STREAM_INCLUDE_USAGE` | `false` | bool | Передавать `stream_options={'include_usage': true}`, чтобы стриминговый ответ заканчивался реальной разбивкой prompt/completion токенов вместо локальной оценки. По умолчанию выключено: не всякий OpenAI-совместимый gateway принимает этот параметр, а неподдерживаемый параметр роняет весь запрос. |
+| `CHAT_RUN_VARIANT_B_ENABLED` | `true` | bool | Пускать запросы chat-completion (включая стриминг) через provider/event-обёртку совместимости; `false` — откат на прежний путь. |
 | `SHOW_USAGE` | `false` | bool | Дописывать в ответ футер с использованием токенов. |
 | `SHOW_PLUGINS_USED` | `false` | bool | Дописывать список вызванных плагинов / инструментов. |
 | `ASSISTANT_PROMPT` | `You are a helpful assistant.` | string | Дефолтный системный промпт до применения чат-режима. |
@@ -335,6 +342,9 @@ Bot API сервер недоступен из контейнера, задай 
 | `SESSION_LOG_DIR` | `./log` | path | Базовый каталог логов сессий; по подкаталогу на `user_id`, события сессии в JSONL плюс `<session_id>.summary.json`. |
 | `SESSION_LOG_MAX_BYTES` | `10485760` | int | Ротировать JSONL-файл сессии перед записью, если новая строка превысит этот размер. `0` отключает ротацию. |
 | `SESSION_LOG_RETENTION_DAYS` | `30` | int | Удалять JSONL/summary-файлы сессий старше указанного числа дней. `0` отключает очистку. |
+| `SESSION_LOG_OTEL_ENDPOINT` | `` | url | Endpoint OTLP/gRPC-коллектора для экспорта тех же трасс сессий поверх JSONL-файлов, например `http://localhost:4317`. Пустое значение (по умолчанию) означает, что пакеты `opentelemetry-*` вообще не импортируются. Требует `SESSION_LOG_ENABLED=true` и пакетов `opentelemetry-*`, которые `requirements.txt` намеренно не ставит (команда установки указана там же). |
+| `SESSION_LOG_OTEL_SERVICE_NAME` | `chatgpt-telegram-bot` | string | Атрибут ресурса `service.name` у экспортируемых span'ов. |
+| `SESSION_LOG_OTEL_INSECURE` | `true` | bool | Использовать незашифрованный gRPC-канал до коллектора. Для TLS-endpoint'а поставьте `false`. |
 | `BOT_DATA_DIR` | `<repo>/data` | path | Runtime-корень данных для HTML/file delivery и data-файлов code-interpreter. Относительные значения резолвятся от корня репозитория. |
 | `BOT_OUTPUT_DIR` | `<repo>/output` | path | Runtime-корень output для сгенерированных HTML-отчётов. Относительные значения резолвятся от корня репозитория. |
 | `BOT_PLOTS_DIR` | `<BOT_OUTPUT_DIR>/plots` | path | Runtime-корень plot/artifact файлов, которые сканирует HTML-генерация. Относительные значения резолвятся от корня репозитория. |
@@ -346,7 +356,8 @@ Bot API сервер недоступен из контейнера, задай 
 | `BUDGET_PERIOD` | `monthly` | string | `daily`, `weekly`, `monthly` или `total`. |
 | `USER_BUDGETS` | `*` | csv / `*` | Лимит на пользователя. `*` снимает лимит. |
 | `GUEST_BUDGET` | `100.0` | float | Бюджет для гостей в групповых чатах. |
-| `TOKEN_PRICE` | `0.002` | float | USD за 1K токенов. |
+| `TOKEN_PRICE` | `0.002` | float | USD за 1K токенов. Применяется к любой модели, которой нет в `MODEL_TOKEN_PRICES`. |
+| `MODEL_TOKEN_PRICES` | `` | csv `model=in:out` | Цены по моделям в USD за 1K токенов, prompt и completion тарифицируются отдельно, например `llmgateway/high=0.005:0.015`. Некорректные и отрицательные записи пропускаются с warning'ом. По умолчанию пусто: модели в репозитории — алиасы gateway, их реальные цены зависят от конкретной установки. |
 | `IMAGE_PRICES` | `0.016,0.018,0.02` | csv float | Стоимость для разных размеров (small / medium / large). |
 | `TTS_PRICES` | `0.015,0.030` | csv float | Тарифы TTS. |
 | `TRANSCRIPTION_PRICE` | `0.006` | float | USD за минуту. |
@@ -428,6 +439,16 @@ Hindsight включается автоматически, когда задан
 | `HINDSIGHT_ASYNC_STORE` | `true` | bool | Запускать retain в фоне. |
 | `HINDSIGHT_TIMEOUT` | `30` | float | Таймаут одного запроса в секундах. |
 | `HINDSIGHT_MAX_AUTO_SAVE_ITEMS` | `5` | int | Максимум фактов, сохраняемых на удаление сессии. |
+| `HINDSIGHT_DREAM_ENABLED` | `false` | bool | Включить локальный журнал событий памяти и фоновый dream-воркер, извлекающий из него кандидатов в память. |
+| `HINDSIGHT_DREAM_INTERVAL_SECONDS` | `600` | int | Интервал фонового dream-воркера. |
+| `HINDSIGHT_DREAM_MAX_EVENTS` | `50` | int | Максимум новых локальных событий памяти за один прогон dream. |
+| `HINDSIGHT_DREAM_MAX_EVENT_CHARS` | `1000` | int | Максимум символов превью, сохраняемых на одно событие памяти. |
+| `HINDSIGHT_DREAM_MAX_DOCUMENTS` | `5` | int | Максимум документов-кандидатов, создаваемых за один прогон dream. |
+| `HINDSIGHT_DYNAMIC_RECALL` | `false` | bool | Добавлять эфемерный recall под конкретный запрос — после того, как базовая память в сессии уже есть. |
+| `HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS` | `1024` | int | Максимум токенов для динамического recall. |
+| `HINDSIGHT_RETRIEVAL_GATE_ENABLED` | `true` | bool | Спрашивать лёгкую модель, нужна ли долговременная память на этом ходу, пропуская recall для приветствий, благодарностей и вопросов, на которые отвечает текущий чат. Fail-open: любая ошибка гейта трактуется как «делать recall». Задайте `LIGHT_MODEL`, иначе гейт падает на `OPENAI_MODEL` и тратит больше, чем экономит. |
+| `HINDSIGHT_RETRIEVAL_GATE_TIMEOUT_SECONDS` | `3.0` | float | Таймаут вызова гейта; по истечении recall выполняется. |
+| `HINDSIGHT_RETRIEVAL_GATE_MAX_TOKENS` | `600` | int | Лимит выходных токенов для JSON-вердикта гейта. |
 
 ### Ключи отдельных плагинов
 
@@ -438,9 +459,7 @@ Hindsight включается автоматически, когда задан
 |---|---|---|
 | `JINA_API_KEY` | `jina_web_search` | Ключ Jina Search API. |
 | `GOOGLE_API_KEY`, `GOOGLE_CSE_ID` | `google_web_search` | Google Programmable Search. |
-| `DEEPL_API_KEY` | `deepl` | Перевод DeepL. |
 | `WOLFRAM_APP_ID` | `wolfram_alpha` | App ID WolframAlpha. |
-| `WORLDTIME_DEFAULT_TIMEZONE` | `worldtimeapi` | Дефолтный часовой пояс (например, `Europe/Moscow`). |
 | `TMDB_API_KEY` | `movie_info` | Ключ TMDb. |
 | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | `spotify` | OAuth Spotify. |
 | `EDAMAM_APP_ID`, `EDAMAM_APP_KEY` | `chief` | Edamam (рецепты). |
@@ -604,7 +623,7 @@ JSON-Schema до выполнения; чат-режимы могут допол
 Включи плагины через allow-list `PLUGINS`:
 
 ```env
-PLUGINS=ddg_web_search,ddg_image_search,deepl,gtts_text_to_speech,auto_tts,\
+PLUGINS=ddg_web_search,ddg_image_search,ddg_translate,auto_tts,\
 website_content,stable_diffusion,github_analysis,youtube_transcript,\
 prompt_perfect,reminders,show_me_diagrams,chief,vkusvill,codeinterpreter,\
 mcp_server,text_document_qa,hindsight_memory,skills,terminal,agent_tools,\
@@ -627,7 +646,6 @@ agent_cron,web_research
 
 | Плагин | Инструменты | Заметки |
 |---|---|---|
-| `deepl` | `translate` | Автодетект DeepL Free/Pro. |
 | `ddg_translate` | `translate` | DuckDuckGo translate (gateway-совместимый путь). |
 
 ### Изображения, видео, речь
@@ -636,7 +654,6 @@ agent_cron,web_research
 |---|---|---|
 | `stable_diffusion` | `stable_diffusion`, `edit_image` | Gateway-генерация и edit (Klein). |
 | `haiper_image_to_video` | `generate_video` | Image-to-video через vsegpt.ru. |
-| `gtts_text_to_speech` | `google_translate_text_to_speech` | Gateway Silero TTS. |
 | `auto_tts` | `translate_text_to_speech` | Авто-TTS для ответов (через OpenAI-совместимое audio API). |
 
 ### Знания и данные
@@ -647,8 +664,7 @@ agent_cron,web_research
 | `crypto` | `get_crypto_rate` | Курсы CoinCap. |
 | `iplocation` | `iplocation` | Geo / ASN по IP. |
 | `weather` | `get_current_weather`, `get_forecast_weather` | Open Meteo. |
-| `worldtimeapi` | `worldtimeapi` | Часовые пояса; для фолбэка нужен `WORLDTIME_DEFAULT_TIMEZONE`. |
-| `whois_` | `get_whois` | python-whois. |
+| `pravo_gov_ru_api` | `search_documents` | Поиск правовых актов на publication.pravo.gov.ru; API-ключ не нужен. |
 | `text_summarizer` | `summarize_text` | Yandex-суммаризация; нужен `YANDEX_API_TOKEN`. |
 | `prompt_perfect` | `optimize_prompt` | Переписывает промпты через хелпер. |
 | `movie_info` | `get_new_movies`, `get_movie_recommendations` | TMDb; нужен `TMDB_API_KEY`. |
@@ -679,22 +695,24 @@ RAG в меню `/rag` возвращает текстовые сообщени�
 | `agent_cron` | `create_cron_job` | Отдельные scheduled agent tasks через `/cron add <schedule> \| <prompt>`, list/pause/resume/run/remove. |
 | `skills` | `list_skills`, `get_skill`, `find_installable_skills`, `install_skill`, `get_skill_status`, `list_active_skills`, `activate_skill`, `deactivate_skill`, `update_skill_progress`, `record_skill_reflection`, `run_skill_script`, `run_skill_agent` | См. [Рантайм skills](#рантайм-skills). |
 | `mcp_server` | динамические | См. [Интеграция с MCP](#интеграция-с-mcp). |
-| `hindsight_memory` | `recall`, `list_memories`, `stats` | Ручная инспекция Hindsight; `/memory` показывает статус, поиск, экспорт и очистку, когда Hindsight настроен. |
+| `hindsight_memory` | `recall`, `list_memories`, `stats` | Ручная инспекция Hindsight; `/memory` показывает статус, поиск, отчёт, экспорт и очистку, когда Hindsight настроен. |
 | `terminal` | `terminal` | Прямой shell; пара к `skills.run_skill_script`. |
 | `codeinterpreter` | `deep_analysis` | Sandboxed Python с pandas / numpy / matplotlib / plotly. |
 | `github_analysis` | `analyze_github_code` | Читает и суммирует репозитории GitHub с подсветкой. |
 | `show_me_diagrams` | `create_diagram` | Диаграммы PlantUML; нужны Java, Graphviz `dot` и `bot/plugins/plantuml.jar`. |
 | `chief` | `get_recipe`, `plan_menu` | Рецепты и меню Edamam. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | Интеграция с ВкусВиллом. |
-| `dice` | `send_dice` | Анимированные кубики Telegram. |
 | `reaction` | `react_with_emoji` | Реакции на ответы ассистента. |
 | `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | Напоминания, persistent JSON. |
 | `task_management` | `create_task`, `list_tasks`, `update_task` | Пользовательский task-list (отдельный от `agent_tools.manage_plan_tasks`). |
 | `language_learning` | `daily_practice`, `track_progress` | Vocabulary / grammar / conversation. |
 | `conversation_analytics` | `analyze_conversation`, `get_personalized_recommendations` | Скользящая аналитика разговоров. |
 
-> **Замечание.** Имена tool-функций неймспейснутые. Например,
-> `deepl.translate` и `ddg_translate.translate` сосуществуют без коллизии.
+> **Замечание.** Имена tool-функций неймспейснутые: `ddg_translate` объявляет
+> спеку с именем `translate`, внутри она получает каноническое имя
+> `ddg_translate.translate`, а до модели доходит как `ddg_translate_translate`:
+> имя для модели обязано соответствовать `^[A-Za-z0-9_-]+$`, поэтому точка
+> заменяется. Два плагина с одинаковым коротким именем не сталкиваются.
 
 ---
 
@@ -842,10 +860,38 @@ Watchdog обновляет typing-индикатор каждые 4 секун�
 но пропускает разовые edit’ы изображений, отдельные технические вопросы,
 случайный поиск и секреты.
 
+Когда `HINDSIGHT_DREAM_ENABLED=true`, плагин дополнительно ведёт локальный
+журнал событий с вычищенными персональными данными и запускает фоновый
+dream-воркер. Его результат сохраняется как локальные документы-кандидаты в
+память; в Hindsight кандидат не попадает, пока пользователь не одобрит его
+через `/memory candidates`. Отклонённый кандидат остаётся локально и неактивным.
+
+Когда `HINDSIGHT_DYNAMIC_RECALL=true`, плагин может добавить дополнительный
+эфемерный блок памяти под последний запрос — но только после того, как базовая
+память сессии уже есть. Динамические блоки не сохраняются в контекст сессии.
+
+Сначала выполняется дешёвый вызов лёгкой модели, который решает, нужна ли
+долговременная память на этом ходу вообще, — приветствия, благодарности и
+вопросы, на которые отвечает текущий чат, полностью пропускают поход за
+recall'ом. Этот гейт включён по умолчанию; чтобы делать recall безусловно,
+задайте `HINDSIGHT_RETRIEVAL_GATE_ENABLED=false`. Выгоду он приносит только
+при настроенном `LIGHT_MODEL` — иначе гейт падает на `OPENAI_MODEL` и тратит
+дорогую модель ради экономии на дорогой модели. Гейт намеренно fail-open:
+таймаут, ошибка транспорта или некорректный вердикт трактуются как «делать
+recall», поэтому он не может подавить recall, который случился бы без него.
+
+`/memory report` показывает те же воспоминания в читаемом Markdown,
+сгруппированные по типам, и присылается файлом, если не помещается в одно
+сообщение. Это не то же самое, что `/memory export`, который отдаёт сырой
+JSON-дамп: report прогоняет каждый элемент через второй PII-фильтр и
+придерживает всё, что всё ещё выглядит чувствительным, — именно его безопасно
+читать и пересылать.
+
 Плагин `hindsight_memory` (`recall`, `list_memories`, `stats`) доступен
 как обычный инструмент, когда нужна ручная инспекция памяти. Когда плагин
 включён и Hindsight настроен, `/memory` и Settings показывают статус,
-количество воспоминаний, ручной поиск, экспорт и очистку.
+количество воспоминаний, число кандидатов на одобрение, ручной поиск, отчёт,
+экспорт и очистку.
 
 ---
 
@@ -921,6 +967,21 @@ python -m pytest -q bot/tests/
 | `ask_your_pdf` | `tests/test_ask_your_pdf.py` |
 | `codeinterpreter` | `tests/test_codeinterpreter_plugin.py` |
 | MCP | `bot/tests/test_mcp_server.py` |
+
+`evals/` — отдельная категория, намеренно не входящая в наборы выше: те
+детерминированы (прошёл/не прошёл) и полностью замоканы, а `evals/judge` шлёт
+реальные запросы в реальную модель, и вторая модель оценивает ответ по рубрике
+от 0 до 10. Это недетерминированно, требует сети и стоит денег, поэтому в
+`pytest.ini` выставлен `testpaths = tests bot/tests` (голый `pytest` никогда не
+соберёт `evals/`), и каждый eval дополнительно закрыт гейтом
+`RUN_LLM_JUDGE_EVALS=1` плюс `OPENAI_API_KEY`. Не подключайте это к CI и
+pre-commit — запускайте вручную:
+
+```bash
+RUN_LLM_JUDGE_EVALS=1 OPENAI_API_KEY=... python -m pytest evals/judge -q
+```
+
+Стоимость одного прогона и остальные обоснования — в [`evals/README.md`](evals/README.md).
 
 Быстрая синтаксическая проверка крупных модулей:
 

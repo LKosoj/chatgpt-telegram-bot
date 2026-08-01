@@ -1,8 +1,9 @@
 import json
+import logging
 import os
 import importlib.machinery
 import importlib.util
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import sqlite3
 import sys
@@ -17,6 +18,7 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
+from bot import utils as bot_utils
 from bot.usage_tracker import UsageTracker
 from bot.utils import (
     make_usage_tracker,
@@ -461,15 +463,23 @@ def test_usage_tracker_prune_store_writes_bounded_snapshot_preserving_all_time_c
 
 
 def test_usage_tracker_prune_store_keeps_bounded_snapshot_after_next_write(tmp_path):
+    # Dates are relative to the real today, unlike the sibling prune tests:
+    # add_current_costs() recomputes the retention window against the actual
+    # current date, so hardcoded dates would silently rot past the cutoff and
+    # fail on their own once enough calendar time passed.
+    today = date.today()
+    recent = (today - timedelta(days=1)).isoformat()
+    stale = (today - timedelta(days=60)).isoformat()
+
     tracker = UsageTracker(42, "owner", logs_dir=str(tmp_path))
-    tracker.store.record_event("42", "user", "chat_tokens", 100, 1.0, event_date="2026-05-01")
-    tracker.store.record_event("42", "user", "chat_tokens", 200, 2.0, event_date="2026-07-01")
-    tracker.prune_store(event_days=30, history_days=30, today=date(2026, 7, 2))
+    tracker.store.record_event("42", "user", "chat_tokens", 100, 1.0, event_date=stale)
+    tracker.store.record_event("42", "user", "chat_tokens", 200, 2.0, event_date=recent)
+    tracker.prune_store(event_days=30, history_days=30, today=today)
 
     tracker.add_current_costs(0.5)
 
     snapshot = json.loads(Path(tracker.user_file).read_text(encoding="utf-8"))
-    assert snapshot["usage_history"]["chat_tokens"] == {"2026-07-01": 200}
+    assert snapshot["usage_history"]["chat_tokens"] == {recent: 200}
     assert snapshot["current_cost"]["all_time"] == 3.5
 
 
@@ -638,3 +648,63 @@ def test_make_usage_tracker_threads_config_prices(tmp_path):
     assert tracker.prices["tts_prices"] == [0.7, 0.8]
     assert tracker.prices["transcription_price"] == 0.321
     assert tracker._history_days == 14
+
+
+# --- Per-model chat token pricing (bot/pricing.py integration) ---
+
+
+def test_record_chat_tokens_old_positional_signature_cost_unchanged(tmp_path):
+    """Calling record_chat_tokens the old way (no model/prompt_tokens/
+    completion_tokens kwargs) must produce exactly the same cost as before
+    per-model pricing existed: total_tokens * config['token_price'] / 1000.
+    """
+    user = _make_tracker(tmp_path, 42, "owner")
+    usage = {42: user}
+    config = _make_config()
+
+    assert record_chat_tokens(usage, config, 42, 12345) is True
+
+    expected_cost = round(12345 * config["token_price"] / 1000, 6)
+    assert user.usage["current_cost"]["day"] == pytest.approx(expected_cost)
+
+
+def test_record_chat_tokens_unknown_model_falls_back_and_warns_once(tmp_path, caplog):
+    model = "unknown/model-for-warn-test"
+    bot_utils._LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS.discard(model)
+
+    user = _make_tracker(tmp_path, 42, "owner")
+    usage = {42: user}
+    config = _make_config()
+
+    with caplog.at_level(logging.WARNING):
+        assert record_chat_tokens(usage, config, 42, 1000, model=model) is True
+        assert record_chat_tokens(usage, config, 42, 1000, model=model) is True
+
+    warnings = [r for r in caplog.records if model in r.message]
+    assert len(warnings) == 1
+
+    expected_cost_per_call = round(1000 * config["token_price"] / 1000, 6)
+    assert user.usage["current_cost"]["day"] == pytest.approx(expected_cost_per_call * 2)
+
+
+def test_record_chat_tokens_writes_model_and_split_metadata(tmp_path):
+    user = _make_tracker(tmp_path, 42, "owner")
+    usage = {42: user}
+    config = _make_config()
+    config["model_token_prices"] = {"modelX": (1.0, 2.0)}
+
+    assert record_chat_tokens(
+        usage, config, 42, 300,
+        model="modelX", prompt_tokens=100, completion_tokens=200,
+    ) is True
+
+    rows = _usage_db_rows(tmp_path, "SELECT cost, metadata FROM usage_events")
+    assert len(rows) == 1
+    assert rows[0]["cost"] == pytest.approx(100 * 1.0 / 1000 + 200 * 2.0 / 1000)
+    metadata = json.loads(rows[0]["metadata"])
+    assert metadata == {
+        "model": "modelX",
+        "prompt_tokens": 100,
+        "completion_tokens": 200,
+        "price_source": "model_split",
+    }

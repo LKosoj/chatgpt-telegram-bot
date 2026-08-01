@@ -5,9 +5,11 @@ from typing import Any
 
 from .ai_events import AIRetry, AIRunEnd, event_to_log_dict
 from .chat_response_utils import (
+    aggregate_usage_split,
     first_choice_or_raise,
     required_choice_message_text,
     response_has_message_text,
+    response_prompt_completion_tokens,
     response_total_tokens,
 )
 from .i18n import localized_text
@@ -67,6 +69,7 @@ class ChatRun:
                 **kwargs,
             )
             token_accumulator = []
+            usage_accumulator = []
             extra_tokens = helper._chat_request_extra_tokens.pop(state_key, 0)
             if extra_tokens:
                 token_accumulator.append(extra_tokens)
@@ -82,10 +85,14 @@ class ChatRun:
                     request_context=request_context,
                     model_to_use=helper._chat_request_models.get(state_key),
                     token_accumulator=token_accumulator,
+                    usage_accumulator=usage_accumulator,
                 )
                 if is_direct_result(response):
                     logger.debug("Direct result returned, skipping further processing")
                     self._record(AIRunEnd(reason="direct_result"))
+                    helper._chat_request_usage_split[state_key] = aggregate_usage_split(
+                        token_accumulator, usage_accumulator,
+                    )
                     return response, sum(token_accumulator)
                 if plugins_used and not response_has_message_text(response):
                     self._record_retry(
@@ -108,11 +115,15 @@ class ChatRun:
                             request_context=request_context,
                             model_to_use=helper._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
+                            usage_accumulator=usage_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug("Direct result returned after empty response retry")
                             self._record(AIRunEnd(reason="direct_result_after_retry"))
+                            helper._chat_request_usage_split[state_key] = aggregate_usage_split(
+                                token_accumulator, usage_accumulator,
+                            )
                             return response, sum(token_accumulator)
                     if not response_has_message_text(response):
                         self._record_retry(
@@ -128,6 +139,9 @@ class ChatRun:
                         retry_tokens = response_total_tokens(response)
                         if retry_tokens:
                             token_accumulator.append(retry_tokens)
+                        retry_split = response_prompt_completion_tokens(response)
+                        if retry_split is not None:
+                            usage_accumulator.append(retry_split)
                 elif not plugins_used and not response_has_message_text(response):
                     self._record_retry(
                         "empty response before tool calls; retrying with tool specs",
@@ -149,11 +163,15 @@ class ChatRun:
                             request_context=request_context,
                             model_to_use=helper._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
+                            usage_accumulator=usage_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug("Direct result returned after empty response retry")
                             self._record(AIRunEnd(reason="direct_result_after_retry"))
+                            helper._chat_request_usage_split[state_key] = aggregate_usage_split(
+                                token_accumulator, usage_accumulator,
+                            )
                             return response, sum(token_accumulator)
                         if retry_plugins_used and not response_has_message_text(response):
                             self._record_retry(
@@ -169,10 +187,16 @@ class ChatRun:
                             retry_tokens = response_total_tokens(response)
                             if retry_tokens:
                                 token_accumulator.append(retry_tokens)
+                            retry_split = response_prompt_completion_tokens(response)
+                            if retry_split is not None:
+                                usage_accumulator.append(retry_split)
             else:
                 response_tokens = response_total_tokens(response)
                 if response_tokens:
                     token_accumulator.append(response_tokens)
+                response_split = response_prompt_completion_tokens(response)
+                if response_split is not None:
+                    usage_accumulator.append(response_split)
 
             answer = ""
 
@@ -204,6 +228,9 @@ class ChatRun:
                 helper.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used
             )
             total_tokens = sum(token_accumulator) or response_total_tokens(response)
+            helper._chat_request_usage_split[state_key] = aggregate_usage_split(
+                token_accumulator, usage_accumulator,
+            )
             if helper.config["show_usage"]:
                 usage_tokens = response_total_tokens(response)
                 answer += (

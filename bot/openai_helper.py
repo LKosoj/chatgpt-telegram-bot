@@ -58,9 +58,11 @@ from .plugins.hooks import (
 from .chat_modes_registry import ChatModesRegistry
 from .chat_response_utils import (
     EMPTY_MODEL_RESPONSE_ERROR,
+    aggregate_usage_split,
     first_choice_or_raise as _first_choice_or_raise,
     required_choice_message_text as _required_choice_message_text,
     response_has_message_text as _response_has_message_text,
+    response_prompt_completion_tokens as _response_prompt_completion_tokens,
     response_total_tokens as _response_total_tokens,
 )
 from .ai_events import AIToolCall
@@ -274,6 +276,12 @@ class OpenAIHelper:
         self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
         self._background_tasks: set[asyncio.Task] = set()
         self._chat_request_models: dict[int, str] = {}
+        # Prompt/completion split for the most recent chat turn per state_key.
+        # Reset to None at the top of every turn (see __common_get_chat_response,
+        # next to the _chat_request_models write) and filled in by chat_run.py /
+        # the legacy get_chat_response path once the turn's round trips are
+        # known; stays None for turns that never populate it (e.g. streaming).
+        self._chat_request_usage_split: dict[int, tuple[int, int] | None] = {}
         self._chat_request_extra_tokens: dict[int, int] = {}
         # skills_agent first-turn planner gate: per-state flag tracking whether the
         # forced-retry already fired this request. Cleared at the start of each
@@ -297,6 +305,7 @@ class OpenAIHelper:
         self.config.setdefault('frequency_penalty', 0.0)
         self.config.setdefault('vision_detail', 'auto')
         self.config.setdefault('n_choices', 1)
+        self.config.setdefault('stream_include_usage', False)
         self.config.setdefault('model_choices', [self.config['model']])
         self.config.setdefault('model_context_windows', {})
         self.config.setdefault('light_model', '')
@@ -317,12 +326,18 @@ class OpenAIHelper:
         self.config.setdefault('session_log_dir', './log')
         self.config.setdefault('session_log_max_bytes', 10 * 1024 * 1024)
         self.config.setdefault('session_log_retention_days', 30)
+        self.config.setdefault('session_log_otel_endpoint', '')
+        self.config.setdefault('session_log_otel_service_name', 'chatgpt-telegram-bot')
+        self.config.setdefault('session_log_otel_insecure', True)
         self.config.setdefault('chat_run_variant_b_enabled', True)
         self.session_logger = SessionLogger(
             self.config['session_log_enabled'],
             self.config['session_log_dir'],
             max_file_bytes=self.config['session_log_max_bytes'],
             retention_seconds=int(self.config['session_log_retention_days']) * 24 * 60 * 60,
+            otel_endpoint=self.config['session_log_otel_endpoint'],
+            otel_service_name=self.config['session_log_otel_service_name'],
+            otel_insecure=self.config['session_log_otel_insecure'],
         )
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
@@ -785,7 +800,10 @@ class OpenAIHelper:
             if assistant_prompt is None:
                 assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
-            model_to_use = model or self.config.get('light_model') or self.config.get('model')
+            # Основная модель по умолчанию: ask() отдаёт содержательный ответ
+            # пользователю, а не служебную классификацию. Вызывающий может
+            # передать model= явно, если ему достаточно light_model.
+            model_to_use = model or self.config.get('model')
             logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
@@ -911,10 +929,11 @@ class OpenAIHelper:
                 **kwargs
             )
             token_accumulator = []
+            usage_accumulator = []
             extra_tokens = self._chat_request_extra_tokens.pop(state_key, 0)
             if extra_tokens:
                 token_accumulator.append(extra_tokens)
-            
+
             if self.config['enable_functions']:
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, user_id)
                 response, plugins_used = await self.__handle_function_call(
@@ -925,9 +944,13 @@ class OpenAIHelper:
                     request_context=request_context,
                     model_to_use=self._chat_request_models.get(state_key),
                     token_accumulator=token_accumulator,
+                    usage_accumulator=usage_accumulator,
                 )
                 if is_direct_result(response):
                     logger.debug('Direct result returned, skipping further processing')
+                    self._chat_request_usage_split[state_key] = aggregate_usage_split(
+                        token_accumulator, usage_accumulator,
+                    )
                     return response, sum(token_accumulator)
                 if plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
@@ -946,10 +969,14 @@ class OpenAIHelper:
                             request_context=request_context,
                             model_to_use=self._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
+                            usage_accumulator=usage_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
+                            self._chat_request_usage_split[state_key] = aggregate_usage_split(
+                                token_accumulator, usage_accumulator,
+                            )
                             return response, sum(token_accumulator)
                     if not _response_has_message_text(response):
                         response = await self._retry_empty_response_after_tools(
@@ -961,6 +988,9 @@ class OpenAIHelper:
                         retry_tokens = _response_total_tokens(response)
                         if retry_tokens:
                             token_accumulator.append(retry_tokens)
+                        retry_split = _response_prompt_completion_tokens(response)
+                        if retry_split is not None:
+                            usage_accumulator.append(retry_split)
                 elif not plugins_used and not _response_has_message_text(response):
                     retry_response = await self._retry_empty_response_with_tools(
                         chat_id,
@@ -978,10 +1008,14 @@ class OpenAIHelper:
                             request_context=request_context,
                             model_to_use=self._chat_request_models.get(state_key),
                             token_accumulator=token_accumulator,
+                            usage_accumulator=usage_accumulator,
                         )
                         plugins_used += retry_plugins_used
                         if is_direct_result(response):
                             logger.debug('Direct result returned after empty response retry')
+                            self._chat_request_usage_split[state_key] = aggregate_usage_split(
+                                token_accumulator, usage_accumulator,
+                            )
                             return response, sum(token_accumulator)
                         if retry_plugins_used and not _response_has_message_text(response):
                             response = await self._retry_empty_response_after_tools(
@@ -993,10 +1027,16 @@ class OpenAIHelper:
                             retry_tokens = _response_total_tokens(response)
                             if retry_tokens:
                                 token_accumulator.append(retry_tokens)
+                            retry_split = _response_prompt_completion_tokens(response)
+                            if retry_split is not None:
+                                usage_accumulator.append(retry_split)
             else:
                 response_tokens = _response_total_tokens(response)
                 if response_tokens:
                     token_accumulator.append(response_tokens)
+                response_split = _response_prompt_completion_tokens(response)
+                if response_split is not None:
+                    usage_accumulator.append(response_split)
 
             answer = ''
 
@@ -1016,6 +1056,7 @@ class OpenAIHelper:
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
             plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
             total_tokens = sum(token_accumulator) or _response_total_tokens(response)
+            self._chat_request_usage_split[state_key] = aggregate_usage_split(token_accumulator, usage_accumulator)
             if self.config['show_usage']:
                 usage_tokens = _response_total_tokens(response)
                 answer += "\n\n---\n" \
@@ -1173,9 +1214,16 @@ class OpenAIHelper:
                     return
 
             answer = ''
-                
+            stream_usage_split = None
+
             try:
                 async for chunk in response:
+                    # With stream_options={'include_usage': True} the API ends
+                    # the stream with a choice-less chunk carrying the real
+                    # token counts. Read it before the has-choice filter drops it.
+                    chunk_split = _response_prompt_completion_tokens(chunk)
+                    if chunk_split is not None:
+                        stream_usage_split = chunk_split
                     if not stream_chunk_has_choice(chunk):
                         continue
                     content_delta = stream_chunk_text_delta(chunk)
@@ -1193,7 +1241,23 @@ class OpenAIHelper:
             if not answer:
                 raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
             await self.__add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
-            tokens_used = str(extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use))
+            # A real split is only usable when this stream was the whole turn.
+            # Once a tool call ran, `response` is a *re-entry* stream created by
+            # handle_function_call via chat_completion(), which never sets
+            # stream_options -- so its usage, if any, covers that last round trip
+            # alone. Nothing else tracks the earlier rounds here either: the
+            # streaming path has no usage_accumulator, and extra_tokens only ever
+            # holds auto-chat-mode classification tokens (see
+            # _maybe_apply_auto_chat_mode). Recording the last round trip's split
+            # would pass it off as the whole turn, so report unknown instead and
+            # let pricing fall back to price_source='model_blended'.
+            if stream_usage_split is not None and not plugins_used:
+                self._chat_request_usage_split[state_key] = (
+                    stream_usage_split["prompt"], stream_usage_split["completion"],
+                )
+                tokens_used = str(extra_tokens + stream_usage_split["prompt"] + stream_usage_split["completion"])
+            else:
+                tokens_used = str(extra_tokens + self._estimate_stream_tokens(chat_id, model_to_use=model_to_use))
 
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
             plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
@@ -1463,6 +1527,10 @@ class OpenAIHelper:
                 model_to_use = self.config['big_model_to_use']
                 max_tokens = self.get_max_tokens(model_to_use, max_tokens_percent, chat_id)
             self._chat_request_models[state_key] = model_to_use
+            # Fresh turn: clear any split left over from a previous turn so a
+            # caller that never repopulates it (e.g. this turn streams) sees
+            # an honest "unknown" instead of stale data from an earlier turn.
+            self._chat_request_usage_split[state_key] = None
 
             messages = await self._apply_before_chat_request_mutators(
                 chat_id=chat_id,
@@ -1507,10 +1575,18 @@ class OpenAIHelper:
                     'extra_headers': { "X-Title": "tgBot" },
                 })
 
+            # Ask the API to append a final usage-only chunk to the stream, so
+            # streaming turns can be priced from real prompt/completion counts
+            # instead of the local tokenizer estimate. Opt-in: not every
+            # OpenAI-compatible gateway accepts stream_options, and an
+            # unsupported parameter fails the request outright.
+            if common_args.get('stream') and self.config.get('stream_include_usage'):
+                common_args['stream_options'] = {'include_usage': True}
+
             if self.config['enable_functions']:
                 allowed_plugins = await self.resolve_allowed_plugins(chat_id, session_id, memory_user_id)
                 tools = self.plugin_manager.get_functions_specs(self, model_to_use, allowed_plugins)
-                
+
                 if tools and model_to_use not in (O_MODELS + GOOGLE + PERPLEXITY):
                     common_args['tools'] = tools
                     common_args['tool_choice'] = 'auto'
@@ -1623,6 +1699,7 @@ class OpenAIHelper:
         model_to_use=None,
         retry_plain_text_tool_intent=False,
         token_accumulator=None,
+        usage_accumulator=None,
     ):
         return await handle_function_call(
             self,
@@ -1637,6 +1714,7 @@ class OpenAIHelper:
             model_to_use=model_to_use,
             retry_plain_text_tool_intent=retry_plain_text_tool_intent,
             token_accumulator=token_accumulator,
+            usage_accumulator=usage_accumulator,
         )
 
     def _uses_structured_tool_history(self, model_to_use: str) -> bool:
@@ -3082,6 +3160,23 @@ class OpenAIHelper:
     def _chat_state_key(self, chat_id):
         return _CHAT_STATE_KEY.get() or chat_id
 
+    def get_last_chat_model(self, chat_id) -> str | None:
+        """Public accessor for the model actually used in the most recent
+        chat turn for ``chat_id``. Reflects the automatic switch to
+        ``big_model_to_use`` when the conversation exceeds the context
+        budget (see the ``_chat_request_models`` write next to this method).
+        """
+        return self._chat_request_models.get(self._chat_state_key(chat_id))
+
+    def get_last_chat_usage_split(self, chat_id) -> tuple[int, int] | None:
+        """Public accessor for the (prompt_tokens, completion_tokens) split
+        of the most recent chat turn for ``chat_id``. None when the split is
+        unknown or incomplete (e.g. a streaming turn, or a turn where at
+        least one round trip did not report usage) -- callers should fall
+        back to a blended/legacy price in that case.
+        """
+        return self._chat_request_usage_split.get(self._chat_state_key(chat_id))
+
     @contextmanager
     def _with_chat_state(self, state_key):
         token = _CHAT_STATE_KEY.set(state_key)
@@ -3137,6 +3232,7 @@ class OpenAIHelper:
         self.loaded_conversation_sessions.pop(chat_id, None)
         self._chat_request_extra_tokens.pop(chat_id, None)
         self._chat_request_models.pop(chat_id, None)
+        self._chat_request_usage_split.pop(chat_id, None)
         self.last_image_file_ids.pop(chat_id, None)
         if hasattr(self, '_per_chat_locks'):
             self._per_chat_locks.pop(chat_id, None)

@@ -168,6 +168,12 @@ class FakeOpenAI:
     async def should_force_non_stream_first_turn_async(self, chat_id, user_id=None):
         return False
 
+    def get_last_chat_model(self, chat_id):
+        return None
+
+    def get_last_chat_usage_split(self, chat_id):
+        return None
+
     def get_chat_response_stream(self, **kwargs):
         self.stream_requests.append(kwargs)
 
