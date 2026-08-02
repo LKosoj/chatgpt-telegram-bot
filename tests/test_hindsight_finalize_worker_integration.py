@@ -54,7 +54,7 @@ def _job_rows(db):
         cursor = conn.cursor()
         cursor.execute(
             'SELECT id, user_id, session_id, status, attempts, '
-            'saved_count, last_error, locked_at '
+            'saved_count, last_error, locked_at, kind, autonomous '
             'FROM hindsight_finalize_jobs ORDER BY id'
         )
         return [dict(row) for row in cursor.fetchall()]
@@ -75,6 +75,10 @@ async def test_hook_inserts_job_then_worker_marks_done(db):
     assert len(rows) == 1
     assert rows[0]["status"] == "pending"
     assert rows[0]["attempts"] == 0
+    # session_close jobs mix live and any autonomous turns from the same session,
+    # so they must never be marked autonomous (see _enqueue_finalize_job_sync).
+    assert rows[0]["kind"] == "session_close"
+    assert rows[0]["autonomous"] == 0
 
     await plugin._finalize_tick(application=None)
 

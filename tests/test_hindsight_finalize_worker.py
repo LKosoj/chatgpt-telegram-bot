@@ -210,8 +210,12 @@ def test_get_background_tasks_returns_finalize_worker():
     plugin = _make_plugin()
     tasks = plugin.get_background_tasks()
 
-    assert len(tasks) == 1
+    # burst_sweep is registered alongside finalize_worker because
+    # HINDSIGHT_BURST_ENABLED defaults to true (see test_hindsight_burst_buffer.py
+    # for burst-specific coverage).
+    assert len(tasks) == 2
     task = tasks[0]
     assert task.name == "finalize_worker"
     assert task.interval_seconds == 30
     assert task.coroutine_factory == plugin._finalize_tick
+    assert tasks[1].name == "burst_sweep"

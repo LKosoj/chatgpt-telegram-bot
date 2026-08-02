@@ -53,6 +53,9 @@ class AssistantResponsePayload:
     tokens: int
     model: str
     ts: float
+    # True only for turns dispatched from an autonomous trigger (e.g. agent_cron),
+    # never auto-detected. Mirrors RequestContext.autonomous (bot/request_context.py).
+    autonomous: bool = False
 
 
 @dataclass(frozen=True, slots=True)

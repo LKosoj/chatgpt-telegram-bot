@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot.plugins.hindsight_memory import HindsightError, HindsightMemoryPlugin, HINDSIGHT_EXTRACTOR_PROMPT
+from bot.plugins.hindsight_memory import (
+    AUTONOMOUS_EXTRACTION_ADDENDUM,
+    HindsightError,
+    HindsightMemoryPlugin,
+    HINDSIGHT_EXTRACTOR_PROMPT,
+)
 
 
 def _build_plugin(**config_overrides) -> HindsightMemoryPlugin:
@@ -118,6 +123,28 @@ async def test_extract_calls_openai_client_with_extractor_prompt():
     assert call.kwargs["messages"][0]["content"] == HINDSIGHT_EXTRACTOR_PROMPT
 
 
+async def test_extract_hindsight_memory_items_mixes_in_autonomous_addendum():
+    plugin = _build_plugin()
+    plugin.openai.client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"items":[]}'))],
+    ))
+    await plugin._extract_hindsight_memory_items("user: hi", autonomous=True)
+    call = plugin.openai.client.chat.completions.create.call_args
+    content = call.kwargs["messages"][0]["content"]
+    assert content.startswith(HINDSIGHT_EXTRACTOR_PROMPT)
+    assert AUTONOMOUS_EXTRACTION_ADDENDUM in content
+
+
+async def test_extract_hindsight_memory_items_default_omits_addendum():
+    plugin = _build_plugin()
+    plugin.openai.client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"items":[]}'))],
+    ))
+    await plugin._extract_hindsight_memory_items("user: hi")
+    call = plugin.openai.client.chat.completions.create.call_args
+    assert call.kwargs["messages"][0]["content"] == HINDSIGHT_EXTRACTOR_PROMPT
+
+
 async def test_finalize_session_memory_happy_path():
     plugin = _build_plugin()
     plugin._extract_hindsight_memory_items = AsyncMock(
@@ -128,6 +155,17 @@ async def test_finalize_session_memory_happy_path():
     saved = await plugin.finalize_session_memory(123, "sess-1", messages)
     assert saved == 1
     plugin._retain_hindsight_items.assert_awaited_once()
+
+
+async def test_finalize_session_memory_propagates_autonomous_flag():
+    plugin = _build_plugin()
+    plugin._extract_hindsight_memory_items = AsyncMock(return_value=[])
+    messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+
+    await plugin.finalize_session_memory(123, "sess-1", messages, autonomous=True)
+
+    plugin._extract_hindsight_memory_items.assert_awaited_once()
+    assert plugin._extract_hindsight_memory_items.call_args.kwargs["autonomous"] is True
 
 
 async def test_finalize_session_memory_uses_unique_document_ids_for_batch_items():

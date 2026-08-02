@@ -48,7 +48,12 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
-from bot.openai_helper import EMPTY_MODEL_RESPONSE_ERROR, OpenAIHelper, default_max_tokens  # noqa: E402
+from bot.openai_helper import (  # noqa: E402
+    EMPTY_MODEL_RESPONSE_ERROR,
+    INTERRUPTED_TOOL_RESULT_NOTICE,
+    OpenAIHelper,
+    default_max_tokens,
+)
 from bot.ai_events import AIMessage, AIToolCall, AIUsage  # noqa: E402
 from bot.ai_provider import AIProviderChoice, AIProviderResponse  # noqa: E402
 from bot.ai_providers.openai_compatible import stream_chunk_text_delta  # noqa: E402
@@ -2520,7 +2525,117 @@ def test_repair_tool_call_history_emits_synthetic_tool_result():
     outbound_tool_result = messages[outbound_assistant_index + 1]
     assert outbound_tool_result["role"] == "tool"
     assert outbound_tool_result["tool_call_id"] == "chief_get_recipe:2"
-    assert "Tool result missing" in json.loads(outbound_tool_result["content"])["error"]
+    assert json.loads(outbound_tool_result["content"]) == {
+        "error": INTERRUPTED_TOOL_RESULT_NOTICE,
+        "tool_name": "chief.get_recipe",
+    }
+    assert "name" not in outbound_tool_result
+
+
+def test_repair_tool_call_history_marks_each_missing_id_in_two_call_batch():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.conversations[1] = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-a",
+                    "type": "function",
+                    "function": {"name": "terminal.run", "arguments": "{}"},
+                },
+                {
+                    "id": "call-b",
+                    "type": "function",
+                    "function": {"name": "chief.get_recipe", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    helper._repair_tool_call_history(1)
+    messages = helper.conversations[1]
+
+    assert messages[1]["role"] == "tool"
+    assert messages[1]["tool_call_id"] == "call-a"
+    assert json.loads(messages[1]["content"]) == {
+        "error": INTERRUPTED_TOOL_RESULT_NOTICE,
+        "tool_name": "terminal.run",
+    }
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "call-b"
+    assert json.loads(messages[2]["content"]) == {
+        "error": INTERRUPTED_TOOL_RESULT_NOTICE,
+        "tool_name": "chief.get_recipe",
+    }
+    assert messages[3] == {"role": "user", "content": "continue"}
+
+
+def test_repair_tool_call_history_keeps_real_result_for_mixed_batch():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.conversations[1] = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-a",
+                    "type": "function",
+                    "function": {"name": "terminal.run", "arguments": "{}"},
+                },
+                {
+                    "id": "call-b",
+                    "type": "function",
+                    "function": {"name": "chief.get_recipe", "arguments": "{}"},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-a",
+            "content": json.dumps({"success": True, "stdout": "ok"}),
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    helper._repair_tool_call_history(1)
+    messages = helper.conversations[1]
+
+    assert messages[1] == {
+        "role": "tool",
+        "tool_call_id": "call-a",
+        "content": json.dumps({"success": True, "stdout": "ok"}),
+    }
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "call-b"
+    assert json.loads(messages[2]["content"]) == {
+        "error": INTERRUPTED_TOOL_RESULT_NOTICE,
+        "tool_name": "chief.get_recipe",
+    }
+    assert messages[3] == {"role": "user", "content": "continue"}
+
+
+def test_repair_tool_call_history_is_idempotent_on_already_repaired_history():
+    helper = _make_helper(DummyPluginManager({}))
+    helper.conversations[1] = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-a",
+                "type": "function",
+                "function": {"name": "terminal.run", "arguments": "{}"},
+            }],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    helper._repair_tool_call_history(1)
+    first_pass = helper.conversations[1]
+    helper._repair_tool_call_history(1)
+
+    assert helper.conversations[1] == first_pass
 
 
 def _tool_call_pair(call_id, content):

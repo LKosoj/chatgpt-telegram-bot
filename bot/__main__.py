@@ -255,6 +255,14 @@ def main():
         'summary_timeout_seconds': _parse_numeric_env('SUMMARY_TIMEOUT_SECONDS', 20.0, float),
         'summary_min_messages_between_runs': _parse_numeric_env('SUMMARY_MIN_MESSAGES_BETWEEN_RUNS', 6, int),
         'summary_target_keep_ratio': _parse_numeric_env('SUMMARY_TARGET_KEEP_RATIO', 0.5, float),
+        # Deterministic head-preserve fallback (used when the LLM summariser
+        # itself fails or is throttled): caps the discarded-window excerpt
+        # kept in the `[prior_summary]` system message.
+        'summary_deterministic_max_chars': _parse_numeric_env('SUMMARY_DETERMINISTIC_MAX_CHARS', 4000, int),
+        'summary_deterministic_tail_chars': _parse_numeric_env('SUMMARY_DETERMINISTIC_TAIL_CHARS', 500, int),
+        # Timeouts for the cheap one-shot utility calls routed through ModelUtilities.
+        'reply_intent_timeout_seconds': _parse_numeric_env('REPLY_INTENT_TIMEOUT_SECONDS', 10.0, float),
+        'session_name_timeout_seconds': _parse_numeric_env('SESSION_NAME_TIMEOUT_SECONDS', 20.0, float),
         # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
         'session_log_enabled': os.environ.get('SESSION_LOG_ENABLED', 'false').lower() == 'true',
         'session_log_dir': os.environ.get('SESSION_LOG_DIR', './log'),

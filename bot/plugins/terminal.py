@@ -9,6 +9,7 @@ import signal
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import command_policy
 from .plugin import Plugin
 
 logger = logging.getLogger(__name__)
@@ -30,11 +31,17 @@ def _output_byte_limit() -> int:
 
 OUTPUT_BYTE_LIMIT = _output_byte_limit()
 
-PIP_BREAK_SYSTEM_PACKAGES_RE = re.compile(
-    r"(?:^|[;&(]\s*)(?:sudo\s+)?"
-    r"(?:(?:\S*/)?pip(?:\d+(?:\.\d+)?)?|(?:\S*/)?python(?:\d+(?:\.\d+)?)?\s+-m\s+pip|uv\s+pip)"
-    r"\b[^|;&\n]*\binstall\b[^|;&\n]*--break-system-packages\b"
-)
+_COMMAND_POLICY = command_policy.load_policy_from_env()
+
+_RAW_APPROVAL_MODE = os.getenv("TERMINAL_APPROVAL_MODE", "block").strip().lower()
+if _RAW_APPROVAL_MODE not in ("block", "allow"):
+    logger.warning(
+        "Invalid TERMINAL_APPROVAL_MODE=%r; falling back to 'block'", _RAW_APPROVAL_MODE
+    )
+    _APPROVAL_MODE = "block"
+else:
+    _APPROVAL_MODE = _RAW_APPROVAL_MODE
+
 INSTALL_COMMAND_RE = re.compile(
     r"(?:^|[;&(]\s*)(?:sudo\s+)?"
     r"(?:"
@@ -49,10 +56,6 @@ INSTALL_COMMAND_RE = re.compile(
 )
 TAIL_COMMAND_RE = re.compile(r"^\s*(?:\S*/)?tail\b")
 
-PIP_BREAK_SYSTEM_PACKAGES_ERROR = (
-    "Refusing to run pip install with --break-system-packages from terminal. "
-    "Install runtime dependencies through the bot environment/setup flow instead of mutating system Python."
-)
 INSTALL_PIPE_TAIL_ERROR = (
     "Refusing to pipe an install command directly into tail because it hides the installer exit code. "
     "Use: cmd >log 2>&1; rc=$?; tail -30 log; exit $rc"
@@ -323,15 +326,22 @@ class TerminalPlugin(Plugin):
 
     @staticmethod
     def _guard_command(command: str) -> str | None:
-        if PIP_BREAK_SYSTEM_PACKAGES_RE.search(command):
-            return PIP_BREAK_SYSTEM_PACKAGES_ERROR
-
         pipe_segments = TerminalPlugin._split_unquoted_pipes(command)
         for index, segment in enumerate(pipe_segments[:-1]):
             if not INSTALL_COMMAND_RE.search(segment):
                 continue
             if any(TAIL_COMMAND_RE.search(next_segment) for next_segment in pipe_segments[index + 1:]):
                 return INSTALL_PIPE_TAIL_ERROR
+
+        decision = command_policy.evaluate_command(command, _COMMAND_POLICY)
+        if decision.decision == "deny":
+            return decision.reason
+        if decision.decision == "require_approval" and _APPROVAL_MODE == "block":
+            reason_suffix = f" ({decision.reason})" if decision.reason else ""
+            return (
+                f"Command requires human approval before running{reason_suffix}. "
+                "Approval workflow is not implemented, so the command is blocked."
+            )
         return None
 
     @staticmethod

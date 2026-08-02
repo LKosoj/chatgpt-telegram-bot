@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 from ..agent_delivery import send_agent_response, send_text_chunks
 from ..request_context import RequestContext
 from ..utils import compute_scope_key, get_thread_id, message_text
+from .hooks import AssistantResponsePayload
 from .plugin import Plugin
 
 
@@ -211,6 +212,7 @@ class AgentCronPlugin(Plugin):
                 chat_id=int(job["chat_id"]),
                 user_id=int(job["user_id"]),
                 request_id=f"agent_cron_{job_id}",
+                autonomous=True,
             )
             response, total_tokens = await helper.get_chat_response(
                 chat_id=int(job["chat_id"]),
@@ -230,6 +232,7 @@ class AgentCronPlugin(Plugin):
             if not manual:
                 self._advance_job(job)
             self._save_jobs()
+            await self._maybe_dispatch_autonomous_response_hook(helper, job, job_id, response, total_tokens)
             await send_agent_response(
                 bot,
                 chat_id=int(job["chat_id"]),
@@ -258,6 +261,48 @@ class AgentCronPlugin(Plugin):
                 message_thread_id=job.get("message_thread_id"),
                 config=getattr(locals().get("helper"), "config", None),
             )
+
+    @staticmethod
+    def _autonomous_capture_enabled() -> bool:
+        return os.environ.get("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", "false").strip().lower() == "true"
+
+    async def _maybe_dispatch_autonomous_response_hook(
+        self, helper, job: Dict[str, Any], job_id: str, response: Any, total_tokens: int,
+    ) -> None:
+        """Fire the standard on_assistant_response observer hook for this cron turn,
+        marked autonomous=True. Cron calls helper.get_chat_response() directly and
+        never goes through telegram_bot.py, which is the only place this hook is
+        normally dispatched from — without this, memory-capture plugins never see
+        cron turns at all. Off by default (HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED):
+        turning it on is a behavior change an operator must opt into.
+        A dispatch failure must not turn a successful cron run into a failed one,
+        so it is caught and logged rather than left to propagate to the caller.
+        """
+        if not self._autonomous_capture_enabled():
+            return
+        if not isinstance(response, str) or not response:
+            return
+        plugin_manager = getattr(helper, "plugin_manager", None)
+        if plugin_manager is None:
+            return
+        try:
+            user_id = int(job["user_id"])
+            await plugin_manager.dispatch_observe(
+                "on_assistant_response",
+                AssistantResponsePayload(
+                    chat_id=int(job["chat_id"]),
+                    user_id=user_id,
+                    request_id=f"agent_cron_{job_id}",
+                    text=response,
+                    tokens=int(total_tokens or 0),
+                    model=str(getattr(helper, "config", {}).get("model", "")),
+                    ts=time.time(),
+                    autonomous=True,
+                ),
+                user_id=user_id,
+            )
+        except Exception:
+            logger.exception("Agent cron autonomous response hook dispatch failed for job_id=%s", job_id)
 
     def _load_jobs(self) -> None:
         try:

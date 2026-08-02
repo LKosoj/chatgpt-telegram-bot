@@ -87,3 +87,66 @@ def test_initialize_migrates_existing_memory_documents_table(tmp_path, monkeypat
         assert "verified_at" in columns
     finally:
         Database._reset_singleton()
+
+
+def test_initialize_migrates_existing_finalize_jobs_table_and_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
+    Database._reset_singleton()
+    db = Database()
+    try:
+        with db.get_connection() as conn:
+            conn.execute(
+                '''
+                CREATE TABLE hindsight_finalize_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    session_id TEXT NOT NULL,
+                    messages TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    kind TEXT NOT NULL DEFAULT 'session_close',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    saved_count INTEGER DEFAULT NULL,
+                    last_error TEXT DEFAULT NULL,
+                    locked_at TIMESTAMP DEFAULT NULL,
+                    next_attempt_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            conn.execute(
+                "INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)",
+                (1, "s-legacy", "{}"),
+            )
+
+        plugin = HindsightMemoryPlugin()
+        plugin.initialize(db=DbHandle(db), plugin_config={})
+
+        with db.get_connection() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(hindsight_finalize_jobs)").fetchall()
+            }
+            assert "autonomous" in columns
+            row = conn.execute(
+                "SELECT autonomous FROM hindsight_finalize_jobs WHERE session_id = 's-legacy'"
+            ).fetchone()
+            assert row["autonomous"] == 0
+
+        # Re-running the migration (e.g. a second plugin instance at startup) must
+        # not error against a table that already has the column, and existing rows
+        # must survive untouched.
+        plugin2 = HindsightMemoryPlugin()
+        plugin2.initialize(db=DbHandle(db), plugin_config={})
+        with db.get_connection() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(hindsight_finalize_jobs)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT autonomous FROM hindsight_finalize_jobs WHERE session_id = 's-legacy'"
+            ).fetchone()
+        assert "autonomous" in columns
+        assert row["autonomous"] == 0
+    finally:
+        Database._reset_singleton()

@@ -340,6 +340,12 @@ def test_hindsight_extractor_prompt_rejects_transient_tasks():
     assert "When in doubt, save nothing" in HINDSIGHT_EXTRACTOR_PROMPT
 
 
+def test_hindsight_extractor_prompt_has_provenance_rule():
+    assert "PROVENANCE" in HINDSIGHT_EXTRACTOR_PROMPT
+    assert "Never derive one from the assistant's reply" in HINDSIGHT_EXTRACTOR_PROMPT
+    assert "EXCLUDE facts about a third person" in HINDSIGHT_EXTRACTOR_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_finalize_hindsight_session_memory_saves_extracted_items():
     helper = make_helper()

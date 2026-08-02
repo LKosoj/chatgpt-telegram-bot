@@ -11,6 +11,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 from urllib.parse import quote
 
@@ -211,6 +212,119 @@ def format_recall_results(data: dict[str, Any], *, max_items: int = 8) -> str:
     return "\n".join(lines)
 
 
+_CONSOLIDATION_BULLET_PATTERN = re.compile(r"^(\s*[-*]\s+)(.*)$")
+
+# Best-effort guard: a DELETE targeting a bullet that carries one of these markers
+# degrades to a no-op instead of removing the line. This is NOT a hard guarantee —
+# it is a plain substring check on the bullet text, and a model can bypass it by
+# rephrasing the fact without one of these markers.
+_EXPLICIT_REMEMBER_MARKERS = ("explicitly asked to remember", "запомни")
+
+
+def _is_explicit_remember_marked(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _EXPLICIT_REMEMBER_MARKERS)
+
+
+@dataclass(frozen=True)
+class ConsolidationAction:
+    """One action parsed from a consolidation-model response."""
+
+    kind: str  # "update" | "delete" | "add"
+    index: int | None = None  # 1-based bullet index, for update/delete
+    text: str | None = None  # revised/new fact text, for update/add
+
+
+def parse_consolidation_actions(output: str) -> list[ConsolidationAction]:
+    """Parse a consolidation-model response into actions. Lines that are empty,
+    ``NONE`` (any case), or don't match one of the three exact forms are
+    silently ignored; this never raises."""
+    actions: list[ConsolidationAction] = []
+    for raw_line in (output or "").split("\n"):
+        line = raw_line.strip()
+        if not line or re.match(r"(?i)^none$", line):
+            continue
+        match = re.match(r"(?i)^update\s+(\d+)\s*:\s*(.+)$", line)
+        if match:
+            actions.append(ConsolidationAction(
+                kind="update", index=int(match.group(1)), text=match.group(2).strip(),
+            ))
+            continue
+        match = re.match(r"(?i)^delete\s+(\d+)\s*$", line)
+        if match:
+            actions.append(ConsolidationAction(kind="delete", index=int(match.group(1))))
+            continue
+        match = re.match(r"(?i)^add\s*:\s*(.+)$", line)
+        if match:
+            actions.append(ConsolidationAction(kind="add", text=match.group(1).strip()))
+            continue
+    return actions
+
+
+def apply_consolidation_actions(body: str, actions: list[ConsolidationAction]) -> str:
+    """Apply parsed actions to *body*. Only lines matching a bullet
+    (``^\\s*[-*]\\s+``) are numbered/targetable; headings, blank lines, and any
+    other non-bullet line pass through verbatim and are not counted. DELETE
+    wins over UPDATE on the same index; an out-of-range index is a no-op. An
+    empty *actions* list returns *body* unchanged (byte-for-byte)."""
+    if not actions:
+        return body
+
+    updates: dict[int, str] = {}
+    deletes: set[int] = set()
+    adds: list[str] = []
+    for action in actions:
+        if action.kind == "update" and action.index is not None:
+            updates[action.index] = action.text or ""
+        elif action.kind == "delete" and action.index is not None:
+            deletes.add(action.index)
+        elif action.kind == "add":
+            adds.append(action.text or "")
+
+    out_lines: list[str] = []
+    n = 0
+    for line in body.split("\n"):
+        match = _CONSOLIDATION_BULLET_PATTERN.match(line)
+        if not match:
+            out_lines.append(line)
+            continue
+        n += 1
+        if n in deletes:
+            if _is_explicit_remember_marked(match.group(2)):
+                # Protected fact: DELETE degrades to a no-op. This cuts both ways —
+                # a bullet that merely mentions a marker word can never be deleted
+                # by consolidation, so log it rather than dropping it silently.
+                logger.info("Consolidation DELETE %s blocked by remember-marker", n)
+                out_lines.append(line)
+            continue
+        if n in updates:
+            out_lines.append(f"{match.group(1)}{updates[n]}")
+            continue
+        out_lines.append(line)
+
+    for text in adds:
+        out_lines.append(f"- {text}")
+
+    return "\n".join(out_lines)
+
+
+def _render_numbered_bullets(body: str) -> str:
+    """Number bullet lines in *body* (same detection as
+    ``apply_consolidation_actions``) for the consolidation prompt; non-bullet
+    lines pass through unnumbered so indices line up with what
+    ``apply_consolidation_actions`` expects."""
+    lines = []
+    n = 0
+    for line in body.split("\n"):
+        match = _CONSOLIDATION_BULLET_PATTERN.match(line)
+        if not match:
+            lines.append(line)
+            continue
+        n += 1
+        lines.append(f"{n}. {match.group(2)}")
+    return "\n".join(lines)
+
+
 HINDSIGHT_MEMORY_MARKER = "[HINDSIGHT_MEMORY_CONTEXT]"
 HINDSIGHT_DYNAMIC_MEMORY_MARKER = "[HINDSIGHT_DYNAMIC_MEMORY_CONTEXT]"
 LESSON_KIND = "lesson"
@@ -239,6 +353,7 @@ HINDSIGHT_FINALIZE_WORKER_INTERVAL_SECONDS = 30
 HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS = 600
 HINDSIGHT_DREAM_MAX_ATTEMPTS = 5
 HINDSIGHT_DREAM_RETRY_SECONDS = 300
+HINDSIGHT_BURST_SWEEP_INTERVAL_SECONDS = 20
 
 HINDSIGHT_SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
@@ -309,6 +424,12 @@ Save only facts that are clearly durable and likely useful in future conversatio
 Do not infer preferences from weak signals. For example, do not save "user prefers Russian"
 only because the conversation is in Russian; save it only if the user explicitly says it or clearly corrects the assistant.
 
+PROVENANCE: a preference, intent, or instruction is a valid fact ONLY when the user's own message
+in this transcript states it. Never derive one from the assistant's reply — an assistant saying
+"as you prefer, I'll keep it short" or describing its own strategy is NOT evidence that the user
+holds that preference. Likewise EXCLUDE facts about a third person who did not speak in this
+transcript.
+
 Do not save one-off tasks or transient requests: image generation/editing requests, uploaded-image descriptions,
 audio/transcription requests, web searches, debugging logs, single SQL questions, generic chit-chat, or temporary commands.
 Do not save passwords, API keys, tokens, secrets, credentials, private auth data, or facts contradicted inside the exchange.
@@ -320,6 +441,11 @@ Examples to reject:
 
 When in doubt, save nothing.
 If there is nothing worth saving, return {"items":[]}."""
+
+AUTONOMOUS_EXTRACTION_ADDENDUM = """This session ran AUTONOMOUSLY: it was triggered by a \
+scheduled job or background task, not a live human message. Save only operational facts: state, \
+blockers, queued/pending work, outcomes. Do not save any preference, intent, or instruction \
+attributed to a person. If only such facts are present, return {"items":[]}."""
 
 HINDSIGHT_DREAM_PROMPT = """You are the dream phase for a Telegram assistant memory system.
 You receive new chronological events plus existing approved memory documents.
@@ -344,6 +470,36 @@ Rules:
 - Do not save one-off requests, transient debugging output, image/audio tasks,
   web searches, or secrets.
 - If nothing is worth remembering, return {"documents":[]}."""
+
+HINDSIGHT_CONSOLIDATION_PROMPT = """You consolidate one existing long-term memory document for a
+Telegram assistant against new events, instead of rewriting it from scratch.
+The input is the document as a numbered list of facts (each line is `<n>. <fact>`,
+non-bullet lines like headings are shown unnumbered for context) followed by new events.
+
+Output ONLY actions, one per line, in these exact forms:
+UPDATE <n>: <revised fact>
+DELETE <n>
+ADD: <new fact>
+If nothing needs changing, output exactly: NONE
+
+Rules:
+- Prefer UPDATE over DELETE+ADD when a fact has evolved or two facts should merge
+  (UPDATE one, DELETE the other).
+- Keep facts atomic: one standalone fact per line.
+- DELETE facts that are stale, contradicted by newer facts, or exact/near duplicates.
+- NEVER delete or weaken a fact the user explicitly asked to remember.
+- Do not reword a fact that is already correct.
+- Only reference numbers that appear in the input list."""
+
+
+@dataclass
+class _TurnBuffer:
+    """Accumulates turns between one user/chat pair's assistant replies until
+    a burst flush enqueues them as a finalize job (see ``_flush_turn_buffer``)."""
+
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    turn_count: int = 0
+    last_activity_ts: float = 0.0
 
 
 class HindsightMemoryPlugin(Plugin):
@@ -394,6 +550,25 @@ class HindsightMemoryPlugin(Plugin):
         self.config.setdefault('hindsight_retrieval_gate_enabled', env.get('HINDSIGHT_RETRIEVAL_GATE_ENABLED', 'true').lower() == 'true')
         self.config.setdefault('hindsight_retrieval_gate_timeout_seconds', float(env.get('HINDSIGHT_RETRIEVAL_GATE_TIMEOUT_SECONDS', '3.0')))
         self.config.setdefault('hindsight_retrieval_gate_max_tokens', int(env.get('HINDSIGHT_RETRIEVAL_GATE_MAX_TOKENS', '600')))
+        # Turn-buffer burst extraction: accumulate turns mid-conversation and flush
+        # them into the same finalize-job queue used by session-close, instead of
+        # waiting for the session to end. Gated by is_active/auto_save_enabled
+        # (the finalize family), not memory_pipeline_enabled (dream-only).
+        self.config.setdefault('hindsight_burst_enabled', env.get('HINDSIGHT_BURST_ENABLED', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_burst_max_turns', int(env.get('HINDSIGHT_BURST_MAX_TURNS', '10')))
+        self.config.setdefault('hindsight_burst_quiet_seconds', float(env.get('HINDSIGHT_BURST_QUIET_SECONDS', '180')))
+        self.config.setdefault(
+            'hindsight_burst_max_buffer_messages',
+            int(env.get('HINDSIGHT_BURST_MAX_BUFFER_MESSAGES', '200')),
+        )
+        self.config.setdefault(
+            'hindsight_burst_max_buffers',
+            int(env.get('HINDSIGHT_BURST_MAX_BUFFERS', '5000')),
+        )
+        self.config.setdefault(
+            'hindsight_burst_sweep_interval_seconds',
+            int(env.get('HINDSIGHT_BURST_SWEEP_INTERVAL_SECONDS', str(HINDSIGHT_BURST_SWEEP_INTERVAL_SECONDS))),
+        )
         # Stage 4A: mirror defaults into openai.config so remaining helper-side
         # readers (_prepare_*/finalize_*) keep working until removed in 4B/4C.
         # setdefault (not assignment) — never overwrite an already-set value.
@@ -426,8 +601,15 @@ class HindsightMemoryPlugin(Plugin):
         # юзеры остаются, давно не активные вытесняются.
         self._memory_user_locks: "OrderedDict[int, asyncio.Lock]" = OrderedDict()
         self._memory_user_locks_max = 2048
+        # Mid-conversation burst buffers, keyed by (user_id, chat_id, autonomous).
+        # The autonomous flag is part of the key so autonomous (cron-triggered)
+        # turns never share a buffer/finalize job with live chat turns for the
+        # same (user, chat). Mutated only while holding ``_memory_user_lock(user_id)``
+        # (see ``_record_turn_message``, ``_burst_sweep_tick``, ``_flush_turn_buffer``).
+        self._turn_buffers: Dict[tuple[int, int, bool], _TurnBuffer] = {}
         self._ensure_memory_document_columns()
         self._ensure_dream_state_columns()
+        self._ensure_finalize_job_columns()
 
     async def _db_run_sync(self, func, *args, **kwargs):
         runner = getattr(getattr(self, "db_handle", None), "run_sync", None)
@@ -495,6 +677,32 @@ class HindsightMemoryPlugin(Plugin):
             if "retry_after" not in columns:
                 conn.execute("ALTER TABLE hindsight_dream_state ADD COLUMN retry_after TIMESTAMP DEFAULT NULL")
 
+    def _ensure_finalize_job_columns(self) -> None:
+        try:
+            self._db_run_sync_blocking(self._ensure_finalize_job_columns_sync)
+        except Exception:
+            logger.exception("Failed to migrate hindsight_finalize_jobs kind column")
+
+    def _ensure_finalize_job_columns_sync(self, db) -> None:
+        with db.get_connection() as conn:
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='hindsight_finalize_jobs'"
+            ).fetchall()
+            if not tables:
+                return
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(hindsight_finalize_jobs)").fetchall()
+            }
+            if "kind" not in columns:
+                conn.execute(
+                    "ALTER TABLE hindsight_finalize_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'session_close'"
+                )
+            if "autonomous" not in columns:
+                conn.execute(
+                    "ALTER TABLE hindsight_finalize_jobs ADD COLUMN autonomous INTEGER NOT NULL DEFAULT 0"
+                )
+
     @property
     def auto_recall_enabled(self) -> bool:
         return bool((getattr(self, "config", None) or {}).get('hindsight_auto_recall', True))
@@ -510,6 +718,15 @@ class HindsightMemoryPlugin(Plugin):
     @property
     def memory_pipeline_enabled(self) -> bool:
         return bool(self.is_active and self.dream_enabled and self.db_handle is not None)
+
+    @property
+    def burst_enabled(self) -> bool:
+        return bool((getattr(self, "config", None) or {}).get('hindsight_burst_enabled', True))
+
+    def _burst_active(self) -> bool:
+        """Gate for the turn-buffer burst pipeline: same family gate as finalize
+        jobs (is_active + auto_save_enabled), plus its own on/off switch."""
+        return bool(self.is_active and self.auto_save_enabled and self.burst_enabled and self.db_handle is not None)
 
     @property
     def dynamic_recall_enabled(self) -> bool:
@@ -590,7 +807,10 @@ class HindsightMemoryPlugin(Plugin):
         return None
 
     async def close_async(self) -> None:
-        """Close the underlying httpx client owned by ``HindsightClient``."""
+        """Flush any pending burst buffers, then close the underlying httpx
+        client owned by ``HindsightClient``. Draining must happen first: the
+        flush enqueues a DB job, it does not call the model."""
+        await self._drain_all_turn_buffers()
         client = getattr(self, "client", None)
         if client is None:
             return
@@ -610,6 +830,20 @@ class HindsightMemoryPlugin(Plugin):
                 coroutine_factory=self._finalize_tick,
             ),
         ]
+        if self.burst_enabled:
+            tasks.append(
+                BackgroundTask(
+                    name="burst_sweep",
+                    interval_seconds=max(
+                        1,
+                        int(self.config.get(
+                            'hindsight_burst_sweep_interval_seconds',
+                            HINDSIGHT_BURST_SWEEP_INTERVAL_SECONDS,
+                        )),
+                    ),
+                    coroutine_factory=self._burst_sweep_tick,
+                )
+            )
         if self.dream_enabled:
             tasks.append(
                 BackgroundTask(
@@ -658,10 +892,16 @@ class HindsightMemoryPlugin(Plugin):
             payload.user_id,
             payload.session_id,
         )
+        await self._drain_user_turn_buffers(payload.user_id)
 
     def _enqueue_finalize_job_sync(
-        self, db, user_id: int, session_id: str, messages: list[dict[str, Any]]
+        self, db, user_id: int, session_id: str, messages: list[dict[str, Any]],
+        kind: str = "session_close", autonomous: bool = False,
     ) -> bool:
+        # autonomous defaults False and stays False for every session_close call
+        # (on_session_before_delete never passes it): a session mixes live and
+        # cron-triggered turns, so the job as a whole can't be marked autonomous
+        # without risking real user facts being dropped by the addendum's rules.
         with db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN IMMEDIATE")
@@ -691,8 +931,9 @@ class HindsightMemoryPlugin(Plugin):
                 ensure_ascii=False,
             )
             cursor.execute(
-                'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages) VALUES (?, ?, ?)',
-                (user_id, session_id, messages_json),
+                'INSERT INTO hindsight_finalize_jobs (user_id, session_id, messages, kind, autonomous) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (user_id, session_id, messages_json, kind, int(bool(autonomous))),
             )
             return True
 
@@ -763,7 +1004,7 @@ class HindsightMemoryPlugin(Plugin):
             )
             cursor.execute(
                 f'''
-                SELECT id, user_id, session_id, messages, attempts
+                SELECT id, user_id, session_id, messages, attempts, kind, autonomous
                 FROM hindsight_finalize_jobs
                 WHERE id IN ({placeholders})
                 ''',
@@ -799,6 +1040,8 @@ class HindsightMemoryPlugin(Plugin):
                     "messages": messages if isinstance(messages, list) else [],
                     "attempts": row["attempts"],
                     "clear_generation": clear_generation,
+                    "kind": row["kind"] or "session_close",
+                    "autonomous": bool(row["autonomous"]),
                 })
         jobs.sort(key=lambda job: order.get(job["id"], 0))
         return jobs
@@ -885,11 +1128,14 @@ class HindsightMemoryPlugin(Plugin):
                             self._mark_finalize_job_done_sync, job["id"], 0,
                         )
                         continue
+                extract_kwargs: Dict[str, Any] = {"raise_on_error": True}
+                if job.get("autonomous"):
+                    extract_kwargs["autonomous"] = True
                 items = await self._extract_session_memory_items(
                     job["user_id"],
                     job["session_id"],
                     job["messages"],
-                    raise_on_error=True,
+                    **extract_kwargs,
                 )
                 async with self._memory_user_lock(user_id):
                     clear_generation = await self._db_run_sync(
@@ -901,11 +1147,17 @@ class HindsightMemoryPlugin(Plugin):
                     elif not items:
                         saved_count = 0
                     else:
+                        # Burst jobs use a distinct document_id suffix so they don't
+                        # collide with the session-close job's "-final" document_id
+                        # for the same session_id (their transcripts can overlap).
+                        retain_kwargs: Dict[str, Any] = {"async_store": False}
+                        if job.get("kind") == "burst":
+                            retain_kwargs["document_id_suffix"] = f"burst-{job['id']}"
                         saved_count = await self._retain_session_memory_items(
                             job["user_id"],
                             job["session_id"],
                             items,
-                            async_store=False,
+                            **retain_kwargs,
                         )
                     await self._db_run_sync(
                         self._mark_finalize_job_done_sync, job["id"], saved_count,
@@ -935,6 +1187,8 @@ class HindsightMemoryPlugin(Plugin):
                 session_id TEXT NOT NULL,
                 messages TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
+                kind TEXT NOT NULL DEFAULT 'session_close',
+                autonomous INTEGER NOT NULL DEFAULT 0,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 saved_count INTEGER DEFAULT NULL,
                 last_error TEXT DEFAULT NULL,
@@ -1049,6 +1303,7 @@ class HindsightMemoryPlugin(Plugin):
                 "ts": payload.ts,
             },
         )
+        await self._record_turn_message(payload.user_id, payload.chat_id, "user", payload.text)
 
     async def on_assistant_response(self, payload: AssistantResponsePayload) -> None:
         await self._append_memory_event(
@@ -1064,8 +1319,16 @@ class HindsightMemoryPlugin(Plugin):
                 "ts": payload.ts,
             },
         )
+        await self._record_turn_message(
+            payload.user_id, payload.chat_id, "assistant", payload.text, is_turn_end=True,
+            autonomous=getattr(payload, "autonomous", False),
+        )
 
     async def on_session_reset(self, payload: SessionResetPayload) -> None:
+        # Note: intentionally does not touch ``_turn_buffers``. This event fires on
+        # almost every turn (reason="request_start"/"final_delivery" — see
+        # telegram_bot.py's dispatch sites), not only on an actual session reset;
+        # treating it as a drain/clear trigger would defeat burst batching.
         await self._append_memory_event(
             "session_reset",
             user_id=payload.user_id,
@@ -1075,6 +1338,192 @@ class HindsightMemoryPlugin(Plugin):
                 "terminal_only": payload.terminal_only,
             },
         )
+
+    # ---- Turn-buffer burst extraction --------------------------------------
+    # Accumulates turns between assistant replies and flushes them into the same
+    # finalize-job queue used by session-close (see ``_enqueue_finalize_job_sync``).
+    # The flush itself never calls the model — extraction stays solely in
+    # ``_finalize_tick``. All buffer mutation happens under ``_memory_user_lock``;
+    # ``_flush_turn_buffer`` assumes the caller already holds it.
+
+    async def _record_turn_message(
+        self,
+        user_id: int | None,
+        chat_id: int,
+        role: str,
+        text: str,
+        *,
+        is_turn_end: bool = False,
+        autonomous: bool = False,
+    ) -> None:
+        if user_id is None or not self._burst_active():
+            return
+        key = (int(user_id), int(chat_id), bool(autonomous))
+        async with self._memory_user_lock(int(user_id)):
+            buf = self._turn_buffers.get(key)
+            if buf is None:
+                self._evict_oldest_turn_buffer_if_full()
+                buf = self._turn_buffers.setdefault(key, _TurnBuffer())
+            buf.messages.append({"role": role, "content": text})
+            buf.last_activity_ts = time.monotonic()
+            self._trim_turn_buffer_messages(key, buf)
+            if is_turn_end:
+                buf.turn_count += 1
+                max_turns = max(1, int(self.config.get('hindsight_burst_max_turns', 10)))
+                if buf.turn_count >= max_turns:
+                    await self._flush_turn_buffer(key)
+
+    def _trim_turn_buffer_messages(self, key: tuple[int, int, bool], buf: "_TurnBuffer") -> None:
+        """Cap a single buffer's message list at ``hindsight_burst_max_buffer_messages``,
+        dropping the oldest messages once exceeded. Guards against a single
+        (user, chat) pair growing unbounded if flushes keep failing."""
+        max_messages = max(1, int(self.config.get('hindsight_burst_max_buffer_messages', 200)))
+        if len(buf.messages) <= max_messages:
+            return
+        dropped = len(buf.messages) - max_messages
+        del buf.messages[:dropped]
+        logger.warning(
+            "Hindsight burst buffer for user_id=%s chat_id=%s exceeded %s messages; dropped %s oldest",
+            key[0], key[1], max_messages, dropped,
+        )
+
+    def _evict_oldest_turn_buffer_if_full(self) -> None:
+        """Cap the number of distinct buffered keys at
+        ``hindsight_burst_max_buffers``. Called only before inserting a new
+        key. Evicts the entry with the oldest ``last_activity_ts``, skipping
+        keys whose user lock is currently held (mirrors the eviction guard in
+        ``_memory_user_lock``) to avoid racing a concurrent flush/drain for
+        that user."""
+        max_buffers = max(1, int(self.config.get('hindsight_burst_max_buffers', 5000)))
+        if len(self._turn_buffers) < max_buffers:
+            return
+        candidates = sorted(self._turn_buffers.items(), key=lambda kv: kv[1].last_activity_ts)
+        for old_key, _ in candidates:
+            lock = self._memory_user_locks.get(old_key[0])
+            if lock is not None and lock.locked():
+                continue
+            self._turn_buffers.pop(old_key, None)
+            logger.warning(
+                "Hindsight burst buffer dict exceeded %s keys; evicted oldest key=%s",
+                max_buffers, old_key,
+            )
+            return
+
+    async def _flush_turn_buffer(self, key: tuple[int, int, bool]) -> None:
+        """Flush the buffer for ``key`` into a burst finalize job. Caller must
+        already hold ``_memory_user_lock(key[0])`` — this method does not take it
+        (the lock is not reentrant).
+
+        The key is popped only *after* the finalize job attempt completes
+        (successfully or with a legitimate no-op, e.g. stale session). If
+        there is no active session yet, or the DB call raises, the buffer is
+        left in place so a later attempt (sweep or next turn) can retry it
+        instead of silently losing the accumulated turns."""
+        buf = self._turn_buffers.get(key)
+        if buf is None or not buf.messages:
+            return
+        user_id, chat_id, autonomous = key
+        session_id = await self._active_session_id_for_burst(user_id)
+        if not session_id:
+            logger.info(
+                "Hindsight burst flush deferred: no active session for user_id=%s chat_id=%s",
+                user_id, chat_id,
+            )
+            return
+        enqueue_kwargs: Dict[str, Any] = {"kind": "burst"}
+        if autonomous:
+            enqueue_kwargs["autonomous"] = True
+        try:
+            inserted = await self._db_run_sync(
+                self._enqueue_finalize_job_sync,
+                user_id,
+                session_id,
+                list(buf.messages),
+                **enqueue_kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "Hindsight burst flush failed for user_id=%s chat_id=%s; buffer retained",
+                user_id, chat_id,
+            )
+            return
+        self._turn_buffers.pop(key, None)
+        if inserted:
+            logger.info(
+                "Queued Hindsight burst finalize job for user_id=%s chat_id=%s session_id=%s turns=%s",
+                user_id, chat_id, session_id, buf.turn_count,
+            )
+
+    async def _active_session_id_for_burst(self, user_id: int) -> str | None:
+        if self.db_handle is None:
+            return None
+        row = await self.db_handle.fetch_one(
+            '''
+            SELECT session_id
+            FROM conversation_context
+            WHERE user_id = ? AND is_active = 1
+            ORDER BY updated_at DESC, created_at DESC
+            ''',
+            (user_id,),
+        )
+        return row["session_id"] if row else None
+
+    async def _burst_sweep_tick(self, *, application=None) -> None:
+        """Periodic sweep: flush buffers that have been quiet for
+        ``hindsight_burst_quiet_seconds``. Registered via ``get_background_tasks``."""
+        if not self._burst_active():
+            return
+        quiet_seconds = float(self.config.get('hindsight_burst_quiet_seconds', 180))
+        now = time.monotonic()
+        # Snapshot keys: the dict may be mutated concurrently by on_user_message/
+        # on_assistant_response while we iterate other users' entries below.
+        for key in list(self._turn_buffers.keys()):
+            user_id = key[0]
+            async with self._memory_user_lock(int(user_id)):
+                # Re-read under the lock: a new turn may have refreshed
+                # last_activity_ts (or flushed the buffer already) since the snapshot.
+                buf = self._turn_buffers.get(key)
+                if buf is None:
+                    continue
+                if (now - buf.last_activity_ts) < quiet_seconds:
+                    continue
+                # One failing key must not abort the sweep for other users.
+                try:
+                    await self._flush_turn_buffer(key)
+                except Exception:
+                    logger.exception("Hindsight burst sweep failed for key=%s; buffer retained", key)
+
+    async def _drain_user_turn_buffers(self, user_id: int) -> None:
+        """Flush all buffered keys for ``user_id`` (any chat_id)."""
+        keys = [key for key in list(self._turn_buffers.keys()) if key[0] == int(user_id)]
+        if not keys:
+            return
+        async with self._memory_user_lock(int(user_id)):
+            for key in keys:
+                if key in self._turn_buffers:
+                    try:
+                        await self._flush_turn_buffer(key)
+                    except Exception:
+                        logger.exception("Hindsight burst drain failed for key=%s; buffer retained", key)
+
+    async def _drain_all_turn_buffers(self) -> None:
+        """Flush every buffered key, regardless of user. Used on shutdown."""
+        for key in list(self._turn_buffers.keys()):
+            user_id = key[0]
+            async with self._memory_user_lock(int(user_id)):
+                if key in self._turn_buffers:
+                    # Shutdown drain: one failing user must not strand the rest.
+                    try:
+                        await self._flush_turn_buffer(key)
+                    except Exception:
+                        logger.exception("Hindsight burst drain failed for key=%s; buffer retained", key)
+
+    def _discard_user_turn_buffers_locked(self, user_id: int) -> None:
+        """Drop (not flush) all buffered keys for ``user_id`` (any chat_id).
+        Caller must already hold ``_memory_user_lock(user_id)`` — this does
+        not take it (the lock is not reentrant). Used by ``_clear_memory``."""
+        for key in [key for key in list(self._turn_buffers.keys()) if key[0] == int(user_id)]:
+            self._turn_buffers.pop(key, None)
 
     async def _append_memory_event(
         self,
@@ -1265,6 +1714,22 @@ class HindsightMemoryPlugin(Plugin):
                     )
                     existing = await self._fetch_approved_memory_documents(user_id)
                 documents = await self._extract_dream_documents(input_summary, existing)
+                existing_by_path = {doc["path"]: doc for doc in existing}
+                consolidated_documents = []
+                for doc in documents:
+                    prior_doc = existing_by_path.get(doc["path"])
+                    if prior_doc is None:
+                        # New path: no prior document to consolidate against.
+                        consolidated_documents.append(doc)
+                        continue
+                    # Existing path: one extra targeted model call replaces the
+                    # extractor's full-rewrite proposal with a merged body, so a
+                    # single dream pass can't silently drop earlier facts.
+                    merged_body = await self._consolidate_dream_document(prior_doc, input_summary)
+                    if merged_body is None:
+                        continue
+                    consolidated_documents.append({**doc, "content": merged_body})
+                documents = consolidated_documents
                 output_json = json.dumps(
                     {"documents": documents},
                     ensure_ascii=False,
@@ -1437,6 +1902,48 @@ class HindsightMemoryPlugin(Plugin):
                 f"{content}"
             )
         return "\n\n".join(parts)
+
+    async def _consolidate_dream_document(
+        self,
+        prior_doc: dict[str, Any],
+        rendered_events: str,
+    ) -> str | None:
+        """Consolidate *prior_doc* against *rendered_events* with one extra,
+        targeted model call (UPDATE/DELETE/ADD actions) instead of letting the
+        dream extractor silently overwrite the whole document body. Returns the
+        merged body, or None when nothing should change (model said NONE, or
+        the response was unparseable/produced no effective change) so the
+        caller can skip creating a candidate for this path."""
+        from ..openai_helper import _first_choice_or_raise
+
+        body = str(prior_doc.get("content") or "")
+        numbered = _render_numbered_bullets(body)
+        response = await self.openai.chat_completion(
+            model=self.openai.config.get('light_model') or self.openai.config.get('model'),
+            messages=[
+                {"role": "system", "content": HINDSIGHT_CONSOLIDATION_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "<document>\n"
+                        f"{numbered}\n"
+                        "</document>\n\n"
+                        "<new_events>\n"
+                        f"{rendered_events}\n"
+                        "</new_events>"
+                    ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=2000,
+            stream=False,
+        )
+        content = _first_choice_or_raise(response).message.content or ""
+        actions = parse_consolidation_actions(content)
+        if not actions:
+            return None
+        updated = apply_consolidation_actions(body, actions)
+        return updated if updated != body else None
 
     def _parse_dream_documents(self, content: str) -> list[dict[str, Any]]:
         text = (content or "").strip()
@@ -1638,12 +2145,14 @@ class HindsightMemoryPlugin(Plugin):
         *,
         raise_on_error: bool = False,
         async_store: bool | None = None,
+        autonomous: bool = False,
     ) -> int:
         items = await self._extract_session_memory_items(
             user_id,
             session_id,
             messages,
             raise_on_error=raise_on_error,
+            autonomous=autonomous,
         )
         if not items:
             return 0
@@ -1670,6 +2179,7 @@ class HindsightMemoryPlugin(Plugin):
         messages: list[dict[str, Any]],
         *,
         raise_on_error: bool = False,
+        autonomous: bool = False,
     ) -> list[dict[str, Any]]:
         if not session_id or not self.is_active or not self.auto_save_enabled:
             return []
@@ -1677,7 +2187,7 @@ class HindsightMemoryPlugin(Plugin):
             transcript = self._session_transcript_for_hindsight(messages)
             if not transcript:
                 return []
-            return await self._extract_hindsight_memory_items(transcript)
+            return await self._extract_hindsight_memory_items(transcript, autonomous=autonomous)
         except Exception as e:
             logger.warning(
                 "Hindsight session extraction failed for user_id=%s session_id=%s: %s",
@@ -1694,10 +2204,11 @@ class HindsightMemoryPlugin(Plugin):
         items: list[dict[str, Any]],
         *,
         async_store: bool | None = None,
+        document_id_suffix: str = "final",
     ) -> int:
         if not items or not session_id:
             return 0
-        document_id = f"telegram-{user_id}-{session_id}-final"
+        document_id = f"telegram-{user_id}-{session_id}-{document_id_suffix}"
         try:
             await self._retain_hindsight_items(
                 user_id=user_id,
@@ -1712,7 +2223,7 @@ class HindsightMemoryPlugin(Plugin):
             if not self._is_duplicate_document_id_error(e):
                 raise
             retry_session_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
-            retry_document_id = f"telegram-{user_id}-{retry_session_id}-final"
+            retry_document_id = f"telegram-{user_id}-{retry_session_id}-{document_id_suffix}"
             logger.warning(
                 "Retrying Hindsight session finalize with new session_id after duplicate document_id "
                 "for user_id=%s session_id=%s retry_session_id=%s",
@@ -1821,11 +2332,18 @@ class HindsightMemoryPlugin(Plugin):
         logger.info("Saved %s Hindsight memory item(s) to bank %s", len(normalized), bank_id)
         return len(normalized)
 
-    async def _extract_hindsight_memory_items(self, transcript: str) -> list[dict[str, Any]]:
+    async def _extract_hindsight_memory_items(
+        self, transcript: str, *, autonomous: bool = False,
+    ) -> list[dict[str, Any]]:
         from ..openai_helper import _first_choice_or_raise
 
+        system_content = (
+            f"{HINDSIGHT_EXTRACTOR_PROMPT}\n\n{AUTONOMOUS_EXTRACTION_ADDENDUM}"
+            if autonomous
+            else HINDSIGHT_EXTRACTOR_PROMPT
+        )
         messages = [
-            {"role": "system", "content": HINDSIGHT_EXTRACTOR_PROMPT},
+            {"role": "system", "content": system_content},
             {
                 "role": "user",
                 "content": (
@@ -2783,6 +3301,12 @@ class HindsightMemoryPlugin(Plugin):
     async def _clear_memory(self, helper, user_id: int) -> None:
         bank_id = self.bank_id_for(user_id)
         async with self._memory_user_lock(user_id):
+            # Drop (not flush!) any turns buffered before this clear request.
+            # Flushing them would enqueue a finalize job stamped with the
+            # *new* clear_generation (bumped below), so the stale-generation
+            # dedup check would not skip it — the facts the user asked to
+            # erase would silently come back on the next finalize tick.
+            self._discard_user_turn_buffers_locked(user_id)
             if self.db_handle is not None:
                 try:
                     await self.client.clear_bank(bank_id)

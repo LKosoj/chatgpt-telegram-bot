@@ -4,6 +4,7 @@ import os
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,6 +79,7 @@ async def test_agent_cron_manual_run_delivers_result(tmp_path):
     assert stored["status"] == "active"
     assert stored["last_tokens"] == 5
     assert helper.requests[0]["chat_id"] == 100
+    assert helper.requests[0]["request_context"].autonomous is True
     assert bot.messages[0]["chat_id"] == 100
     assert "Cron job" in bot.messages[0]["text"]
     assert "cron result" in bot.messages[0]["text"]
@@ -126,6 +128,58 @@ async def test_agent_cron_failure_uses_rich_config(tmp_path):
             {"api_kwargs": None},
         )
     ]
+
+
+# --- Autonomous capture hook (HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED) ---------
+
+
+@pytest.mark.asyncio
+async def test_agent_cron_default_does_not_dispatch_autonomous_hook(tmp_path, monkeypatch):
+    monkeypatch.delenv("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", raising=False)
+    plugin = AgentCronPlugin()
+    helper = FakeHelper()  # no .plugin_manager attribute
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    bot = FakeBot()
+    parsed = plugin._parse_schedule("daily at 09:30")
+    job = plugin._create_job(
+        chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
+        parsed=parsed, reply_to_message_id=77,
+    )
+
+    # If the hook were dispatched unconditionally, accessing helper.plugin_manager
+    # on a helper without one would either raise or (if guarded) still change
+    # behavior; assert the run completes normally with today's default (disabled).
+    await plugin._run_job(bot, job["scope"], job["id"], manual=True)
+
+    stored = plugin.jobs[job["scope"]][job["id"]]
+    assert stored["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_agent_cron_dispatches_autonomous_hook_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", "true")
+    plugin = AgentCronPlugin()
+    helper = FakeHelper()
+    helper.plugin_manager = SimpleNamespace(dispatch_observe=AsyncMock())
+    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    bot = FakeBot()
+    parsed = plugin._parse_schedule("daily at 09:30")
+    job = plugin._create_job(
+        chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
+        parsed=parsed, reply_to_message_id=77,
+    )
+
+    await plugin._run_job(bot, job["scope"], job["id"], manual=True)
+
+    helper.plugin_manager.dispatch_observe.assert_awaited_once()
+    call = helper.plugin_manager.dispatch_observe.call_args
+    assert call.args[0] == "on_assistant_response"
+    payload = call.args[1]
+    assert payload.autonomous is True
+    assert payload.chat_id == 100
+    assert payload.user_id == 42
+    assert payload.text == "cron result"
+    assert call.kwargs == {"user_id": 42}
 
 
 # --- Tests for surgical bugfixes ---

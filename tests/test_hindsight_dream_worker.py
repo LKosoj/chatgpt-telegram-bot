@@ -17,12 +17,22 @@ class FakeOpenAI:
     def __init__(self, content: str):
         self.config = {"light_model": "fake-light"}
         self.content = content
+        # Optional queue of responses for calls AFTER the first (FIFO), for
+        # tests that need the dream-extraction call (always `self.content`)
+        # and a later consolidation call to see different canned output.
+        # Falls back to `self.content` once exhausted/unset, so existing
+        # single-response tests are unaffected.
+        self.responses: list[str] = []
         self.calls = []
 
     async def chat_completion(self, **kwargs):
         self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            content = self.content
+        else:
+            content = self.responses.pop(0) if self.responses else self.content
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))]
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
         )
 
 
@@ -216,3 +226,70 @@ async def test_dream_tick_resets_fail_count_on_success(plugin):
     assert state["last_event_id"] == 2
     assert state["fail_count"] == 0
     assert state["retry_after"] is None
+
+
+async def _insert_approved_document(plugin, path, kind, content, user_id=42):
+    await plugin.db_handle.execute(
+        '''
+        INSERT INTO hindsight_memory_documents
+        (user_id, path, kind, status, content, content_hash, version)
+        VALUES (?, ?, ?, 'approved', ?, 'hash', 1)
+        ''',
+        (user_id, path, kind, content),
+    )
+
+
+async def test_dream_tick_consolidates_existing_document_via_update(plugin):
+    await _insert_approved_document(
+        plugin, "profile/preferences.md", "profile", "- User prefers concise answers.",
+    )
+    # First call is the dream extraction (JSON); second is the consolidation
+    # call for the matching path (plain UPDATE/DELETE/ADD action lines).
+    plugin.openai.content = json.dumps({
+        "documents": [{
+            "path": "profile/preferences.md",
+            "kind": "profile",
+            "content": "User prefers concise answers and dark mode.",
+        }]
+    })
+    plugin.openai.responses = ["UPDATE 1: User prefers concise answers and dark mode."]
+    await _seed_user_events(plugin)
+
+    await plugin._dream_tick(application=None)
+
+    doc = await plugin.db_handle.fetch_one(
+        "SELECT status, content, version FROM hindsight_memory_documents WHERE version = 2"
+    )
+    assert doc is not None
+    assert doc["status"] == "candidate"
+    # Merged via apply_consolidation_actions (keeps the "- " bullet), not the
+    # extractor's raw full-rewrite sentence.
+    assert doc["content"] == "- User prefers concise answers and dark mode."
+    assert len(plugin.openai.calls) == 2
+
+
+async def test_dream_tick_consolidation_none_skips_candidate(plugin):
+    await _insert_approved_document(
+        plugin, "profile/preferences.md", "profile", "- User prefers concise answers.",
+    )
+    plugin.openai.content = json.dumps({
+        "documents": [{
+            "path": "profile/preferences.md",
+            "kind": "profile",
+            "content": "User prefers concise answers.",
+        }]
+    })
+    plugin.openai.responses = ["NONE"]
+    await _seed_user_events(plugin)
+
+    await plugin._dream_tick(application=None)
+
+    docs = await plugin.db_handle.fetch_all(
+        "SELECT version, status FROM hindsight_memory_documents WHERE path = ?",
+        ("profile/preferences.md",),
+    )
+    assert len(docs) == 1
+    assert docs[0]["status"] == "approved"
+    run = await plugin.db_handle.fetch_one("SELECT status FROM hindsight_dream_runs")
+    assert run["status"] == "completed"
+    assert len(plugin.openai.calls) == 2

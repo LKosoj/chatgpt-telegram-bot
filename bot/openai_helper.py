@@ -49,6 +49,7 @@ from .model_constants import (
     QWEN,
 )
 from .llm_gateway_client import LLMGatewayClient, extract_image_result
+from .model_utilities import ModelUtilities
 from .plugins.hooks import (
     BeforeChatRequestPayload,
     HookEvent,
@@ -86,6 +87,11 @@ LLM_RATE_LIMIT_RETRY_WAIT_SECONDS = 20
 TTS_OPTIONS_CACHE_SECONDS = 300
 TOOL_RESULTS_KEEP_FULL = 5
 TOOL_RESULT_SUMMARY_CHARS = 240
+INTERRUPTED_TOOL_RESULT_NOTICE = (
+    "Tool result missing: the platform restarted while this tool call was running and its "
+    "outcome was never recorded. Do not assume it succeeded or failed — verify what actually "
+    "happened before repeating this action, especially if it has side effects."
+)
 _CHAT_LOCK_BYPASS_CHAT_ID = ContextVar("openai_helper_chat_lock_bypass_chat_id", default=None)
 _CHAT_STATE_KEY = ContextVar("openai_helper_chat_state_key", default=None)
 _TURN_STATS: ContextVar[Optional[dict]] = ContextVar("openai_turn_stats", default=None)
@@ -322,6 +328,10 @@ class OpenAIHelper:
         self.config.setdefault('summary_timeout_seconds', 20.0)
         self.config.setdefault('summary_min_messages_between_runs', 6)
         self.config.setdefault('summary_target_keep_ratio', 0.5)
+        # Timeouts for the other cheap one-off model utility calls (ModelUtilities);
+        # unlike summary_timeout_seconds above, these previously had no timeout at all.
+        self.config.setdefault('reply_intent_timeout_seconds', 10.0)
+        self.config.setdefault('session_name_timeout_seconds', 20.0)
         self.config.setdefault('session_log_enabled', False)
         self.config.setdefault('session_log_dir', './log')
         self.config.setdefault('session_log_max_bytes', 10 * 1024 * 1024)
@@ -339,6 +349,9 @@ class OpenAIHelper:
             otel_service_name=self.config['session_log_otel_service_name'],
             otel_insecure=self.config['session_log_otel_insecure'],
         )
+        # ``ModelUtilities`` is stateless and is constructed at each call site
+        # instead of being cached here: several tests build a helper via
+        # ``object.__new__(OpenAIHelper)`` and would not have a cached attribute.
 
     async def classify_reply_intent(self, user_text: str, replied_message_kind: str) -> str:
         """
@@ -358,17 +371,19 @@ class OpenAIHelper:
                 + "\n\nReturn the classification as JSON.",
             },
         ]
-        response = await self._create_chat_response_completion(
+        try:
+            timeout_seconds = float(self.config.get('reply_intent_timeout_seconds', 10.0))
+        except (TypeError, ValueError):
+            timeout_seconds = 10.0
+        content = await ModelUtilities(self).classify_json(
             kind='reply_intent',
-            model=self.config.get('light_model') or self.config.get('model'),
             messages=messages,
+            timeout_seconds=timeout_seconds,
             temperature=0.0,
             max_tokens=1000,
-            response_format={"type": "json_object"},
-            stream=False,
-            extra_headers={ "X-Title": "tgBot" },
         )
-        content = _first_choice_or_raise(response).message.content or ""
+        if content is None:
+            return "unknown"
         allowed_intents = {"image_edit", "image_describe", "text_reply"}
         intent_aliases = {
             "image_description": "image_describe",
@@ -439,6 +454,7 @@ class OpenAIHelper:
         json_mode: bool = False,
         response_format: dict | None = None,
         extra_headers: dict | None = None,
+        kind: str = 'chat_completion',
         **extra,
     ):
         """Low-level chat completion through the configured chat-response path.
@@ -465,7 +481,7 @@ class OpenAIHelper:
         )
         if extra:
             kwargs.update(extra)
-        return await self._create_chat_response_completion(kind='chat_completion', **kwargs)
+        return await self._create_chat_response_completion(kind=kind, **kwargs)
 
     async def _create_chat_completion_with_rate_limit_retry(self, *, kind, **kwargs):
         for attempt in range(1, LLM_RATE_LIMIT_RETRY_ATTEMPTS + 1):
@@ -1508,14 +1524,7 @@ class OpenAIHelper:
                     )
                     summarized = False
                 if not summarized:
-                    conv = self.conversations[state_key]
-                    # Preserve ALL system messages (initial assistant prompt
-                    # AND any prior `[prior_summary]:` system messages from
-                    # earlier successful summarisations) so accumulated memory
-                    # survives the throttle-then-fallback path.
-                    head = [m for m in conv if isinstance(m, dict) and m.get('role') == 'system']
-                    tail = conv[-self.config['max_history_size']:]
-                    self.conversations[state_key] = head + [m for m in tail if m not in head]
+                    self._fallback_trim_with_summary(state_key)
                 token_count = self.__count_tokens(self.conversations[state_key], model_to_use)
 
             logger.info(f"Model: {model_to_use}")
@@ -2506,14 +2515,7 @@ class OpenAIHelper:
                     )
                     summarized = False
                 if not summarized:
-                    conv = self.conversations[state_key]
-                    # Preserve ALL system messages (initial prompt + any prior
-                    # `[prior_summary]:` from earlier summarisations) so
-                    # accumulated memory survives the throttle-then-fallback
-                    # path.
-                    head = [m for m in conv if isinstance(m, dict) and m.get('role') == 'system']
-                    tail = conv[-self.config['max_history_size']:]
-                    self.conversations[state_key] = head + [m for m in tail if m not in head]
+                    self._fallback_trim_with_summary(state_key)
 
             message = {'role':'user', 'content':content}
 
@@ -3099,12 +3101,20 @@ class OpenAIHelper:
                     index += 1
 
                 missing_ids = [tool_call_id for tool_call_id in expected_ids if tool_call_id not in seen_ids]
+                tool_names_by_id: dict[str, Any] = {}
+                for call in message.get("tool_calls") or []:
+                    if not isinstance(call, dict) or call.get("id") is None:
+                        continue
+                    function = call.get("function")
+                    name = function.get("name") if isinstance(function, dict) else None
+                    tool_names_by_id[str(call["id"])] = name
                 for tool_call_id in missing_ids:
                     repaired.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "content": json.dumps({
-                            "error": "Tool result missing because execution was interrupted before a result was recorded."
+                            "error": INTERRUPTED_TOOL_RESULT_NOTICE,
+                            "tool_name": tool_names_by_id.get(tool_call_id),
                         }, ensure_ascii=False),
                     })
                     changed = True
@@ -3575,6 +3585,12 @@ class OpenAIHelper:
         "Формат: один абзац, без списков, без markdown."
     )
 
+    # Tag prefix shared by both summary producers (`_summarise_window`'s LLM
+    # summary and `_fallback_trim_with_summary`'s deterministic one) so a
+    # `[prior_summary]` system message can be told apart from an ordinary
+    # system prompt regardless of which path created it.
+    _PRIOR_SUMMARY_PREFIX = "[prior_summary]: "
+
     @staticmethod
     def _safe_cut_index(msgs: list, naive_cut: int) -> int:
         """Adjust ``naive_cut`` so it does not slice the middle of an
@@ -3677,6 +3693,43 @@ class OpenAIHelper:
             lines.append(f"{role}: {content_text}".rstrip())
         return "\n".join(lines)
 
+    @staticmethod
+    def _cap_text_with_notice(rendered: str, *, max_chars: int, tail_chars: int) -> str:
+        """Bound arbitrary text to ``max_chars``, keeping a head+tail excerpt
+        with a truncation notice in between when it doesn't fit.
+
+        ``len(result) <= max_chars`` holds unconditionally, including when
+        ``max_chars`` is too small to fit the notice itself (the notice is
+        then hard-truncated) or when ``max_chars <= 0`` (returns "").
+        """
+        if max_chars <= 0:
+            return ""
+        if len(rendered) <= max_chars:
+            return rendered
+        notice = f"…[truncated — {len(rendered)} chars]…"
+        if len(notice) >= max_chars:
+            return notice[:max_chars]
+        budget = max_chars - len(notice)
+        tail_chars = max(0, min(tail_chars, budget))
+        head_chars = budget - tail_chars
+        return rendered[:head_chars] + notice + (rendered[-tail_chars:] if tail_chars else "")
+
+    @staticmethod
+    def _deterministic_summary_text(messages: list, *, max_chars: int = 4000, tail_chars: int = 500) -> str:
+        """Render discarded messages as a bounded head+tail excerpt.
+
+        Used by the head-preserve fallback when the LLM summariser itself
+        fails or is throttled: instead of dropping the discarded window
+        outright, keep a deterministic (no model call) textual trace of it
+        so the conversation retains some memory of what was cut. Below
+        ``max_chars`` the full rendering is kept verbatim; above it, the
+        head is kept up to ``max_chars - tail_chars - len(notice)`` and the
+        last ``tail_chars`` characters are appended after a truncation
+        notice — see ``_cap_text_with_notice`` for the exact bound.
+        """
+        rendered = OpenAIHelper._serialize_messages_for_summary(messages)
+        return OpenAIHelper._cap_text_with_notice(rendered, max_chars=max_chars, tail_chars=tail_chars)
+
     def _should_summarize_now(self, state_key) -> bool:
         """Throttle: skip a fresh summary run if too few messages have been
         appended since the last one.
@@ -3698,22 +3751,20 @@ class OpenAIHelper:
         Raises on transport / timeout errors — caller wraps with try/except.
         """
         rendered = self._serialize_messages_for_summary(messages_to_summarize)
-        summary_model = self.config.get('summary_model') or self.config.get('light_model') or self.config.get('model')
         max_tokens = int(self.config.get('summary_max_tokens', 400) or 400)
-        response = await self._create_chat_response_completion(
-            kind='summary',
-            model=summary_model,
+        try:
+            timeout_seconds = float(self.config.get('summary_timeout_seconds', 20.0))
+        except (TypeError, ValueError):
+            timeout_seconds = 20.0
+        return await ModelUtilities(self).summarize_window(
             messages=[
                 {"role": "system", "content": self.SUMMARY_WINDOW_PROMPT},
                 {"role": "user", "content": rendered},
             ],
+            timeout_seconds=timeout_seconds,
             temperature=0.2,
             max_tokens=max_tokens,
-            stream=False,
-            extra_headers={"X-Title": "tgBot"},
         )
-        summary = _first_choice_or_raise(response).message.content or ""
-        return summary.strip()
 
     async def _summarize_and_trim(
         self,
@@ -3778,15 +3829,7 @@ class OpenAIHelper:
         to_keep = non_system[cut:]
 
         try:
-            timeout_seconds = float(self.config.get('summary_timeout_seconds', 20.0))
-        except (TypeError, ValueError):
-            timeout_seconds = 20.0
-
-        try:
-            summary = await asyncio.wait_for(
-                self._summarise_window(to_summarize),
-                timeout=timeout_seconds,
-            )
+            summary = await self._summarise_window(to_summarize)
         except Exception as exc:
             logger.error(
                 "Summary window call failed for state_key=%s error=%s",
@@ -3799,7 +3842,7 @@ class OpenAIHelper:
             logger.warning("Summary window returned empty content; skipping trim")
             return False
 
-        summary_msg = {"role": "system", "content": "[prior_summary]: " + summary}
+        summary_msg = {"role": "system", "content": self._PRIOR_SUMMARY_PREFIX + summary}
         self.conversations[state_key] = [*head, summary_msg, *to_keep]
         self._last_summary_at[state_key] = len(self.conversations[state_key])
         logger.info(
@@ -3809,6 +3852,86 @@ class OpenAIHelper:
             chat_id, session_id,
         )
         return True
+
+    def _fallback_trim_with_summary(self, state_key) -> None:
+        """Head-preserve trim fallback used when ``_summarize_and_trim``
+        returns False (throttled, unresolvable cut, or summary-call failure).
+
+        Unlike a bare slice, the discarded middle is not dropped silently:
+        it is rendered into a deterministic (no LLM call) ``[prior_summary]``
+        system message via ``_deterministic_summary_text`` before being cut,
+        so some trace of it survives even when the real summariser is down.
+        Runs ``_repair_tool_call_history`` afterwards because the cut can
+        land inside an assistant/tool_calls -> tool pair.
+
+        Only the leading contiguous run of system messages is protected
+        (same convention as ``_summarize_and_trim``), and the cut point is
+        computed from the non-system message count alone so that repeated
+        calls converge on ``max_history_size`` non-system messages instead
+        of growing unbounded (the leading system block itself grows by at
+        most one message per call — see below).
+
+        A ``[prior_summary]`` message produced by an earlier call (by this
+        method or by ``_summarize_and_trim``) is always contiguous with the
+        leading system block, so it is picked up by the head scan on the
+        next call. It is merged into the new summary text (instead of a
+        second ``[prior_summary]`` message being appended) so the number of
+        such messages never grows across repeated failed summarisations.
+        """
+        conv = self.conversations.get(state_key) or []
+        if not conv:
+            return
+
+        head_end = 0
+        for m in conv:
+            if isinstance(m, dict) and m.get('role') == 'system':
+                head_end += 1
+            else:
+                break
+        head = conv[:head_end]
+        non_system = conv[head_end:]
+        if not non_system:
+            return
+
+        max_history_size = self.config['max_history_size']
+        naive_cut = max(0, len(non_system) - max_history_size)
+        safe_cut = self._safe_cut_index(non_system, naive_cut)
+        discarded = non_system[:safe_cut]
+        tail = non_system[safe_cut:]
+
+        # Split any earlier [prior_summary] message(s) out of the head so a
+        # new summary merges into them rather than piling up alongside.
+        plain_head = []
+        prior_summary_text = None
+        for m in head:
+            content = m.get('content') if isinstance(m, dict) else None
+            if isinstance(content, str) and content.startswith(self._PRIOR_SUMMARY_PREFIX):
+                piece = content[len(self._PRIOR_SUMMARY_PREFIX):]
+                prior_summary_text = piece if prior_summary_text is None else f"{prior_summary_text}\n{piece}"
+            else:
+                plain_head.append(m)
+
+        max_chars_cfg = self.config.get('summary_deterministic_max_chars', 4000)
+        max_chars = 4000 if max_chars_cfg is None else int(max_chars_cfg)
+        tail_chars_cfg = self.config.get('summary_deterministic_tail_chars', 500)
+        tail_chars = 500 if tail_chars_cfg is None else int(tail_chars_cfg)
+
+        new_conv = list(plain_head)
+        if max_chars <= 0:
+            # Deterministic summary disabled: behave like the pre-feature
+            # bare slice and drop discarded content silently. An already
+            # existing summary (from before the setting was turned off) is
+            # kept as-is rather than folding new discarded text into it.
+            if prior_summary_text is not None:
+                new_conv.append({"role": "system", "content": self._PRIOR_SUMMARY_PREFIX + prior_summary_text})
+        elif discarded or prior_summary_text is not None:
+            new_text = self._serialize_messages_for_summary(discarded) if discarded else ""
+            merged = "\n".join(t for t in (prior_summary_text, new_text) if t)
+            text = self._cap_text_with_notice(merged, max_chars=max_chars, tail_chars=tail_chars)
+            new_conv.append({"role": "system", "content": self._PRIOR_SUMMARY_PREFIX + text})
+        new_conv.extend(tail)
+        self.conversations[state_key] = new_conv
+        self._repair_tool_call_history(state_key)
 
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
     def __count_tokens(self, messages, model_to_use = None) -> int:
@@ -3965,8 +4088,11 @@ class OpenAIHelper:
             """
             
             model_to_use = self.config.get('light_model') or self.config.get('model')
-            response = await self.chat_completion(
-                model=model_to_use,
+            try:
+                timeout_seconds = float(self.config.get('session_name_timeout_seconds', 20.0))
+            except (TypeError, ValueError):
+                timeout_seconds = 20.0
+            content, tokens = await ModelUtilities(self).generate_title(
                 messages=[
                     {
                         "role": "system",
@@ -3974,16 +4100,17 @@ class OpenAIHelper:
                     },
                     {"role": "user", "content": prompt},
                 ],
+                timeout_seconds=timeout_seconds,
+                model=model_to_use,
                 temperature=0.3,
                 max_tokens=int(self.get_max_tokens(model_to_use, 20, chat_id)),
-                stream=False,
             )
-            content = _required_choice_message_text(_first_choice_or_raise(response))
-            tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+            if content is None:
+                return f"Сессия {dt.now().strftime('%d.%m')}", 0
 
             # Очищаем и обрезаем название
             session_name = content.strip().strip('"')[:50]
-            
+
             # Если название пустое, используем дефолтное
             return session_name or f"Сессия {dt.now().strftime('%d.%m')}", tokens
         

@@ -28,7 +28,7 @@ rules from the current session.
   (`bot/__main__.py:349-362`).
 - Telegram polling is owned by `ChatGPTTelegramBot.run()` in `bot/telegram_bot.py`; the current
   builder enables concurrent updates, local Telegram Bot API mode, and
-  `http://localhost:8081/bot` as base URL (`bot/telegram_bot.py:6331-6344`).
+  `http://localhost:8081/bot` as base URL (`bot/telegram_bot.py:6288-6303`).
 - Main request flow:
   - Telegram update handling lives mostly in `bot/telegram_bot.py`.
   - OpenAI-compatible chat/image/audio/vision access is in `bot/openai_helper.py`.
@@ -59,10 +59,10 @@ rules from the current session.
 - Tool arguments are JSON-decoded and validated against the function spec before plugin
   execution (`bot/plugin_manager.py:428`, `bot/validation.py:33`).
 - Tool calls may arrive in batches and are executed with `asyncio.gather`; `chat_id` and
-  `user_id` are injected into arguments before execution (`bot/openai_tool_handler.py:178`,
-  `bot/openai_tool_handler.py:1368`).
+  `user_id` are injected into arguments before execution (`bot/openai_tool_handler.py:181`,
+  `bot/openai_tool_handler.py:1358-1360`).
 - A plugin response marked as a direct result short-circuits model re-entry
-  (`bot/openai_tool_handler.py:421`, `bot/openai_tool_handler.py:1479`).
+  (`bot/openai_tool_handler.py:416-420`, `bot/openai_tool_handler.py:1593-1596`).
 - Google model tool specs use `{"function_declarations": specs}` while other models receive
   OpenAI-style `{"type": "function", "function": spec}` entries
   (`bot/plugin_manager.py:354-355`). Note: the Google branch is currently unreachable because
@@ -99,13 +99,13 @@ There are four kinds of hooks, each with a different dispatch policy:
    - `agent_tools.on_before_chat_request` (`bot/plugins/agent_tools.py:346`) — injects the
      planning-prefix system message that reminds the model to call `manage_plan_tasks`
      before non-trivial work.
-   - `hindsight_memory.on_before_chat_request` (`bot/plugins/hindsight_memory.py:1919`) —
+   - `hindsight_memory.on_before_chat_request` (`bot/plugins/hindsight_memory.py:2437`) —
      injects a recalled long-term-memory system message when auto-recall is enabled.
 4. **Collectors** (`collect_fragments` / `collect_objects`): named slots, called
    **sequentially**. Active slots in tree: `auto_mode_priority` (auto-mode prompt prefix,
-   `bot/openai_helper.py:4137`), `stats_block` (`/stats` extra blocks,
+   `bot/openai_helper.py:4272-4274`), `stats_block` (`/stats` extra blocks,
    `bot/telegram_bot.py:1290`), `settings_menu_buttons` (extra settings-menu button rows,
-   `bot/telegram_bot.py:1593` — only consumer of `collect_objects`). Each plugin's
+   `bot/telegram_bot.py:1583-1587` — only consumer of `collect_objects`). Each plugin's
    `contribute_prompt_fragment(slot, payload)` returns a string fragment (for
    `collect_fragments`) or an arbitrary object (for `collect_objects`) or `None`. Skipped
    on exception. Caller decides composition (e.g. `"\n\n".join(...)`).
@@ -122,8 +122,14 @@ through `self.db_handle` (async `DbHandle` facade: `execute`/`executemany`/`fetc
 once per plugin; tables created this way live alongside core tables but are owned by the
 plugin and are removed from `bot/database.py`.
 
-Examples in tree: `bot/plugins/hindsight_memory.py:929-950` (`hindsight_finalize_jobs`),
-`bot/plugins/agent_tools.py` (`agent_plan_contracts` / `agent_plan_tasks`). Plugins that own
+Examples in tree: `bot/plugins/hindsight_memory.py:1181-1199` (`hindsight_finalize_jobs` DDL in
+`register_schema()`), `bot/plugins/agent_tools.py` (`agent_plan_contracts` /
+`agent_plan_tasks`). The `kind` column on `hindsight_finalize_jobs` distinguishes
+`session_close` from `burst` jobs (see Background tasks); long-term-memory consolidation
+(`_consolidate_dream_document`, `bot/plugins/hindsight_memory.py:1906`) merges a new summary
+into an existing document via a bounded ADD/DELETE action protocol
+(`parse_consolidation_actions` / `apply_consolidation_actions`,
+`bot/plugins/hindsight_memory.py:238`, `:264`), not a schema change. Plugins that own
 a table without `ON DELETE CASCADE` to a core table are responsible for their own GC if/when
 a user-deletion mechanism is introduced.
 
@@ -143,15 +149,30 @@ with deterministic interval scheduling; `close_async()` cancels them on shutdown
 hindsight finalize worker, and agent_tools cleanup all run this way — core code (telegram
 bot, openai helper) no longer launches plugin-specific workers.
 
+Hindsight also registers a `burst_sweep` task (`bot/plugins/hindsight_memory.py:825-845`) that
+periodically flushes per-`(user_id, chat_id, autonomous)` in-memory turn buffers accumulated
+mid-conversation into a `hindsight_finalize_jobs` row once a turn-count or quiet-time threshold is
+hit (`HINDSIGHT_BURST_MAX_TURNS` / `HINDSIGHT_BURST_QUIET_SECONDS`), instead of waiting for session
+close; `close_async()` drains any remaining buffers first.
+
+The third key component keeps autonomous turns out of the same extraction job as live ones. A turn
+is autonomous only when `agent_cron` dispatches `on_assistant_response(autonomous=True)`, which it
+does only under `HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED` (default `false` — cron turns otherwise
+never reach the memory hooks at all). The flag rides the job's `autonomous` column through to
+`_extract_hindsight_memory_items`, which appends `AUTONOMOUS_EXTRACTION_ADDENDUM` to the extractor
+prompt. `session_close` jobs are always `autonomous=False`: that history interleaves live and cron
+turns, so flagging it wholesale would drop real user facts.
+
 ## Chat Modes
 
 - Chat modes are defined in `bot/chat_modes.yml` and loaded through `ChatModesRegistry`.
 - `OpenAIHelper` constructs the registry and validates mode tool references during init
-  (`bot/openai_helper.py:299-300`).
+  (`bot/openai_helper.py:305-306`).
 - Missing tool references in `chat_modes.yml` are logged by `validate_tools()`
   (`bot/chat_modes_registry.py:82`).
 - During request preparation, the active mode can restrict allowed plugins via its `tools`
-  field; absent mode tooling defaults to `['All']` (`bot/openai_helper.py:1296`).
+  field; absent mode tooling defaults to `['All']` (`bot/openai_helper.py:1315`,
+  `bot/openai_helper.py:1346-1347`).
 - When editing chat modes, keep plugin names aligned with loaded plugin module names, not
   human-readable descriptions.
 
@@ -171,8 +192,8 @@ bar for adding a new tool is high because of this. Ranked cheapest to most expen
    catalog (`bot/plugins/skills.py:208` — `on_before_chat_request`). The cheapest way to add a
    capability the model does not need to be able to call by name on every turn.
 3. **Chat modes** (`bot/chat_modes.yml`) are free by themselves: a mode is a system prompt plus
-   a `tools:` allow-list, read at `bot/openai_helper.py:1327-1328`, defaulting to `['All']`
-   (`bot/openai_helper.py:1296`). Narrowing `tools:` is the main lever for cutting per-call
+   a `tools:` allow-list, read at `bot/openai_helper.py:1346-1347`, defaulting to `['All']`
+   (`bot/openai_helper.py:1315`). Narrowing `tools:` is the main lever for cutting per-call
    payload; most modes in tree list a short explicit set of plugins (commonly 7-10) instead of
    `All`.
 4. **New plugin/tool** — one full JSON schema on every request where `allowed_plugins` includes
@@ -209,10 +230,10 @@ not treat this as a refactor mandate:
   applied via `_apply_plan_runtime_effects` (`bot/plugins/agent_tools.py:2080`).
 - `_record_tool_outcome` (`bot/plugins/agent_tools.py:2103`) counts consecutive tool failures
   on the same task and schedules a re-plan itself once a threshold is reached.
-- `_reentry_tool_choice(...)` (`bot/openai_tool_handler.py:877`) is a pure function of the
+- `_reentry_tool_choice(...)` (`bot/openai_tool_handler.py:868`) is a pure function of the
   round counter that picks `"auto"`/`"none"`; once `functions_max_consecutive_calls` is
   exhausted the code forcibly narrows the tool set to the delivery tool
-  (`bot/openai_tool_handler.py:939-940`).
+  (`bot/openai_tool_handler.py:930-931`).
 
 `describe_plan_lifecycle()` (`bot/plugins/agent_tools.py:38`) is the single source of truth for
 the task-plan lifecycle: the full status set, its terminal/open subsets, the cross-task
@@ -250,16 +271,47 @@ regression guard. Keep the two definitions in sync when changing task statuses, 
 - When adding a new pricing path, keep the same rule: report unknown rather than a split that
   silently omits round trips.
 
+## Model Utility Calls
+
+`bot/model_utilities.py`'s `ModelUtilities` (`bot/model_utilities.py:16`) is a thin, stateless
+wrapper around `helper.chat_completion(**kwargs)` — not the `AIProvider` interface — for cheap
+one-off model calls: `one_shot`, `classify_json`, `generate_title`, `summarize_window`. It only
+touches `helper.chat_completion`/`helper.config`, so it also runs against minimal test doubles.
+All four apply `asyncio.wait_for(timeout_seconds)` and degrade to `None` on error, except
+`summarize_window`, which re-raises so `OpenAIHelper._summarize_and_trim`
+(`bot/openai_helper.py:3769`) can catch it and fall back to a deterministic trim.
+
+## Conversation History Compaction
+
+When history needs to shrink, `OpenAIHelper._summarize_and_trim()`
+(`bot/openai_helper.py:3769`) tries an LLM summary via `ModelUtilities.summarize_window`; if it
+returns `False` (throttled, unresolvable cut, or the summary call itself failing/timing out),
+`_fallback_trim_with_summary()` (`bot/openai_helper.py:3856`) head-preserve-trims the window
+instead, replacing the cut portion with a deterministic (no model call) excerpt from
+`_deterministic_summary_text()` (`bot/openai_helper.py:3718`) — a bounded head+tail rendering —
+so history is compacted, never silently dropped.
+
+## Terminal Command Policy
+
+`bot/command_policy.py` backs the terminal plugin's guard: `evaluate_command()`
+(`bot/command_policy.py:434`) normalizes a command string (unquoting, `$(...)`/backtick
+expansion, heredoc stripping) and matches it against `CommandRule` patterns — built-in
+`DEFAULT_RULES` plus any layered from `TERMINAL_COMMAND_POLICY` (JSON, via
+`load_policy_from_env()` at `bot/command_policy.py:410`) — to a `CommandDecision` of
+`allow`/`deny`/`require_approval`; `TERMINAL_APPROVAL_MODE` governs how the terminal plugin
+acts on `require_approval`. It is a heuristic over command text, not a sandbox boundary:
+bypassable by obfuscation or by writing a script to a file and then executing it
+(`bot/command_policy.py:4-7`).
+
 ## Telegram Handler Rules
 
 - Plugin commands are normalized through `PluginManager.get_plugin_commands()` and registered
   in `post_init()` as command handlers or callback handlers (`bot/plugin_manager.py:865`,
-  `bot/telegram_bot.py:5380-5409`).
+  `bot/telegram_bot.py:5337-5366`).
 - Plugin command names must not include spaces; a leading `/` is stripped during normalization
   (`bot/plugin_manager.py:927`).
 - Plugin message handlers can provide a ready handler object or a `filters.X` string/object.
-  Invalid filters are logged and skipped (`bot/telegram_bot.py:5256`,
-  `bot/telegram_bot.py:5281-5286`).
+  Invalid filters are logged and skipped (`bot/telegram_bot.py:5238-5243`).
 - Do not reintroduce `eval` for handler filters.
 
 ## Database Rules
@@ -302,6 +354,12 @@ regression guard. Keep the two definitions in sync when changing task statuses, 
   - MCP plugin behavior: `bot/tests/test_mcp_server.py`
   - hook framework: `tests/test_plugin_hooks.py`, `tests/test_db_handle.py`
   - core/plugin boundary: `tests/test_no_hardcoded_plugin_refs.py`
+- `tests/test_exemplar_*.py` is a layer distinct from per-function unit tests: each exercises
+  one real, multi-step code path (burst-buffer-to-finalize-job flow, tool-call-interruption
+  repair, summarize-then-fallback compaction, terminal command guard) and asserts on the
+  *structure* of the result (counts, markers, invariants) rather than exact model/text output,
+  so it stays deterministic without pinning wording. Still plain `pytest`-collected, no
+  network — unlike `evals/`.
 - For narrow documentation-only edits, inspect the rendered Markdown or run no tests and state
   that no runtime tests were needed.
 - `evals/` is a third category and is never part of "run the tests". Everything under `tests/`
