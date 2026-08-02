@@ -49,9 +49,17 @@ rules from the current session.
   (`bot/plugins/plugin.py:109-124`).
 - Stable plugin identity is `plugin_id`; tool namespace is `function_prefix`, defaulting to
   `plugin_id` (`bot/plugins/plugin.py:11`, `bot/plugins/plugin.py:18`).
-- `PluginManager` loads plugin modules from `bot/plugins/*.py`, excluding `__init__.py` and
-  `plugin.py`; empty/unset `PLUGINS` loads all plugins, and non-empty `PLUGINS` acts as a
-  comma-separated allow-list (`bot/plugin_manager.py:218`, `bot/plugin_manager.py:230`).
+- `PluginManager` loads plugin modules from `bot/plugins/*.py`, excluding the files listed in
+  `NON_PLUGIN_MODULES` (`bot/plugin_manager.py:34`) — the base class plus the framework
+  modules `background.py`, `db_handle.py`, `hooks.py`; empty/unset `PLUGINS` loads all
+  plugins, and non-empty `PLUGINS` acts as a comma-separated allow-list
+  (`bot/plugin_manager.py:223`, `bot/plugin_manager.py:234`).
+- The loader runs a plugin through `exec_module` without registering it in `sys.modules`, so a
+  plugin module must not combine `from __future__ import annotations` with `@dataclass`:
+  `dataclasses` resolves the resulting string annotations through
+  `sys.modules[cls.__module__].__dict__` and the plugin silently fails to load with
+  `'NoneType' object has no attribute '__dict__'`. Guarded by
+  `tests/test_plugin_manager.py::test_plugin_modules_do_not_combine_future_annotations_with_dataclass`.
 - Function specs must be unique after namespacing. Unqualified spec names are normalized to
   `<function_prefix>.<name>` (`bot/plugin_manager.py:749`).
 - Duplicate function names are invalid. With `PLUGIN_STRICT_VALIDATION=true`, duplicates raise;

@@ -29,6 +29,11 @@ from .validation import validate_function_args
 
 logger = logging.getLogger(__name__)
 FRAMEWORK_TOOL_ARGS = {"chat_id", "user_id", "message_id", "request_context"}
+# Файлы в каталоге плагинов, которые плагинами не являются: базовый класс и
+# служебные модули фреймворка (импортируются напрямую, а не через загрузчик).
+NON_PLUGIN_MODULES = {
+    '__init__.py', 'plugin.py', 'background.py', 'db_handle.py', 'hooks.py',
+}
 MODEL_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -222,10 +227,9 @@ class PluginManager:
         self.plugin_instances.clear()
 
         plugins_path = Path(self.plugins_directory)
-        excluded_files = {'__init__.py', 'plugin.py'}
 
         for plugin_file in sorted(plugins_path.glob("*.py")):
-            if plugin_file.name not in excluded_files:
+            if plugin_file.name not in NON_PLUGIN_MODULES:
                 plugin_name = plugin_file.stem
                 if self.enabled_plugins and plugin_name not in self.enabled_plugins:
                     continue
@@ -790,11 +794,10 @@ class PluginManager:
 
     def _get_available_plugin_files(self) -> list[str]:
         plugins_path = Path(self.plugins_directory)
-        excluded_files = {'__init__.py', 'plugin.py'}
         return [
             p.stem
             for p in plugins_path.glob("*.py")
-            if p.name not in excluded_files
+            if p.name not in NON_PLUGIN_MODULES
         ]
 
     def _suggest_plugin_names(self, name: str, candidates: list[str]) -> list[str]:

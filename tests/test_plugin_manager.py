@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot.plugin_manager import PluginManager
+from bot.plugin_manager import NON_PLUGIN_MODULES, PluginManager
 from bot.request_context import RequestContext
 
 
@@ -244,6 +244,40 @@ def test_config_none_loads_all_plugins_by_default(tmp_path):
     assert "alpha" in pm.plugins
     specs = pm.get_functions_specs(helper=None, model_to_use="llmgateway/high", allowed_plugins=["All"])
     assert [spec["function"]["name"] for spec in specs] == ["alpha_do"]
+
+
+def test_plugin_modules_do_not_combine_future_annotations_with_dataclass():
+    """Загрузчик выполняет плагин через exec_module, не помещая его в sys.modules.
+    Под `from __future__ import annotations` аннотации полей становятся строками, и
+    dataclasses разрешает их через sys.modules[cls.__module__].__dict__ — получая
+    None. Плагин молча не загружается с сообщением
+    "'NoneType' object has no attribute '__dict__'"."""
+    plugins_dir = Path(__file__).resolve().parent.parent / "bot" / "plugins"
+
+    offenders = [
+        path.name
+        for path in sorted(plugins_dir.glob("*.py"))
+        if path.name not in NON_PLUGIN_MODULES
+        and "from __future__ import annotations" in (source := path.read_text(encoding="utf-8"))
+        and "@dataclass" in source
+    ]
+
+    assert offenders == [], (
+        f"Плагины {offenders} сочетают future-аннотации с @dataclass и не загрузятся"
+    )
+
+
+def test_service_modules_are_not_loaded_as_plugins(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    _write_plugin(plugin_dir / "hooks.py", "HooksPlugin", "do")
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    assert "alpha" in pm.plugins
+    assert "hooks" not in pm.plugins
+    assert pm._get_available_plugin_files() == ["alpha"]
 
 
 def test_register_plugin_ignores_imported_plugin_classes(tmp_path, monkeypatch):
