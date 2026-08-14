@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 
 import openai
 
@@ -55,32 +56,64 @@ def _strip_framework_tool_args(args: dict) -> None:
         args.pop(key, None)
 
 
-def _tool_call_semaphore(helper) -> asyncio.Semaphore:
-    """Per-helper semaphore that bounds parallel tool execution.
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
 
-    Why: a single batch from the model can request many tool calls; without a
-    bound, asyncio.gather fans out unbounded subprocess/HTTP work and starves
-    the event loop. Lazy-init keeps the semaphore bound to the current loop —
-    если loop пересоздан (restart, отдельные тесты), привязанный к мёртвому
-    loop Semaphore поднимет RuntimeError; поэтому проверяем id(loop) и
+
+def _tool_call_batch_semaphore() -> asyncio.Semaphore:
+    """Bound on parallel tool calls within ONE model batch, i.e. one chat.
+
+    Tool calls only ever run concurrently inside a single
+    ``_execute_prepared_tool_calls`` call, so a fresh semaphore per batch is
+    exactly a per-chat bound — no keyed registry, nothing to evict, no loop
+    affinity to track.
+    """
+    return asyncio.Semaphore(_positive_int_env("TOOL_CALL_PARALLELISM", 5))
+
+
+def _tool_call_global_semaphore(helper) -> asyncio.Semaphore:
+    """Process-wide ceiling on parallel tool execution, shared by all chats.
+
+    Why: the per-batch bound alone lets N concurrent chats fan out N×limit
+    subprocess/HTTP jobs. This second gate caps the total so one busy chat
+    cannot starve the event loop, while the per-batch gate keeps a single
+    chat from occupying every global slot.
+
+    Lazy-init keeps the semaphore bound to the current loop — если loop
+    пересоздан (restart, отдельные тесты), привязанный к мёртвому loop
+    Semaphore поднимет RuntimeError; поэтому проверяем id(loop) и
     пересоздаём по необходимости.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
-    cached = getattr(helper, "_tool_call_semaphore_bundle", None)
+    cached = getattr(helper, "_tool_call_global_semaphore_bundle", None)
     if cached is not None and loop is not None and cached[0] is loop:
         return cached[1]
-    try:
-        limit = max(1, int(os.getenv("TOOL_CALL_PARALLELISM", "5")))
-    except ValueError:
-        limit = 5
-    sem = asyncio.Semaphore(limit)
+    sem = asyncio.Semaphore(_positive_int_env("TOOL_CALL_GLOBAL_PARALLELISM", 20))
     if loop is not None:
-        helper._tool_call_semaphore_bundle = (loop, sem)
-    helper._tool_call_semaphore = sem
+        helper._tool_call_global_semaphore_bundle = (loop, sem)
+    helper._tool_call_global_semaphore = sem
     return sem
+
+
+@asynccontextmanager
+async def _tool_call_slot(semaphore, global_semaphore):
+    """Acquire the per-batch slot first, then the process-wide one.
+
+    Order matters: taking the batch slot first means a single chat can never
+    hold more than its own limit of places in the global queue.
+    """
+    async with semaphore:
+        if global_semaphore is None:
+            yield
+            return
+        async with global_semaphore:
+            yield
 
 
 async def _call_function_bounded(
@@ -91,8 +124,9 @@ async def _call_function_bounded(
     semaphore,
     tool_call_id=None,
     model_name=None,
+    global_semaphore=None,
 ):
-    async with semaphore:
+    async with _tool_call_slot(semaphore, global_semaphore):
         without_chat_lock = getattr(helper, "_without_chat_lock", None)
         tool_chat_id = None
         if callable(without_chat_lock):
@@ -157,7 +191,9 @@ async def _call_function_bounded(
                              'ok': ok, 'error': error})
 
 
-async def _execute_prepared_tool_calls(helper, prepared, request_context, semaphore):
+async def _execute_prepared_tool_calls(
+    helper, prepared, request_context, semaphore, global_semaphore=None,
+):
     results = [None] * len(prepared)
     phases = [
         [(idx, item) for idx, item in enumerate(prepared) if item[0] != DELIVERY_TOOL_NAME],
@@ -175,6 +211,7 @@ async def _execute_prepared_tool_calls(helper, prepared, request_context, semaph
                 semaphore,
                 tool_call_id=_tool_call_id,
                 model_name=model_name,
+                global_semaphore=global_semaphore,
             )
             for _idx, (name, model_name, args, _canonical_args, _tool_call_id) in phase
         ]
@@ -1425,8 +1462,14 @@ async def handle_function_call(
                 log_exception_shape(exc),
             )
 
-        semaphore = _tool_call_semaphore(helper)
-        results = await _execute_prepared_tool_calls(helper, prepared, request_context, semaphore)
+        semaphore = _tool_call_batch_semaphore()
+        results = await _execute_prepared_tool_calls(
+            helper,
+            prepared,
+            request_context,
+            semaphore,
+            _tool_call_global_semaphore(helper),
+        )
 
         direct_results_collected: list = []
         failed_calls: list[tuple[str, str]] = []

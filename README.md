@@ -295,6 +295,8 @@ by the runtime. **Bold** rows are required.
 | `PROXY_WEB` | `` | url | Proxy for ad-hoc web fetches. |
 | `ENABLE_FUNCTIONS` | derived | bool | Enable tool-calling. Auto-detected from the chosen model. |
 | `FUNCTIONS_MAX_CONSECUTIVE_CALLS` | `10` | int | Cap on consecutive tool-call rounds in the main loop (per assistant turn). |
+| `TOOL_CALL_PARALLELISM` | `5` | int | Parallel tool calls within one model batch, i.e. per chat. |
+| `TOOL_CALL_GLOBAL_PARALLELISM` | `20` | int | Process-wide ceiling on parallel tool execution across all chats. Keeps one busy chat from starving the others while still bounding total load. |
 
 ### Image, Vision, TTS, Transcription
 
