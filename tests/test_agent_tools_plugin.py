@@ -1256,6 +1256,58 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_subagents_drop_reasoning_traces_from_history(tmp_path):
+    class ReasoningCompletions(FakeCompletions):
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs.get("tools") and not any(
+                message.get("role") == "tool" for message in kwargs["messages"]
+            ):
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content="Long intermediate reasoning trace",
+                                tool_calls=self.tool_calls,
+                            )
+                        )
+                    ]
+                )
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="final answer", tool_calls=None)
+                    )
+                ]
+            )
+
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(completions=ReasoningCompletions())
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0]["status"] == "completed"
+    reentry_messages = helper.completions.calls[1]["messages"]
+    assistant_messages = [
+        message for message in reentry_messages if message.get("role") == "assistant"
+    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["content"] is None
+    assert assistant_messages[0]["tool_calls"]
+    assert not any(
+        "Long intermediate reasoning trace" in str(message.get("content") or "")
+        for message in reentry_messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_subagents_uses_async_current_model_when_available(tmp_path):
     class AsyncModelHelper(FakeLLMHelper):
         def get_current_model(self, user_id, session_id=None):

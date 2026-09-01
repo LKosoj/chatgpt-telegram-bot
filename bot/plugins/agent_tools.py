@@ -3423,7 +3423,7 @@ class AgentToolsPlugin(Plugin):
             choice = response.choices[0]
             tool_calls = self._extract_tool_calls(choice, helper)
             if tool_calls and not is_final_round:
-                messages.append(self._assistant_tool_calls_message(choice, tool_calls))
+                messages.append(self._assistant_tool_calls_message(tool_calls))
                 tool_responses: List[str | None] = [None] * len(tool_calls)
                 pending_calls: List[tuple[int, Dict[str, str]]] = []
                 for index, call in enumerate(tool_calls):
@@ -3616,22 +3616,14 @@ class AgentToolsPlugin(Plugin):
             })
         return tool_calls
 
-    def _assistant_tool_calls_message(self, choice, tool_calls: List[Dict[str, str]]) -> Dict[str, Any]:
-        message = getattr(choice, "message", None)
-        raw_content = getattr(message, "content", None)
-        if isinstance(raw_content, list):
-            parts = []
-            for item in raw_content:
-                if isinstance(item, dict):
-                    parts.append(str(item.get("text") or ""))
-                else:
-                    parts.append(str(item))
-            normalized_content = "\n".join(part for part in parts if part) or None
-        else:
-            normalized_content = raw_content
+    def _assistant_tool_calls_message(self, tool_calls: List[Dict[str, str]]) -> Dict[str, Any]:
+        # The model's intermediate reasoning is dropped here: only the tool calls
+        # survive into the next round, so subagent history does not grow with
+        # reasoning traces. Matches the main chat loop, which also stores
+        # ``content: None`` for assistant tool-call messages.
         return {
             "role": "assistant",
-            "content": normalized_content,
+            "content": None,
             "tool_calls": [
                 {
                     "id": call["id"],
