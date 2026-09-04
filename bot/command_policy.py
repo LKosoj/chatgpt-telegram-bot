@@ -100,12 +100,35 @@ _PIP_BREAK_SYSTEM_PACKAGES_REASON = (
     "Install runtime dependencies through the bot environment/setup flow instead of mutating system Python."
 )
 
-# Segment-boundary anchor: true start of string, or right after one of the segment
-# separator characters (`;`, `&` — covering `&&`, `|` — covering `||`, or newline).
-_SEG_START = r"(?:^|[;\n&|])\s*"
-# Command position within a segment: optional leading VAR=value assignments, optional
-# leading `sudo`/`env` (with its own flags), optional path prefix before the command.
-_CMD_PREFIX = _SEG_START + r"(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|env)\s+(?:-\S+\s+)*)*(?:\S*/)?"
+# Segment-boundary characters: `;`, `&` (covering `&&`), `|` (covering `||`), newline,
+# and the two grouping openers `(` (subshell) / `{` (brace group) — a command right
+# after either opener is in command position exactly like after `;`/`&&`/a newline,
+# e.g. `( rm -rf / )` or `{ rm -rf /; }`. Shared by _SEG_START and the interpreter
+# -c splice below so both learn about a new opener in one place.
+_SEG_BOUNDARY_CHARS = r";\n&|({"
+# Segment-boundary anchor: true start of string, or right after one of the above.
+_SEG_START = r"(?:^|[" + _SEG_BOUNDARY_CHARS + r"])\s*"
+# Wrapper commands that pass their trailing argument through to a real command in the
+# same command position: privilege/env (`sudo`, `env`), scheduling/monitoring
+# (`timeout`, `nohup`, `nice`, `stdbuf`, `time`), batch execution (`xargs`), and the
+# shell builtins that force literal/builtin lookup (`command`, `builtin`). Matched only
+# at a segment boundary (via _CMD_PREFIX below), so a filename or argument that happens
+# to spell one of these words elsewhere in a command is never treated as a wrapper.
+_WRAPPER_WORD = r"(?:sudo|env|timeout|nohup|nice|stdbuf|time|xargs|command|builtin)"
+# One wrapper's own argument: a `-flag` (bundled or with attached value, e.g. `-n`,
+# `-oL`), a bare duration/number (`timeout 10`, `nice -n 19`), or a VAR=value
+# assignment (`env FOO=bar`). Bounded and specific on purpose: this must not swallow
+# the real command name that follows the wrapper.
+_WRAPPER_ARG = r"(?:-\S+|\d+[smhd]?|[A-Za-z_]\w*=\S*)"
+# Command position within a segment: optional leading VAR=value assignments, then zero
+# or more stacked wrapper words each with its own zero-or-more args (covers chains like
+# `sudo env FOO=bar nice -n 19`), then an optional path prefix before the command.
+_CMD_PREFIX = (
+    _SEG_START
+    + r"(?:[A-Za-z_]\w*=\S*\s+)*"
+    + r"(?:" + _WRAPPER_WORD + r"\b\s+(?:" + _WRAPPER_ARG + r"\s+)*)*"
+    + r"(?:\S*/)?"
+)
 # Rest of the current segment only: excludes the segment separator characters so a
 # flag/keyword search below never leaks into a different segment.
 _SEG_REST = r"[^;&|\n]*"
@@ -117,9 +140,17 @@ _SQL_CLIENTS = r"(?:psql|mysql|mariadb|sqlite3|clickhouse-client|mongosh|mongo)"
 # script string it takes is scanned as its own command position, e.g.
 # `bash -c "rm -rf /"` -> `bash -c\nrm -rf /`.
 _INTERPRETER_DASH_C_RE = re.compile(
-    r"((?:^|[;\n&|])\s*(?:\S+/)?" + _INTERPRETER_NAMES + r"\b(?:\s+-{1,2}\S+)*?\s+-[^-\s]*c)(\s+)",
+    r"((?:^|[" + _SEG_BOUNDARY_CHARS + r"])\s*(?:\S+/)?" + _INTERPRETER_NAMES + r"\b(?:\s+-{1,2}\S+)*?\s+-[^-\s]*c)(\s+)",
     re.IGNORECASE,
 )
+
+# Splices a segment boundary (newline) right after a `; do`/`; then`/`; else` clause
+# keyword so the command that follows is scanned in its own command position, e.g.
+# `for d in /; do rm -rf $d; done` -> `for d in /; do\nrm -rf $d; done`. Anchored on a
+# preceding `;` (the only place POSIX shell grammar allows these keywords to open a new
+# command list) so a `do`/`then`/`else` that happens to appear as a plain argument
+# elsewhere is never spliced.
+_CLAUSE_KEYWORD_RE = re.compile(r"(;\s*(?:do|then|else)\b)(\s+)", re.IGNORECASE)
 
 # rm in command position, OR (conservatively) a segment whose command position is an
 # unresolvable dynamic substitution ($(...) / `...`) — since the real command name
@@ -152,7 +183,8 @@ DEFAULT_RULES: "tuple[CommandRule, ...]" = (
         reason="destructive / fork bomb",
     ),
     CommandRule(
-        pattern=_CMD_PREFIX + r"curl\b" + _SEG_REST + r"\|\s*(?:\S+/)?(?:ba|da|k|z)?sh\b",
+        pattern=_CMD_PREFIX + r"curl\b" + _SEG_REST
+        + r"\|\s*(?:sudo\s+)?(?:\S+/)?" + _INTERPRETER_NAMES + r"\b",
         decision="require_approval",
         reason="pipe-to-shell",
     ),
@@ -366,7 +398,8 @@ def normalize_command(text: str) -> str:
         )
         return text
     normalized = _normalize_at_depth(text, 0)
-    return _INTERPRETER_DASH_C_RE.sub(lambda m: m.group(1) + "\n", normalized)
+    normalized = _INTERPRETER_DASH_C_RE.sub(lambda m: m.group(1) + "\n", normalized)
+    return _CLAUSE_KEYWORD_RE.sub(lambda m: m.group(1) + "\n", normalized)
 
 
 def parse_command_policy(data: object) -> CommandPolicy:
@@ -432,6 +465,23 @@ def load_policy_from_env(env_value: Optional[str] = None) -> CommandPolicy:
 
 
 def evaluate_command(command: str, policy: CommandPolicy) -> CommandDecision:
+    if len(command) > MAX_NORMALIZE_LENGTH:
+        # Rule matching cost grows super-linearly with input size (every segment
+        # boundary restarts the command-position scan), so an unbounded string is not
+        # scanned at all: it cannot be classified cheaply, therefore it is not allowed
+        # automatically either.
+        logger.warning(
+            "command_policy: input length %d exceeds MAX_NORMALIZE_LENGTH (%d); "
+            "not scanned, escalating instead",
+            len(command),
+            MAX_NORMALIZE_LENGTH,
+        )
+        decision = "deny" if policy.mode == "allowlist" else "require_approval"
+        return CommandDecision(
+            decision=decision,
+            reason=f"command longer than {MAX_NORMALIZE_LENGTH} characters is not analyzed",
+            matched=None,
+        )
     scannable = normalize_command(command)
     for rule in policy.rules:
         try:

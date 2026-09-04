@@ -8,8 +8,6 @@ and, just as importantly, the cases where the split must stay unknown.
 """
 import types
 
-import pytest
-
 from tests.test_openai_helper_tool_calls import (
     DummyClient,
     DummyPluginManager,
@@ -104,7 +102,7 @@ async def test_split_stays_unknown_when_a_tool_call_ran_first():
     async def fake_handle_function_call(chat_id, response, **kwargs):
         return response, ("some_plugin",)
 
-    helper._OpenAIHelper__handle_function_call = fake_handle_function_call
+    helper._handle_function_call = fake_handle_function_call
     helper.config["enable_functions"] = True
 
     await _drain(helper)

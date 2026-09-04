@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import logging
 import sys
+import threading
 import types
 from contextlib import suppress
 
@@ -17,14 +18,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -53,6 +49,7 @@ _install_module_if_missing("tenacity", _tenacity)
 from bot import __main__ as bot_main  # noqa: E402
 from bot import telegram_bot  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from tests.fakes import FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -208,6 +205,8 @@ class FakeApplicationBuilder:
         self.token_calls = []
         self.local_mode_calls = []
         self.base_url_calls = []
+        self.proxy_calls = []
+        self.get_updates_proxy_calls = []
 
     def token(self, token):
         self.token_calls.append(token)
@@ -231,6 +230,14 @@ class FakeApplicationBuilder:
 
     def base_url(self, url):
         self.base_url_calls.append(url)
+        return self
+
+    def proxy(self, proxy):
+        self.proxy_calls.append(proxy)
+        return self
+
+    def get_updates_proxy(self, proxy):
+        self.get_updates_proxy_calls.append(proxy)
         return self
 
     def build(self):
@@ -322,14 +329,17 @@ def _set_required_env(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BASE_URL", raising=False)
     monkeypatch.delenv("TELEGRAM_RICH_MESSAGES", raising=False)
     monkeypatch.delenv("TELEGRAM_RICH_DRAFTS", raising=False)
-    monkeypatch.delenv("CHAT_RUN_VARIANT_B_ENABLED", raising=False)
 
 
 def _run_main_with_fake_dependencies(monkeypatch):
     CapturingTelegramBot.instances.clear()
     monkeypatch.setattr(bot_main, "load_dotenv", lambda: None)
     monkeypatch.setattr(bot_main, "PluginManager", lambda config: FakePluginManager())
-    monkeypatch.setattr(bot_main, "Database", lambda: object())
+    def _fake_database():
+        return object()
+
+    _fake_database.configure = lambda **kwargs: None
+    monkeypatch.setattr(bot_main, "Database", _fake_database)
     monkeypatch.setattr(bot_main, "OpenAIHelper", FakeOpenAIHelper)
     monkeypatch.setattr(bot_main, "ChatGPTTelegramBot", CapturingTelegramBot)
     monkeypatch.setattr(
@@ -675,23 +685,6 @@ def test_main_parses_telegram_local_mode_and_custom_base_url(monkeypatch):
     assert bot.run_calls == 1
 
 
-def test_main_enables_chat_run_variant_b_by_default(monkeypatch):
-    _set_required_env(monkeypatch)
-
-    bot = _run_main_with_fake_dependencies(monkeypatch)
-
-    assert bot.openai.config["chat_run_variant_b_enabled"] is True
-
-
-def test_main_can_disable_chat_run_variant_b_flag(monkeypatch):
-    _set_required_env(monkeypatch)
-    monkeypatch.setenv("CHAT_RUN_VARIANT_B_ENABLED", "false")
-
-    bot = _run_main_with_fake_dependencies(monkeypatch)
-
-    assert bot.openai.config["chat_run_variant_b_enabled"] is False
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -746,6 +739,24 @@ def test_telegram_builder_skips_base_url_when_local_mode_disabled(monkeypatch):
     assert builder.local_mode_calls == [False]
     assert builder.base_url_calls == []
     assert application.run_polling_calls == 1
+
+
+def test_telegram_builder_sets_proxy_when_configured(monkeypatch):
+    builder, application = _run_bot_with_fake_builder(
+        monkeypatch,
+        {"proxy": "http://proxy.local:8080"},
+    )
+
+    assert builder.proxy_calls == ["http://proxy.local:8080"]
+    assert builder.get_updates_proxy_calls == ["http://proxy.local:8080"]
+    assert application.run_polling_calls == 1
+
+
+def test_telegram_builder_skips_proxy_when_not_configured(monkeypatch):
+    builder, _application = _run_bot_with_fake_builder(monkeypatch)
+
+    assert builder.proxy_calls == []
+    assert builder.get_updates_proxy_calls == []
 
 
 def test_run_post_shutdown_cleanup_not_repeated_by_finally(monkeypatch):
@@ -964,3 +975,33 @@ async def test_cleanup_cancels_only_owned_tasks_and_shuts_db_last():
         unrelated.cancel()
         with suppress(asyncio.CancelledError):
             await unrelated
+
+
+@pytest.mark.asyncio
+async def test_cleanup_shuts_db_down_off_the_event_loop_thread():
+    """``db.shutdown()`` is a blocking sync call; ``cleanup()`` must run it via
+    ``asyncio.to_thread`` instead of calling it directly on the event loop thread
+    (see docs/remediation_2026-09-04/T08-db-deadlock.md).
+    """
+    event_loop_thread = threading.get_ident()
+    shutdown_threads = []
+
+    class ThreadRecordingDb:
+        def shutdown(self):
+            shutdown_threads.append(threading.get_ident())
+
+    bot = object.__new__(ChatGPTTelegramBot)
+    bot._cleanup_called = False
+    bot.openai = CleanupOpenAI([])
+    bot.db = ThreadRecordingDb()
+    bot.buffer_lock = asyncio.Lock()
+    bot.media_group_lock = asyncio.Lock()
+    bot._background_tasks = []
+    bot._transient_tasks = set()
+    bot.message_buffer = {}
+    bot.media_group_buffer = {}
+
+    await bot.cleanup()
+
+    assert shutdown_threads == [shutdown_threads[0]]
+    assert shutdown_threads[0] != event_loop_thread

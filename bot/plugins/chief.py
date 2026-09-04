@@ -193,6 +193,20 @@ class ChiefPlugin(Plugin):
             timeout = aiohttp.ClientTimeout(total=self._api_timeout)
             self.session = aiohttp.ClientSession(timeout=timeout)
 
+    async def close_async(self) -> None:
+        """Закрывает aiohttp-сессию, лениво созданную `_ensure_session()`.
+
+        Без этого при остановке бота в логах видно предупреждение aiohttp
+        "Unclosed client session" — сессия держит открытый TCP-сокет до сборки мусора.
+        """
+        session = getattr(self, "session", None)
+        if session is None or session.closed:
+            return
+        try:
+            await session.close()
+        except Exception:
+            logging.exception("Failed to close Chief aiohttp session")
+
     def _get_cache_key(self, params: Dict) -> str:
         """Генерирует ключ кэша на основе параметров запроса"""
         return json.dumps(sorted(params.items()))

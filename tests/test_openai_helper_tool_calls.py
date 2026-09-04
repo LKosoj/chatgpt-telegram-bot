@@ -19,14 +19,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _markdown2 = types.ModuleType("markdown2")
@@ -67,6 +62,7 @@ from bot.openai_tool_handler import (  # noqa: E402
     _filter_tools_by_name,
     _has_tool_specs,
     _merge_direct_results_into_final,
+    _reentry_tool_choice,
     _retry_plain_text_tool_intent,
     handle_function_call,
 )
@@ -78,6 +74,7 @@ from bot.user_settings import (  # noqa: E402
     get_user_settings,
     normalize_string_list,
 )
+from tests.fakes import FakeChoice, FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -355,19 +352,6 @@ class FakeToolCall:
         self.function = types.SimpleNamespace(name=name, arguments=arguments)
 
 
-class FakeMessage:
-    def __init__(self, tool_calls=None, content=""):
-        self.tool_calls = tool_calls
-        self.content = content
-
-
-class FakeChoice:
-    def __init__(self, tool_calls=None, content=""):
-        self.message = FakeMessage(tool_calls=tool_calls, content=content)
-        self.delta = None
-        self.finish_reason = None
-
-
 class FakeResponse:
     def __init__(self, tool_calls=None, content="", total_tokens=3, prompt_tokens=1, completion_tokens=2):
         self.choices = [FakeChoice(tool_calls=tool_calls, content=content)]
@@ -504,35 +488,11 @@ def test_configured_model_context_window_overrides_default():
 
 
 def test_common_chat_response_methods_are_not_wrapped_in_method_level_retry():
-    chat_source = inspect.getsource(OpenAIHelper._OpenAIHelper__common_get_chat_response)
+    chat_source = inspect.getsource(OpenAIHelper._common_get_chat_response)
     vision_source = inspect.getsource(OpenAIHelper._OpenAIHelper__common_get_chat_response_vision)
 
     assert "@retry" not in chat_source
     assert "@retry" not in vision_source
-
-
-@pytest.mark.asyncio
-async def test_provider_family_branch_forces_non_streaming_request(monkeypatch):
-    monkeypatch.setattr(openai_helper_module, "O_MODELS", ("provider/no-stream",))
-    helper = _make_helper(
-        DummyPluginManager({}),
-        client=DummyClient([FakeResponse(content="done")]),
-    )
-    helper.config["model"] = "provider/no-stream"
-    helper.config["model_choices"] = ["provider/no-stream"]
-
-    response = await helper._OpenAIHelper__common_get_chat_response(
-        1,
-        "hello",
-        stream=True,
-        user_id=1,
-    )
-
-    assert response.choices[0].message.content == "done"
-    request_kwargs = helper.client.create_kwargs[0]
-    assert request_kwargs["stream"] is False
-    assert "max_completion_tokens" in request_kwargs
-    assert "max_tokens" not in request_kwargs
 
 
 @pytest.mark.asyncio
@@ -569,41 +529,26 @@ async def test_timed_create_retries_rate_limit_at_sdk_boundary(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize(
-    ("enabled", "stream", "expected_path"),
-    [
-        (True, False, "provider"),
-        (False, False, "legacy"),
-        (True, True, "provider"),
-        (False, True, "legacy"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_create_chat_response_completion_gate(monkeypatch, enabled, stream, expected_path):
+async def test_create_chat_response_completion_gate(monkeypatch):
     helper = _make_helper(DummyPluginManager({}), client=DummyClient())
-    helper.config["chat_run_variant_b_enabled"] = enabled
     calls = []
 
     async def fake_provider(*, kind, **kwargs):
         calls.append(("provider", kind, kwargs))
         return "provider-response"
 
-    async def fake_legacy(*, kind, **kwargs):
-        calls.append(("legacy", kind, kwargs))
-        return "legacy-response"
-
     monkeypatch.setattr(helper, "_timed_create_via_ai_provider", fake_provider)
-    monkeypatch.setattr(helper, "_timed_create", fake_legacy)
 
     result = await helper._create_chat_response_completion(
         kind="unit",
         model="llmgateway/high",
         messages=[],
-        stream=stream,
+        stream=True,
     )
 
-    assert result == f"{expected_path}-response"
-    assert [call[0] for call in calls] == [expected_path]
+    assert result == "provider-response"
+    assert calls == [("provider", "unit", {"model": "llmgateway/high", "messages": [], "stream": True})]
 
 
 @pytest.mark.asyncio
@@ -670,7 +615,7 @@ async def test_streamed_tool_call_records_provider_response_on_terminal_chunk():
             messages=[],
             stream=True,
         )
-        response, tools_used = await helper._OpenAIHelper__handle_function_call(
+        response, tools_used = await helper._handle_function_call(
             chat_id=1,
             response=response,
             stream=True,
@@ -786,7 +731,7 @@ async def test_handle_function_call_accepts_provider_response_tool_calls():
         ),
     )
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1,
         response=response,
         stream=False,
@@ -823,34 +768,6 @@ async def test_reply_intent_uses_provider_wrapper_by_default():
         if event["type"] == "ai_provider_response"
     ]
     assert [event["kind"] for event in provider_events] == ["reply_intent"]
-
-
-@pytest.mark.asyncio
-async def test_reply_intent_can_roll_back_to_legacy_timed_create():
-    from bot.session_logger import clear_trace, set_trace
-
-    helper = _make_helper(
-        DummyPluginManager({}),
-        client=DummyClient([FakeResponse(content='{"intent":"text_reply"}')]),
-    )
-    helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = False
-
-    token = set_trace(1, "reply-session", "reply-turn")
-    try:
-        intent = await helper.classify_reply_intent("answer", "text")
-    finally:
-        clear_trace(token)
-
-    assert intent == "text_reply"
-    assert not any(
-        event["type"] == "ai_provider_response"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "reply_intent"
-        for event in helper.session_logger.events
-    )
 
 
 @pytest.mark.asyncio
@@ -929,7 +846,6 @@ async def test_chat_run_variant_b_provider_failure_logs_provider_error_event():
 
     helper = _make_helper(DummyPluginManager({}), client=FailingClient())
     helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = True
 
     with pytest.raises(Exception):
         await helper.get_chat_response(
@@ -1098,48 +1014,6 @@ async def test_interpret_image_uses_provider_wrapper_by_default():
 
 
 @pytest.mark.asyncio
-async def test_interpret_image_can_roll_back_to_legacy_timed_create():
-    from bot.session_logger import clear_trace, set_trace
-
-    png_1x1 = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-    )
-    helper = _make_helper(
-        DummyPluginManager({}),
-        client=DummyClient([FakeResponse(content="legacy vision")]),
-    )
-    helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = False
-
-    token = set_trace(1, "vision-session", "vision-turn")
-    try:
-        answer, total_tokens = await helper.interpret_image(
-            1,
-            io.BytesIO(png_1x1),
-            prompt="describe",
-            user_id=1,
-            image_file_id="image-1",
-        )
-    finally:
-        clear_trace(token)
-
-    assert answer == "legacy vision"
-    assert total_tokens == 3
-    assert not any(
-        event["type"] == "ai_provider_response"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "vision"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        item.get("type") == "image_url"
-        for item in helper.client.create_kwargs[0]["messages"][-1]["content"]
-    )
-
-
-@pytest.mark.asyncio
 async def test_interpret_image_stream_uses_provider_wrapper_by_default():
     from bot.session_logger import clear_trace, set_trace
 
@@ -1184,46 +1058,6 @@ async def test_interpret_image_stream_uses_provider_wrapper_by_default():
         "error_count": 0,
         "finish_reason": None,
     }]
-
-
-@pytest.mark.asyncio
-async def test_interpret_image_stream_can_roll_back_to_legacy_timed_create():
-    from bot.session_logger import clear_trace, set_trace
-
-    png_1x1 = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-    )
-    helper = _make_helper(
-        DummyPluginManager({}),
-        client=DummyClient([_fake_stream(["legacy vision"])]),
-    )
-    helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = False
-
-    token = set_trace(1, "vision-stream-session", "vision-stream-turn")
-    try:
-        chunks = []
-        async for chunk in helper.interpret_image_stream(
-            1,
-            io.BytesIO(png_1x1),
-            prompt="describe",
-            user_id=1,
-            image_file_id="image-1",
-        ):
-            chunks.append(chunk)
-    finally:
-        clear_trace(token)
-
-    assert chunks[0] == ("legacy vision", "not_finished")
-    assert chunks[-1][0] == "legacy vision"
-    assert not any(
-        event["type"] == "ai_provider_response"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "vision" and event["stream"] is True
-        for event in helper.session_logger.events
-    )
 
 
 @pytest.mark.asyncio
@@ -1747,7 +1581,7 @@ async def test_chat_request_tool_specs_use_request_user_for_disabled_plugins():
         get_mode_by_system_prompt=lambda _content: {"tools": ["weather", "time"]},
     )
 
-    await helper._OpenAIHelper__common_get_chat_response(
+    await helper._common_get_chat_response(
         chat_id=1,
         query="hello",
         session_id="session-1",
@@ -1839,7 +1673,7 @@ async def test_generate_speech_uses_user_tts_settings():
 async def test_stream_without_tool_calls_preserves_first_chunk():
     helper = _make_helper(DummyPluginManager({}))
 
-    response, tools_used = await helper._OpenAIHelper__handle_function_call(
+    response, tools_used = await helper._handle_function_call(
         chat_id=1,
         response=_fake_stream(["Hel", "lo"]),
         stream=True,
@@ -1885,29 +1719,6 @@ async def test_chat_response_stream_uses_provider_wrapper_by_default():
 
 
 @pytest.mark.asyncio
-async def test_chat_response_stream_can_roll_back_to_legacy_timed_create():
-    client = DummyClient([_fake_stream(["old"])])
-    helper = _make_helper(DummyPluginManager({}), client=client)
-    helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = False
-
-    chunks = []
-    async for chunk in helper.get_chat_response_stream(1, "hello", user_id=1):
-        chunks.append(chunk)
-
-    assert chunks[0] == ("old", "not_finished")
-    assert chunks[-1][0] == "old"
-    assert not any(
-        event["type"] == "ai_provider_response"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "main" and event["stream"] is True
-        for event in helper.session_logger.events
-    )
-
-
-@pytest.mark.asyncio
 async def test_initial_model_request_uses_resolved_allowed_plugins(monkeypatch):
     pm = DummyPluginManager({})
     helper = _make_helper(pm, client=DummyClient([FakeResponse(content="done")]))
@@ -1935,8 +1746,6 @@ async def test_chat_run_variant_b_returns_plain_chat_response():
         client=DummyClient([FakeResponse(content="evented answer")]),
     )
     helper.session_logger = CaptureSessionLogger()
-
-    assert helper.config["chat_run_variant_b_enabled"] is True
 
     answer, total_tokens = await helper.get_chat_response(
         chat_id=1,
@@ -1966,39 +1775,6 @@ async def test_chat_run_variant_b_returns_plain_chat_response():
 
 
 @pytest.mark.asyncio
-async def test_chat_run_variant_b_false_uses_legacy_non_stream_path(monkeypatch):
-    from bot.chat_run import ChatRun
-
-    async def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("ChatRun should not run when Variant B is disabled")
-
-    monkeypatch.setattr(ChatRun, "run_non_stream", fail_if_called)
-    helper = _make_helper(
-        DummyPluginManager({}),
-        client=DummyClient([FakeResponse(content="legacy answer")]),
-    )
-    helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = False
-
-    answer, total_tokens = await helper.get_chat_response(
-        chat_id=1,
-        query="hello",
-        user_id=1,
-    )
-
-    assert answer == "legacy answer"
-    assert total_tokens == 3
-    assert not any(
-        event["type"] in {"ai_provider_response", "provider_error", "run_end"}
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "main"
-        for event in helper.session_logger.events
-    )
-
-
-@pytest.mark.asyncio
 async def test_chat_run_variant_b_preserves_tool_call_flow():
     tool_spec = {
         "type": "function",
@@ -2018,7 +1794,6 @@ async def test_chat_run_variant_b_preserves_tool_call_flow():
     ])
     helper = _make_helper(pm, client=client)
     helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = True
 
     answer, total_tokens = await helper.get_chat_response(
         chat_id=1,
@@ -2060,7 +1835,6 @@ async def test_chat_run_variant_b_direct_result_short_circuits():
     ])
     helper = _make_helper(pm, client=client)
     helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = True
 
     answer, total_tokens = await helper.get_chat_response(
         chat_id=1,
@@ -2100,7 +1874,6 @@ async def test_chat_run_variant_b_logs_retry_and_run_end():
     ])
     helper = _make_helper(pm, client=client)
     helper.session_logger = CaptureSessionLogger()
-    helper.config["chat_run_variant_b_enabled"] = True
 
     answer, total_tokens = await helper.get_chat_response(
         chat_id=1,
@@ -2119,7 +1892,7 @@ async def test_chat_run_variant_b_logs_retry_and_run_end():
 
 
 @pytest.mark.asyncio
-async def test_tool_execution_allows_nested_chat_response_with_same_chat_lock():
+async def test_tool_execution_rejects_nested_chat_response_even_with_same_chat_lock():
     class NestedPluginManager(DummyPluginManager):
         async def call_function(self, name, helper, arguments, request_context=None):
             return await helper.get_chat_response(chat_id=1, query="nested", user_id=1)
@@ -2130,19 +1903,56 @@ async def test_tool_execution_allows_nested_chat_response_with_same_chat_lock():
     )
     lock = await helper._chat_lock(1)
 
-    async with lock:
-        result = await asyncio.wait_for(
-            _call_function_bounded(
-                helper,
-                "prompt_perfect.optimize_prompt",
-                json.dumps({"chat_id": 1}),
-                None,
-                asyncio.Semaphore(1),
-            ),
-            timeout=1,
-        )
+    # Эмулируем реальный внешний ход: get_chat_response() всегда выставляет
+    # _CHAT_STATE_KEY до захвата лока (см. bot/openai_helper.py), поэтому
+    # вложенный вызов из tool-call видит непустой ContextVar именно так, а
+    # не через сам факт удержания lock.
+    state_token = openai_helper_module._CHAT_STATE_KEY.set(1)
+    try:
+        async with lock:
+            with pytest.raises(RuntimeError, match="get_chat_response"):
+                await asyncio.wait_for(
+                    _call_function_bounded(
+                        helper,
+                        "prompt_perfect.optimize_prompt",
+                        json.dumps({"chat_id": 1}),
+                        None,
+                        asyncio.Semaphore(1),
+                    ),
+                    timeout=2,
+                )
+    finally:
+        openai_helper_module._CHAT_STATE_KEY.reset(state_token)
 
-    assert result == ("nested done", 3)
+    # Guard срабатывает до захвата лока — лок не должен остаться удержанным
+    # где-то во вложенном вызове после того, как исключение всплыло.
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_rejects_call_from_active_turn():
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient([FakeResponse(content="x")]))
+    token = openai_helper_module._CHAT_STATE_KEY.set(1)
+    try:
+        with pytest.raises(RuntimeError, match="get_chat_response"):
+            await asyncio.wait_for(
+                helper.get_chat_response(chat_id=999, query="q", user_id=1),
+                timeout=2,
+            )
+    finally:
+        openai_helper_module._CHAT_STATE_KEY.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_get_chat_response_stream_rejects_call_from_active_turn():
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient([_fake_stream([])]))
+    token = openai_helper_module._CHAT_STATE_KEY.set(1)
+    try:
+        with pytest.raises(RuntimeError, match="get_chat_response"):
+            async for _ in helper.get_chat_response_stream(chat_id=999, query="q", user_id=1):
+                pass
+    finally:
+        openai_helper_module._CHAT_STATE_KEY.reset(token)
 
 
 @pytest.mark.asyncio
@@ -2190,7 +2000,7 @@ async def test_llmgateway_tool_results_use_structured_tool_history():
         FakeToolCall("skills.get_skill_status", "{}", id="call-status"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -2347,7 +2157,7 @@ async def test_invalid_tool_arguments_logs_debug_values_and_keeps_sanitized_sess
 
     token = set_trace(1, "session-debug", "turn-debug")
     try:
-        out, tools_used = await helper._OpenAIHelper__handle_function_call(
+        out, tools_used = await helper._handle_function_call(
             chat_id=1,
             response=response,
             stream=False,
@@ -2409,7 +2219,7 @@ async def test_tool_arguments_and_response_are_visible_in_normal_logs(caplog):
     caplog.set_level(logging.INFO, logger="bot.openai_tool_handler")
     caplog.set_level(logging.INFO, logger="bot.openai_helper")
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1,
         response=response,
         stream=False,
@@ -2709,7 +2519,7 @@ async def test_add_to_history_persists_compacted_old_tool_results():
         messages.extend(_tool_call_pair(f"call-{index}", content))
     helper.conversations[1] = messages
 
-    await helper._OpenAIHelper__add_to_history(
+    await helper._add_to_history(
         1,
         role="assistant",
         content="final answer",
@@ -2884,7 +2694,7 @@ async def test_parallel_tool_calls_no_direct_result():
         FakeToolCall("p2.do", "{}"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -2961,7 +2771,50 @@ async def test_plain_text_tool_intent_repair_after_limit_sends_no_tools():
     assert out.choices[0].message.content == "done"
     assert tools_used == ("task_management.create_task",)
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
-    assert helper.client.create_kwargs[0]["tools"] == []
+    # An empty tool list must never reach the API as tools=[]; chat_completion()
+    # normalizes it away (kwargs simply omit the "tools" key).
+    assert "tools" not in helper.client.create_kwargs[0]
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_normalizes_empty_tools_to_none():
+    helper = _make_helper(
+        DummyPluginManager({}),
+        client=DummyClient([
+            FakeResponse(content="done"),
+            FakeResponse(content="done"),
+            FakeResponse(content="done"),
+        ]),
+    )
+
+    await helper.chat_completion(
+        model="llmgateway/high",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        tool_choice="auto",
+    )
+    assert "tools" not in helper.client.create_kwargs[0]
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+
+    # Regression: tools=None must still be omitted from kwargs (unchanged behavior).
+    await helper.chat_completion(
+        model="llmgateway/high",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+    )
+    assert "tools" not in helper.client.create_kwargs[1]
+
+    # Regression: a non-empty tools list passes through untouched, and an
+    # explicit tool_choice is not overwritten.
+    specs = [{"type": "function", "function": {"name": "weather.get_weather"}}]
+    await helper.chat_completion(
+        model="llmgateway/high",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=specs,
+        tool_choice="auto",
+    )
+    assert helper.client.create_kwargs[2]["tools"] == specs
+    assert helper.client.create_kwargs[2]["tool_choice"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -3026,27 +2879,6 @@ async def test_empty_response_retry_uses_pinned_session_max_tokens_percent():
 
 
 @pytest.mark.asyncio
-async def test_empty_response_after_tools_provider_family_uses_completion_tokens(monkeypatch):
-    monkeypatch.setattr(openai_helper_module, "O_MODELS", ("provider/no-stream",))
-    client = DummyClient([FakeResponse(content="retry done")])
-    helper = _make_helper(DummyPluginManager({}), client=client)
-    helper.conversations[1] = [{"role": "system", "content": "system"}]
-
-    response = await helper._retry_empty_response_after_tools(
-        chat_id=1,
-        user_id=1,
-        session_id=None,
-        model_to_use="provider/no-stream",
-    )
-
-    assert response.choices[0].message.content == "retry done"
-    request_kwargs = client.create_kwargs[0]
-    assert request_kwargs["stream"] is False
-    assert "max_completion_tokens" in request_kwargs
-    assert "max_tokens" not in request_kwargs
-
-
-@pytest.mark.asyncio
 async def test_prompt_perfect_suppresses_itself_on_reentry():
     tool_spec = {
         "type": "function",
@@ -3071,13 +2903,15 @@ async def test_prompt_perfect_suppresses_itself_on_reentry():
         FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
     assert out.choices[0].message.content == "final answer"
     assert tools_used == ("prompt_perfect.optimize_prompt",)
-    assert helper.client.create_kwargs[0]["tools"] == []
+    # An empty tool list must never reach the API as tools=[]; chat_completion()
+    # normalizes it away (kwargs simply omit the "tools" key).
+    assert "tools" not in helper.client.create_kwargs[0]
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
     assert len(pm.calls) == 1
 
@@ -3120,16 +2954,18 @@ async def test_prompt_perfect_retries_plain_text_tool_intent_without_tools():
         FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
     assert out.choices[0].message.content == "Сформирую дизайн-проект напрямую."
     assert tools_used == ("prompt_perfect.optimize_prompt",)
     assert helper.client.calls == 2
-    assert helper.client.create_kwargs[0]["tools"] == []
+    # An empty tool list must never reach the API as tools=[]; chat_completion()
+    # normalizes it away (kwargs simply omit the "tools" key).
+    assert "tools" not in helper.client.create_kwargs[0]
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
-    assert helper.client.create_kwargs[1]["tools"] == []
+    assert "tools" not in helper.client.create_kwargs[1]
     assert helper.client.create_kwargs[1]["tool_choice"] == "none"
     assert len(pm.calls) == 1
     assert stuck_text != out.choices[0].message.content
@@ -3210,7 +3046,7 @@ async def test_prompt_perfect_suppression_survives_delivery_repair():
         FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3276,7 +3112,7 @@ async def test_delivery_repair_escalates_on_second_attempt():
     first_narrative = "Plain text — should trigger first repair."
     response = FakeResponse(content=first_narrative)
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3328,7 +3164,7 @@ async def test_non_object_tool_arguments_are_recoverable_tool_error():
         FakeToolCall("p1.do", "[]"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3353,7 +3189,7 @@ async def test_parallel_tool_calls_direct_result_short_circuit():
         FakeToolCall("p2.do", "{}"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3410,7 +3246,7 @@ async def test_agent_mode_defers_direct_result_and_continues_tool_loop():
         FakeToolCall("stable_diffusion.stable_diffusion", "{}", id="call-image"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3495,7 +3331,7 @@ async def test_agent_tools_workflow_defers_intermediate_direct_results_without_m
         ),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3569,7 +3405,7 @@ async def test_successful_tool_output_path_adds_manifest_for_delivery_reentry():
         FakeToolCall("builder.build", "{}", id="call-build"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3594,7 +3430,7 @@ async def test_malformed_direct_result_reenters_model_instead_of_short_circuitin
     )
     response = FakeResponse(tool_calls=[FakeToolCall("p1.do", "{}")])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3645,7 +3481,7 @@ async def test_skills_agent_retries_plain_text_final_response_through_delivery_t
         FakeToolCall("terminal.terminal", json.dumps({"command": "node /tmp/create_pptx.js"}), id="call-terminal"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3717,7 +3553,7 @@ async def test_skills_agent_plain_status_after_tools_can_resume_tool_work():
         FakeToolCall("terminal.terminal", json.dumps({"command": "node /tmp/create_pptx.js"}), id="call-build"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3896,6 +3732,72 @@ async def test_generic_successful_tool_does_not_bypass_consecutive_call_limit():
 
 
 @pytest.mark.asyncio
+async def test_final_delivery_required_not_set_without_delivery_tool_allowed():
+    # Mirrors a real mode like `code_interpreter`: an artifact-producing tool
+    # (`builder.build`) is allowed, but `agent_tools` (and therefore
+    # `agent_tools.deliver_to_user`) is not in the allow-list.
+    responses = {
+        "builder.build": {
+            "success": True,
+            "output_path": "/tmp/out.pptx",
+        },
+    }
+    specs = [
+        {"type": "function", "function": {"name": "builder.build"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager(responses, specs=specs),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    response = FakeResponse(tool_calls=[
+        FakeToolCall("builder.build", "{}", id="call-build"),
+    ])
+
+    out, tools_used = await handle_function_call(
+        helper,
+        chat_id=1,
+        response=response,
+        stream=False,
+        times=1,
+        allowed_plugins=["builder"],
+        user_id=1,
+    )
+
+    # Regression: without the gate, the artifact from builder.build would set
+    # final_delivery_required=True and the consecutive-call-limit branch would
+    # then narrow "tools" down to {agent_tools.deliver_to_user} — a tool that
+    # does not exist in this mode's specs, collapsing "tools" to empty.
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert helper.client.create_kwargs[0]["tools"] == specs
+    assert tools_used == ("builder.build",)
+    assert out.choices[0].message.content == "done"
+
+
+def test_reentry_tool_choice_enforces_delivery_grace_round_limit():
+    tools = [{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}]
+    max_consecutive_calls = 2
+    boundary = max_consecutive_calls + openai_tool_handler_module.DELIVERY_GRACE_ROUNDS
+
+    # One round before the boundary, the mandatory-delivery path still gets "auto".
+    assert _reentry_tool_choice(
+        tools,
+        times=boundary - 1,
+        max_consecutive_calls=max_consecutive_calls,
+        final_delivery_required=True,
+    ) == "auto"
+
+    # At the boundary, even final_delivery_required=True is forced to "none" —
+    # the mandatory-delivery path is bounded the same way as the ordinary one.
+    assert _reentry_tool_choice(
+        tools,
+        times=boundary,
+        max_consecutive_calls=max_consecutive_calls,
+        final_delivery_required=True,
+    ) == "none"
+
+
+@pytest.mark.asyncio
 async def test_delivery_tool_runs_after_plan_updates_in_same_batch():
     responses = {
         "agent_tools.manage_plan_tasks": {"success": True, "plan_tasks": {"tasks": []}},
@@ -3923,7 +3825,7 @@ async def test_delivery_tool_runs_after_plan_updates_in_same_batch():
         ),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -3969,7 +3871,7 @@ async def test_skills_agent_retries_initial_plain_text_response_through_delivery
         get_mode_by_system_prompt=lambda _content: None,
     )
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1,
         response=FakeResponse(content="plain text should not pass through"),
         stream=False,
@@ -4090,7 +3992,7 @@ async def test_agent_mode_sends_final_direct_result_when_defer_is_false():
         FakeToolCall("agent_tools.deliver_to_user", "{}", id="call-artifact"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4111,7 +4013,7 @@ async def test_allowed_tool_reentry_uses_original_allowlist():
         FakeToolCall("weather.get_weather", "{}"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["weather"], user_id=1
     )
 
@@ -4155,7 +4057,7 @@ async def test_all_allowlist_allows_any_tool_call():
         FakeToolCall("task_management.create_task", "{}"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4187,7 +4089,7 @@ async def test_request_context_tool_flow_injects_context_without_shared_user_id(
         })),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=999,
         response=response,
         stream=False,
@@ -4328,7 +4230,7 @@ async def test_skills_agent_routes_skill_scripts_away_from_codeinterpreter():
         ),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4359,7 +4261,7 @@ async def test_skills_agent_routes_active_skill_script_names_away_from_codeinter
         ),
     ])
 
-    await helper._OpenAIHelper__handle_function_call(
+    await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4389,7 +4291,7 @@ async def test_skills_agent_rejects_ad_hoc_tmp_script_creation_via_codeinterpret
         ),
     ])
 
-    await helper._OpenAIHelper__handle_function_call(
+    await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4418,7 +4320,7 @@ async def test_active_skill_script_reference_blocks_codeinterpreter_in_any_mode(
         ),
     ])
 
-    await helper._OpenAIHelper__handle_function_call(
+    await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4448,7 +4350,7 @@ async def test_ordinary_mode_merges_multiple_direct_results_into_final():
         FakeToolCall("stable_diffusion.second", "{}", id="call-b"),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4615,7 +4517,7 @@ async def test_deliver_to_user_carries_cleanup_directive_in_payload():
         FakeToolCall("agent_tools.deliver_to_user", "{}", id="call-final"),
     ])
 
-    out, _tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, _tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
@@ -4656,7 +4558,7 @@ async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
         ),
     ])
 
-    out, tools_used = await helper._OpenAIHelper__handle_function_call(
+    out, tools_used = await helper._handle_function_call(
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 

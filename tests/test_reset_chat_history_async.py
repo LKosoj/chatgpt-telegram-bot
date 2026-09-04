@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("tiktoken")
 
+from bot.database import ConversationContextError
 from bot.openai_helper import OpenAIHelper
 
 
@@ -171,8 +172,7 @@ async def test_async_method_signatures():
     import inspect
     assert inspect.iscoroutinefunction(OpenAIHelper.get_conversation_stats)
     assert inspect.iscoroutinefunction(OpenAIHelper.resolve_allowed_plugins)
-    # __add_to_history is name-mangled
-    add = getattr(OpenAIHelper, "_OpenAIHelper__add_to_history")
+    add = getattr(OpenAIHelper, "_add_to_history")
     assert inspect.iscoroutinefunction(add)
 
 
@@ -231,6 +231,27 @@ async def test_get_conversation_stats_cold_no_db_context_resets():
 
     # create_session called because there was no saved context
     helper.db.create_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_stats_propagates_error_without_creating_session():
+    """T11: a read error from get_conversation_context must propagate, not be
+    treated as 'no context yet' -> reset_chat_history/create_session must not run."""
+    helper = object.__new__(OpenAIHelper)
+    helper.conversations = {}
+    helper.loaded_conversation_sessions = {}
+    helper.config = {'max_sessions': 5}
+    helper.db = SimpleNamespace(
+        create_session_async=AsyncMock(side_effect=AssertionError("must not be called")),
+        get_conversation_context_async=AsyncMock(
+            side_effect=ConversationContextError("db locked")
+        ),
+    )
+
+    with pytest.raises(ConversationContextError):
+        await helper.get_conversation_stats(42)
+
+    helper.db.create_session_async.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +348,7 @@ def _make_helper_ask():
     helper.get_current_model = MagicMock(return_value="test-model")
     helper.get_max_tokens = MagicMock(return_value=100)
     # Stub __add_to_history so we can count calls
-    helper._OpenAIHelper__add_to_history = AsyncMock()
+    helper._add_to_history = AsyncMock()
     return helper
 
 
@@ -343,7 +364,7 @@ async def test_ask_inside_active_turn_does_not_write_history():
     finally:
         _CHAT_STATE_KEY.reset(token)
 
-    helper._OpenAIHelper__add_to_history.assert_not_called()
+    helper._add_to_history.assert_not_called()
     # conversations dict should remain untouched
     assert 7 not in helper.conversations
 
@@ -359,8 +380,8 @@ async def test_ask_outside_active_turn_writes_history_twice():
 
     await helper.ask("test prompt", user_id=7)
 
-    assert helper._OpenAIHelper__add_to_history.await_count == 2
-    calls = helper._OpenAIHelper__add_to_history.call_args_list
+    assert helper._add_to_history.await_count == 2
+    calls = helper._add_to_history.call_args_list
     assert calls[0].kwargs.get('role') == 'user' or calls[0].args[1] == 'user'
     assert calls[1].kwargs.get('role') == 'assistant' or calls[1].args[1] == 'assistant'
 

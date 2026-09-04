@@ -19,14 +19,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _markdown2 = types.ModuleType("markdown2")
@@ -50,6 +45,7 @@ _install_module_if_missing("tenacity", _tenacity)
 
 from bot import telegram_bot  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from tests.fakes import FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -69,6 +65,12 @@ class FakeUsageTracker:
 
     def add_transcription_seconds(self, seconds):
         self.transcription_seconds.append(seconds)
+
+    async def add_transcription_seconds_async(self, seconds):
+        return self.add_transcription_seconds(seconds)
+
+    async def get_current_cost_async(self):
+        return self.get_current_cost()
 
 
 class FakeDownloadedFile:

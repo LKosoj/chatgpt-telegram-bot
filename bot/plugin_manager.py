@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import importlib
@@ -17,7 +17,6 @@ import difflib
 from .plugins.background import BackgroundTask
 from .plugins.db_handle import DbHandle
 from .plugins.plugin import Plugin
-from .model_constants import GOOGLE as GOOGLE_MODELS
 from .user_settings import (
     USER_DISABLED_SKILLS_SETTING,
     USER_DISABLED_PLUGINS_SETTING,
@@ -71,6 +70,7 @@ class PluginManager:
         os.makedirs(self.storage_root, exist_ok=True)
         self._model_tool_name_to_canonical: dict[str, str] = {}
         self._canonical_tool_name_to_model: dict[str, str] = {}
+        self._function_index: dict[str, tuple[str, dict]] | None = None
 
         current_dir = Path(__file__).parent
         self.plugins_directory = current_dir / plugins_directory
@@ -94,6 +94,7 @@ class PluginManager:
                 storage_root=self.storage_root,
                 db=getattr(self, "db_handle", None),
                 plugin_config=self._plugin_config_segment(instance),
+                invalidate_function_index=self.invalidate_function_index,
             )
 
     def set_db(self, db) -> None:
@@ -172,6 +173,42 @@ class PluginManager:
         finally:
             _request_user_settings_cache.reset(token)
 
+    async def preload_user_settings_async(self, user_id: int | None) -> None:
+        """Populate the active user_settings_scope cache via the async DB path.
+
+        No-op if there is no db, no user_id, or no active scope for this task —
+        callers that skip this still fall back to the existing sync read inside
+        `_request_user_settings`, now bounded by `Database`'s op-lock timeout.
+        """
+        if self.db is None or user_id is None:
+            return
+        cache = _request_user_settings_cache.get()
+        if cache is None or cache.manager_id != id(self) or cache.user_id != user_id:
+            return
+        if cache.loaded:
+            return
+        get_async = getattr(self.db, "get_user_settings_async", None)
+        if not callable(get_async):
+            return
+        settings = get_async(user_id)
+        if inspect.isawaitable(settings):
+            settings = await settings
+        settings = settings if isinstance(settings, dict) else {}
+        cache.disabled_plugins = frozenset(
+            normalize_string_list(settings.get(USER_DISABLED_PLUGINS_SETTING))
+        )
+        cache.disabled_skills = frozenset(
+            normalize_string_list(settings.get(USER_DISABLED_SKILLS_SETTING))
+        )
+        cache.loaded = True
+
+    @asynccontextmanager
+    async def user_settings_scope_async(self, user_id: int | None):
+        """`user_settings_scope` + `preload_user_settings_async` in one call."""
+        with self.user_settings_scope(user_id):
+            await self.preload_user_settings_async(user_id)
+            yield
+
     def _request_user_settings(self, user_id: int | None) -> _RequestUserSettingsCache | None:
         if self.db is None or user_id is None:
             return None
@@ -238,6 +275,7 @@ class PluginManager:
                     self.register_plugin(plugin_name, plugin_module)
 
         self._validate_enabled_plugins()
+        self.invalidate_function_index()
 
     def load_plugin_module(self, plugin_name):
         """Загружает модуль плагина по имени."""
@@ -345,17 +383,16 @@ class PluginManager:
                 logger.error(f"Error instantiating plugin {plugin_name}: {str(e)}")
                 continue
 
-        return self._format_specs_for_model(all_specs, model_to_use)
+        return self._format_specs_for_model(all_specs)
 
-    def _format_specs_for_model(self, specs, model_to_use):
+    def _format_specs_for_model(self, specs):
         """
         Wrap function specs in the envelope expected by the target provider.
-        Google models use {"function_declarations": [...]}, OpenAI-compatible
-        models use the [{"type": "function", "function": {...}}] form.
+        Currently only the OpenAI-compatible [{"type": "function", "function": {...}}]
+        form is produced; every model reaches this gateway as an OpenAI-compatible
+        alias (see bot/model_constants.py).
         """
         model_specs = [self._spec_for_model(spec) for spec in specs]
-        if model_to_use in GOOGLE_MODELS:
-            return {"function_declarations": model_specs}
         return [{"type": "function", "function": spec} for spec in model_specs]
 
     def _spec_for_model(self, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -401,6 +438,69 @@ class PluginManager:
         if not hasattr(self, "_canonical_tool_name_to_model"):
             self._canonical_tool_name_to_model = {}
         return self._model_tool_name_to_canonical.get(name, name)
+
+    def invalidate_function_index(self) -> None:
+        """Явно сбрасывает индекс «имя функции → (плагин, spec)».
+
+        Вызывается после load_plugins()/reinitialize() (набор плагинов мог
+        измениться) и любым плагином с динамическими спеками после изменения
+        набора инструментов (см. MCPServerPlugin.register_server/remove_server/
+        _refresh_server_tools).
+        """
+        self._function_index = None
+
+    def _get_function_index(self) -> Dict[str, tuple]:
+        if self._function_index is None:
+            self._function_index = self._build_function_index()
+        return self._function_index
+
+    def _build_function_index(self) -> Dict[str, tuple]:
+        """Полный проход по всем загруженным плагинам — ровно тот же цикл,
+        что раньше выполнялся отдельно в get_plugin_name_by_function_name на
+        каждый вызов. Один сломанный плагин не должен ронять сборку индекса —
+        поведение один в один с текущим (см. test_call_function_lookup_skips_
+        unrelated_broken_plugin), strict_validation здесь сознательно не
+        учитывается (этот метод никогда не raise'ит — как и оба публичных
+        метода, которые он заменяет)."""
+        index: Dict[str, tuple] = {}
+        for plugin_name in self.plugins.keys():
+            try:
+                plugin_instance = self.get_plugin(plugin_name)
+                if not plugin_instance:
+                    continue
+                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
+            except Exception as exc:  # noqa: BLE001 — см. docstring
+                logger.error(
+                    "Error building function index for plugin %s: %s",
+                    plugin_name, exc, exc_info=True,
+                )
+                continue
+            for spec in specs:
+                name = spec.get("name")
+                if not name:
+                    continue
+                # setdefault: первый встреченный плагин побеждает при коллизии
+                # имён — так же, как сегодняшний линейный проход возвращает
+                # первое совпадение по self.plugins.keys().
+                index.setdefault(name, (plugin_name, spec))
+                model_name = self.to_model_function_name(name)
+                if model_name != name:
+                    index.setdefault(model_name, (plugin_name, spec))
+        return index
+
+    def _lookup_function(self, function_name):
+        canonical = self.to_canonical_function_name(function_name)
+        index = self._get_function_index()
+        entry = index.get(canonical) or index.get(function_name)
+        if entry is not None:
+            return entry
+        # Промах: спека могла появиться после последней сборки индекса без
+        # явного invalidate_function_index() (например, плагин не вызвал
+        # колбэк). Пересобираем один раз и пробуем снова — не бесконечный
+        # цикл, т.к. второй промах просто возвращает None, как и сегодня.
+        self.invalidate_function_index()
+        index = self._get_function_index()
+        return index.get(canonical) or index.get(function_name)
 
     async def call_function(self, function_name, helper, arguments, request_context=None):
         """
@@ -585,43 +685,12 @@ class PluginManager:
         return plugin.get_source_name()
 
     def get_spec_by_function_name(self, function_name):
-        function_name = self.to_canonical_function_name(function_name)
-        plugin = self.__get_plugin_by_function_name(function_name)
-        if not plugin:
-            return None
-        specs = self._normalize_specs(plugin.get_spec(), plugin)
-        for spec in specs:
-            name = spec.get("name")
-            if name == function_name or self.to_model_function_name(name) == function_name:
-                return spec
-        return None
+        entry = self._lookup_function(function_name)
+        return entry[1] if entry else None
 
     def get_plugin_name_by_function_name(self, function_name):
-        requested_name = str(function_name or "")
-        function_name = self.to_canonical_function_name(requested_name)
-        for plugin_name in self.plugins.keys():
-            try:
-                plugin_instance = self.get_plugin(plugin_name)
-                if not plugin_instance:
-                    continue
-
-                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-                if any(
-                    spec.get('name') == function_name
-                    or self.to_model_function_name(spec.get('name')) == requested_name
-                    for spec in specs
-                ):
-                    return plugin_name
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Error resolving function %s against plugin %s: %s",
-                    function_name,
-                    plugin_name,
-                    exc,
-                    exc_info=True,
-                )
-
-        return None
+        entry = self._lookup_function(function_name)
+        return entry[0] if entry else None
 
     def is_function_allowed(self, function_name, allowed_plugins):
         function_name = self.to_canonical_function_name(function_name)
@@ -698,6 +767,7 @@ class PluginManager:
                     storage_root=self.storage_root,
                     db=getattr(self, "db_handle", None),
                     plugin_config=self._plugin_config_segment(instance),
+                    invalidate_function_index=self.invalidate_function_index,
                 )
             if not getattr(instance, "plugin_id", None):
                 instance.plugin_id = plugin_name
@@ -721,6 +791,7 @@ class PluginManager:
                     storage_root=self.storage_root,
                     db=getattr(self, "db_handle", None),
                     plugin_config=self._plugin_config_segment(instance),
+                    invalidate_function_index=self.invalidate_function_index,
                 )
             self.plugin_instances[plugin_name] = instance
             return instance

@@ -256,8 +256,8 @@ def _usage(response: Any) -> AIUsage | None:
     if usage is None:
         return None
     return AIUsage(
-        prompt_tokens=_int_or_zero(getattr(usage, "prompt_tokens", 0)),
-        completion_tokens=_int_or_zero(getattr(usage, "completion_tokens", 0)),
+        prompt_tokens=_int_or_none(getattr(usage, "prompt_tokens", None)),
+        completion_tokens=_int_or_none(getattr(usage, "completion_tokens", None)),
         total_tokens=_int_or_zero(getattr(usage, "total_tokens", 0)),
     )
 
@@ -267,3 +267,19 @@ def _int_or_zero(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Как _int_or_zero, но не подменяет отсутствующее значение нулём.
+
+    bot.pricing.resolve_chat_cost() читает None как "разбивка неизвестна" и
+    считает по model_blended; 0 читается как "известно, что токенов не
+    было" и уводит в model_split с нулевой ценой. См.
+    docs/remediation_2026-09-04/T06-usage-none.md.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

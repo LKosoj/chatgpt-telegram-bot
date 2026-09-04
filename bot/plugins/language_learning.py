@@ -184,10 +184,8 @@ class LanguageLearningPlugin(Plugin):
             )
             
             # Use the helper to get response from ChatGPT
-            response, _ = await helper.get_chat_response(
-                chat_id=hash(f"{language}_{level}_{exercise_type}"),
-                query=prompt
-            )
+            user_id = self._get_owner_user_id(kwargs)
+            response, _ = await helper.ask(prompt, user_id)
 
             return {
                 "exercise": {

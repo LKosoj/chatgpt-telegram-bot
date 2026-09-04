@@ -1,15 +1,12 @@
 """T2 — agent_tools.on_before_chat_request plan-rule mutator behaviour."""
 from typing import List
 
-import pytest
-
 from bot.plugins.agent_tools import (
     AgentToolsPlugin,
     _PLAN_RULE_MARKER,
     _PLAN_RULE_TEXT,
     _WORKING_CHECKPOINT_MARKER,
 )
-from bot.database import Database
 from bot.plugins.db_handle import DbHandle
 from bot.plugins.hooks import BeforeChatRequestPayload
 
@@ -30,18 +27,6 @@ def _make_plugin(allowed) -> AgentToolsPlugin:
     plugin = AgentToolsPlugin()
     plugin.openai = FakeHelper(allowed)
     return plugin
-
-
-@pytest.fixture()
-def agent_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._reset_singleton()
-    db = Database()
-    with db.get_connection() as conn:
-        for stmt in AgentToolsPlugin().register_schema():
-            conn.execute(stmt)
-    yield db
-    Database._reset_singleton()
 
 
 def _payload(chat_id=1, user_id=42) -> BeforeChatRequestPayload:

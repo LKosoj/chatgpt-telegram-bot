@@ -146,7 +146,6 @@ def build_real_helper(
         "stream": False,
         "proxy": None,
         "proxy_web": None,
-        "chat_run_variant_b_enabled": True,
         "max_history_size": 15,
         "max_conversation_age_minutes": 180,
         "assistant_prompt": "You are a helpful assistant.",

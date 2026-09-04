@@ -13,19 +13,26 @@ jobs:
     timeout-minutes: 10
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-        cache: 'pip'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    - name: Run tests
-      run: |
-        python -m pytest bot/tests/
-    - name: Run MCP Server Plugin Tests
-      run: |
-        python -m pytest bot/tests/test_mcp_server.py -v 
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Lint with ruff
+        run: ruff check bot tests bot/tests
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Audit dependencies
+        # Informational: pip-audit fails on any CVE in any of the ~30 transitive
+        # dependencies, which would block unrelated PRs on somebody else's
+        # advisory. Read the step output; do not let it gate the merge.
+        continue-on-error: true
+        run: pip-audit -r requirements.txt

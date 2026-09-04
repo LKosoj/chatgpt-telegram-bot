@@ -799,6 +799,51 @@ def is_within_budget(config, usage, update: Update, is_inline=False) -> bool:
     remaining_budget = get_remaining_budget(config, usage, update, is_inline=is_inline)
     return remaining_budget > 0
 
+# Mapping of budget period to cost period, shared by get_remaining_budget_async
+# (kept alongside the sync version's identical inline dict, see T14 plan).
+_BUDGET_COST_MAP = {
+    "monthly": "cost_month",
+    "weekly": "cost_week",
+    "daily": "cost_today",
+    "all-time": "cost_all_time",
+    "total": "cost_all_time",
+}
+
+def _budget_user_and_name(update: Update, is_inline: bool):
+    if is_inline and update.inline_query:
+        user = update.inline_query.from_user
+    elif update.callback_query:
+        user = update.callback_query.from_user
+    elif update.message:
+        user = update.message.from_user
+    else:
+        user = update.effective_user
+    return (user.id if user else None), (user.name if user else "unknown")
+
+async def get_remaining_budget_async(config, usage, update: Update, is_inline=False) -> float:
+    user_id, name = _budget_user_and_name(update, is_inline)
+    if user_id is None:
+        return 0.0
+    if user_id not in usage:
+        # Создание трекера (DDL + импорт legacy JSON) остаётся синхронным --
+        # см. "Риски", это разовая операция на процесс/пользователя.
+        usage[user_id] = make_usage_tracker(config, user_id, name)
+
+    user_budget = get_user_budget(config, user_id)
+    budget_period = config['budget_period']
+    if user_budget is not None:
+        current_cost = await usage[user_id].get_current_cost_async()
+        return user_budget - current_cost[_BUDGET_COST_MAP.get(budget_period, "cost_month")]
+
+    if 'guests' not in usage:
+        usage['guests'] = make_usage_tracker(config, 'guests', 'all guest users in group chats')
+    current_cost = await usage['guests'].get_current_cost_async()
+    return config['guest_budget'] - current_cost[_BUDGET_COST_MAP.get(budget_period, "cost_month")]
+
+async def is_within_budget_async(config, usage, update: Update, is_inline=False) -> bool:
+    remaining_budget = await get_remaining_budget_async(config, usage, update, is_inline=is_inline)
+    return remaining_budget > 0
+
 def make_usage_tracker(config, user_id, user_name, logs_dir="usage_logs"):
     """
     Construct a UsageTracker pre-loaded with the prices from `config`, so that
@@ -828,6 +873,20 @@ def _charge_user_and_guest(usage, config, user_id, charge_fn):
         logging.warning("Failed to record usage error=%s", log_exception_shape(e))
         return False
 
+async def _charge_user_and_guest_async(usage, config, user_id, charge_fn_async):
+    if user_id not in usage:
+        logging.warning(f'No UsageTracker for user_id={user_id}; skipping charge.')
+        return False
+    try:
+        await charge_fn_async(usage[user_id])
+        allowed_user_ids = config['allowed_user_ids'].split(',')
+        if str(user_id) not in allowed_user_ids and 'guests' in usage:
+            await charge_fn_async(usage['guests'])
+        return True
+    except Exception as e:
+        logging.warning("Failed to record usage error=%s", log_exception_shape(e))
+        return False
+
 def _positive_int_usage(value, label):
     if isinstance(value, bool):
         logging.warning(f'Invalid {label}; not adding request to usage tracker.')
@@ -846,11 +905,10 @@ def _positive_int_usage(value, label):
 # the log on every message -- one warning per model per process.
 _LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS: set = set()
 
-def record_chat_tokens(usage, config, user_id, used_tokens, *, model=None,
-                        prompt_tokens=None, completion_tokens=None):
-    used_tokens = _positive_int_usage(used_tokens, 'chat tokens')
-    if used_tokens is None:
-        return False
+def _resolve_chat_token_charge(config, model, used_tokens, prompt_tokens, completion_tokens):
+    """Ценовая логика record_chat_tokens без обращения к трекеру -- общая
+    для sync- и async-версии, чтобы не дублировать (в т.ч. мутацию
+    _LEGACY_TOKEN_PRICE_FALLBACK_WARNED_MODELS)."""
     cost, price_source = resolve_chat_cost(
         model=model,
         total_tokens=used_tokens,
@@ -872,15 +930,40 @@ def record_chat_tokens(usage, config, user_id, used_tokens, *, model=None,
         'completion_tokens': completion_tokens,
         'price_source': price_source,
     }
+    return cost, metadata
+
+def record_chat_tokens(usage, config, user_id, used_tokens, *, model=None,
+                        prompt_tokens=None, completion_tokens=None):
+    used_tokens = _positive_int_usage(used_tokens, 'chat tokens')
+    if used_tokens is None:
+        return False
+    cost, metadata = _resolve_chat_token_charge(config, model, used_tokens, prompt_tokens, completion_tokens)
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_chat_tokens(used_tokens, cost=cost, metadata=metadata),
+    )
+
+async def record_chat_tokens_async(usage, config, user_id, used_tokens, *, model=None,
+                                    prompt_tokens=None, completion_tokens=None):
+    used_tokens = _positive_int_usage(used_tokens, 'chat tokens')
+    if used_tokens is None:
+        return False
+    cost, metadata = _resolve_chat_token_charge(config, model, used_tokens, prompt_tokens, completion_tokens)
+    return await _charge_user_and_guest_async(
+        usage, config, user_id,
+        lambda t: t.add_chat_tokens_async(used_tokens, cost=cost, metadata=metadata),
     )
 
 def record_image_request(usage, config, user_id, image_size):
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_image_request(image_size),
+    )
+
+async def record_image_request_async(usage, config, user_id, image_size):
+    return await _charge_user_and_guest_async(
+        usage, config, user_id,
+        lambda t: t.add_image_request_async(image_size),
     )
 
 def record_vision_tokens(usage, config, user_id, used_tokens):
@@ -892,6 +975,15 @@ def record_vision_tokens(usage, config, user_id, used_tokens):
         lambda t: t.add_vision_tokens(used_tokens),
     )
 
+async def record_vision_tokens_async(usage, config, user_id, used_tokens):
+    used_tokens = _positive_int_usage(used_tokens, 'vision tokens')
+    if used_tokens is None:
+        return False
+    return await _charge_user_and_guest_async(
+        usage, config, user_id,
+        lambda t: t.add_vision_tokens_async(used_tokens),
+    )
+
 def record_tts_request(usage, config, user_id, text_length, tts_model):
     text_length = _positive_int_usage(text_length, 'TTS characters')
     if text_length is None:
@@ -901,6 +993,15 @@ def record_tts_request(usage, config, user_id, text_length, tts_model):
         lambda t: t.add_tts_request(text_length, tts_model),
     )
 
+async def record_tts_request_async(usage, config, user_id, text_length, tts_model):
+    text_length = _positive_int_usage(text_length, 'TTS characters')
+    if text_length is None:
+        return False
+    return await _charge_user_and_guest_async(
+        usage, config, user_id,
+        lambda t: t.add_tts_request_async(text_length, tts_model),
+    )
+
 def record_transcription_seconds(usage, config, user_id, seconds):
     seconds = _positive_int_usage(seconds, 'transcription seconds')
     if seconds is None:
@@ -908,6 +1009,15 @@ def record_transcription_seconds(usage, config, user_id, seconds):
     return _charge_user_and_guest(
         usage, config, user_id,
         lambda t: t.add_transcription_seconds(seconds),
+    )
+
+async def record_transcription_seconds_async(usage, config, user_id, seconds):
+    seconds = _positive_int_usage(seconds, 'transcription seconds')
+    if seconds is None:
+        return False
+    return await _charge_user_and_guest_async(
+        usage, config, user_id,
+        lambda t: t.add_transcription_seconds_async(seconds),
     )
 
 def get_reply_to_message_id(config, update: Update):

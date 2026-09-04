@@ -194,6 +194,51 @@ class RawNamePlugin(Plugin):
     path.write_text(textwrap.dedent(code), encoding="utf-8")
 
 
+def _write_counting_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class CountingPlugin(Plugin):
+    call_count = 0
+
+    def get_source_name(self) -> str:
+        return "Counting"
+
+    def get_spec(self):
+        CountingPlugin.call_count += 1
+        return [{"name": "do", "description": "x",
+                  "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        return {"result": "ok"}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
+def _write_dynamic_spec_plugin(path: Path):
+    code = """
+from bot.plugins.plugin import Plugin
+
+class DynamicPlugin(Plugin):
+    def initialize(self, openai=None, bot=None, storage_root=None, invalidate_function_index=None):
+        super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        self.invalidate = invalidate_function_index
+
+    def get_source_name(self) -> str:
+        return "Dynamic"
+
+    def get_spec(self):
+        return [{"name": "do", "description": "x",
+                  "parameters": {"type": "object", "properties": {}, "required": []}}]
+
+    async def execute(self, function_name, helper, **kwargs):
+        if self.invalidate:
+            self.invalidate()
+        return {"result": "ok"}
+"""
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+
+
 def _write_imported_class_plugin(tmp_path: Path, plugin_dir: Path):
     (tmp_path / "foreign_plugin.py").write_text(textwrap.dedent("""
         from bot.plugins.plugin import Plugin
@@ -384,6 +429,88 @@ def test_function_allowlist_uses_plugin_ownership(tmp_path):
     assert pm.is_function_allowed("alpha.missing", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["alpha"]) is False
     assert pm.is_function_allowed("beta.run", ["All"]) is True
+
+
+def test_function_index_builds_spec_once_across_repeated_lookups(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_counting_plugin(plugin_dir / "counting.py")
+
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    assert pm._function_index is None  # ещё не построен
+
+    assert pm.get_plugin_name_by_function_name("counting.do") == "counting"
+    assert pm.get_spec_by_function_name("counting.do") is not None
+    assert pm.is_function_allowed("counting.do", ["counting"]) is True
+
+    # get_spec() вызван ровно один раз на все три обращения к резолву —
+    # считаем через сам зарегистрированный класс, не через отдельный импорт.
+    plugin_class = pm.plugins["counting"]
+    assert plugin_class.call_count == 1
+
+
+def test_invalidate_function_index_picks_up_changed_spec(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    pm.get_plugin_name_by_function_name("alpha.do")  # строит и кэширует индекс
+
+    plugin = pm.get_plugin("alpha")
+    plugin.get_spec = lambda: [{
+        "name": "do", "description": "новое описание",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }]
+
+    # Без инвалидации индекс всё ещё отдаёт старую (закэшированную) spec-запись.
+    stale_spec = pm.get_spec_by_function_name("alpha.do")
+    assert stale_spec["description"] == "x"  # "x" — из _write_plugin
+
+    pm.invalidate_function_index()
+    fresh_spec = pm.get_spec_by_function_name("alpha.do")
+    assert fresh_spec["description"] == "новое описание"
+
+
+def test_function_index_rebuilds_lazily_on_miss(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    pm.get_plugin_name_by_function_name("alpha.do")  # строит индекс без "alpha.extra"
+
+    plugin = pm.get_plugin("alpha")
+    plugin.get_spec = lambda: [
+        {"name": "do", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}},
+        {"name": "extra", "description": "x", "parameters": {"type": "object", "properties": {}, "required": []}},
+    ]
+
+    # Без вызова invalidate_function_index() — промах должен сам пересобрать индекс.
+    assert pm.get_plugin_name_by_function_name("alpha.extra") == "alpha"
+
+
+def test_reinitialize_resets_function_index(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / "alpha.py", "AlphaPlugin", "do")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+    pm.get_plugin_name_by_function_name("alpha.do")
+    assert pm._function_index is not None
+
+    _write_plugin(plugin_dir / "beta.py", "BetaPlugin", "run")
+    pm.reinitialize()
+
+    assert pm._function_index is None
+    assert pm.get_plugin_name_by_function_name("beta.run") == "beta"
+
+
+def test_plugin_receives_invalidate_function_index_callback(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    _write_dynamic_spec_plugin(plugin_dir / "dynamic.py")
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    plugin = pm.get_plugin("dynamic")
+    assert plugin.invalidate == pm.invalidate_function_index
 
 
 def test_prompt_handlers_include_plugin_name(tmp_path):
@@ -709,6 +836,44 @@ async def test_user_settings_scope_reuses_settings_across_plugin_phases(tmp_path
         assert pm.disabled_skills_for_user(42) == {"demo"}
 
     assert pm.db.calls == [42]
+
+
+@pytest.mark.asyncio
+async def test_user_settings_scope_async_preloads_via_async_db_call(tmp_path):
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    pm = PluginManager(config={"plugins": []}, plugins_directory=str(plugin_dir))
+
+    class FakeDB:
+        def __init__(self):
+            self.sync_calls = []
+            self.async_calls = []
+
+        def get_user_settings(self, user_id):
+            self.sync_calls.append(user_id)
+            return {
+                "disabled_plugins": ["weather"],
+                "disabled_skills": ["demo"],
+            }
+
+        async def get_user_settings_async(self, user_id):
+            self.async_calls.append(user_id)
+            return {
+                "disabled_plugins": ["weather"],
+                "disabled_skills": ["demo"],
+            }
+
+    db = FakeDB()
+    pm.set_db(db)
+
+    async with pm.user_settings_scope_async(42):
+        assert pm.disabled_plugins_for_user(42) == {"weather"}
+        assert pm.is_plugin_disabled_for_user("weather", 42) is True
+        assert pm.disabled_skills_for_user(42) == {"demo"}
+        assert db.async_calls == [42]
+        assert db.sync_calls == []
+
+    assert db.sync_calls == []
 
 
 @pytest.mark.asyncio

@@ -7,9 +7,9 @@ import time
 from typing import Dict, List
 
 try:
-    import PyPDF2
+    import pypdf
 except ImportError:
-    PyPDF2 = None
+    pypdf = None
 
 try:
     import textract
@@ -40,10 +40,6 @@ class AskYourPDFPlugin(Plugin):
         self.max_cache_age_days = 10
         self.max_extracted_text_chars = 50000
 
-        os.makedirs(self.temp_dir, exist_ok=True)
-        os.makedirs(self.cache_dir, exist_ok=True)
-        self._init_cache_metadata()
-
     def initialize(
         self,
         openai=None,
@@ -60,9 +56,9 @@ class AskYourPDFPlugin(Plugin):
                 self.cache_dir,
                 "cache_metadata.json",
             )
-            os.makedirs(self.temp_dir, exist_ok=True)
-            os.makedirs(self.cache_dir, exist_ok=True)
-            self._init_cache_metadata()
+        os.makedirs(self.temp_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self._init_cache_metadata()
 
     def get_source_name(self) -> str:
         return "AskYourPDF"
@@ -244,11 +240,11 @@ class AskYourPDFPlugin(Plugin):
         return False
 
     def _extract_text_with_pypdf2(self, file_path: str) -> str:
-        if PyPDF2 is None:
+        if pypdf is None:
             return ""
 
         with open(file_path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
+            reader = pypdf.PdfReader(f)
             return "\n".join(
                 page.extract_text() or ""
                 for page in reader.pages
@@ -361,10 +357,8 @@ class AskYourPDFPlugin(Plugin):
                     extracted_text,
                 )
 
-                response, _ = await helper.get_chat_response(
-                    chat_id=hash(file_path),
-                    query=analysis_prompt,
-                )
+                user_id = kwargs.get("user_id")
+                response, _ = await helper.ask(analysis_prompt, user_id)
                 result = {
                     "result": response,
                     "file_hash": file_hash,

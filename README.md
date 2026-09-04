@@ -67,12 +67,14 @@ Context Protocol (MCP) integrations.
    - [Hindsight Long-Term Memory](#hindsight-long-term-memory)
    - [Plugin-Specific Keys](#plugin-specific-keys)
    - [Database Tuning](#database-tuning)
+   - [Terminal Plugin](#terminal-plugin)
    - [Deprecated Variables](#deprecated-variables)
 6. [Telegram UX](#telegram-ux)
    - [Slash Commands](#slash-commands)
    - [Inline Menus](#inline-menus)
    - [Media Handlers](#media-handlers)
    - [Inline Mode](#inline-mode)
+   - [Known limitations](#known-limitations)
 7. [Sessions And Chat Modes](#sessions-and-chat-modes)
 8. [Plugins Catalogue](#plugins-catalogue)
 9. [Agent / Subagent Runtime](#agent--subagent-runtime)
@@ -191,7 +193,7 @@ The repository also keeps a generated codebase map under
 
 ## Requirements
 
-- **Python 3.9+** (3.12 is what the project is currently developed against).
+- **Python 3.11+** (3.12 is what the project is currently developed against).
 - **Telegram bot token** from @BotFather.
 - **LLMGateway-compatible API endpoint** (or any OpenAI-compatible endpoint —
   the bot still uses `OPENAI_API_KEY` / `OPENAI_BASE_URL` env names).
@@ -230,7 +232,11 @@ The image healthcheck verifies the bot process and writable runtime paths. The
 Compose default `DB_PATH` is `/app/data/user_data.db`; `SKILLS_DIR` and
 `SKILLS_WORKDIR` are pinned under `/app/data` for container-local skill state.
 If you used the old full-repository bind mount, copy any existing
-`bot/user_data.db*` files into the new data volume before switching. If a local
+`bot/user_data.db*` files into the new data volume before switching. By default,
+`docker-compose.yml` sets `TELEGRAM_LOCAL_MODE=false` (there is no bundled local Bot API
+service in Compose), so a fresh `docker compose up` talks to Telegram's hosted API without
+extra setup; set `TELEGRAM_LOCAL_MODE=true` in `.env` only if you also run your own reachable
+local Bot API server. If a local
 Telegram Bot API server is not reachable from inside the container, set
 `TELEGRAM_LOCAL_MODE=false` or point `TELEGRAM_BASE_URL` at a reachable host.
 
@@ -286,7 +292,6 @@ by the runtime. **Bold** rows are required.
 | `N_CHOICES` | `1` | int | Number of completions returned. |
 | `STREAM` | `true` | bool | Stream chat responses to Telegram. |
 | `STREAM_INCLUDE_USAGE` | `false` | bool | Send `stream_options={'include_usage': true}` so streaming turns end with a real prompt/completion token split instead of a local estimate. Off by default: not every OpenAI-compatible gateway accepts the parameter, and an unsupported one fails the whole request. |
-| `CHAT_RUN_VARIANT_B_ENABLED` | `true` | bool | Use the provider/event compatibility wrapper for chat-completion requests, including streaming; set `false` for legacy rollback. |
 | `SHOW_USAGE` | `false` | bool | Append token-usage footer to responses. |
 | `SHOW_PLUGINS_USED` | `false` | bool | Append a list of plugins/tools that were called. |
 | `ASSISTANT_PROMPT` | `You are a helpful assistant.` | string | Default system prompt before chat-mode application. |
@@ -478,6 +483,18 @@ The SQLite layer is configured via env. See
 | `SQLITE_TIMEOUT` | `5.0` | float | Connection-open timeout in seconds. |
 | `SQLITE_JOURNAL_MODE` | `WAL` | string | Journal mode applied to every new connection. |
 | `SQLITE_BUSY_TIMEOUT_MS` | `5000` | int | `PRAGMA busy_timeout` value. |
+| `DB_OP_LOCK_TIMEOUT_SECONDS` | `15.0` | float | Max seconds to wait for the internal `Database._op_lock` before raising `DatabaseLockTimeoutError`, e.g. when a `DbHandle.transaction()` is stuck holding it. |
+
+### Terminal Plugin
+
+| Variable | Default | Type | Purpose |
+|---|---|---|---|
+| `TERMINAL_APPROVAL_MODE` | `block` | string | What happens when a command matches a `require_approval` rule: `block` refuses it (human approval isn't implemented yet), `allow` lets it run. Unrecognized values fall back to `block` with a warning. |
+| `TERMINAL_OUTPUT_BYTE_LIMIT` | `8192` | int | Max bytes of a command's stdout+stderr kept per call; clamped to a minimum of `1024`. |
+| `TERMINAL_COMMAND_POLICY` | `` | JSON | Extra allow/deny/require_approval rules layered on top of the built-in defaults. See the commented example in [`.env.example`](.env.example) for the JSON shape; invalid JSON/regex/decision falls back to the built-in defaults with a warning. |
+
+> The plugin is loaded by default when `PLUGINS` is unset. If `PLUGINS` is used
+> as an allow-list, include `terminal`.
 
 ### Deprecated Variables
 
@@ -545,6 +562,21 @@ own message filters before the catch-all text handler:
 `@<bot> query` triggers an inline-query response with a single "🤖 Answer with
 ChatGPT" button. The reply is generated asynchronously and the inline message
 is patched in place once ready.
+
+### Known limitations
+
+- If the very first streamed chunk exceeds 4096 characters, the tail message is sent without
+  `reply_to_message_id`. See `docs/remediation_2026-09-04/T12-telegram-stream.md` for details.
+- The rich-drafts streaming path (`sendRichMessage`/`sendRichMessageDraft`, `bot/telegram_rich.py`)
+  is the **default** for private chats (`TELEGRAM_RICH_MESSAGES=auto` plus
+  `TELEGRAM_RICH_DRAFTS=true`), and the streaming rework did not touch it: it uses a different
+  transport with its own limit (32768 bytes, `MAX_RICH_MARKDOWN_BYTES`) and its own error
+  handling. On a delivery failure `TELEGRAM_RICH_MESSAGES=required` re-raises and aborts the
+  answer; `auto` swallows the error and falls back to legacy editing, but re-publishes the text
+  only when no draft had been sent yet — an already-sent draft can be left showing stale content
+  (`bot/telegram_bot.py:4310-4347`). Note that most streaming tests configure the legacy mode, so
+  this path is thinly covered. Tracked separately — see
+  `docs/remediation_2026-09-04/T12-telegram-stream.md`.
 
 ---
 

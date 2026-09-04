@@ -17,6 +17,46 @@ from .plugin import Plugin
 logger = logging.getLogger(__name__)
 
 
+def _mcp_input_schema_to_openai_parameters(input_schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """MCP inputSchema — уже полноценная JSON Schema (type/properties/required/enum/
+    вложенные object и array), совпадающая по форме с полем "parameters" в OpenAI
+    function calling. Поэтому берём её как есть, а не пересобираем по одному полю:
+    старый код терял enum, вложенные объекты и всё, кроме верхнеуровневых type+description.
+    """
+    if isinstance(input_schema, dict) and input_schema:
+        return input_schema
+    return {"type": "object", "properties": {}, "required": []}
+
+
+def _mcp_call_result_to_dict(result: Any) -> Dict[str, Any]:
+    """call_mcp_function() отдаёт результат прямо в PluginManager.call_function()
+    (bot/plugin_manager.py:487: json.dumps(result, default=str, ensure_ascii=False)).
+    Без этой конвертации CallToolResult — pydantic-объект, json.dumps падает на нём и
+    default=str превращает ответ в нечитаемый repr вместо текста/данных для модели.
+    """
+    is_error = getattr(result, "is_error", False)
+    content = getattr(result, "content", None) or []
+    texts = [block.text for block in content if getattr(block, "type", None) == "text"]
+    if is_error:
+        return {"error": "; ".join(texts) or "MCP tool call failed"}
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        return structured if isinstance(structured, dict) else {"result": structured}
+    other = [
+        getattr(block, "type", None) or type(block).__name__
+        for block in content
+        if getattr(block, "type", None) != "text"
+    ]
+    out: Dict[str, Any] = {"result": "\n".join(texts) if texts else None}
+    if other:
+        # image/audio/resource blocks cannot be passed to the model as text; say so
+        # instead of silently returning an empty result.
+        out["omitted_content"] = other
+        if not texts:
+            out["result"] = f"[{len(other)} non-text content block(s) omitted: {', '.join(other)}]"
+    return out
+
+
 class MCPServerPlugin(Plugin):
     """
     Плагин для поддержки сторонних MCP (Machine Conversation Protocol) серверов.
@@ -38,9 +78,15 @@ class MCPServerPlugin(Plugin):
         self._session_owners: Dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._connect_locks: Dict[str, asyncio.Lock] = {}
+        self._invalidate_function_index = lambda: None
 
-    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+    def initialize(
+        self, openai=None, bot=None, storage_root: str | None = None,
+        invalidate_function_index=None,
+    ) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        if invalidate_function_index is not None:
+            self._invalidate_function_index = invalidate_function_index
         if storage_root:
             os.makedirs(storage_root, exist_ok=True)
             self.config_path = Path(storage_root) / "mcp_servers.json"
@@ -336,6 +382,7 @@ class MCPServerPlugin(Plugin):
                     if tools_data:
                         server_config["tools"] = tools_data
                         self.save_servers_config()
+                        self._invalidate_function_index()
                         logger.info(f"Обновлены инструменты для сервера {server_name} (stdio): {len(tools_data)} инструментов")
             else:
                 # Для HTTP транспорта используем существующий метод
@@ -347,6 +394,7 @@ class MCPServerPlugin(Plugin):
                 if tools_data:
                     server_config["tools"] = tools_data
                     self.save_servers_config()
+                    self._invalidate_function_index()
                     logger.info(f"Обновлены инструменты для сервера {server_name} (http): {len(tools_data)} инструментов")
                 
         except Exception as e:
@@ -360,36 +408,20 @@ class MCPServerPlugin(Plugin):
         :return: Список инструментов в формате спецификаций OpenAI
         """
         try:
-            # Получаем инструменты из сессии
+            # list_tools() -> types.ListToolsResult; сами тулы лежат в .tools
             mcp_tools = await session.list_tools()
-            
-            # Преобразуем в формат, совместимый с OpenAI
+
             openai_tools = []
-            for tool in mcp_tools:
-                openai_tool = {
+            for tool in mcp_tools.tools:
+                openai_tools.append({
                     "name": tool.name,
                     "description": tool.description or f"Инструмент {tool.name}",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-                
-                # Преобразуем параметры
-                if tool.parameters:
-                    for param_name, param_schema in tool.parameters.items():
-                        openai_tool["parameters"]["properties"][param_name] = {
-                            "type": param_schema.get("type", "string"),
-                            "description": param_schema.get("description", f"Параметр {param_name}")
-                        }
-                        if param_name in (tool.required_parameters or []):
-                            openai_tool["parameters"]["required"].append(param_name)
-                
-                openai_tools.append(openai_tool)
-            
+                    # tool.input_schema — snake_case в mcp 2.x (было tool.inputSchema в 1.x)
+                    "parameters": _mcp_input_schema_to_openai_parameters(tool.input_schema),
+                })
+
             return openai_tools
-                
+
         except Exception as e:
             logger.error(f"Ошибка при получении инструментов через stdio: {str(e)}")
             return []
@@ -402,7 +434,10 @@ class MCPServerPlugin(Plugin):
         async with lock:
             if server_name in self.sessions and self.sessions[server_name]:
                 try:
-                    await self.sessions[server_name].ping()
+                    # ClientSession.ping() не существует ни в mcp 1.26, ни в 2.1.1 —
+                    # только send_ping(). До этой правки health-check всегда падал в
+                    # except и код на каждый вызов молча пересоздавал stdio-процесс.
+                    await self.sessions[server_name].send_ping()
                     return self.sessions[server_name]
                 except Exception:
                     await self._close_session(server_name)
@@ -488,8 +523,9 @@ class MCPServerPlugin(Plugin):
                     read_stream, write_stream = await stack.enter_async_context(
                         stdio_client(server_params)
                     )
+                    timeout = float(os.getenv("MCP_REQUEST_TIMEOUT", "30"))
                     session = await stack.enter_async_context(
-                        ClientSession(read_stream, write_stream)
+                        ClientSession(read_stream, write_stream, read_timeout_seconds=timeout)
                     )
                     await session.initialize()
                     result["session"] = session
@@ -591,6 +627,7 @@ class MCPServerPlugin(Plugin):
             
             # Сохраняем конфигурацию в файл
             self.save_servers_config()
+            self._invalidate_function_index()
             
             tool_names = [tool["name"] for tool in self.servers[server_name]["tools"]]
             
@@ -654,6 +691,7 @@ class MCPServerPlugin(Plugin):
 
         # Сохраняем обновленную конфигурацию
         self.save_servers_config()
+        self._invalidate_function_index()
 
         return {
             "success": True,
@@ -687,7 +725,7 @@ class MCPServerPlugin(Plugin):
                 
                 # Вызываем инструмент
                 result = await session.call_tool(function_name, arguments=kwargs)
-                return result
+                return _mcp_call_result_to_dict(result)
             except Exception as e:
                 logger.error(f"Ошибка при вызове функции {function_name} через stdio: {str(e)}")
                 return {"error": str(e)}

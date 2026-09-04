@@ -22,9 +22,8 @@ logger = logging.getLogger(__name__)
 class ChatRun:
     """Compatibility run shell for one non-stream chat turn.
 
-    The default path routes completions through the provider/event adapter and
-    keeps the tool loop on the provider-neutral response boundary. The legacy
-    SDK-shaped path remains behind the Variant B rollback flag.
+    Routes completions through the provider/event adapter and keeps the tool
+    loop on the provider-neutral response boundary.
     """
 
     def __init__(self, helper: Any):
@@ -57,11 +56,11 @@ class ChatRun:
         helper = self.helper
         try:
             state_key = helper._chat_state_key(chat_id)
-            # Keep the per-request planner-gate lifecycle identical to the
-            # legacy dispatcher while the compatibility shell remains rollbackable.
+            # Reset per-request skills_agent gate flag so it doesn't persist
+            # across user-initiated requests.
             helper._gate_fired.pop(state_key, None)
             plugins_used = ()
-            response = await helper._OpenAIHelper__common_get_chat_response(
+            response = await helper._common_get_chat_response(
                 chat_id,
                 query,
                 session_id=session_id,
@@ -77,7 +76,7 @@ class ChatRun:
             if helper.config["enable_functions"]:
                 plugin_user_id = user_id or chat_id
                 allowed_plugins = await helper.resolve_allowed_plugins(chat_id, session_id, plugin_user_id)
-                response, plugins_used = await helper._OpenAIHelper__handle_function_call(
+                response, plugins_used = await helper._handle_function_call(
                     chat_id,
                     response,
                     allowed_plugins=allowed_plugins,
@@ -107,7 +106,7 @@ class ChatRun:
                         model_to_use=helper._chat_request_models.get(state_key),
                     )
                     if retry_response is not None:
-                        response, retry_plugins_used = await helper._OpenAIHelper__handle_function_call(
+                        response, retry_plugins_used = await helper._handle_function_call(
                             chat_id,
                             retry_response,
                             allowed_plugins=allowed_plugins,
@@ -155,7 +154,7 @@ class ChatRun:
                         model_to_use=helper._chat_request_models.get(state_key),
                     )
                     if retry_response is not None:
-                        response, retry_plugins_used = await helper._OpenAIHelper__handle_function_call(
+                        response, retry_plugins_used = await helper._handle_function_call(
                             chat_id,
                             retry_response,
                             allowed_plugins=allowed_plugins,
@@ -204,7 +203,7 @@ class ChatRun:
                 for index, choice in enumerate(response.choices):
                     content = required_choice_message_text(choice)
                     if index == 0:
-                        await helper._OpenAIHelper__add_to_history(
+                        await helper._add_to_history(
                             chat_id,
                             role="assistant",
                             content=content,
@@ -215,7 +214,7 @@ class ChatRun:
                     answer += "\n\n"
             else:
                 answer = required_choice_message_text(first_choice_or_raise(response))
-                await helper._OpenAIHelper__add_to_history(
+                await helper._add_to_history(
                     chat_id,
                     role="assistant",
                     content=answer,
@@ -237,10 +236,16 @@ class ChatRun:
                     "\n\n---\n"
                     f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
                 )
-                if total_tokens == usage_tokens:
+                usage = response.usage
+                if (
+                    total_tokens == usage_tokens
+                    and usage is not None
+                    and usage.prompt_tokens is not None
+                    and usage.completion_tokens is not None
+                ):
                     answer += (
-                        f" ({str(response.usage.prompt_tokens)} {localized_text('prompt', bot_language)},"
-                        f" {str(response.usage.completion_tokens)} "
+                        f" ({str(usage.prompt_tokens)} {localized_text('prompt', bot_language)},"
+                        f" {str(usage.completion_tokens)} "
                         f"{localized_text('completion', bot_language)})"
                     )
                 if show_plugins_used:

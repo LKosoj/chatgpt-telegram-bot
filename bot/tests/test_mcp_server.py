@@ -3,6 +3,7 @@ import json
 import pytest
 
 pytest.importorskip("mcp")
+from mcp import types
 from unittest.mock import patch, AsyncMock, MagicMock
 
 # Импортируем класс плагина
@@ -202,6 +203,67 @@ async def test_remove_server_unauthorized(mcp_plugin, mock_env_vars):
 
 
 @pytest.mark.asyncio
+async def test_register_server_invalidates_function_index(mcp_plugin, mock_env_vars):
+    """register_server должен инвалидировать индекс функций после успешной регистрации."""
+    mcp_plugin._fetch_server_tools = AsyncMock(return_value=[
+        {"name": "test_function", "description": "Test function", "parameters": {}}
+    ])
+    called = []
+    mcp_plugin._invalidate_function_index = lambda: called.append(True)
+
+    result = await mcp_plugin.register_server(
+        server_name="test_server",
+        base_url="http://example.com",
+        user_id=123,
+    )
+
+    assert result['success'] is True
+    assert called
+
+
+@pytest.mark.asyncio
+async def test_remove_server_invalidates_function_index(mcp_plugin, mock_env_vars):
+    """remove_server должен инвалидировать индекс функций после удаления."""
+    mcp_plugin.servers = {
+        "test_server": {
+            "base_url": "http://example.com",
+            "tools": []
+        }
+    }
+    called = []
+    mcp_plugin._invalidate_function_index = lambda: called.append(True)
+
+    result = await mcp_plugin.remove_server(
+        server_name="test_server",
+        user_id=123
+    )
+
+    assert result['success'] is True
+    assert called
+
+
+@pytest.mark.asyncio
+async def test_refresh_server_tools_invalidates_function_index(mcp_plugin, mock_env_vars):
+    """_refresh_server_tools (фоновое обновление списка тулов) должен инвалидировать индекс."""
+    mcp_plugin.servers = {
+        "test_server": {
+            "transport": "http",
+            "base_url": "http://example.com",
+            "tools": []
+        }
+    }
+    mcp_plugin._fetch_server_tools = AsyncMock(return_value=[
+        {"name": "test_function", "description": "Test function", "parameters": {}}
+    ])
+    called = []
+    mcp_plugin._invalidate_function_index = lambda: called.append(True)
+
+    await mcp_plugin._refresh_server_tools("test_server")
+
+    assert called
+
+
+@pytest.mark.asyncio
 async def test_call_mcp_function(mcp_plugin, mock_env_vars):
     """Тест вызова функции на MCP сервере"""
     # Добавляем тестовый сервер
@@ -379,5 +441,123 @@ async def test_user_access_control(mcp_plugin, mock_env_vars):
         assert mcp_plugin.is_user_allowed(999) is True  # Любой пользователь
 
 
+@pytest.mark.asyncio
+async def test_fetch_stdio_tools_maps_nested_schema(mcp_plugin, mock_env_vars):
+    """Регрессия на §3.8 архитектурного обзора: ListToolsResult.tools, tool.input_schema,
+    вложенные object/enum/required не должны теряться."""
+    tool = types.Tool(
+        name="get_weather",
+        description="Get weather",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name"},
+                "unit": {"type": "string", "enum": ["c", "f"]},
+                "coords": {
+                    "type": "object",
+                    "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}},
+                    "required": ["lat", "lon"],
+                },
+            },
+            "required": ["city"],
+        },
+    )
+    session = AsyncMock()
+    session.list_tools = AsyncMock(return_value=types.ListToolsResult(tools=[tool]))
+
+    result = await mcp_plugin._fetch_stdio_tools(session)
+
+    assert result == [{
+        "name": "get_weather",
+        "description": "Get weather",
+        "parameters": tool.input_schema,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_fetch_stdio_tools_defaults_empty_schema(mcp_plugin, mock_env_vars):
+    tool = types.Tool(name="ping", description=None, input_schema={})
+    session = AsyncMock()
+    session.list_tools = AsyncMock(return_value=types.ListToolsResult(tools=[tool]))
+
+    result = await mcp_plugin._fetch_stdio_tools(session)
+
+    assert result == [{
+        "name": "ping",
+        "description": "Инструмент ping",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_session_uses_send_ping(mcp_plugin, mock_env_vars):
+    """Регрессия: ClientSession.ping() не существует ни в 1.26, ни в 2.x — только send_ping()."""
+    fake_session = MagicMock(spec=["send_ping"])  # spec без "ping" — .ping() бросит AttributeError
+    fake_session.send_ping = AsyncMock(return_value=None)
+    mcp_plugin.sessions["srv"] = fake_session
+
+    session = await mcp_plugin._get_or_create_session("srv")
+
+    assert session is fake_session
+    fake_session.send_ping.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_function_stdio_returns_structured_content(mcp_plugin, mock_env_vars):
+    mcp_plugin.servers = {"srv": {"transport": "stdio", "command": "python", "tools": []}}
+    call_result = types.CallToolResult(
+        content=[types.TextContent(type="text", text="42")],
+        structured_content={"answer": 42},
+        is_error=False,
+    )
+    fake_session = AsyncMock()
+    fake_session.call_tool = AsyncMock(return_value=call_result)
+    mcp_plugin._get_or_create_session = AsyncMock(return_value=fake_session)
+
+    result = await mcp_plugin.call_mcp_function(server_name="srv", function_name="answer")
+
+    assert result == {"answer": 42}
+    json.dumps(result)  # не требует default=str — регрессия на несериализуемый pydantic-объект
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_function_stdio_error_result(mcp_plugin, mock_env_vars):
+    mcp_plugin.servers = {"srv": {"transport": "stdio", "command": "python", "tools": []}}
+    call_result = types.CallToolResult(
+        content=[types.TextContent(type="text", text="boom")],
+        is_error=True,
+    )
+    fake_session = AsyncMock()
+    fake_session.call_tool = AsyncMock(return_value=call_result)
+    mcp_plugin._get_or_create_session = AsyncMock(return_value=fake_session)
+
+    result = await mcp_plugin.call_mcp_function(server_name="srv", function_name="boom")
+
+    assert result == {"error": "boom"}
+
+
 if __name__ == "__main__":
-    pytest.main() 
+    pytest.main()
+
+
+def test_mcp_call_result_reports_non_text_content():
+    from bot.plugins.mcp_server import _mcp_call_result_to_dict
+
+    result = types.CallToolResult(
+        content=[types.ImageContent(type="image", data="aGVsbG8=", mimeType="image/png")],
+        isError=False,
+    )
+    out = _mcp_call_result_to_dict(result)
+    assert out["omitted_content"] == ["image"]
+    assert "non-text" in out["result"]
+
+    mixed = types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text="caption"),
+            types.ImageContent(type="image", data="aGVsbG8=", mimeType="image/png"),
+        ],
+        isError=False,
+    )
+    out = _mcp_call_result_to_dict(mixed)
+    assert out["result"] == "caption"
+    assert out["omitted_content"] == ["image"]

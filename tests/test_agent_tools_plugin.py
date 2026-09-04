@@ -17,7 +17,6 @@ if importlib.util.find_spec("markdown2") is None:
 
 from bot.plugin_manager import PluginManager
 from bot.i18n import localized_text
-from bot.database import Database
 from bot.model_constants import MAX_OUTPUT_TOKENS
 from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.request_context import RequestContext
@@ -370,19 +369,6 @@ class FakeMessage:
 
     async def reply_text(self, text: str):
         self.replies.append(text)
-
-
-@pytest.fixture()
-def agent_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._reset_singleton()
-    db = Database()
-    # Stage 3: agent_plan_* DDLs live in the plugin now.
-    with db.get_connection() as conn:
-        for stmt in AgentToolsPlugin().register_schema():
-            conn.execute(stmt)
-    yield db
-    Database._reset_singleton()
 
 
 def _db_backed_agent_plugin(tmp_path, db):

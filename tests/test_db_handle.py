@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from bot.database import Database
+from bot.database import Database, DatabaseLockTimeoutError
 from bot.plugins.db_handle import DbHandle
 
 
@@ -196,6 +196,90 @@ async def test_direct_database_async_call_waits_outside_dbhandle_transaction(db,
     await external_task
     rows = await handle.fetch_all("SELECT id, name FROM kv ORDER BY id")
     assert rows == [{"id": 2, "name": "external"}]
+
+
+async def test_sync_db_call_from_loop_task_during_open_transaction_times_out(
+    db, handle, monkeypatch
+):
+    """Reproduces the real deadlock from docs/remediation_2026-09-04/T08-db-deadlock.md:
+    a coroutine calls a *sync* ``Database`` method directly (no ``to_thread``/executor)
+    while another task holds an open ``DbHandle.transaction()``. Before the fix this
+    blocked the event loop thread forever (even ``asyncio.wait_for``'s own timer could
+    not fire, since it runs on the same blocked thread); now
+    ``Database._op_lock.acquire`` is bounded by ``DB_OP_LOCK_TIMEOUT_SECONDS`` and
+    raises ``DatabaseLockTimeoutError`` instead, so the direct call itself returns
+    control to the loop after a bounded wait.
+    """
+    monkeypatch.setenv("DB_OP_LOCK_TIMEOUT_SECONDS", "0.2")
+    await _create_kv_table(handle)
+
+    task_a_in_transaction = asyncio.Event()
+    release_task_a = asyncio.Event()
+
+    async def task_a():
+        async with handle.transaction() as tx:
+            await tx.execute(
+                "INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (1, "a", 1)
+            )
+            task_a_in_transaction.set()
+            await release_task_a.wait()
+            await tx.execute(
+                "INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (2, "b", 2)
+            )
+
+    async def task_b():
+        await task_a_in_transaction.wait()
+        # Direct sync call on the event-loop thread, matching the real repro
+        # script (/tmp/hunt/repro_deadlock.py) — no asyncio.to_thread wrapper.
+        return db.get_user_settings(1)
+
+    task_a_handle = asyncio.create_task(task_a())
+    task_b_handle = asyncio.create_task(task_b())
+
+    with pytest.raises(DatabaseLockTimeoutError):
+        await asyncio.wait_for(task_b_handle, timeout=5)
+
+    release_task_a.set()
+    await asyncio.wait_for(task_a_handle, timeout=5)
+
+    rows = await handle.fetch_all("SELECT id FROM kv ORDER BY id")
+    assert [r["id"] for r in rows] == [1, 2]
+
+
+async def test_execute_from_inside_own_open_transaction_raises_instead_of_hanging(
+    handle: DbHandle,
+):
+    await _create_kv_table(handle)
+
+    async def _body():
+        async with handle.transaction() as tx:
+            await tx.execute(
+                "INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (1, "a", 1)
+            )
+            # Wrong: plain db_handle.execute instead of tx.execute, from the
+            # same task that opened the transaction.
+            await handle.execute(
+                "INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (2, "b", 2)
+            )
+
+    with pytest.raises(RuntimeError, match="open DbHandle.transaction"):
+        await asyncio.wait_for(_body(), timeout=2)
+
+
+async def test_database_async_method_from_inside_own_open_transaction_raises(
+    db, handle: DbHandle
+):
+    await _create_kv_table(handle)
+
+    async def _body():
+        async with handle.transaction() as tx:
+            await tx.execute(
+                "INSERT INTO kv(id, name, value) VALUES (?, ?, ?)", (1, "a", 1)
+            )
+            await db.get_user_settings_async(1)
+
+    with pytest.raises(RuntimeError, match="open DbHandle.transaction"):
+        await asyncio.wait_for(_body(), timeout=2)
 
 
 async def test_transaction_enter_cancellation_closes_opened_db_transaction():

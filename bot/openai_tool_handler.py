@@ -291,6 +291,9 @@ DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 MANAGE_PLAN_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "manage_plan_tasks"
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
+DELIVERY_GRACE_ROUNDS = 2  # extra re-entry rounds beyond max_consecutive_calls while
+                           # final_delivery_required=True and deliver_to_user has not
+                           # yet succeeded
 SUPPRESS_REENTRY_TOOLS_KEY = "suppress_reentry_tools"
 RETRY_PLAIN_TEXT_TOOL_INTENT_KEY = "retry_plain_text_tool_intent"
 TOOL_INTENT_REPAIR_MAX_ATTEMPTS = 1
@@ -906,7 +909,7 @@ def _reentry_tool_choice(tools, *, times: int, max_consecutive_calls: int, final
     if not _has_tool_specs(tools):
         return "none"
     if final_delivery_required:
-        return "auto"
+        return "auto" if times < max_consecutive_calls + DELIVERY_GRACE_ROUNDS else "none"
     return "auto" if times < max_consecutive_calls else "none"
 
 
@@ -1501,7 +1504,11 @@ async def handle_function_call(
                 retry_plain_text_tool_intent
                 or _requires_plain_text_tool_intent_retry(tool_result)
             )
-            if tool_result.success and (defer_direct_results or tool_result.artifacts):
+            if (
+                tool_result.success
+                and (defer_direct_results or tool_result.artifacts)
+                and _delivery_tool_is_allowed(helper, allowed_plugins)
+            ):
                 final_delivery_required = True
             tool_outcomes.append((tool_name, bool(tool_result.success)))
             for entry in tool_result.artifacts:

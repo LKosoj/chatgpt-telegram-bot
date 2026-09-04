@@ -11,7 +11,7 @@ def _load_ask_your_pdf_module(
     monkeypatch,
     extracted_text="Extracted PDF text",
 ):
-    fake_pypdf2 = types.ModuleType("PyPDF2")
+    fake_pypdf2 = types.ModuleType("pypdf")
 
     class FakePage:
         def extract_text(self):
@@ -27,7 +27,7 @@ def _load_ask_your_pdf_module(
     fake_textract = types.ModuleType("textract")
     fake_textract.process = lambda file_path: extracted_text.encode("utf-8")
 
-    monkeypatch.setitem(sys.modules, "PyPDF2", fake_pypdf2)
+    monkeypatch.setitem(sys.modules, "pypdf", fake_pypdf2)
     monkeypatch.setitem(sys.modules, "textract", fake_textract)
 
     import bot.plugins.ask_your_pdf as ask_your_pdf
@@ -50,15 +50,15 @@ def _plugin(tmp_path, module):
 
 def _helper(answer="PDF analysis result"):
     return SimpleNamespace(
-        get_chat_response=AsyncMock(return_value=(answer, 123)),
+        ask=AsyncMock(return_value=(answer, 123)),
     )
 
 
 def _helper_prompt(helper):
-    call = helper.get_chat_response.await_args
-    if "query" in call.kwargs:
-        return call.kwargs["query"]
-    return call.args[1]
+    call = helper.ask.await_args
+    if call.args:
+        return call.args[0]
+    return call.kwargs["prompt"]
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_analyze_pdf_happy_path_extracts_text_and_returns_result(
     assert "error" not in result
     assert result["result"] == "PDF analysis result"
     assert result["file_hash"] == plugin.generate_file_hash(str(pdf_path))
-    helper.get_chat_response.assert_awaited_once()
+    helper.ask.assert_awaited_once()
     prompt = _helper_prompt(helper)
     assert "What is this document about?" in prompt
     assert "Extracted PDF text" in prompt
@@ -113,7 +113,7 @@ async def test_analyze_pdf_cache_hit_returns_cached_result_without_helper(
     )
 
     assert result == cached_result
-    helper.get_chat_response.assert_not_called()
+    helper.ask.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_analyze_pdf_cache_is_scoped_by_query(monkeypatch, tmp_path):
     plugin = _plugin(tmp_path, module)
     pdf_path = _create_pdf(tmp_path / "scoped-cache.pdf")
     helper = _helper()
-    helper.get_chat_response.side_effect = [
+    helper.ask.side_effect = [
         ("first answer", 1),
         ("second answer", 1),
     ]
@@ -142,7 +142,7 @@ async def test_analyze_pdf_cache_is_scoped_by_query(monkeypatch, tmp_path):
 
     assert first["result"] == "first answer"
     assert second["result"] == "second answer"
-    assert helper.get_chat_response.await_count == 2
+    assert helper.ask.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -162,7 +162,7 @@ async def test_analyze_pdf_missing_file_returns_error_without_helper(
     )
 
     assert result == {"error": "File not found"}
-    helper.get_chat_response.assert_not_called()
+    helper.ask.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -225,7 +225,7 @@ async def test_analyze_pdf_error_when_text_cannot_be_extracted(
     )
 
     assert "Could not extract text from PDF" in result["error"]
-    helper.get_chat_response.assert_not_called()
+    helper.ask.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -247,7 +247,7 @@ async def test_analyze_pdf_truncates_oversized_text(monkeypatch, tmp_path):
     )
 
     assert "error" not in result
-    helper.get_chat_response.assert_awaited_once()
+    helper.ask.assert_awaited_once()
     prompt = _helper_prompt(helper)
     assert "BEGIN " in prompt
     assert "SENTINEL_AFTER_LIMIT" not in prompt
@@ -293,4 +293,4 @@ async def test_analyze_pdf_rejects_path_outside_plugin_storage(
     )
 
     assert "error" in result
-    helper.get_chat_response.assert_not_called()
+    helper.ask.assert_not_called()

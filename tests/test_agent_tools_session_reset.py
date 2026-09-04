@@ -13,7 +13,6 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
-from bot.database import Database
 from bot.plugin_manager import PluginManager
 from bot.plugins.agent_tools import AgentToolsPlugin
 from bot.plugins.db_handle import DbHandle
@@ -25,18 +24,6 @@ PLAN_CONTRACT = {
     "success_criteria": ["Plan state matches reset policy"],
     "verification": ["Checked persisted plan state"],
 }
-
-
-@pytest.fixture()
-def agent_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._reset_singleton()
-    db = Database()
-    with db.get_connection() as conn:
-        for stmt in AgentToolsPlugin().register_schema():
-            conn.execute(stmt)
-    yield db
-    Database._reset_singleton()
 
 
 def _make_plugin(tmp_path, db):

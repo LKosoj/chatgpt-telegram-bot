@@ -34,6 +34,23 @@ def parse_bool_env(name, default):
     raise ValueError(f'{name} must be a boolean value')
 
 
+def env_bool(name: str, default: bool) -> bool:
+    """Soft boolean env parsing — replaces the inline ``.lower() == 'true'`` idiom.
+
+    Byte-for-byte equivalent of the historical per-call-site expression:
+    unset env -> ``default``; **any** other value (including recognizable
+    synonyms like ``'1'``/``'yes'``) -> ``False`` unless it is exactly
+    ``'true'`` case-insensitively. Never raises. Do not use this for env
+    vars whose invalid-value handling must reject startup — those keep using
+    the stricter ``parse_bool_env`` above (see
+    ``test_invalid_telegram_local_mode_rejected_before_polling``).
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() == 'true'
+
+
 def parse_telegram_rich_mode_env(name='TELEGRAM_RICH_MESSAGES', default='auto'):
     value = os.environ.get(name)
     if value is None:
@@ -201,17 +218,29 @@ def main():
     else:
         guest_budget_default = 100.0
 
-    openai_config = {
+    proxy_env = os.environ.get('PROXY', None)
+    shared = {
         'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
         'api_key': api_key,
-        'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
-        'stream': os.environ.get('STREAM', 'true').lower() == 'true',
-        'stream_include_usage': os.environ.get('STREAM_INCLUDE_USAGE', 'false').lower() == 'true',
-        'proxy': os.environ.get('PROXY', None) or os.environ.get('OPENAI_PROXY', None),
-        'proxy_web': os.environ.get('PROXY_WEB', None),
         'telegram_rich_messages': telegram_rich_messages,
         'telegram_rich_drafts': telegram_rich_drafts,
-        'chat_run_variant_b_enabled': parse_bool_env('CHAT_RUN_VARIANT_B_ENABLED', True),
+        'stream': env_bool('STREAM', True),
+        'bot_language': bot_language,
+        'max_sessions': max_sessions,
+        'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
+        'tts_model': first_model_env('TTS_MODEL'),
+        'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
+        'data_dir': os.environ.get('BOT_DATA_DIR', ''),
+        'output_dir': os.environ.get('BOT_OUTPUT_DIR', ''),
+        'plots_dir': os.environ.get('BOT_PLOTS_DIR', ''),
+    }
+
+    openai_config = {
+        **shared,
+        'show_usage': env_bool('SHOW_USAGE', False),
+        'stream_include_usage': env_bool('STREAM_INCLUDE_USAGE', False),
+        'proxy': proxy_env or os.environ.get('OPENAI_PROXY', None),
+        'proxy_web': os.environ.get('PROXY_WEB', None),
         'max_history_size': _parse_numeric_env('MAX_HISTORY_SIZE', 15, int),
         'max_conversation_age_minutes': _parse_numeric_env('MAX_CONVERSATION_AGE_MINUTES', 180, int),
         'assistant_prompt': os.environ.get('ASSISTANT_PROMPT', 'You are a helpful assistant.'),
@@ -224,27 +253,23 @@ def main():
         'image_quality': os.environ.get('IMAGE_QUALITY', 'standard'),
         'image_style': os.environ.get('IMAGE_STYLE', 'vivid'),
         'image_size': os.environ.get('IMAGE_SIZE', '512x512'),
-        'auto_chat_modes': os.environ.get('AUTO_CHAT_MODES', 'false').lower() == 'true',
+        'auto_chat_modes': env_bool('AUTO_CHAT_MODES', False),
         'model': model,
         'model_choices': model_choices,
-        'enable_functions': os.environ.get('ENABLE_FUNCTIONS', str(functions_available)).lower() == 'true',
+        'enable_functions': env_bool('ENABLE_FUNCTIONS', functions_available),
         'functions_max_consecutive_calls': _parse_numeric_env('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10, int),
         'presence_penalty': _parse_numeric_env('PRESENCE_PENALTY', 0.0, float),
         'frequency_penalty': _parse_numeric_env('FREQUENCY_PENALTY', 0.0, float),
-        'bot_language': bot_language,
-        'show_plugins_used': os.environ.get('SHOW_PLUGINS_USED', 'false').lower() == 'true',
+        'show_plugins_used': env_bool('SHOW_PLUGINS_USED', False),
         'whisper_prompt': os.environ.get('WHISPER_PROMPT', ''),
         'vision_model': first_model_env('VISION_MODEL'),
-        'enable_vision_follow_up_questions': os.environ.get('ENABLE_VISION_FOLLOW_UP_QUESTIONS', 'true').lower() == 'true',
+        'enable_vision_follow_up_questions': env_bool('ENABLE_VISION_FOLLOW_UP_QUESTIONS', True),
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
         'vision_detail': os.environ.get('VISION_DETAIL', 'auto'),
         'vision_max_tokens': _parse_numeric_env('VISION_MAX_TOKENS', 1000, int),
-        'tts_model': first_model_env('TTS_MODEL'),
         'tts_voice': os.environ.get('TTS_VOICE', 'kseniya').lower(),
-        'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'transcription_model': first_model_env('TRANSCRIPTION_MODEL'),
         'yandex_api_token': os.environ.get('YANDEX_API_TOKEN', ''),
-        'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
         'big_model_to_use': first_model_env('BIG_MODEL_TO_USE'),
         'light_model': first_model_env('LIGHT_MODEL'),
         # T4: context summarisation knobs. ``SUMMARY_MODEL`` empty -> helper
@@ -264,7 +289,7 @@ def main():
         'reply_intent_timeout_seconds': _parse_numeric_env('REPLY_INTENT_TIMEOUT_SECONDS', 10.0, float),
         'session_name_timeout_seconds': _parse_numeric_env('SESSION_NAME_TIMEOUT_SECONDS', 20.0, float),
         # hindsight_* keys live in bot/plugins/hindsight_memory.py (Stage 4A migration).
-        'session_log_enabled': os.environ.get('SESSION_LOG_ENABLED', 'false').lower() == 'true',
+        'session_log_enabled': env_bool('SESSION_LOG_ENABLED', False),
         'session_log_dir': os.environ.get('SESSION_LOG_DIR', './log'),
         'session_log_max_bytes': _parse_numeric_env(
             'SESSION_LOG_MAX_BYTES', 10 * 1024 * 1024, int, minimum=0,
@@ -273,10 +298,6 @@ def main():
         'session_log_otel_endpoint': os.environ.get('SESSION_LOG_OTEL_ENDPOINT', ''),
         'session_log_otel_service_name': os.environ.get('SESSION_LOG_OTEL_SERVICE_NAME', 'chatgpt-telegram-bot'),
         'session_log_otel_insecure': parse_bool_env('SESSION_LOG_OTEL_INSECURE', True),
-        'data_dir': os.environ.get('BOT_DATA_DIR', ''),
-        'output_dir': os.environ.get('BOT_OUTPUT_DIR', ''),
-        'plots_dir': os.environ.get('BOT_PLOTS_DIR', ''),
-        'max_sessions': max_sessions,
     }
 
     if openai_config['enable_functions'] and not functions_available:
@@ -298,42 +319,33 @@ def main():
     telegram_base_url = validate_telegram_base_url(telegram_base_url)
 
     telegram_config = {
-        'openai_base': os.environ.get('OPENAI_BASE_URL', ''),
-        'api_key': api_key,
+        **shared,
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
         'telegram_local_mode': telegram_local_mode,
         'telegram_base_url': telegram_base_url,
-        'telegram_rich_messages': telegram_rich_messages,
-        'telegram_rich_drafts': telegram_rich_drafts,
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
-        'enable_quoting': os.environ.get('ENABLE_QUOTING', 'true').lower() == 'true',
-        'enable_image_generation': os.environ.get('ENABLE_IMAGE_GENERATION', 'true').lower() == 'true',
-        'enable_transcription': os.environ.get('ENABLE_TRANSCRIPTION', 'true').lower() == 'true',
-        'enable_vision': os.environ.get('ENABLE_VISION', 'true').lower() == 'true',
-        'enable_tts_generation': os.environ.get('ENABLE_TTS_GENERATION', 'true').lower() == 'true',
+        'enable_quoting': env_bool('ENABLE_QUOTING', True),
+        'enable_image_generation': env_bool('ENABLE_IMAGE_GENERATION', True),
+        'enable_transcription': env_bool('ENABLE_TRANSCRIPTION', True),
+        'enable_vision': env_bool('ENABLE_VISION', True),
+        'enable_tts_generation': env_bool('ENABLE_TTS_GENERATION', True),
         'budget_period': os.environ.get('BUDGET_PERIOD', 'monthly').lower(),
         'user_budgets': os.environ.get('USER_BUDGETS', os.environ.get('MONTHLY_USER_BUDGETS', '*')),
         'guest_budget': _parse_numeric_env('GUEST_BUDGET', guest_budget_default, float),
-        'stream': os.environ.get('STREAM', 'true').lower() == 'true',
-        'proxy': os.environ.get('PROXY', None) or os.environ.get('TELEGRAM_PROXY', None),
-        'voice_reply_transcript': os.environ.get('VOICE_REPLY_WITH_TRANSCRIPT_ONLY', 'false').lower() == 'true',
+        'proxy': proxy_env or os.environ.get('TELEGRAM_PROXY', None),
+        'voice_reply_transcript': env_bool('VOICE_REPLY_WITH_TRANSCRIPT_ONLY', False),
         'voice_reply_prompts': parse_semicolon_list_env('VOICE_REPLY_PROMPTS'),
-        'ignore_group_transcriptions': os.environ.get('IGNORE_GROUP_TRANSCRIPTIONS', 'true').lower() == 'true',
-        'ignore_group_vision': os.environ.get('IGNORE_GROUP_VISION', 'true').lower() == 'true',
+        'ignore_group_transcriptions': env_bool('IGNORE_GROUP_TRANSCRIPTIONS', True),
+        'ignore_group_vision': env_bool('IGNORE_GROUP_VISION', True),
         'group_trigger_keyword': os.environ.get('GROUP_TRIGGER_KEYWORD', ''),
         'token_price': _parse_numeric_env('TOKEN_PRICE', 0.002, float),
         'model_token_prices': load_model_token_prices(os.environ.get('MODEL_TOKEN_PRICES', '')),
         'image_prices': _parse_numeric_list_env('IMAGE_PRICES', [0.016, 0.018, 0.02], float),
         'vision_token_price': _parse_numeric_env('VISION_TOKEN_PRICE', 0.01, float),
         'image_receive_mode': os.environ.get('IMAGE_FORMAT', "photo"),
-        'tts_model': first_model_env('TTS_MODEL'),
-        'tts_response_format': os.environ.get('TTS_RESPONSE_FORMAT', 'wav'),
         'tts_prices': _parse_numeric_list_env('TTS_PRICES', [0.015, 0.030], float),
         'transcription_price': _parse_numeric_env('TRANSCRIPTION_PRICE', 0.006, float),
-        'bot_language': bot_language,
-        'max_sessions': max_sessions,
-        'assemblyai_api_key': os.environ.get('ASSEMBLYAI_API_KEY', ''),
         'telegram_download_bot_id': os.environ.get('TELEGRAM_DOWNLOAD_BOT_ID', ''),
         'telegram_download_dir': os.environ.get('TELEGRAM_DOWNLOAD_DIR', 'media'),
         'retention_cleanup_interval_seconds': _parse_numeric_env(
@@ -344,9 +356,6 @@ def main():
         ),
         'image_retention_days': _parse_numeric_env('IMAGE_RETENTION_DAYS', 7, int, minimum=0),
         'usage_retention_days': _parse_numeric_env('USAGE_RETENTION_DAYS', 30, int, minimum=0),
-        'data_dir': os.environ.get('BOT_DATA_DIR', ''),
-        'output_dir': os.environ.get('BOT_OUTPUT_DIR', ''),
-        'plots_dir': os.environ.get('BOT_PLOTS_DIR', ''),
     }
 
     plugin_config = {
@@ -357,6 +366,12 @@ def main():
     plugin_manager = PluginManager(config=plugin_config)
     # Stage 4A: expose openai_config keys to plugins via get_config_prefix().
     plugin_manager.config.update(openai_config)
+    Database.configure(
+        db_path=os.environ.get('DB_PATH'),
+        max_sessions=max_sessions,
+        journal_mode=os.environ.get('SQLITE_JOURNAL_MODE'),
+        default_model=model,
+    )
     db = Database()
     plugin_manager.set_db(db)
     # Stage 0 hook wiring: plugins may declare DDL via Plugin.register_schema().

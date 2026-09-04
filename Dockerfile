@@ -14,6 +14,10 @@ ENV PYTHONFAULTHANDLER=1 \
 
 WORKDIR /app
 COPY requirements.txt .
+# g++/libc6-dev: build toolchain kept on purpose — the base image is python:slim and
+# some transitive dependencies may ship without a prebuilt wheel for a new Python/arch
+# combination; the toolchain is purged right after `pip install`, so the final image size
+# is unaffected. Removing it requires verifying a real `docker build` first.
 RUN apt-get update \
      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg default-jre-headless graphviz g++ libc6-dev \
      && pip install -r requirements.txt --no-cache-dir \

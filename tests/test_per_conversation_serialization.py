@@ -1,12 +1,15 @@
 import asyncio
 import importlib.util
+import io
 import sys
 import types
 from collections import defaultdict
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 
 _INSERTED_MODULES = []
@@ -18,14 +21,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -54,6 +52,7 @@ _install_module_if_missing("tenacity", _tenacity)
 from bot import telegram_bot  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from tests.fakes import FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -199,6 +198,32 @@ class DelayedOpenAI:
 
     def _clear_chat_state(self, state_key):
         self.cleared_states.append(state_key)
+
+    def evict(self, state_key):
+        self._clear_chat_state(state_key)
+
+    @contextmanager
+    def chat_state_scope(self, state_key):
+        yield
+
+    async def interpret_images(self, chat_id, fileobjs, *, prompt=None, user_id=None,
+                               image_file_ids=None, session_id=None):
+        self.requests.append({
+            "chat_id": chat_id,
+            "query": prompt,
+            "image_file_ids": image_file_ids,
+            "session_id": session_id,
+        })
+        self.active_calls += 1
+        self.max_parallel_calls = max(self.max_parallel_calls, self.active_calls)
+        self.started.set()
+        self.db.get_conversation_context(chat_id)
+        try:
+            await asyncio.sleep(0.05)
+            return f"vision response for {prompt}", 1
+        finally:
+            self.db.save_conversation_context(chat_id)
+            self.active_calls -= 1
 
 
 class FakeMessage:
@@ -774,3 +799,92 @@ async def test_early_plugin_prompt_route_does_not_create_empty_session():
     assert db.load_calls == []
     assert db.created_sessions == []
     assert openai.requests == []
+
+
+def _make_png_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class FakeInlineCallbackQuery:
+    def __init__(self, data, user_id=42, name="User 42"):
+        self.data = data
+        self.from_user = SimpleNamespace(id=user_id, name=name)
+        self.inline_message_id = "inline-msg-1"
+        self.message = None
+        self.answer = AsyncMock()
+
+
+class FakeInlineCallbackUpdate:
+    def __init__(self, data, user_id=42, name="User 42"):
+        self.callback_query = FakeInlineCallbackQuery(data, user_id=user_id, name=name)
+        self.message = None
+        self.effective_chat = None
+        self.effective_user = self.callback_query.from_user
+        self.effective_message = None
+
+
+@pytest.mark.asyncio
+async def test_vision_media_group_serializes_with_process_message(monkeypatch):
+    # T13 §3.1: _process_vision_media_group must take the same per-conversation lock
+    # as process_message, otherwise a concurrent text prompt from the same user races
+    # it over self.openai.conversations. Repro is db.overlaps staying non-empty.
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", _run_without_indicator)
+    bot, db, openai = _make_bot()
+    bot.config["enable_vision"] = True
+    bot.config["enable_vision_follow_up_questions"] = False
+    bot.application = None
+    db.save_image_async = AsyncMock()
+
+    png_bytes = _make_png_bytes()
+
+    async def get_file(file_id):
+        return SimpleNamespace(download_as_bytearray=AsyncMock(return_value=png_bytes))
+
+    vision_context = SimpleNamespace(bot=SimpleNamespace(id=999, get_file=get_file))
+    vision_update = FakeUpdate(FakeMessage(chat_id=1234, user_id=42, message_id=5, text=None))
+    item = {
+        "update": vision_update,
+        "context": vision_context,
+        "chat_id": 1234,
+        "user_id": 42,
+        "message_id": 5,
+        "message_timestamp": 1000.0,
+        "caption": "Describe this",
+        "is_forwarded": False,
+        "file_id": "file-1",
+    }
+    text_update = FakeUpdate(FakeMessage(chat_id=1234, user_id=42, message_id=6, text="hello"))
+
+    await asyncio.gather(
+        bot._process_vision_media_group([item]),
+        bot.process_message("hello", text_update, _make_context()),
+    )
+
+    assert db.overlaps == []
+
+
+@pytest.mark.asyncio
+async def test_inline_callback_serializes_with_process_message_same_user(monkeypatch):
+    # T13 §3.2: handle_callback_inline_query must take the same per-conversation lock
+    # as process_message. chat_id=user_id here matches get_conversation_key for the
+    # user's own private chat, so an inline callback answer and a plain text message
+    # from the same user race over self.openai.conversations[user_id] without the lock.
+    monkeypatch.setattr(telegram_bot, "wrap_with_indicator", _run_without_indicator)
+    bot, db, openai = _make_bot()
+    bot.check_allowed_and_within_budget = AsyncMock(return_value=True)
+    bot.inline_queries_cache = {"unique-1": "inline question"}
+
+    inline_update = FakeInlineCallbackUpdate("gpt:unique-1", user_id=42)
+    inline_context = SimpleNamespace(bot=SimpleNamespace(id=999, edit_message_text=AsyncMock()))
+    # Same chat_id as user_id reproduces the private-chat conversation key collision
+    # (get_conversation_key returns effective_user.id for non-group chats).
+    text_update = FakeUpdate(FakeMessage(chat_id=42, user_id=42, message_id=7, text="hello"))
+
+    await asyncio.gather(
+        bot.handle_callback_inline_query(inline_update, inline_context),
+        bot.process_message("hello", text_update, _make_context()),
+    )
+
+    assert db.overlaps == []

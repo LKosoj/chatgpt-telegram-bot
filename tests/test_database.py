@@ -1,9 +1,17 @@
+import asyncio
+import logging
 import sqlite3
 import threading
+import time
 
 import pytest
 
-from bot.database import Database
+from bot.database import (
+    ConversationContextCorruptError,
+    ConversationContextError,
+    Database,
+    DatabaseLockTimeoutError,
+)
 
 
 class DummyOpenAI:
@@ -702,14 +710,23 @@ def test_outer_commit_failure_rolls_back(db, tmp_path):
 
 
 def test_concurrent_access_smoke(db):
+    worker_errors = []
+
     def worker(idx):
-        db.save_user_settings(idx, {"x": idx})
+        try:
+            db.save_user_settings(idx, {"x": idx})
+        except BaseException as exc:
+            worker_errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+
+    assert worker_errors == []
+    for idx in range(10):
+        assert db.get_user_settings(idx) == {"x": idx}
 
 
 def test_chat_settings_are_persisted_by_chat_id(db):
@@ -1079,9 +1096,168 @@ def test_shutdown_idempotent(db):
     db.shutdown()
     db.shutdown()  # не должно бросить
 
-    # После shutdown executor=None; _get_executor создаёт новый.
+    # После shutdown executor=None, и новый пул больше не создаётся:
+    # иначе фоновая задача, обратившаяся к БД во время остановки, породила бы
+    # осиротевший воркер-поток (ревью T08).
     assert db._executor is None
-    new_exec = db._get_executor()
-    assert new_exec is not None
-    # Финальная очистка — чтобы не мешать fixture teardown.
+    with pytest.raises(RuntimeError, match="shut down"):
+        db._get_executor()
+
+
+def test_async_call_after_shutdown_raises_instead_of_spawning_executor(db):
+    """Async-доступ после shutdown() падает явно, а не создаёт новый пул."""
     db.shutdown()
+
+    async def _run():
+        await db.get_user_settings_async(1)
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        asyncio.run(_run())
+    assert db._executor is None
+
+
+def test_sync_call_from_event_loop_logs_warning_once_per_site(db, caplog):
+    """Синхронный вызов из потока event loop логируется на уровне WARNING
+    (дефолтный уровень бота — INFO, DEBUG в прод-логах не виден) и не более
+    одного раза на call-site, чтобы не засорять лог на горячих путях."""
+    import bot.database as database_module
+
+    database_module._SYNC_CALL_WARNED_SITES.clear()
+    caplog.set_level(logging.WARNING, logger="bot.database")
+
+    async def _run():
+        for _ in range(2):
+            db.get_user_settings(1)  # один и тот же call-site дважды
+
+    asyncio.run(_run())
+    warnings = [r for r in caplog.records if "Sync Database call from the event loop thread" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert "test_database.py" in warnings[0].getMessage()
+
+    # Вне event loop предупреждения нет.
+    caplog.clear()
+    db.get_user_settings(1)
+    assert not [r for r in caplog.records if "Sync Database call" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# T11: get_conversation_context должна пробрасывать реальную ошибку чтения
+# (а не подменять её тем же сентинелом, что и легитимное «данных нет»).
+# ---------------------------------------------------------------------------
+
+def test_get_conversation_context_propagates_read_error_without_creating_session(db):
+    """Временная ошибка чтения не должна создавать новую сессию.
+
+    Note: sqlite3.Cursor is an immutable C-level type on this Python version
+    (3.12) -- mock.patch.object(sqlite3.Cursor, "execute", ...) raises
+    "cannot set 'execute' attribute of immutable type". Instead we swap the
+    thread-local connection for one built from a Cursor subclass, the same
+    swap-the-connection pattern already used by
+    test_outer_commit_failure_rolls_back in this file.
+    """
+    helper = DummyOpenAI()
+    session_id = db.create_session(1, openai_helper=helper)
+    sessions_before = db.list_user_sessions(1)
+
+    class FailingCursor(sqlite3.Cursor):
+        def execute(self, sql, *args, **kwargs):
+            if "SELECT context, parse_mode" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *args, **kwargs)
+
+    class FailingConnection(sqlite3.Connection):
+        def cursor(self, factory=None):
+            return super().cursor(factory or FailingCursor)
+
+    failing_conn = sqlite3.connect(db.db_path, factory=FailingConnection)
+    failing_conn.row_factory = sqlite3.Row
+    db._local.connection = failing_conn
+    db._local.depth = 0
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.get_conversation_context(1, session_id)
+
+    # Ни одна новая сессия не появилась и не пропала.
+    assert db.list_user_sessions(1) == sessions_before
+
+
+def test_get_conversation_context_raises_on_create_session_failure(db, monkeypatch):
+    """create_session вернула None (замаскированное исключение) -> явная ошибка,
+    а не сентинел «данных нет»."""
+    monkeypatch.setattr(db, "create_session", lambda *a, **k: None)
+
+    with pytest.raises(ConversationContextError):
+        db.get_conversation_context(999)  # нет активной сессии, session_id не передан
+
+
+def test_get_conversation_context_raises_on_corrupt_json(db):
+    """Битый JSON в context — ошибка данных, не тихий сентинел."""
+    helper = DummyOpenAI()
+    session_id = db.create_session(1, openai_helper=helper)
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_context SET context = ? WHERE user_id = ? AND session_id = ?",
+            ("{not valid json", 1, session_id),
+        )
+
+    with pytest.raises(ConversationContextCorruptError):
+        db.get_conversation_context(1, session_id)
+
+
+def test_get_conversation_context_missing_session_defaults_to_100_not_80(db):
+    """Унификация дефолта max_tokens_percent: legit «нет данных» -> 100, не 80."""
+    context, parse_mode, temperature, max_tokens_percent, session_id = (
+        db.get_conversation_context(1, "definitely-missing-session-id")
+    )
+    assert context is None
+    assert max_tokens_percent == 100
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_context_async_propagates_corrupt_json_error(db):
+    """Асинхронная обёртка не глотает исключение из sync-метода."""
+    helper = DummyOpenAI()
+    session_id = await db.create_session_async(1, openai_helper=helper)
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE conversation_context SET context = ? WHERE user_id = ? AND session_id = ?",
+            ("{not valid json", 1, session_id),
+        )
+
+    with pytest.raises(ConversationContextCorruptError):
+        await db.get_conversation_context_async(1, session_id)
+
+
+def test_get_connection_op_lock_times_out_instead_of_hanging(db, monkeypatch):
+    """``Database._op_lock`` is a plain ``threading.RLock``; a slow holder used to
+    block every other caller forever. ``DB_OP_LOCK_TIMEOUT_SECONDS`` bounds the
+    wait and raises ``DatabaseLockTimeoutError`` instead (see
+    docs/remediation_2026-09-04/T08-db-deadlock.md).
+    """
+    monkeypatch.setenv("DB_OP_LOCK_TIMEOUT_SECONDS", "0.2")
+
+    holder_ready = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_lock():
+        with db.get_connection():
+            holder_ready.set()
+            release_holder.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=hold_lock)
+    holder_thread.start()
+    try:
+        assert holder_ready.wait(timeout=5)
+
+        started = time.monotonic()
+        with pytest.raises(DatabaseLockTimeoutError):
+            with db.get_connection():
+                pass
+        elapsed = time.monotonic() - started
+
+        assert 0.15 <= elapsed <= 3.0
+    finally:
+        release_holder.set()
+        holder_thread.join(timeout=5)
+        assert not holder_thread.is_alive()

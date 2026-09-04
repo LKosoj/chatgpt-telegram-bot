@@ -1,3 +1,4 @@
+import asyncio
 import os
 import os.path
 import pathlib
@@ -886,3 +887,28 @@ class UsageTracker:
 
         all_time_cost = token_cost + transcription_cost + image_cost + vision_cost + tts_cost
         return all_time_cost
+
+    # --- Async wrappers (T14) -------------------------------------------
+    # Тонкие обёртки над уже существующими sync-методами: выполняют тот же
+    # код в отдельном потоке (asyncio.to_thread), чтобы не блокировать
+    # event loop бота. Новый lock не нужен: _file_lock (class-level
+    # threading.RLock, см. :366) уже сериализует критическую секцию
+    # внутри каждого вызываемого sync-метода.
+
+    async def add_chat_tokens_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_chat_tokens, *args, **kwargs)
+
+    async def add_image_request_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_image_request, *args, **kwargs)
+
+    async def add_vision_tokens_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_vision_tokens, *args, **kwargs)
+
+    async def add_tts_request_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_tts_request, *args, **kwargs)
+
+    async def add_transcription_seconds_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_transcription_seconds, *args, **kwargs)
+
+    async def get_current_cost_async(self):
+        return await asyncio.to_thread(self.get_current_cost)

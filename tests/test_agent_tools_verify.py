@@ -23,7 +23,6 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
-from bot.database import Database
 from bot.plugins.agent_tools import (
     AgentToolsPlugin,
     _PLAN_RULE_TEXT,
@@ -39,18 +38,6 @@ PLAN_CONTRACT = {
     "success_criteria": ["Verify trigger fires only when expected"],
     "verification": ["Inspected pending verify state"],
 }
-
-
-@pytest.fixture()
-def agent_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))
-    Database._reset_singleton()
-    db = Database()
-    with db.get_connection() as conn:
-        for stmt in AgentToolsPlugin().register_schema():
-            conn.execute(stmt)
-    yield db
-    Database._reset_singleton()
 
 
 class FakeHelper:

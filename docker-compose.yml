@@ -6,6 +6,7 @@ services:
     env_file:
       - .env
     environment:
+      TELEGRAM_LOCAL_MODE: ${TELEGRAM_LOCAL_MODE:-false}
       DB_PATH: ${DB_PATH:-/app/data/user_data.db}
       PLUGIN_STORAGE_ROOT: ${PLUGIN_STORAGE_ROOT:-/app/data}
       SESSION_LOG_DIR: ${SESSION_LOG_DIR:-/app/log}

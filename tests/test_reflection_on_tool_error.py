@@ -34,6 +34,7 @@ from bot.openai_tool_handler import (  # noqa: E402
     REPEATED_FAILURE_NOTE_PREFIX,
     handle_function_call,
 )
+from tests.fakes import FakeChoice  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -43,19 +44,6 @@ class FakeToolCall:
     def __init__(self, name, arguments, call_id=None):
         self.id = call_id or f"call_{name}"
         self.function = SimpleNamespace(name=name, arguments=json.dumps(arguments))
-
-
-class FakeMessage:
-    def __init__(self, tool_calls=None, content=""):
-        self.tool_calls = tool_calls
-        self.content = content
-
-
-class FakeChoice:
-    def __init__(self, tool_calls=None, content=""):
-        self.message = FakeMessage(tool_calls=tool_calls, content=content)
-        self.delta = None
-        self.finish_reason = None
 
 
 class FakeResponse:

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import os
 import requests
 import random
@@ -34,10 +36,10 @@ class WebshotPlugin(Plugin):
             image_url = f'https://image.thum.io/get/maxAge/12/width/720/{kwargs["url"]}'
             
             # preload url first
-            requests.get(image_url)
+            await asyncio.to_thread(requests.get, image_url, timeout=10)
 
             # download the actual image
-            response = requests.get(image_url, timeout=30)
+            response = await asyncio.to_thread(requests.get, image_url, timeout=30)
 
             if response.status_code == 200:
                 if not os.path.exists("uploads/webshot"):
@@ -58,6 +60,7 @@ class WebshotPlugin(Plugin):
                 return {'result': 'Unable to screenshot website'}
         except Exception:
             if 'image_file_path' in locals():
-                os.remove(image_file_path)
-                
+                with contextlib.suppress(OSError):
+                    os.remove(image_file_path)
+
             return {'result': 'Unable to screenshot website'}

@@ -26,6 +26,7 @@ from bot.plugins.conversation_analytics import ConversationAnalyticsPlugin  # no
 from bot.plugins.hooks import AssistantResponsePayload  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.validation import validate_function_args  # noqa: E402
+from tests.fakes import FakeChoice  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -34,19 +35,6 @@ for _module_name in _INSERTED_MODULES:
 class FakeToolCall:
     def __init__(self, name, arguments):
         self.function = SimpleNamespace(name=name, arguments=json.dumps(arguments))
-
-
-class FakeMessage:
-    def __init__(self, tool_calls=None, content=""):
-        self.tool_calls = tool_calls
-        self.content = content
-
-
-class FakeChoice:
-    def __init__(self, tool_calls=None, content=""):
-        self.message = FakeMessage(tool_calls=tool_calls, content=content)
-        self.delta = None
-        self.finish_reason = None
 
 
 class FakeResponse:

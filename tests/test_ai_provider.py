@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from bot.ai_events import (
@@ -11,6 +13,7 @@ from bot.ai_events import (
 )
 from bot.ai_provider import AIProviderRequest, collect_ai_response
 from bot.ai_providers.fake import FakeAIProvider
+from bot.ai_providers.openai_compatible import OpenAICompatibleProvider
 
 
 @pytest.mark.asyncio
@@ -96,3 +99,31 @@ async def test_fake_provider_fails_loudly_when_no_response_is_queued():
         await collect_ai_response(provider.stream_response(
             AIProviderRequest(model="m", messages=()),
         ))
+
+
+@pytest.mark.asyncio
+async def test_usage_keeps_missing_prompt_completion_as_none():
+    """Шлюз прислал total_tokens, но не прислал prompt/completion_tokens.
+
+    Regression test for T06: раньше _usage()/_int_or_zero превращали
+    отсутствующие поля в 0, из-за чего resolve_chat_cost решал, что
+    разбивка известна (model_split, цена 0.0), вместо честного
+    model_blended.
+    """
+    fake_response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="hi", tool_calls=None),
+            finish_reason="stop",
+        )],
+        usage=SimpleNamespace(total_tokens=5, prompt_tokens=None, completion_tokens=None),
+    )
+
+    async def create_chat_completion(**kwargs):
+        return fake_response
+
+    provider = OpenAICompatibleProvider(create_chat_completion)
+    response = await collect_ai_response(provider.stream_response(
+        AIProviderRequest(model="m", messages=()),
+    ))
+
+    assert response.usage == AIUsage(prompt_tokens=None, completion_tokens=None, total_tokens=5)

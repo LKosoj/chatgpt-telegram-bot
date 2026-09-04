@@ -13,18 +13,3 @@ LLMGATEWAY_WEB_SEARCH_MODEL = "llmgateway/web-search"
 LLMGATEWAY_WEB_READ_MODEL = "llmgateway/web-read"
 LLMGATEWAY_WEB_RESEARCH_MODEL = "llmgateway/web-research"
 LLMGATEWAY_WEB_DEEP_RESEARCH_MODEL = "llmgateway/web-deep-research"
-
-# Provider groups are kept for compatibility with older helper checks.
-# Runtime model selection is configured through OPENAI_MODEL.
-GPT_4_VISION_MODELS = ()
-GPT_4O_MODELS = ()
-GPT_5_MODELS = ()
-O_MODELS = ()
-ANTHROPIC = ()
-GOOGLE = ()
-MISTRALAI = ()
-DEEPSEEK = ()
-LLAMA = ()
-PERPLEXITY = ()
-MOONSHOTAI = ()
-QWEN = ()

@@ -14,6 +14,7 @@ bot/file.json
 bot/plugins/reminders.json
 bot/.vscode/lua.booster.lint.json
 bot/plugins/.cursorrules
+bot/plugins/pdf_cache/
 /.specstory
 bot/user_data.db
 bot/user_data.db-shm

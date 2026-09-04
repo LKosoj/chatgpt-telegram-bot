@@ -129,38 +129,6 @@ async def test_summarise_window_uses_provider_wrapper_by_default():
 
 
 @pytest.mark.asyncio
-async def test_summarise_window_can_roll_back_to_legacy_timed_create():
-    config = _base_config()
-    config["chat_run_variant_b_enabled"] = False
-    helper = _make_helper(config)
-    helper.session_logger = CaptureSessionLogger()
-
-    async def fake_sdk_create(*, kind, **_kwargs):
-        assert kind == "summary"
-        return _summary_response("legacy summary")
-
-    helper._create_chat_completion_with_rate_limit_retry = fake_sdk_create
-
-    token = set_trace(1, "summary-session", "summary-turn")
-    try:
-        summary = await helper._summarise_window([
-            {"role": "user", "content": "old user message"},
-        ])
-    finally:
-        clear_trace(token)
-
-    assert summary == "legacy summary"
-    assert not any(
-        event["type"] == "ai_provider_response"
-        for event in helper.session_logger.events
-    )
-    assert any(
-        event["type"] == "llm_call" and event["kind"] == "summary"
-        for event in helper.session_logger.events
-    )
-
-
-@pytest.mark.asyncio
 async def test_long_history_triggers_summary_and_preserves_facts():
     helper = _make_helper()
     state_key = 42

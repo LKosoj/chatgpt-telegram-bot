@@ -18,6 +18,7 @@
 #Show Me Diagrams: Design a flowchart for customer support process
 
 import os
+import asyncio
 import tempfile
 from typing import Dict, List
 import uuid
@@ -147,21 +148,13 @@ class ShowMeDiagramsPlugin(Plugin):
         description = kwargs.get('description')
         title = kwargs.get('title', 'Diagram')
         user_id = kwargs.get('user_id')
-        # chat_id инжектится PluginManager-ом в kwargs перед execute (см.
-        # openai_tool_handler.py). Раньше тут читался несуществующий ключ
-        # helper.conversations['last_chat_id'], который всегда возвращал 0
-        # и слал follow-up-запрос «в никуда».
-        chat_id = kwargs.get('chat_id') or 0
         if not diagram_type:
             type_prompt = (
                 "Выберите тип диаграммы из следующих:\n"
                 f"{', '.join(self.diagram_types.keys())}\n"
                 "Какой тип диаграммы вы хотите создать?"
             )
-            diagram_type_response, _ = await helper.get_chat_response(
-                chat_id=chat_id,
-                query=type_prompt
-            )
+            diagram_type_response, _ = await helper.ask(type_prompt, user_id)
             diagram_type = diagram_type_response.strip().lower()
 
             if diagram_type not in self.diagram_types:
@@ -183,10 +176,7 @@ class ShowMeDiagramsPlugin(Plugin):
             hint = type_hints.get(diagram_type, "Пожалуйста, опишите содержание диаграммы максимально подробно.")
             description_prompt += hint
 
-            description_response, _ = await helper.get_chat_response(
-                chat_id=chat_id,
-                query=description_prompt
-            )
+            description_response, _ = await helper.ask(description_prompt, user_id)
             description = description_response.strip()
 
         try:
@@ -217,8 +207,11 @@ class ShowMeDiagramsPlugin(Plugin):
             f.write(puml_content)
         
         # Запускаем PlantUML для генерации изображения
-        result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir], 
-                              capture_output=True, text=True, check=False)
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
         
         # Пытаемся исправить ошибки до 3 раз
         attempts = 0
@@ -258,8 +251,11 @@ class ShowMeDiagramsPlugin(Plugin):
                 f.write(generated_text)
             
             # Заново запускаем PlantUML для генерации изображения
-            result = subprocess.run(['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir], 
-                                  capture_output=True, text=True, check=False)
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ['java', '-jar', self.plantuml_jar, '-tpng', puml_file, '-o', temp_dir],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
             
             if result.returncode == 0:
                 logging.info(f"Ошибка исправлена с {attempts} попытки для {file_name}")

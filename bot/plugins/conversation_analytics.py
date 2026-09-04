@@ -230,10 +230,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 2. Suggest a starting question for this topic
                 3. List potential learning opportunities"""
                 
-                response, _ = await helper.get_chat_response(
-                    chat_id=hash(f"{chat_id}_topics"),
-                    query=prompt
-                )
+                response, _ = await helper.ask(prompt, kwargs.get('user_id'))
                 recommendations.append(("Related Topics", response))
 
             elif recommendation_type == "learning":
@@ -250,10 +247,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 2. Suggest next learning steps
                 3. Recommend specific resources or exercises"""
                 
-                response, _ = await helper.get_chat_response(
-                    chat_id=hash(f"{chat_id}_learning"),
-                    query=prompt
-                )
+                response, _ = await helper.ask(prompt, kwargs.get('user_id'))
                 recommendations.append(("Learning Paths", response))
 
             elif recommendation_type == "content_format":
@@ -268,10 +262,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 2. Optimal content length
                 3. Presentation style suggestions"""
                 
-                response, _ = await helper.get_chat_response(
-                    chat_id=hash(f"{chat_id}_format"),
-                    query=prompt
-                )
+                response, _ = await helper.ask(prompt, kwargs.get('user_id'))
                 recommendations.append(("Content Format", response))
 
             elif recommendation_type == "interaction_style":
@@ -286,10 +277,7 @@ class ConversationAnalyticsPlugin(Plugin):
                 2. Response format recommendations
                 3. Engagement optimization tips"""
                 
-                response, _ = await helper.get_chat_response(
-                    chat_id=hash(f"{chat_id}_style"),
-                    query=prompt
-                )
+                response, _ = await helper.ask(prompt, kwargs.get('user_id'))
                 recommendations.append(("Interaction Style", response))
 
             return {

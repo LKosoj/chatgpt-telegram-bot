@@ -2,8 +2,8 @@
 
 Gate contract (briefly):
 - Active iff: current mode is skills_agent, function calling is enabled, the request
-  has a non-empty `tools` list, the model is not in the excluded families, the
-  request is non-streaming, and no plan task exists yet for the scope.
+  has a non-empty `tools` list, the request is non-streaming, and no plan task
+  exists yet for the scope.
 - If active and the model returns any execution-tool call (anything not in
   INFORMATION_ONLY_TOOLS) on the FIRST turn of the request, drop the response and
   retry with tool_choice pinned to manage_plan_tasks.
@@ -27,14 +27,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _markdown2 = types.ModuleType("markdown2")
@@ -61,6 +56,7 @@ from bot.openai_helper import (  # noqa: E402
     INFORMATION_ONLY_TOOLS,
     OpenAIHelper,
 )
+from tests.fakes import FakeChoice, FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -358,29 +354,33 @@ def test_build_force_planner_handles_bare_name_suffix():
 
 
 # ---------------------------------------------------------------------------
-# should_force_non_stream_first_turn (telegram_bot dispatch helper)
+# should_force_non_stream_first_turn_async (telegram_bot dispatch helper)
 # ---------------------------------------------------------------------------
 
 
-def test_should_force_non_stream_first_turn_true_in_skills_agent_without_plan():
+@pytest.mark.asyncio
+async def test_should_force_non_stream_first_turn_true_in_skills_agent_without_plan():
     helper, _ = _make_helper(tasks=[])
-    assert helper.should_force_non_stream_first_turn(42, 7) is True
+    assert await helper.should_force_non_stream_first_turn_async(42, 7) is True
 
 
-def test_should_force_non_stream_first_turn_returns_false_when_plan_exists():
+@pytest.mark.asyncio
+async def test_should_force_non_stream_first_turn_returns_false_when_plan_exists():
     helper, _ = _make_helper(tasks=[{"id": "t1", "content": "x", "status": "pending"}])
-    assert helper.should_force_non_stream_first_turn(42, 7) is False
+    assert await helper.should_force_non_stream_first_turn_async(42, 7) is False
 
 
-def test_should_force_non_stream_first_turn_false_in_other_modes():
+@pytest.mark.asyncio
+async def test_should_force_non_stream_first_turn_false_in_other_modes():
     helper, _ = _make_helper(mode_key="default")
-    assert helper.should_force_non_stream_first_turn(42, 7) is False
+    assert await helper.should_force_non_stream_first_turn_async(42, 7) is False
 
 
-def test_should_force_non_stream_first_turn_false_when_flag_off():
+@pytest.mark.asyncio
+async def test_should_force_non_stream_first_turn_false_when_flag_off():
     helper, _ = _make_helper(skills_agent_mode={"key": "skills_agent"})
     # No force_non_stream_first_turn -> dispatcher streams as usual.
-    assert helper.should_force_non_stream_first_turn(42, 7) is False
+    assert await helper.should_force_non_stream_first_turn_async(42, 7) is False
 
 
 # ---------------------------------------------------------------------------
@@ -392,19 +392,6 @@ class FakeToolCall:
     def __init__(self, name, arguments="{}", id=None):
         self.id = id or f"call_{name.replace('.', '_')}"
         self.function = types.SimpleNamespace(name=name, arguments=arguments)
-
-
-class FakeMessage:
-    def __init__(self, tool_calls=None, content=""):
-        self.tool_calls = tool_calls
-        self.content = content
-
-
-class FakeChoice:
-    def __init__(self, tool_calls=None, content=""):
-        self.message = FakeMessage(tool_calls=tool_calls, content=content)
-        self.delta = None
-        self.finish_reason = None
 
 
 class FakeResponse:
@@ -448,13 +435,9 @@ async def _invoke_common(helper, *, chat_id, tools, stream=False, model="gpt-4o"
     }
 
     # Mirror the gate block from __common_get_chat_response.
-    from bot.openai_helper import O_MODELS, GOOGLE, PERPLEXITY
-
-    gate_supported_model = model not in (O_MODELS + GOOGLE + PERPLEXITY)
     gate_active = (
         not common_args.get("stream")
         and bool(common_args.get("tools"))
-        and gate_supported_model
         and helper._is_skills_agent_mode(chat_id)
         and helper._skills_agent_gate_enabled_for_mode()
         and not helper._skills_agent_has_plan(chat_id, memory_user_id)
@@ -622,23 +605,4 @@ async def test_gate_e2e_inactive_when_mode_flag_off():
         responses=[FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])]
     )
     await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_excluded_model_family_skipped():
-    """Models in the excluded families (e.g. Perplexity) do not get tools and
-    the gate must not fire for them."""
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])]
-    )
-    # Pick a model that's in PERPLEXITY tuple — use the constant.
-    from bot.openai_helper import PERPLEXITY
-
-    if not PERPLEXITY:
-        pytest.skip("PERPLEXITY tuple is empty in this build")
-    await _invoke_common(
-        helper, chat_id=42, tools=_tools_list_with_planner(), model=PERPLEXITY[0]
-    )
     assert len(helper.client.calls) == 1

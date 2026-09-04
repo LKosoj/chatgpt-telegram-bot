@@ -17,8 +17,8 @@ JSONValue: TypeAlias = (
 
 @dataclass(frozen=True, slots=True)
 class AIUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
     total_tokens: int = 0
 
 

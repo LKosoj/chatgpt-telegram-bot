@@ -1,4 +1,5 @@
 from typing import Dict, Optional, List
+import asyncio
 import os
 import requests
 import logging
@@ -114,7 +115,7 @@ class MovieInfoPlugin(Plugin):
         }
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             movies = response.json().get("results", [])
             
@@ -140,7 +141,7 @@ class MovieInfoPlugin(Plugin):
         params = {"api_key": self.TMDB_API_KEY, "language": "ru-RU"}
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             details = response.json()
             
@@ -166,7 +167,7 @@ class MovieInfoPlugin(Plugin):
         params = {"api_key": self.TMDB_API_KEY, "language": "ru-RU"}
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             return response.json().get("results", [])
         except requests.RequestException as e:
@@ -202,7 +203,7 @@ class MovieInfoPlugin(Plugin):
             params["with_genres"] = genre_id
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             movies = response.json().get("results", [])
             
@@ -218,8 +219,8 @@ class MovieInfoPlugin(Plugin):
                 # Извлекаем параметры с значениями по умолчанию
                 genre = kwargs.get('genre')
                 count = kwargs.get('count', 30)
-                
-                movies = self._get_new_movies(genre=genre, count=count)
+
+                movies = await asyncio.to_thread(self._get_new_movies, genre=genre, count=count)
                 return {
                     'movies': movies,
                     'genre_filter': genre or 'Все жанры'
@@ -231,9 +232,9 @@ class MovieInfoPlugin(Plugin):
                 count = kwargs.get('count', 10)
                 
                 # Получаем новые фильмы с учетом жанра
-                movies = self._get_new_movies(genre=genre, count=count)
+                movies = await asyncio.to_thread(self._get_new_movies, genre=genre, count=count)
                 # Добавляем фильмы из расширенного поиска
-                movies.extend(self._discover_movies(genre=genre, count=count))
+                movies.extend(await asyncio.to_thread(self._discover_movies, genre=genre, count=count))
                 
                 # Подготавливаем данные для анализа
                 movie_data = []
@@ -243,8 +244,8 @@ class MovieInfoPlugin(Plugin):
                     if not movie_id:
                         continue
                     
-                    details = self._get_movie_details(movie_id) or {}
-                    reviews = self._get_movie_reviews(movie_id)
+                    details = await asyncio.to_thread(self._get_movie_details, movie_id) or {}
+                    reviews = await asyncio.to_thread(self._get_movie_reviews, movie_id)
                     
                     critic_reviews = "\n".join(
                         [f"- {review.get('author', 'Аноним')}: {review.get('content', 'Нет текста')}"

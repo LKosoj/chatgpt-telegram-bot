@@ -2,9 +2,10 @@ import asyncio
 import concurrent.futures
 import contextvars
 import sqlite3
-from typing import Dict, Any, Optional, List, Generator
+from typing import Dict, Any, Optional, List, Generator, NamedTuple
 from contextlib import contextmanager
 import json
+import sys
 import threading
 import os
 import logging
@@ -20,6 +21,81 @@ _DB_HANDLE_TRANSACTION_LOCK_BYPASS = contextvars.ContextVar(
     default=False,
 )
 
+
+class _TransactionMarker:
+    """Tracks one open ``DbHandle.transaction()``: whether it is still active,
+    and which task actually opened it.
+
+    Both fields exist to defeat two different false-positive traps caused by
+    ``asyncio.create_task()`` copying the current ``contextvars.Context`` at
+    task-creation time:
+
+    - Without ``active``: a task spawned *inside* an open transaction body
+      keeps its own copy of the ContextVar entry for as long as it runs —
+      including after the owning task's ``__aexit__`` has already returned
+      (resetting a ContextVar only affects the context that performed the
+      reset, not copies already forked off it). That spawned task would look
+      "inside" the transaction forever. ``__aexit__`` flips ``active = False``
+      on this shared object in place, so every context-copy observes the
+      transaction as closed, regardless of how many task copies exist.
+    - Without ``owner_task``: a task spawned *inside* an open transaction body
+      (e.g. `asyncio.create_task(db._run_in_db_thread(...))`, a real, tested
+      pattern — see `test_direct_database_async_call_waits_outside_dbhandle_transaction`
+      in tests/test_db_handle.py) inherits a context-copy where the ContextVar
+      is still set to this *active* marker, even though it is a genuinely
+      independent task that is supposed to simply wait its turn on the
+      handle-wide transaction lock, not be treated as the same logical call
+      re-entering a lock it already holds. Comparing against
+      ``asyncio.current_task()`` at guard-check time (a live runtime lookup,
+      not something propagated via context-copying) distinguishes "the exact
+      task that opened this transaction, awaiting inline" from "some other
+      task that happens to have inherited a copy of the same ContextVar
+      value".
+    """
+
+    __slots__ = ("active", "owner_task")
+
+    def __init__(self, owner_task) -> None:
+        self.active = True
+        self.owner_task = owner_task
+
+
+_DB_HANDLE_TRANSACTION_OPEN: contextvars.ContextVar = contextvars.ContextVar(
+    "db_handle_transaction_open",
+    default=None,
+)
+
+
+def _is_transaction_open_on_current_task() -> bool:
+    """True iff the task currently executing is the one that opened the
+    still-active `DbHandle.transaction()` visible through
+    `_DB_HANDLE_TRANSACTION_OPEN` in this context. See `_TransactionMarker`."""
+    marker = _DB_HANDLE_TRANSACTION_OPEN.get()
+    if marker is None or not marker.active:
+        return False
+    try:
+        current_task = asyncio.current_task()
+    except RuntimeError:
+        return False
+    return current_task is marker.owner_task
+
+
+# Call-sites, для которых уже выдано предупреждение о синхронном вызове из event loop.
+_SYNC_CALL_WARNED_SITES: set[str] = set()
+_SYNC_CALL_WARNED_SITES_LOCK = threading.Lock()
+
+
+class DatabaseLockTimeoutError(RuntimeError):
+    """``Database._op_lock`` could not be acquired within the configured timeout.
+
+    Raised instead of blocking the calling thread forever. The main scenario this
+    guards against: a `DbHandle.transaction()` opened on the DB-worker thread is
+    suspended between two `await`s (control has returned to the event loop), and
+    the event-loop thread itself makes a *synchronous* `Database.*` call that
+    contends for the same `_op_lock` — see
+    docs/remediation_2026-09-04/T08-db-deadlock.md.
+    """
+
 SQLITE_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"})
 
 
@@ -30,13 +106,16 @@ def _first_openai_model_from_env() -> str:
     )
 
 
-def _sqlite_journal_mode_from_env() -> str:
-    raw_mode = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
-    mode = raw_mode.strip().upper()
+def _normalize_journal_mode(raw_mode: str) -> str:
+    mode = (raw_mode or "").strip().upper()
     if mode not in SQLITE_JOURNAL_MODES:
         logger.warning("Invalid SQLITE_JOURNAL_MODE=%r; falling back to WAL", raw_mode)
         return "WAL"
     return mode
+
+
+def _sqlite_journal_mode_from_env() -> str:
+    return _normalize_journal_mode(os.getenv("SQLITE_JOURNAL_MODE", "WAL"))
 
 
 def _numeric_env(name, default, cast, *, minimum=None):
@@ -60,15 +139,74 @@ def _numeric_env(name, default, cast, *, minimum=None):
     return value
 
 
+class ConversationContextResult(NamedTuple):
+    """Структурированный результат ``Database.get_conversation_context``.
+
+    Оставлен как tuple (не dataclass), чтобы позиционная распаковка на местах
+    вызова (``context, parse_mode, temperature, max_tokens_percent, session_id
+    = ...``) продолжала работать без изменений.
+    """
+
+    context: Optional[Dict[str, Any]]
+    parse_mode: str
+    temperature: float
+    max_tokens_percent: int
+    session_id: Optional[str]
+
+
+class ConversationContextError(RuntimeError):
+    """Не удалось загрузить контекст разговора из-за отказа хранилища
+    (заблокированная БД, неожиданная ошибка драйвера, либо сама сессия не
+    смогла создаться). Не путать с легитимным «загружать ещё нечего» —
+    это по-прежнему обычный ConversationContextResult с context=None.
+    Вызывающий код не должен в ответ на это исключение создавать новую сессию.
+    """
+
+
+class ConversationContextCorruptError(ConversationContextError):
+    """conversation_context.context не парсится как JSON. В отличие от
+    заблокированной БД это проблема данных, а не временная — повтор не
+    поможет. Отдельный подкласс — чтобы находить именно эти случаи по типу
+    исключения для ручного разбора одной строки.
+    """
+
+
 class Database:
     _instance = None
     _lock = threading.Lock()
     _connection_lock = threading.Lock()
+    _configured: Dict[str, Any] = {}  # explicit overrides set via configure(), empty by default
 
     # Текущая целевая версия схемы. Миграция 1 — переход с legacy-таблицы
     # `conversation_context` без session_id на новую схему с сессиями.
     # Миграция 2 — добавление колонки version (монотонный счётчик ревизий).
     TARGET_SCHEMA_VERSION = 2
+
+    @classmethod
+    def configure(
+        cls,
+        *,
+        db_path: Optional[str] = None,
+        max_sessions: Optional[int] = None,
+        journal_mode: Optional[str] = None,
+        default_model: Optional[str] = None,
+    ) -> None:
+        """Explicit config for values otherwise read from env inside this module.
+
+        Call before the first ``Database()`` construction (``bot/__main__.py``
+        does this right before ``db = Database()``). Any argument left as
+        ``None`` keeps today's env-var fallback for that value untouched —
+        this is what the tests that ``monkeypatch.setenv(...)`` and call
+        ``_reset_singleton()`` without ever calling ``configure()`` rely on.
+        """
+        if db_path is not None:
+            cls._configured['db_path'] = db_path
+        if max_sessions is not None:
+            cls._configured['max_sessions'] = int(max_sessions)
+        if journal_mode is not None:
+            cls._configured['journal_mode'] = _normalize_journal_mode(journal_mode)
+        if default_model is not None:
+            cls._configured['default_model'] = default_model
 
     def __new__(cls):
         with cls._lock:
@@ -76,9 +214,14 @@ class Database:
                 instance = super(Database, cls).__new__(cls)
                 # Используем путь к текущему файлу для создания базы данных
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                instance.db_path = os.getenv("DB_PATH") or os.path.join(current_dir, 'user_data.db')
+                instance.db_path = (
+                    cls._configured.get('db_path')
+                    or os.getenv("DB_PATH")
+                    or os.path.join(current_dir, 'user_data.db')
+                )
                 instance._op_lock = threading.RLock()
                 instance._executor = None
+                instance._shutdown_started = False
                 instance._local = threading.local()
                 try:
                     instance.init_db()
@@ -99,9 +242,43 @@ class Database:
         with cls._lock:
             instance = cls._instance
             cls._instance = None
+            cls._configured = {}
             if instance is not None:
                 instance.shutdown()
                 instance._close_db_thread_connection()
+
+    @staticmethod
+    def _warn_if_sync_call_from_event_loop() -> None:
+        """Логирует WARNING (один раз на каждое место вызова), если синхронный
+        `Database.*` вызван из потока event loop.
+
+        Такой вызов блокирует loop и может упереться в `_op_lock`, который держит
+        приостановленная `DbHandle.transaction()` (см. `DatabaseLockTimeoutError`).
+        Уровень именно WARNING: дефолтный уровень бота — INFO (`bot/__main__.py`),
+        и DEBUG-сообщение в прод-логах никогда бы не появилось. Ограничение
+        «один раз на call-site» — чтобы горячие пути (`/help`, `/stats`, ...)
+        не засоряли лог на каждом запросе.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        frame = sys._getframe(1)
+        while frame is not None and (
+            frame.f_code.co_filename == __file__ or frame.f_code.co_filename.endswith("contextlib.py")
+        ):
+            frame = frame.f_back
+        site = f"{frame.f_code.co_filename}:{frame.f_lineno}" if frame is not None else "<unknown>"
+        with _SYNC_CALL_WARNED_SITES_LOCK:
+            if site in _SYNC_CALL_WARNED_SITES:
+                return
+            _SYNC_CALL_WARNED_SITES.add(site)
+        logger.warning(
+            "Sync Database call from the event loop thread at %s; prefer the "
+            "*_async method to avoid blocking the loop (logged once per call site).",
+            site,
+            stack_info=True,
+        )
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -113,13 +290,14 @@ class Database:
         внешнем выходе. Это нужно, чтобы `transaction()` мог обернуть несколько
         существующих `with get_connection()`-блоков в одну атомарную единицу.
         """
+        self._warn_if_sync_call_from_event_loop()
         if not hasattr(self._local, 'connection'):
             with self._connection_lock:
                 timeout = _numeric_env("SQLITE_TIMEOUT", 5.0, float, minimum=0.0)
                 self._local.connection = sqlite3.connect(self.db_path, timeout=timeout)
                 self._local.connection.row_factory = sqlite3.Row
                 self._local.connection.execute("PRAGMA foreign_keys = ON")
-                journal_mode = _sqlite_journal_mode_from_env()
+                journal_mode = self._configured.get('journal_mode') or _sqlite_journal_mode_from_env()
                 try:
                     self._local.connection.execute(f"PRAGMA journal_mode = {journal_mode}")
                 except sqlite3.Error:
@@ -129,7 +307,14 @@ class Database:
         if not hasattr(self._local, 'depth'):
             self._local.depth = 0
 
-        self._op_lock.acquire()
+        lock_timeout = _numeric_env("DB_OP_LOCK_TIMEOUT_SECONDS", 15.0, float, minimum=0.0)
+        if not self._op_lock.acquire(timeout=lock_timeout):
+            raise DatabaseLockTimeoutError(
+                f"Timed out after {lock_timeout}s waiting for Database._op_lock; "
+                "an open DbHandle.transaction() may be holding it while suspended "
+                "on the event loop, or a slow query is running concurrently. See "
+                "docs/remediation_2026-09-04/T08-db-deadlock.md."
+            )
         self._local.depth += 1
         is_outer = self._local.depth == 1
         try:
@@ -199,6 +384,11 @@ class Database:
         if self._executor is not None:
             return self._executor
         with self._op_lock:
+            if self._shutdown_started:
+                # После shutdown() новый пул не создаём: иначе «зависшая» фоновая
+                # задача, сделавшая async-вызов к БД во время остановки, молча
+                # породила бы осиротевший воркер-поток и ещё одно соединение.
+                raise RuntimeError("Database is shut down; async DB access is no longer available")
             if self._executor is None:
                 self._executor = concurrent.futures.ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="db-worker"
@@ -225,6 +415,7 @@ class Database:
         """Закрывает воркер-соединение и останавливает executor (best-effort)."""
         try:
             with self._op_lock:
+                self._shutdown_started = True
                 executor = self._executor
                 if executor is None:
                     return
@@ -242,9 +433,22 @@ class Database:
             pass
 
     async def _run_in_db_thread(self, func, *args, **kwargs):
-        """Запускает sync-функцию в единственном db-worker потоке."""
+        """Запускает sync-функцию в единственном db-worker потоке.
+
+        ВНИМАНИЕ: нельзя вызывать `db`/`db_handle` методы (кроме
+        `tx.execute`/`tx.fetch_one`/`tx.fetch_all`) изнутри тела
+        `async with db_handle.transaction() as tx:` — тот же таск уже держит
+        `_db_handle_transaction_lock`, а `asyncio.Lock` не реентерабелен;
+        вместо зависания здесь вылетает понятная ошибка.
+        """
         lock = getattr(self, "_db_handle_transaction_lock", None)
         if lock is not None and not _DB_HANDLE_TRANSACTION_LOCK_BYPASS.get():
+            if _is_transaction_open_on_current_task():
+                raise RuntimeError(
+                    "Database call attempted from inside an open "
+                    "DbHandle.transaction() body on the same task; use "
+                    "tx.execute/tx.fetch_one/tx.fetch_all instead."
+                )
             async with lock:
                 return await self._run_in_db_thread_unlocked(func, *args, **kwargs)
         return await self._run_in_db_thread_unlocked(func, *args, **kwargs)
@@ -492,7 +696,7 @@ class Database:
                 COALESCE(created_at, CURRENT_TIMESTAMP),
                 COALESCE(updated_at, CURRENT_TIMESTAMP)
             FROM conversation_context_old
-        ''', (default_context, _first_openai_model_from_env()))
+        ''', (default_context, self._configured.get('default_model') or _first_openai_model_from_env()))
 
         cursor.execute('DROP TABLE conversation_context_old')
         logger.info('Migration 1: conversation_context session migration complete')
@@ -820,7 +1024,10 @@ class Database:
                 else:
                     # Строки нет — обычная вставка с version=0.
                     logger.info(f"Создаем новую запись для сессии {session_id}")
-                    model = openai_helper.config['model'] if openai_helper else _first_openai_model_from_env()
+                    model = (
+                        openai_helper.config['model'] if openai_helper
+                        else (self._configured.get('default_model') or _first_openai_model_from_env())
+                    )
                     cursor.execute('''
                         UPDATE conversation_context
                         SET is_active = 0
@@ -931,55 +1138,87 @@ class Database:
         # ensure_session_name_with_llm в фоне сгенерирует осмысленное имя
         # и сам вызовет db.set_session_name. БД больше не вызывает LLM.
     
-    def get_conversation_context(self, user_id: int, session_id: str = None, openai_helper = None) -> Optional[Dict[str, Any]]:
-        """Получение контекста разговора с поддержкой сессий"""
+    def get_conversation_context(
+        self, user_id: int, session_id: str = None, openai_helper = None
+    ) -> ConversationContextResult:
+        """Получение контекста разговора с поддержкой сессий.
+
+        Бросает ConversationContextError (или её подкласс
+        ConversationContextCorruptError для битого JSON) вместо того, чтобы
+        подменять отказ чтения тем же результатом, что и «контекста ещё нет».
+        Вызывающий код не должен создавать новую сессию в ответ на это
+        исключение. Легитимное «загружать нечего» (свежий пользователь,
+        либо session_id без единой строки) по-прежнему возвращается как
+        обычный ConversationContextResult с context=None — это не ошибка.
+        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Проверяем наличие активной сессии
                 cursor.execute('''
-                    SELECT session_id FROM conversation_context 
+                    SELECT session_id FROM conversation_context
                     WHERE user_id = ? AND is_active = 1
                 ''', (user_id,))
                 result = cursor.fetchone()
-                
+
                 # Если нет активной сессии и не указан session_id, создаем новую
                 if not result and not session_id:
                     logger.info(f"Создаем новую сессию для пользователя {user_id}")
                     session_id = self.create_session(user_id, openai_helper=openai_helper)
                     if not session_id:
-                        logger.warning(f"Не удалось создать сессию для пользователя {user_id}")
-                        return None, 'HTML', 0.8, 80, None
+                        # create_session сама ловит все свои исключения и в этом
+                        # случае уже залогировала причину — здесь это не «данных
+                        # нет», а замаскированный отказ записи.
+                        raise ConversationContextError(
+                            f"Не удалось создать сессию для пользователя {user_id}"
+                        )
                 elif not session_id and result:
                     session_id = result[0]
-                
-                # Если сессия всё ещё не определена, используем значения по умолчанию
+
+                # Защитная ветка: практически недостижима — к этой точке
+                # session_id уже гарантированно взят из create_session, из
+                # активной строки, либо это исходный аргумент вызывающего кода.
                 if not session_id:
                     logger.warning(f"Не удалось определить сессию для пользователя {user_id}")
-                    return None, 'HTML', 0.8, 80, None
-                
+                    return ConversationContextResult(None, 'HTML', 0.8, 100, None)
+
                 cursor.execute('''
-                    SELECT context, parse_mode, temperature, max_tokens_percent 
-                    FROM conversation_context 
+                    SELECT context, parse_mode, temperature, max_tokens_percent
+                    FROM conversation_context
                     WHERE user_id = ? AND session_id = ?
                 ''', (user_id, session_id))
-                
+
                 result = cursor.fetchone()
                 if result:
-                    context = json.loads(result[0]) if result[0] is not None else {'messages': []}
+                    try:
+                        context = json.loads(result[0]) if result[0] is not None else {'messages': []}
+                    except (TypeError, json.JSONDecodeError) as e:
+                        # Ошибка данных, не временная — отдельный подкласс, чтобы
+                        # её можно было найти по типу исключения и поправить
+                        # строку вручную, а не тихо подменять контекст пустым.
+                        raise ConversationContextCorruptError(
+                            f"Повреждён JSON контекста user_id={user_id}, session_id={session_id}: {e}"
+                        ) from e
                     parse_mode = result[1] if result[1] is not None else 'HTML'
                     temperature = round(result[2], 2) if result[2] is not None else 0.8
                     max_tokens_percent = result[3] if result[3] is not None else 100
-                    
-                    return context, parse_mode, temperature, max_tokens_percent, session_id
-                
+
+                    return ConversationContextResult(
+                        context, parse_mode, temperature, max_tokens_percent, session_id
+                    )
+
                 logger.info(f"Контекст не найден для сессии {session_id}, возвращаем значения по умолчанию")
-                return None, 'HTML', 0.8, 80, None
-                
+                return ConversationContextResult(None, 'HTML', 0.8, 100, None)
+
+        except ConversationContextError:
+            raise
         except Exception as e:
-            logger.error(f'Ошибка получения контекста сессии: {e}', exc_info=True)
-            return None, 'HTML', 0.8, 80, None
+            logger.error(
+                f'Ошибка получения контекста сессии user_id={user_id} session_id={session_id}: {e}',
+                exc_info=True,
+            )
+            raise
     
     def save_user_model(self, user_id: int, model_name: str) -> None:
         """Сохранение выбранной модели пользователя"""
@@ -1161,6 +1400,8 @@ class Database:
 
     @staticmethod
     def _coerce_max_sessions_limit(max_sessions: Optional[int] = None) -> int:
+        if max_sessions is None:
+            max_sessions = Database._configured.get('max_sessions')
         raw_value = os.getenv('MAX_SESSIONS', 5) if max_sessions is None else max_sessions
         try:
             value = int(raw_value)
@@ -1236,7 +1477,10 @@ class Database:
             max_tokens_percent = 100
             system_message = None
             new_session_id = str(uuid.uuid4())
-            model = openai_helper.config['model'] if openai_helper else _first_openai_model_from_env()
+            model = (
+                openai_helper.config['model'] if openai_helper
+                else (self._configured.get('default_model') or _first_openai_model_from_env())
+            )
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
             with self.transaction() as conn:
@@ -1382,7 +1626,10 @@ class Database:
         user_id: int,
         session_id: str = None,
         openai_helper = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> ConversationContextResult:
+        """См. ``get_conversation_context`` — исключения (включая
+        ConversationContextError/ConversationContextCorruptError) пробрасываются
+        через ``_run_in_db_thread``/``run_in_executor`` без изменений."""
         return await self._run_db_method(
             "get_conversation_context",
             user_id,

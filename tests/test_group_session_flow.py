@@ -18,14 +18,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -53,6 +48,7 @@ _install_module_if_missing("tenacity", _tenacity)
 
 from bot.plugins.hooks import HookEvent  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
+from tests.fakes import FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -156,15 +152,51 @@ class _FakeGroupPluginManager:
         return False
 
 
-def _make_openai():
+def _make_openai(db):
     plugin_manager = _FakeGroupPluginManager()
-    return SimpleNamespace(
+    conversations = {}
+    loaded_conversation_sessions = {}
+
+    def history_snapshot(chat_id):
+        return conversations.get(chat_id)
+
+    def load_session(chat_id, session_id, messages):
+        conversations[chat_id] = list(messages)
+        loaded_conversation_sessions[chat_id] = session_id
+        return conversations[chat_id]
+
+    async def replace_system_message(
+        chat_id, content, *, mode_key=None, parse_mode='HTML',
+        temperature=None, max_tokens_percent=80,
+    ):
+        current_context = conversations.get(chat_id) or []
+        system_message = {"role": "system", "content": content}
+        if mode_key is not None:
+            system_message["mode_key"] = mode_key
+        if current_context and current_context[0].get('role') == 'system':
+            current_context[0] = system_message
+        else:
+            current_context.insert(0, system_message)
+        conversations[chat_id] = current_context
+        session_id = loaded_conversation_sessions.get(chat_id)
+        if temperature is None:
+            temperature = ns.config['temperature']
+        return await db.save_conversation_context_async(
+            chat_id, {'messages': current_context}, parse_mode, temperature,
+            max_tokens_percent, session_id, ns,
+        )
+
+    ns = SimpleNamespace(
         config={"temperature": 0.1, "hindsight_auto_save": True},
-        conversations={},
-        loaded_conversation_sessions={},
+        conversations=conversations,
+        loaded_conversation_sessions=loaded_conversation_sessions,
         reset_chat_history=AsyncMock(),
         plugin_manager=plugin_manager,
+        history_snapshot=history_snapshot,
+        load_session=load_session,
+        replace_system_message=replace_system_message,
     )
+    return ns
 
 
 def _make_bot(active_sessions=None):
@@ -177,7 +209,7 @@ def _make_bot(active_sessions=None):
         "MAX_SESSIONS": 5,
     }
     bot.db = _make_db(active_sessions=active_sessions)
-    bot.openai = _make_openai()
+    bot.openai = _make_openai(bot.db)
     bot.usage = {}
     bot.get_chat_modes = MagicMock(return_value={
         "assistant": {
@@ -416,6 +448,23 @@ async def test_dispatch_session_before_delete_fires_hook_with_snapshot():
     assert payload.session_id == "session-2"
     assert list(payload.messages) == messages
     assert kwargs == {"user_id": -100123}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_session_before_delete_swallows_snapshot_read_error():
+    from bot.database import ConversationContextCorruptError
+
+    bot = _make_bot()
+    bot.db.get_conversation_context.side_effect = ConversationContextCorruptError("broken json")
+
+    result = await ChatGPTTelegramBot._dispatch_session_before_delete(
+        bot,
+        -100123,
+        "session-2",
+    )
+
+    assert result == 0
+    bot.openai.plugin_manager.dispatch_blocking.assert_not_awaited()
 
 
 @pytest.mark.asyncio

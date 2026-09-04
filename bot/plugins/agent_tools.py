@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes, MessageHandler, filters
 from ..agent_delivery import send_agent_response, send_text_chunks
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
+from ..tool_result import tool_result_content
 from ..utils import compute_scope_key, get_thread_id, message_text
 from .hooks import BeforeChatRequestPayload
 from .background import BackgroundTask
@@ -3476,7 +3477,7 @@ class AgentToolsPlugin(Plugin):
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": self._tool_result_content(helper, tool_response or ""),
+                        "content": self._tool_result_content(tool_response or ""),
                     })
                 continue
 
@@ -3717,16 +3718,8 @@ class AgentToolsPlugin(Plugin):
             ensure_ascii=False,
         )
 
-    def _tool_result_content(self, helper, content: Any) -> str:
-        formatter = getattr(helper, "_tool_result_content", None)
-        if callable(formatter):
-            return formatter(content)
-        if isinstance(content, str):
-            return content
-        try:
-            return json.dumps(content, ensure_ascii=False)
-        except TypeError:
-            return str(content)
+    def _tool_result_content(self, content: Any) -> str:
+        return tool_result_content(content)
 
     def _choice_text(self, response) -> str:
         try:

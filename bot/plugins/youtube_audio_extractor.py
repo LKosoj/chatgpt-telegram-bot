@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import re
 from typing import Dict
 
-from pytube import YouTube
+from pytubefix import YouTube
 
 from .plugin import Plugin
 
@@ -28,13 +29,20 @@ class YouTubeAudioExtractorPlugin(Plugin):
             },
         }]
 
+    @staticmethod
+    def _download_audio(link: str) -> str:
+        """Blocking part: pytubefix talks to YouTube over urllib, which would
+        otherwise block the single event loop thread that serves every chat."""
+        video = YouTube(link)
+        audio = video.streams.filter(only_audio=True, file_extension='mp4').first()
+        output = re.sub(r'[^\w\-_\. ]', '_', video.title) + '.mp3'
+        audio.download(filename=output)
+        return output
+
     async def execute(self, function_name, helper, **kwargs) -> Dict:
         link = kwargs['youtube_link']
         try:
-            video = YouTube(link)
-            audio = video.streams.filter(only_audio=True, file_extension='mp4').first()
-            output = re.sub(r'[^\w\-_\. ]', '_', video.title) + '.mp3'
-            audio.download(filename=output)
+            output = await asyncio.to_thread(self._download_audio, link)
             return {
                 'direct_result': {
                     'kind': 'file',

@@ -18,14 +18,9 @@ def _install_module_if_missing(name, module):
         _INSERTED_MODULES.append(name)
 
 
-class _FakeEncoding:
-    def encode(self, value):
-        return list(value)
-
-
 _tiktoken = types.ModuleType("tiktoken")
-_tiktoken.encoding_for_model = lambda _model: _FakeEncoding()
-_tiktoken.get_encoding = lambda _name: _FakeEncoding()
+_tiktoken.encoding_for_model = lambda _model: FakeEncoding()
+_tiktoken.get_encoding = lambda _name: FakeEncoding()
 _install_module_if_missing("tiktoken", _tiktoken)
 
 _pydub = types.ModuleType("pydub")
@@ -55,6 +50,7 @@ from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 from bot.i18n import localized_text  # noqa: E402
 from bot.utils import is_allowed  # noqa: E402
 import bot.utils as utils_module  # noqa: E402
+from tests.fakes import FakeEncoding  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -201,7 +197,6 @@ def _make_openai():
         reset_chat_history=AsyncMock(),
         get_chat_response=AsyncMock(return_value=("answer", 1)),
         get_chat_response_stream=MagicMock(),
-        should_force_non_stream_first_turn=MagicMock(return_value=True),
         should_force_non_stream_first_turn_async=AsyncMock(return_value=True),
         plugin_manager=FakeSettingsPluginManager(),
     )
@@ -670,33 +665,35 @@ async def test_authorized_callback_wrapper_rejects_unauthorized_user_before_call
     callback.assert_not_called()
 
 
-def test_auto_language_detects_persists_and_caches_first_contact():
+@pytest.mark.asyncio
+async def test_auto_language_detects_persists_and_caches_first_contact():
     bot = _make_bot(allowed_user_ids="*")
     bot.config["bot_language"] = "auto"
     update = FakeCallbackUpdate("settings:root", user_id=999, language_code="de-DE")
 
-    assert bot._get_user_language(update) == "de"
+    assert await bot._get_user_language_async(update) == "de"
     bot.db.save_user_settings.assert_called_once_with(999, {"language": "de"})
 
     bot.db.get_user_settings.reset_mock()
     update.effective_user.language_code = "ru"
 
-    assert bot._get_user_language(update) == "de"
+    assert await bot._get_user_language_async(update) == "de"
     bot.db.get_user_settings.assert_not_called()
 
 
-def test_explicit_bot_language_is_default_and_user_setting_can_override():
+@pytest.mark.asyncio
+async def test_explicit_bot_language_is_default_and_user_setting_can_override():
     bot = _make_bot(allowed_user_ids="*")
     bot.config["bot_language"] = "ru"
     update = FakeCallbackUpdate("settings:root", user_id=999, language_code="de")
 
-    assert bot._get_user_language(update) == "ru"
+    assert await bot._get_user_language_async(update) == "ru"
     bot.db.save_user_settings.assert_not_called()
 
     bot._user_language_cache.clear()
     bot.db.get_user_settings.return_value = {"language": "de"}
 
-    assert bot._get_user_language(update) == "de"
+    assert await bot._get_user_language_async(update) == "de"
 
 
 def test_language_settings_menu_uses_two_languages_per_row():
