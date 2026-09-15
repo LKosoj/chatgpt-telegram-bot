@@ -15,6 +15,7 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
+from bot.ai_events import AIToolCall
 from bot.plugin_manager import PluginManager
 from bot.i18n import localized_text
 from bot.model_constants import MAX_OUTPUT_TOKENS
@@ -1239,6 +1240,66 @@ async def test_run_subagents_runs_tool_capable_workers(tmp_path):
         for message in helper.completions.calls[0]["messages"]
         if message.get("role") == "user"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_handles_normalized_tool_calls(tmp_path):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(
+        completions=FakeCompletions([
+            AIToolCall(
+                id="tool_1",
+                name="skills.list_skills",
+                model_name="skills.list_skills",
+                arguments="{}",
+            )
+        ])
+    )
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0]["status"] == "completed"
+    assert len(helper.completions.calls) == 2
+    assert [name for name, _args in helper.plugin_manager.calls] == ["skills.list_skills"]
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_rejects_empty_result(tmp_path):
+    class EmptyCompletions:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="", tool_calls=None)
+                    )
+                ]
+            )
+
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(completions=EmptyCompletions())
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0] == {
+        "id": "a1",
+        "role": "reviewer",
+        "status": "error",
+        "error": "Subagent returned no result or published artifacts",
+    }
 
 
 @pytest.mark.asyncio

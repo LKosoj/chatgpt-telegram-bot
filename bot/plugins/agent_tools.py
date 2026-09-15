@@ -14,6 +14,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..agent_delivery import send_agent_response, send_text_chunks
+from ..ai_events import AIToolCall
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..tool_result import tool_result_content
@@ -3337,6 +3338,8 @@ class AgentToolsPlugin(Plugin):
                 request_context=request_context,
                 parent_allowed_plugins=parent_allowed_plugins,
             )
+            if not result_text.strip() and not published:
+                raise RuntimeError("Subagent returned no result or published artifacts")
             status = "completed"
             result = {
                 "id": subagent_id,
@@ -3596,8 +3599,13 @@ class AgentToolsPlugin(Plugin):
         raw_tool_calls = getattr(message, "tool_calls", None) or []
         tool_calls = []
         for index, tool_call in enumerate(raw_tool_calls):
-            function = getattr(tool_call, "function", None)
-            model_name = getattr(function, "name", "") if function else ""
+            if isinstance(tool_call, AIToolCall):
+                model_name = tool_call.model_name or tool_call.name
+                arguments = tool_call.arguments
+            else:
+                function = getattr(tool_call, "function", None)
+                model_name = getattr(function, "name", "") if function else ""
+                arguments = getattr(function, "arguments", "{}") if function else "{}"
             if not model_name:
                 continue
             if model_name == INTERNAL_PUBLISH_MODEL_TOOL:
@@ -3613,7 +3621,7 @@ class AgentToolsPlugin(Plugin):
                 "id": getattr(tool_call, "id", None) or f"sub_call_{index}",
                 "name": name,
                 "model_name": model_name,
-                "arguments": getattr(function, "arguments", "{}") or "{}",
+                "arguments": arguments or "{}",
             })
         return tool_calls
 
