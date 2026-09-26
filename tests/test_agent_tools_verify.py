@@ -4,8 +4,8 @@ Variant 2 (backstop): a plan task transitioning to status=completed (via add or
 update) schedules a one-shot ``[verify-step-v1]`` system-message inject, delivered
 by on_before_chat_request. Mirrors the re-plan trigger lifecycle.
 
-Variant 3 (prompt): the plan-rule prefix instructs inline intent-before-tool and
-assessment-after-tool, without extra round-trips.
+Variant 3 (prompt): the plan-rule prefix covers when to create a plan (T09 dropped
+the earlier per-tool intent-before/assessment-after guidance).
 """
 from __future__ import annotations
 
@@ -63,11 +63,14 @@ def _payload(chat_id=10, user_id=42) -> BeforeChatRequestPayload:
     return BeforeChatRequestPayload(chat_id=chat_id, user_id=user_id, request_id=None)
 
 
-# ---------- Variant 3: plan-rule prompt carries intent/assessment guidance ----
+# ---------- Variant 3: plan-rule prompt (T09 dropped the per-tool intent/assessment
+# guidance; the rule now only covers when to create a plan) --------------------
 
-def test_plan_rule_text_includes_intent_and_assessment():
-    assert "намерение" in _PLAN_RULE_TEXT
-    assert "оцени" in _PLAN_RULE_TEXT
+def test_plan_rule_text_does_not_include_intent_and_assessment():
+    assert "намерение" not in _PLAN_RULE_TEXT
+    assert "оцени" not in _PLAN_RULE_TEXT
+    assert "manage_plan_tasks" in _PLAN_RULE_TEXT
+    assert "больше двух шагов" in _PLAN_RULE_TEXT
 
 
 # ---------- Unit-level helpers (no DB) ---------------------------------------

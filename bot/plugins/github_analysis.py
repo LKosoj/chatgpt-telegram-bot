@@ -1,12 +1,12 @@
 import base64
 import os
 import logging
-import aiohttp
 import json
-from typing import Dict
+from typing import Dict, List
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
 from .plugin import Plugin
+from .. import net_safety
 
 #logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -14,15 +14,18 @@ lexer = None
 
 class GitHubCodeAnalysisPlugin(Plugin):
 
+    returns_untrusted_content = True
+
     def __init__(self):
         super().__init__()
         self.max_tokens = int(os.environ.get('MAX_TOKENS', 1000))
         self.temperature = float(os.environ.get('TEMPERATURE', 1.0))
+        self.max_response_bytes = int(os.environ.get('GITHUB_ANALYSIS_MAX_RESPONSE_BYTES', 5_000_000))
 
     def get_source_name(self) -> str:
         return 'GitHub Code Analysis'
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [
             {
                 'name': 'analyze_github_code',
@@ -62,63 +65,63 @@ class GitHubCodeAnalysisPlugin(Plugin):
 
     async def analyze_github_code(self, owner, repo, path='', prompt=''):
         url = f'https://api.github.com/repos/{owner}/{repo}/contents/{path}'
-        headers = ""
 
-    
         logging.info(f"Requesting URL: {url}")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                logging.info(f"GIHUB GIHUB GIHUB Response status: {response.status}")
-            
-                if response.status != 200:
-                    logging.info(f"Failed to fetch repository contents: {response.status}")
-                    return {'error': f'Failed to fetch repository contents: {response.status}'}
-            
-                contents = await response.read()  # Чтение сырых байтов
+        try:
+            response = await net_safety.safe_get(
+                url, max_bytes=self.max_response_bytes, timeout=15.0,
+            )
+        except (net_safety.UnsafeURLError, net_safety.ResponseTooLargeError) as exc:
+            logging.error(f"Refused GitHub API request: {exc}")
+            return {'error': f'Refused GitHub API request: {exc}'}
 
+        if response.status_code != 200:
+            logging.info(f"Failed to fetch repository contents: {response.status_code}")
+            return {'error': f'Failed to fetch repository contents: {response.status_code}'}
 
+        contents = response.content
 
-                try:
-                    data = contents.decode('utf-8')
-                    contents = json.loads(data)  # Явное преобразование в JSON
-                except UnicodeDecodeError as e:
-                    logging.error(f"Decoding error: {e}")
-                    contents = ""
-        
-                if isinstance(contents, dict) and 'message' in contents:
-                    logging.info(f"GitHub error: {contents['message']}")
-                    return {'error': f'GitHub error: {contents["message"]}'}
+        try:
+            data = contents.decode('utf-8')
+            contents = json.loads(data)  # Явное преобразование в JSON
+        except UnicodeDecodeError as e:
+            logging.error(f"Decoding error: {e}")
+            contents = ""
 
-                analysis_results = []
+        if isinstance(contents, dict) and 'message' in contents:
+            logging.info(f"GitHub error: {contents['message']}")
+            return {'error': f'GitHub error: {contents["message"]}'}
 
-                if isinstance(contents, dict):  # Если ответ не список, преобразуем в список
-                    contents = [contents]
+        analysis_results = []
 
-                for item in contents:
-                    if item['type'] == 'file':
-                        logging.info(f"Analyzing file: {item['name']}")
+        if isinstance(contents, dict):  # Если ответ не список, преобразуем в список
+            contents = [contents]
 
-                        if 'content' in item and item['encoding'] == 'base64':
-                            try:
-                                code = base64.b64decode(item['content']).decode('utf-8')
-                            except (UnicodeDecodeError, base64.binascii.Error) as e:
-                                logging.error(f"Error decoding Base64 content for {item['name']}: {e}")
-                                continue
+        for item in contents:
+            if item['type'] == 'file':
+                logging.info(f"Analyzing file: {item['name']}")
 
-                            language = self.detect_language(item['name'], code)
-                            logging.info(f"Detected language for {item['name']}: {language}")
+                if 'content' in item and item['encoding'] == 'base64':
+                    try:
+                        code = base64.b64decode(item['content']).decode('utf-8')
+                    except (UnicodeDecodeError, base64.binascii.Error) as e:
+                        logging.error(f"Error decoding Base64 content for {item['name']}: {e}")
+                        continue
 
-                            if language:
-                                analysis = await self.analyze_code_with_chatgpt(code, language, prompt)
-                                analysis_results.append({
-                                    'file': item['name'],
-                                    'language': language,
-                                    'analysis': analysis
-                                })
+                    language = self.detect_language(item['name'], code)
+                    logging.info(f"Detected language for {item['name']}: {language}")
 
-                return {'results': analysis_results}
-            
+                    if language:
+                        analysis = await self.analyze_code_with_chatgpt(code, language, prompt)
+                        analysis_results.append({
+                            'file': item['name'],
+                            'language': language,
+                            'analysis': analysis
+                        })
+
+        return {'results': analysis_results}
+
     def detect_language(self, filename, code):
         try:
             logging.info(f"GITHUB filename: {filename}")

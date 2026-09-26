@@ -8,12 +8,13 @@ import time
 import inspect
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 from datetime import datetime as dt
 
 import tiktoken
 
-import openai
+if TYPE_CHECKING:
+    from telegram import Bot
 
 from functools import lru_cache
 import json
@@ -48,15 +49,25 @@ from .plugins.hooks import (
     SessionBeforeDeletePayload,
 )
 from .chat_modes_registry import ChatModesRegistry
+from .conversation_state import ChatStateRegistry, _FieldView, _UNSET
 from .chat_response_utils import (
     EMPTY_MODEL_RESPONSE_ERROR,
+    finalize_chat_answer,
     first_choice_or_raise as _first_choice_or_raise,
+    leading_system_count,
     required_choice_message_text as _required_choice_message_text,
     response_prompt_completion_tokens as _response_prompt_completion_tokens,
     response_total_tokens as _response_total_tokens,
 )
 from .ai_events import AIToolCall
-from .ai_providers.openai_compatible import stream_chunk_has_choice, stream_chunk_text_delta
+from .ai_provider import ProviderBadRequestError, ProviderRateLimitError
+from .ai_providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    build_openai_client,
+    raw_chat_completion,
+    stream_chunk_has_choice,
+    stream_chunk_text_delta,
+)
 from .validation import validate_openai_config
 from .openai_tool_handler import handle_function_call
 from .i18n import get_current_language, language_name, localized_text
@@ -71,8 +82,6 @@ from .user_settings import (
 logger = logging.getLogger(__name__)
 
 VISION_MAX_ATTEMPTS = 3
-LLM_RATE_LIMIT_RETRY_ATTEMPTS = 3
-LLM_RATE_LIMIT_RETRY_WAIT_SECONDS = 20
 TTS_OPTIONS_CACHE_SECONDS = 300
 TOOL_RESULTS_KEEP_FULL = 5
 TOOL_RESULT_SUMMARY_CHARS = 240
@@ -203,7 +212,7 @@ Otherwise classify as text_reply."""
 
 
 @lru_cache(maxsize=128)
-def default_max_tokens(model: str = None) -> int:
+def default_max_tokens(model: str | None = None) -> int:
     """
     Gets the default number of max tokens for the given model.
     :param model: The model name
@@ -251,43 +260,32 @@ class OpenAIHelper:
         self._http_client = httpx2.AsyncClient(proxy=proxy)
 
         self.api_key = config['api_key']
-        client_kwargs = {
-            "api_key": config["api_key"],
-            "http_client": self._http_client,
-            "timeout": 300.0,
-            "max_retries": 3,
-        }
-        if config["openai_base"]:
-            client_kwargs["base_url"] = config["openai_base"]
-        self.client = openai.AsyncOpenAI(**client_kwargs)
+        self.client = build_openai_client(config, self._http_client)
         self.gateway_client = LLMGatewayClient(config.get("openai_base", ""), config["api_key"])
+        self._provider = OpenAICompatibleProvider(
+            raw_chat_completion(lambda: self.client),
+            provider_name="chat-run-openai-compatible",
+            get_client=lambda: self.client,
+            get_gateway_client=lambda: self.gateway_client,
+        )
         validate_openai_config(config)
         self.config = dict(config)
         self.plugin_manager = plugin_manager
         self.db = db
-        self.conversations: dict[int, list] = {}  # {chat_id: history}
-        self.loaded_conversation_sessions: dict[int, str | None] = {}  # {chat_id: session_id}
+        # T11: conversations / loaded_conversation_sessions / last_updated /
+        # _chat_request_models / _chat_request_usage_split / _chat_request_extra_tokens /
+        # _gate_fired / _last_summary_at / last_image_file_ids / _per_chat_locks used to be
+        # 9 independent per-chat dicts here. They are now MutableMapping-backed properties
+        # over a single ChatStateRegistry (bot/conversation_state.py) so every read/write
+        # site below keeps working unchanged, but eviction (_clear_chat_state) now drops
+        # one whole record instead of pop()ing 7 dicts by hand -- see ConversationState's
+        # docstring there for what each field means and why evict() no longer leaks
+        # _gate_fired/_last_summary_at.
+        self._chat_states = ChatStateRegistry()
         self._background_tasks: set[asyncio.Task] = set()
-        self._chat_request_models: dict[int, str] = {}
-        # Prompt/completion split for the most recent chat turn per state_key.
-        # Reset to None at the top of every turn (see _common_get_chat_response,
-        # next to the _chat_request_models write) and filled in by chat_run.py
-        # once the turn's round trips are known; stays None for turns that
-        # never populate it (e.g. streaming).
-        self._chat_request_usage_split: dict[int, tuple[int, int] | None] = {}
-        self._chat_request_extra_tokens: dict[int, int] = {}
-        # skills_agent first-turn planner gate: per-state flag tracking whether the
-        # forced-retry already fired this request. Cleared at the start of each
-        # locked dispatcher (see _get_chat_response_locked / _get_chat_response_stream_locked).
-        self._gate_fired: dict = {}
-        # T4: per-state message-count snapshot at the time of the last successful
-        # summarisation; used by ``_should_summarize_now`` to throttle reruns.
-        self._last_summary_at: dict = {}
-        self.last_updated: dict[int, datetime.datetime] = {}  # {chat_id: last_update_timestamp}
-        self.last_image_file_ids = {}
         self._tts_models_cache: tuple[float, list[str]] | None = None
         self._tts_voices_cache: dict[str, tuple[float, list[str]]] = {}
-        self.bot = None
+        self.bot: Bot | None = None
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.chat_modes_registry = ChatModesRegistry(os.path.join(current_dir, 'chat_modes.yml'))
         self.chat_modes_registry.validate_tools(self.plugin_manager)
@@ -463,23 +461,6 @@ class OpenAIHelper:
             kwargs.update(extra)
         return await self._create_chat_response_completion(kind=kind, **kwargs)
 
-    async def _create_chat_completion_with_rate_limit_retry(self, *, kind, **kwargs):
-        for attempt in range(1, LLM_RATE_LIMIT_RETRY_ATTEMPTS + 1):
-            try:
-                return await self.client.chat.completions.create(**kwargs)
-            except openai.RateLimitError as exc:
-                if attempt >= LLM_RATE_LIMIT_RETRY_ATTEMPTS:
-                    raise
-                logger.warning(
-                    "Rate limit error on LLM request kind=%s attempt=%s/%s; retrying in %ss error=%s",
-                    kind,
-                    attempt,
-                    LLM_RATE_LIMIT_RETRY_ATTEMPTS,
-                    LLM_RATE_LIMIT_RETRY_WAIT_SECONDS,
-                    log_exception_shape(exc),
-                )
-                await asyncio.sleep(LLM_RATE_LIMIT_RETRY_WAIT_SECONDS)
-
     async def _timed_create(self, *, kind, **kwargs):
         """Wrapper around client.chat.completions.create: measures duration,
         writes an llm_call event to session_logger (when a trace is active),
@@ -500,7 +481,7 @@ class OpenAIHelper:
             _json_for_log(kwargs),
         )
         try:
-            response = await self._create_chat_completion_with_rate_limit_retry(kind=kind, **kwargs)
+            response = await self._provider.create_response(self._ai_provider_request_from_kwargs(kwargs))
         except Exception as exc:
             logger.error(
                 "LLM request failed kind=%s error=%s payload=%s",
@@ -671,9 +652,9 @@ class OpenAIHelper:
         self,
         chat_id: int,
         context: dict[str, Any],
-        parse_mode: str,
-        temperature: float,
-        max_tokens_percent: int,
+        parse_mode: str | None,
+        temperature: float | None,
+        max_tokens_percent: int | None,
         session_id: str | None,
     ) -> str | None:
         save_async = getattr(self.db, "save_conversation_context_async", None)
@@ -702,6 +683,26 @@ class OpenAIHelper:
             bg.add(task)
             task.add_done_callback(bg.discard)
         return saved
+
+    async def _persist_conversation_context(
+        self, chat_id, state_key, parse_mode, temperature, max_tokens_percent, session_id,
+    ) -> None:
+        """Persist self.conversations[state_key] via _save_conversation_context.
+
+        Shared tail of _maybe_apply_auto_chat_mode, reset_chat_history,
+        _add_to_history, and record_plugin_exchange -- all four save the
+        in-memory conversation for state_key as-is, differing only in how
+        parse_mode/temperature/max_tokens_percent/session_id were resolved
+        beforehand.
+        """
+        await self._save_conversation_context(
+            chat_id,
+            {'messages': self.conversations[state_key]},
+            parse_mode,
+            temperature,
+            max_tokens_percent,
+            session_id,
+        )
 
     async def _db_call(self, method_name: str, *args, **kwargs):
         async_method = getattr(self.db, f"{method_name}_async", None)
@@ -790,14 +791,14 @@ class OpenAIHelper:
                         # Если нет контекста в БД, начинаем новый чат
                         await self.reset_chat_history(user_id, session_id=None)
 
-            add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            add_prompt1 = f" Текущая дата и время: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             if assistant_prompt is None:
-                assistant_prompt = "Ты помошник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
+                assistant_prompt = "Ты помощник, который отвечает на вопросы пользователя. Ты должен использовать все свои знания и навыки для того, чтобы помочь пользователю. " + add_prompt1
 
             # Основная модель по умолчанию: ask() отдаёт содержательный ответ
             # пользователю, а не служебную классификацию. Вызывающий может
             # передать model= явно, если ему достаточно light_model.
-            model_to_use = model or self.config.get('model')
+            model_to_use = cast(str, model or self.config.get('model'))
             logger.info(f"Используемая модель: {model_to_use}")
 
             messages = [
@@ -823,13 +824,40 @@ class OpenAIHelper:
             logger.error("Error in ask method error=%s", log_exception_shape(e))
             raise
 
+    def _begin_turn(self, chat_id, query, request_id, session_id, user_id, conversation_state_key=None):
+        """Shared reentrant-check + turn-state setup for get_chat_response()
+        and get_chat_response_stream(). Returns (state_key, token, turn_id,
+        trace_token, stats_token, slog); each caller runs its own matching
+        `finally` cleanup, since the two entry points differ there (the
+        stream variant also records a final assistant_response first).
+        """
+        if _CHAT_STATE_KEY.get() is not None:
+            raise RuntimeError(
+                "get_chat_response() called re-entrantly from inside an active chat "
+                "turn (chat_id=%r). A nested call either deadlocks on the per-chat "
+                "lock (different chat_id) or corrupts the outer conversation history "
+                "(same chat_id, lock bypassed). Plugins making a one-off model call "
+                "from execute() must use helper.ask() instead."
+                % (chat_id,)
+            )
+
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
+        turn_id = request_id or uuid.uuid4().hex
+        trace_token = set_trace(user_id, session_id, turn_id)
+        stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0, 'mutator_ms': 0, 'start': time.monotonic()})
+        slog = getattr(self, 'session_logger', None)
+        if slog is not None and get_trace() is not None:
+            slog.record({'type': 'turn_start', 'user_message': query, 'model_requested': self.config.get('model'), 'chat_id': chat_id})
+        return state_key, token, turn_id, trace_token, stats_token, slog
+
     async def get_chat_response(
         self,
         chat_id: int,
         query: str,
-        request_id: str = None,
-        session_id: str = None,
-        user_id: int = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        user_id: int | None = None,
         request_context=None,
         **kwargs,
     ) -> tuple[str, str]:
@@ -849,24 +877,9 @@ class OpenAIHelper:
             if session_id is None:
                 session_id = request_context.session_id
 
-        if _CHAT_STATE_KEY.get() is not None:
-            raise RuntimeError(
-                "get_chat_response() called re-entrantly from inside an active chat "
-                "turn (chat_id=%r). A nested call either deadlocks on the per-chat "
-                "lock (different chat_id) or corrupts the outer conversation history "
-                "(same chat_id, lock bypassed). Plugins making a one-off model call "
-                "from execute() must use helper.ask() instead."
-                % (chat_id,)
-            )
-
-        state_key = conversation_state_key or self._chat_state_key(chat_id)
-        token = _CHAT_STATE_KEY.set(state_key)
-        turn_id = request_id or uuid.uuid4().hex
-        trace_token = set_trace(user_id, session_id, turn_id)
-        stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0, 'mutator_ms': 0, 'start': time.monotonic()})
-        slog = getattr(self, 'session_logger', None)
-        if slog is not None and get_trace() is not None:
-            slog.record({'type': 'turn_start', 'user_message': query, 'model_requested': self.config.get('model'), 'chat_id': chat_id})
+        state_key, token, turn_id, trace_token, stats_token, slog = self._begin_turn(
+            chat_id, query, request_id, session_id, user_id, conversation_state_key,
+        )
         try:
             if self._chat_lock_bypass_enabled(chat_id):
                 result = await self._get_chat_response_locked(
@@ -925,9 +938,9 @@ class OpenAIHelper:
         self,
         chat_id: int,
         query: str,
-        request_id: str = None,
-        session_id: str = None,
-        user_id: int = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        user_id: int | None = None,
         request_context=None,
         **kwargs,
     ):
@@ -946,24 +959,9 @@ class OpenAIHelper:
             if session_id is None:
                 session_id = request_context.session_id
 
-        if _CHAT_STATE_KEY.get() is not None:
-            raise RuntimeError(
-                "get_chat_response() called re-entrantly from inside an active chat "
-                "turn (chat_id=%r). A nested call either deadlocks on the per-chat "
-                "lock (different chat_id) or corrupts the outer conversation history "
-                "(same chat_id, lock bypassed). Plugins making a one-off model call "
-                "from execute() must use helper.ask() instead."
-                % (chat_id,)
-            )
-
-        state_key = conversation_state_key or self._chat_state_key(chat_id)
-        token = _CHAT_STATE_KEY.set(state_key)
-        turn_id = request_id or uuid.uuid4().hex
-        trace_token = set_trace(user_id, session_id, turn_id)
-        stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0, 'mutator_ms': 0, 'start': time.monotonic()})
-        slog = getattr(self, 'session_logger', None)
-        if slog is not None and get_trace() is not None:
-            slog.record({'type': 'turn_start', 'user_message': query, 'model_requested': self.config.get('model'), 'chat_id': chat_id})
+        state_key, token, turn_id, trace_token, stats_token, slog = self._begin_turn(
+            chat_id, query, request_id, session_id, user_id, conversation_state_key,
+        )
         final_answer = None
         try:
             if self._chat_lock_bypass_enabled(chat_id):
@@ -1210,7 +1208,7 @@ class OpenAIHelper:
         if user_messages:
             return
 
-        model_to_use = self.config.get('light_model') or self.config.get('model')
+        model_to_use = cast(str, self.config.get('light_model') or self.config.get('model'))
         auto_mode_prompt = await self._build_auto_chat_mode_prompt(
             query, chat_id=chat_id, user_id=user_id
         )
@@ -1268,14 +1266,26 @@ class OpenAIHelper:
             if session_id is None:
                 session_id = saved_session_id
 
-        await self._save_conversation_context(
-            chat_id,
-            {'messages': self.conversations[state_key]},
-            parse_mode,
-            temperature,
-            max_tokens_percent,
-            session_id,
+        await self._persist_conversation_context(
+            chat_id, state_key, parse_mode, temperature, max_tokens_percent, session_id,
         )
+
+    def _raise_provider_rate_limit_or_bad_request(
+        self, e: ProviderRateLimitError | ProviderBadRequestError, bot_language: str
+    ) -> None:
+        """Shared body of the ProviderRateLimitError/ProviderBadRequestError except
+        blocks in _common_get_chat_response and __common_get_chat_response_vision --
+        both log and re-raise a user-facing Exception identically, differing only
+        in log level, log message, and the localized_text key.
+        """
+        if isinstance(e, ProviderRateLimitError):
+            logger.warning("Rate limit error error=%s", log_exception_shape(e))
+            text_key = 'error'
+        else:
+            logger.error("Bad request error error=%s", log_exception_shape(e))
+            text_key = 'openai_invalid'
+        error_message = escape_markdown(str(e))
+        raise Exception(f"⚠️ _{localized_text(text_key, bot_language)}._ ⚠️\n{error_message}") from e
 
     async def _common_get_chat_response(self, chat_id: int, query: str, stream=False, session_id=None, **kwargs):
         """
@@ -1448,6 +1458,7 @@ class OpenAIHelper:
                     to_canonical_name = getattr(self.plugin_manager, "to_canonical_function_name", None)
                     tool_calls_normalized = []
                     for tc in raw_tool_calls:
+                        model_name: str | None
                         if isinstance(tc, AIToolCall):
                             model_name = tc.name
                         else:
@@ -1489,14 +1500,11 @@ class OpenAIHelper:
                 logger.debug(f'_______________________Response choices: {len(response.choices)}')
                 return response
     
-        except openai.RateLimitError as e:
-            logger.warning("Rate limit error error=%s", log_exception_shape(e))
-            raise e
+        except ProviderRateLimitError as e:
+            self._raise_provider_rate_limit_or_bad_request(e, bot_language)
 
-        except openai.BadRequestError as e:
-            logger.error("Bad request error error=%s", log_exception_shape(e))
-            error_message = escape_markdown(str(e))
-            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
+        except ProviderBadRequestError as e:
+            self._raise_provider_rate_limit_or_bad_request(e, bot_language)
 
         except ValueError as e:
             logger.error("Configuration error error=%s", log_exception_shape(e))
@@ -2018,7 +2026,7 @@ class OpenAIHelper:
                 image_args["quality"] = self.config["image_quality"]
                 image_args["style"] = self.config["image_style"]
 
-            response = await self.client.images.generate(**image_args)
+            response = await self._provider.generate_image(**image_args)
 
             response_data = getattr(response, "data", None) or []
             if len(response_data) == 0:
@@ -2037,6 +2045,13 @@ class OpenAIHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
+    async def raw_generate_image(self, **kwargs):
+        """Low-level image-generate call returning the raw SDK response object
+        (not the (value, size) tuple generate_image() returns). Exists for
+        plugins that need extract_image_result()'s raw url/b64_json/path shape
+        directly, e.g. bot/plugins/stable_diffusion.py."""
+        return await self._provider.generate_image(**kwargs)
+
     async def edit_telegram_image(self, prompt: str, file_id: str) -> tuple[str, str]:
         """
         Edits a Telegram image by downloading it and sending it to the LLMGateway image edit endpoint.
@@ -2047,7 +2062,7 @@ class OpenAIHelper:
             response = await self.gateway_client.image_edit_file(
                 prompt,
                 image_bytes,
-                model=self.config.get("image_model"),
+                model=cast(str, self.config.get("image_model")),
             )
             return extract_image_result(response)
         except Exception as e:
@@ -2108,10 +2123,11 @@ class OpenAIHelper:
         return "tts" in lowered or "speech" in lowered or "silero" in lowered
 
     async def get_available_tts_models(self) -> list[str]:
-        if self._cache_is_fresh(self._tts_models_cache):
-            return list(self._tts_models_cache[1])
+        cache_entry = self._tts_models_cache
+        if cache_entry is not None and self._cache_is_fresh(cache_entry):
+            return list(cache_entry[1])
         try:
-            response = await self.client.models.list()
+            response = await self._provider.list_models()
             models = [
                 model
                 for model in self._extract_option_ids(response, ("models",))
@@ -2124,9 +2140,9 @@ class OpenAIHelper:
         return list(models)
 
     async def get_available_tts_voices(self, model: str | None = None) -> list[str]:
-        model_to_use = model or self.config.get('tts_model')
+        model_to_use = cast(str, model or self.config.get('tts_model'))
         cache_entry = self._tts_voices_cache.get(model_to_use)
-        if self._cache_is_fresh(cache_entry):
+        if cache_entry is not None and self._cache_is_fresh(cache_entry):
             return list(cache_entry[1])
         try:
             response = await self.gateway_client.audio_voices(model_to_use)
@@ -2161,7 +2177,7 @@ class OpenAIHelper:
         voice = str(settings.get(USER_TTS_VOICE_SETTING) or "").strip()
         return voice or str(self.config['tts_voice']).lower()
 
-    async def generate_speech(self, text: str, user_id: int | None = None) -> tuple[any, int]:
+    async def generate_speech(self, text: str, user_id: int | None = None) -> tuple[Any, int]:
         """
         Generates an audio from the given text using TTS model.
         :param prompt: The text to send to the model
@@ -2169,7 +2185,7 @@ class OpenAIHelper:
         """
         bot_language = self.config['bot_language']
         try:
-            response = await self.client.audio.speech.create(
+            response = await self._provider.speech(
                 model=await self.get_user_tts_model_async(user_id),
                 voice=(await self.get_user_tts_voice_async(user_id)).lower(),
                 input=text,
@@ -2196,7 +2212,7 @@ class OpenAIHelper:
         try:
             audio_bytes = await asyncio.to_thread(_read_file_bytes, filename)
             prompt_text = self.config['whisper_prompt']
-            result = await self.client.audio.transcriptions.create(
+            result = await self._provider.transcribe(
                 model=self.config.get('transcription_model'),
                 file=(os.path.basename(filename), audio_bytes),
                 prompt=prompt_text,
@@ -2312,13 +2328,11 @@ class OpenAIHelper:
             
             return await self._create_chat_response_completion(kind='vision', **common_args)
 
-        except openai.RateLimitError as e:
-            raise e
+        except ProviderRateLimitError as e:
+            self._raise_provider_rate_limit_or_bad_request(e, bot_language)
 
-        except openai.BadRequestError as e:
-            logger.error("Bad request error error=%s", log_exception_shape(e))
-            error_message = escape_markdown(str(e))
-            raise Exception(f"⚠️ _{localized_text('openai_invalid', bot_language)}._ ⚠️\n{error_message}") from e
+        except ProviderBadRequestError as e:
+            self._raise_provider_rate_limit_or_bad_request(e, bot_language)
 
         except Exception as e:
             logger.error("Error in function call handling error=%s", log_exception_shape(e))
@@ -2379,6 +2393,15 @@ class OpenAIHelper:
         else:
             self.loaded_conversation_sessions.pop(state_key, None)
 
+    def _begin_simple_turn(self, chat_id, conversation_state_key=None):
+        """Shared state_key/token setup for interpret_image, interpret_images,
+        and interpret_image_stream. Caller acquires its own lock and runs
+        `finally: _CHAT_STATE_KEY.reset(token)`.
+        """
+        state_key = conversation_state_key or self._chat_state_key(chat_id)
+        token = _CHAT_STATE_KEY.set(state_key)
+        return state_key, token
+
     async def interpret_image(
         self,
         chat_id,
@@ -2392,8 +2415,7 @@ class OpenAIHelper:
         """
         Interprets a given PNG image file using the Vision model.
         """
-        state_key = conversation_state_key or self._chat_state_key(chat_id)
-        token = _CHAT_STATE_KEY.set(state_key)
+        state_key, token = self._begin_simple_turn(chat_id, conversation_state_key)
         try:
             lock = await self._chat_lock(state_key)
             async with lock:
@@ -2428,8 +2450,7 @@ class OpenAIHelper:
         session_id=None,
         conversation_state_key=None,
     ):
-        state_key = conversation_state_key or self._chat_state_key(chat_id)
-        token = _CHAT_STATE_KEY.set(state_key)
+        state_key, token = self._begin_simple_turn(chat_id, conversation_state_key)
         try:
             lock = await self._chat_lock(state_key)
             async with lock:
@@ -2525,43 +2546,14 @@ class OpenAIHelper:
         raise last_error or ValueError(EMPTY_MODEL_RESPONSE_ERROR)
 
     async def _interpret_image_text_response(self, chat_id, response, plugins_used=(), token_accumulator=None, session_id=None):
-        answer = ''
-        if len(response.choices) > 1 and self.config['n_choices'] > 1:
-            for index, choice in enumerate(response.choices):
-                content = _required_choice_message_text(choice)
-                if index == 0:
-                    await self._add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
-                answer += f'{index + 1}\u20e3\n'
-                answer += content
-                answer += '\n\n'
-        else:
-            answer = _required_choice_message_text(_first_choice_or_raise(response))
-            await self._add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
-
-        bot_language = self.config['bot_language']
-        show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
-        plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
-        total_tokens = sum(token_accumulator or []) or _response_total_tokens(response)
-        if self.config['show_usage']:
-            usage_tokens = _response_total_tokens(response)
-            answer += "\n\n---\n" \
-                      f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
-            usage = response.usage
-            if (
-                total_tokens == usage_tokens
-                and usage is not None
-                and usage.prompt_tokens is not None
-                and usage.completion_tokens is not None
-            ):
-                answer += \
-                      f" ({str(usage.prompt_tokens)} {localized_text('prompt', bot_language)}," \
-                      f" {str(usage.completion_tokens)} {localized_text('completion', bot_language)})"
-            if show_plugins_used:
-                answer += f"\n🔌 {', '.join(plugin_names)}"
-        elif show_plugins_used:
-            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
-
-        return answer, total_tokens
+        return await finalize_chat_answer(
+            self,
+            chat_id,
+            response,
+            plugins_used=plugins_used,
+            token_accumulator=token_accumulator,
+            session_id=session_id,
+        )
 
     async def interpret_image_stream(
         self,
@@ -2576,8 +2568,7 @@ class OpenAIHelper:
         """
         Interprets a given PNG image file using the Vision model.
         """
-        state_key = conversation_state_key or self._chat_state_key(chat_id)
-        token = _CHAT_STATE_KEY.set(state_key)
+        state_key, token = self._begin_simple_turn(chat_id, conversation_state_key)
         try:
             lock = await self._chat_lock(state_key)
             async with lock:
@@ -2919,6 +2910,123 @@ class OpenAIHelper:
         if changed:
             self.conversations[chat_id] = repaired
 
+    def _get_chat_states(self) -> ChatStateRegistry:
+        """Lazily creates and returns this instance's ChatStateRegistry, so
+        tests that build OpenAIHelper via object.__new__ (bypassing __init__)
+        still get a working registry on first attribute access -- same
+        lazy-default pattern set_last_image_file_id already used for
+        last_image_file_ids before T11.
+
+        Also runs a throttled, cheap-unless-due sweep of idle/over-capacity
+        chat states (ChatStateRegistry.maybe_sweep): this accessor is the one
+        chokepoint every property below, plus _chat_lock/_mutable_history, go
+        through, so it is the natural place for the lazy-sweep-at-access
+        design chosen for periodic cleanup (see docs/improvement_2026-09-25/
+        T11-plan.md §4) instead of a new core background-task loop.
+        """
+        registry = self.__dict__.get('_chat_states')
+        if registry is None:
+            registry = ChatStateRegistry()
+            self.__dict__['_chat_states'] = registry
+        config = getattr(self, 'config', None)
+        max_age_minutes = config.get('max_conversation_age_minutes') if isinstance(config, dict) else None
+        if max_age_minutes is not None:
+            registry.maybe_sweep(datetime.datetime.now(), max_age_minutes=max_age_minutes)
+        return registry
+
+    # tests/test_compat_state_views_guard.py pins the current count of self.<name>
+    # accesses to these 10 compat properties in this file (and helper.<name> in
+    # bot/chat_run.py / bot/openai_tool_handler.py) so it cannot grow silently.
+    @property
+    def conversations(self):
+        return _FieldView(self._get_chat_states(), 'history', None)
+
+    @conversations.setter
+    def conversations(self, value):
+        _FieldView(self._get_chat_states(), 'history', None).replace(value)
+
+    @property
+    def loaded_conversation_sessions(self):
+        return _FieldView(self._get_chat_states(), 'session_id', _UNSET)
+
+    @loaded_conversation_sessions.setter
+    def loaded_conversation_sessions(self, value):
+        _FieldView(self._get_chat_states(), 'session_id', _UNSET).replace(value)
+
+    @property
+    def last_updated(self):
+        return _FieldView(self._get_chat_states(), 'last_updated', None)
+
+    @last_updated.setter
+    def last_updated(self, value):
+        _FieldView(self._get_chat_states(), 'last_updated', None).replace(value)
+
+    @property
+    def _chat_request_models(self):
+        return _FieldView(self._get_chat_states(), 'request_model', None)
+
+    @_chat_request_models.setter
+    def _chat_request_models(self, value):
+        _FieldView(self._get_chat_states(), 'request_model', None).replace(value)
+
+    @property
+    def _chat_request_usage_split(self):
+        # Sentinel is _UNSET, not None: None is itself a legitimate stored
+        # value here (reset at the top of every turn, see
+        # _common_get_chat_response next to the _chat_request_models write) --
+        # see ConversationState.usage_split's comment in conversation_state.py.
+        return _FieldView(self._get_chat_states(), 'usage_split', _UNSET)
+
+    @_chat_request_usage_split.setter
+    def _chat_request_usage_split(self, value):
+        _FieldView(self._get_chat_states(), 'usage_split', _UNSET).replace(value)
+
+    @property
+    def _chat_request_extra_tokens(self):
+        return _FieldView(self._get_chat_states(), 'extra_tokens', 0)
+
+    @_chat_request_extra_tokens.setter
+    def _chat_request_extra_tokens(self, value):
+        _FieldView(self._get_chat_states(), 'extra_tokens', 0).replace(value)
+
+    @property
+    def _gate_fired(self):
+        return _FieldView(self._get_chat_states(), 'gate_fired', False)
+
+    @_gate_fired.setter
+    def _gate_fired(self, value):
+        _FieldView(self._get_chat_states(), 'gate_fired', False).replace(value)
+
+    @property
+    def _last_summary_at(self):
+        return _FieldView(self._get_chat_states(), 'last_summary_at', None)
+
+    @_last_summary_at.setter
+    def _last_summary_at(self, value):
+        _FieldView(self._get_chat_states(), 'last_summary_at', None).replace(value)
+
+    @property
+    def last_image_file_ids(self):
+        return _FieldView(self._get_chat_states(), 'last_image_file_ids', None)
+
+    @last_image_file_ids.setter
+    def last_image_file_ids(self, value):
+        _FieldView(self._get_chat_states(), 'last_image_file_ids', None).replace(value)
+
+    @property
+    def _per_chat_locks(self):
+        # 'unset' (None) never actually occurs in practice: ConversationState
+        # .lock's default_factory always creates a real Lock, so __contains__
+        # reduces to "record exists for this key". A setter exists (beyond
+        # what the master plan's file-list literally requires) because
+        # tests/test_openai_helper_session_api.py's _make_helper() reassigns
+        # this whole dict, like it does for the other 8.
+        return _FieldView(self._get_chat_states(), 'lock', None)
+
+    @_per_chat_locks.setter
+    def _per_chat_locks(self, value):
+        _FieldView(self._get_chat_states(), 'lock', None).replace(value)
+
     async def _chat_lock(self, chat_id) -> asyncio.Lock:
         """Per-chat asyncio.Lock guarding mutations of self.conversations.
 
@@ -2931,18 +3039,14 @@ class OpenAIHelper:
         Note: do not acquire this lock in inner helpers — asyncio.Lock is
         not reentrant and the recursive call paths (handle_function_call,
         retry helpers) would deadlock.
+
+        T11: creating the per-chat Lock used to need a double-checked-locking
+        guard (_chat_locks_guard) because two coroutines could race to create
+        the first lock for a chat_id. ChatStateRegistry.get_or_create() is a
+        plain dict operation with no ``await`` point, so that race is now
+        structurally impossible and the guard is gone, not preserved.
         """
-        guard = getattr(self, '_chat_locks_guard', None)
-        if guard is None:
-            guard = asyncio.Lock()
-            self._chat_locks_guard = guard
-            self._per_chat_locks = {}
-        async with guard:
-            lock = self._per_chat_locks.get(chat_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._per_chat_locks[chat_id] = lock
-            return lock
+        return self._get_chat_states().get_or_create(self._chat_state_key(chat_id)).lock
 
     def _chat_state_key(self, chat_id):
         return _CHAT_STATE_KEY.get() or chat_id
@@ -2963,6 +3067,17 @@ class OpenAIHelper:
         back to a blended/legacy price in that case.
         """
         return self._chat_request_usage_split.get(self._chat_state_key(chat_id))
+
+    def _mutable_history(self, chat_id) -> list:
+        """Returns the live history list for chat_id, creating an empty one if
+        this is the first write this turn. Used by openai_tool_handler.py's
+        _conversation_messages(), which needs to .append() through the cache
+        (unlike history_snapshot(), which returns a defensive copy).
+        """
+        state = self._get_chat_states().get_or_create(self._chat_state_key(chat_id))
+        if state.history is None:
+            state.history = []
+        return state.history
 
     def history_snapshot(self, chat_id) -> list[dict] | None:
         """Public read-only access to the warm cache of chat_id's history.
@@ -3097,16 +3212,13 @@ class OpenAIHelper:
         Why: conversations / last_updated / loaded_conversation_sessions /
         last_image_file_ids / extra token usage share the same chat_id key.
         Clearing only one of them leaves the others stale.
+
+        T11: this now evicts one whole ConversationState record instead of
+        pop()ing 7+ dicts individually, which also fixes a pre-T11 leak --
+        gate_fired/last_summary_at were never included in that pop list and
+        so were never cleared. Dropping the whole record clears them too.
         """
-        self.conversations.pop(chat_id, None)
-        self.last_updated.pop(chat_id, None)
-        self.loaded_conversation_sessions.pop(chat_id, None)
-        self._chat_request_extra_tokens.pop(chat_id, None)
-        self._chat_request_models.pop(chat_id, None)
-        self._chat_request_usage_split.pop(chat_id, None)
-        self.last_image_file_ids.pop(chat_id, None)
-        if hasattr(self, '_per_chat_locks'):
-            self._per_chat_locks.pop(chat_id, None)
+        self._get_chat_states().evict(chat_id)
 
     async def _dispatch_before_summarise_reset(
         self,
@@ -3268,13 +3380,8 @@ class OpenAIHelper:
                 last_summary_at.pop(state_key, None)
 
             # Сохраняем обновленный контекст
-            await self._save_conversation_context(
-                chat_id,
-                {'messages': self.conversations[state_key]},
-                parse_mode,
-                temperature,
-                max_tokens_percent,
-                session_id,
+            await self._persist_conversation_context(
+                chat_id, state_key, parse_mode, temperature, max_tokens_percent, session_id,
             )
             
             logger.info(f'Chat history reset for chat_id={chat_id}, session_id={session_id}')
@@ -3306,6 +3413,16 @@ class OpenAIHelper:
         if model_to_use is None:
             raise RuntimeError("model_to_use is required when adding tool results to history")
         content = self._tool_result_content(content)
+        get_plugin = getattr(self.plugin_manager, "get_plugin", None)
+        if callable(get_plugin):
+            plugin_id = str(function_name or "").split(".", 1)[0]
+            try:
+                plugin = get_plugin(plugin_id)
+            except Exception:
+                plugin = None
+            if plugin is not None and getattr(plugin, "returns_untrusted_content", False):
+                from .plugins.plugin import wrap_untrusted_tool_output
+                content = wrap_untrusted_tool_output(plugin_id, content)
         to_model_name = getattr(self.plugin_manager, "to_model_function_name", None)
         model_function_name = (
             to_model_name(function_name) if callable(to_model_name) else function_name
@@ -3320,10 +3437,12 @@ class OpenAIHelper:
             return
 
         if model_to_use in self.get_model_choices():
-            # For all other models (OpenAI-style), use the assistant role instead of deprecated function role
-            # The 'function' role is no longer supported in OpenAI API as of 2025
+            # Tool output is never the model's own words — route it as a user
+            # message, not the assistant role, for every tool result (not just
+            # untrusted ones): it's data the tool returned, not something the
+            # model said (T08, prompt injection hardening).
             function_result = f"Function {function_name} returned: {content}"
-            self.conversations[state_key].append({"role": "assistant", "content": function_result})
+            self.conversations[state_key].append({"role": "user", "content": function_result})
         else:
             # For OpenAI-style models, use the function role
             self.conversations[state_key].append({
@@ -3356,15 +3475,10 @@ class OpenAIHelper:
             session_id,
         )
         self.loaded_conversation_sessions[state_key] = session_id
-        
+
         # Сохраняем обновленный контекст в базу данных с использованием session_id
-        await self._save_conversation_context(
-            chat_id,
-            {'messages': self.conversations[state_key]},
-            parse_mode,
-            temperature,
-            max_tokens_percent,
-            session_id,
+        await self._persist_conversation_context(
+            chat_id, state_key, parse_mode, temperature, max_tokens_percent, session_id,
         )
 
     async def record_plugin_exchange(
@@ -3407,13 +3521,8 @@ class OpenAIHelper:
         self.conversations[state_key].append({"role": "user", "content": user_text})
         self.conversations[state_key].append({"role": "assistant", "content": assistant_text})
 
-        await self._save_conversation_context(
-            chat_id,
-            {'messages': self.conversations[state_key]},
-            parse_mode,
-            temperature,
-            max_tokens_percent,
-            session_id,
+        await self._persist_conversation_context(
+            chat_id, state_key, parse_mode, temperature, max_tokens_percent, session_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -3648,12 +3757,7 @@ class OpenAIHelper:
             return False
 
         # Protect leading system messages (assistant_prompt, mode prompt, etc).
-        head_end = 0
-        for m in conv:
-            if isinstance(m, dict) and m.get('role') == 'system':
-                head_end += 1
-            else:
-                break
+        head_end = leading_system_count(conv)
         head = conv[:head_end]
         non_system = conv[head_end:]
         if len(non_system) < 4:
@@ -3731,12 +3835,7 @@ class OpenAIHelper:
         if not conv:
             return
 
-        head_end = 0
-        for m in conv:
-            if isinstance(m, dict) and m.get('role') == 'system':
-                head_end += 1
-            else:
-                break
+        head_end = leading_system_count(conv)
         head = conv[:head_end]
         non_system = conv[head_end:]
         if not non_system:
@@ -3878,11 +3977,11 @@ class OpenAIHelper:
             logger.error("Error processing image for token counting error=%s", log_exception_shape(e))
             raise
 
-    async def get_file_data(self, file_id: str) -> bytes:
+    async def get_file_data(self, file_id: str) -> bytearray:
         """
         Получает данные файла из Telegram по file_id
         """
-        if not hasattr(self, 'bot'):
+        if self.bot is None:
             raise ValueError("Bot instance not available")
         
         try:
@@ -3979,7 +4078,7 @@ class OpenAIHelper:
             models.insert(0, default_model)
         return models
 
-    def get_current_model(self, user_id: int = None, session_id: str | None = None) -> str:
+    def get_current_model(self, user_id: int | None = None, session_id: str | None = None) -> str:
         """
         Получает текущую модель с учетом приоритетов:
         1. Модель из указанной или активной сессии
@@ -4014,7 +4113,7 @@ class OpenAIHelper:
         logger.info(f"Модель по умолчанию: {self.config['model']}")
         return self.config['model']
 
-    async def get_current_model_async(self, user_id: int = None, session_id: str | None = None) -> str:
+    async def get_current_model_async(self, user_id: int | None = None, session_id: str | None = None) -> str:
         session_model = ''
         if user_id:
             if session_id:
@@ -4127,12 +4226,12 @@ class OpenAIHelper:
 1. Если задача простая и может быть решена одним коротким ответом или одним очевидным инструментом, выбирай наиболее простой подходящий режим.
 2. Если задача сложная, открытая или ожидаемо требует больше двух шагов, выбирай skills_agent, если такой режим есть в списке доступных режимов.
 3. Сложная задача - это задача, где нужно построить план и выполнить больше двух связанных шагов: последовательно использовать инструменты, обработать файлы или артефакты, запустить локальные scripts, проверить результат, исправить ошибки или уточнить требования у пользователя.
-4. Не выбирай skills_agent по отдельным словам. Выбирай его по структуре задачи: больше двух шагов, неопределенный маршрут, необходимость orchestration или проверки промежуточных результатов.
+4. Совпадение одного отдельного слова с skills_agent — не сильный сигнал для его выбора. Выбирай его по структуре задачи: больше двух шагов, неопределенный маршрут, необходимость orchestration или проверки промежуточных результатов.
 5. Если сложность не нужна, не выбирай skills_agent.
 6. Если ни один режим не подходит, верни assistant.
 
-Сообщение: ^{query}^
-Доступные режимы: ^{self.get_all_modes()}^"""
+Доступные режимы: ^{self.get_all_modes()}^
+Сообщение: ^{query}^"""
 
     async def close(self):
         """

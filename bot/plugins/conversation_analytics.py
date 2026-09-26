@@ -5,7 +5,7 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Any, DefaultDict, Dict, List
 from collections import defaultdict
 
 from .plugin import Plugin
@@ -216,7 +216,7 @@ class ConversationAnalyticsPlugin(Plugin):
             
             if recommendation_type == "topics":
                 # Анализ частых тем и предложение связанных тем
-                topics_counter = defaultdict(int)
+                topics_counter: DefaultDict[str, int] = defaultdict(int)
                 for msg in recent_messages:
                     if 'topics' in msg:
                         for topic in msg['topics']:
@@ -300,13 +300,13 @@ class ConversationAnalyticsPlugin(Plugin):
             # Calculate time period cutoff
             now = datetime.now()
             if time_period == 'day':
-                cutoff = now - timedelta(days=1)
+                cutoff_dt = now - timedelta(days=1)
             elif time_period == 'week':
-                cutoff = now - timedelta(weeks=1)
+                cutoff_dt = now - timedelta(weeks=1)
             else:  # month
-                cutoff = now - timedelta(days=30)
+                cutoff_dt = now - timedelta(days=30)
 
-            cutoff = cutoff.isoformat()
+            cutoff = cutoff_dt.isoformat()
 
             # Filter messages within time period
             period_messages = [
@@ -332,7 +332,7 @@ class ConversationAnalyticsPlugin(Plugin):
 
             if analysis_type in ['topics', 'all']:
                 # Get recent topics/themes
-                topics = defaultdict(int)
+                topics: DefaultDict[str, int] = defaultdict(int)
                 for msg in period_messages:
                     if 'topics' in msg:
                         for topic in msg['topics']:
@@ -346,7 +346,7 @@ class ConversationAnalyticsPlugin(Plugin):
 
             if analysis_type in ['sentiment', 'all']:
                 # Calculate activity patterns
-                hour_activity = defaultdict(int)
+                hour_activity: DefaultDict[str, int] = defaultdict(int)
                 for msg in period_messages:
                     hour = datetime.fromisoformat(msg['timestamp']).hour
                     hour_activity[str(hour)] += 1
@@ -446,7 +446,7 @@ class ConversationAnalyticsPlugin(Plugin):
 
     def _analyze_interaction_patterns(self, messages: List[Dict]) -> Dict:
         """Анализирует паттерны взаимодействия"""
-        patterns = {
+        patterns: Dict[str, Any] = {
             'avg_response_time': 0,
             'message_length': [],
             'question_frequency': 0,

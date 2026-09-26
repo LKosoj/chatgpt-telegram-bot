@@ -212,6 +212,50 @@ async def test_dynamic_recall_injects_ephemeral_marker_when_baseline_exists():
     assert plugin.client.recall_calls[0][1] == "new query"
 
 
+async def test_dynamic_recall_lands_before_trailing_user_with_earlier_history():
+    """T09 step 4: dynamic recall is spliced right before the trailing user message
+    when earlier history already exists, not near the start."""
+    plugin = _make_plugin(FakeHindsight(), hindsight_dynamic_recall=True)
+    messages = [
+        {"role": "system", "content": "sp"},
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second question"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert new[-1] == {"role": "user", "content": "second question"}
+    assert new[-2]["content"].startswith(HINDSIGHT_DYNAMIC_MEMORY_MARKER)
+
+
+async def test_dynamic_recall_appends_at_end_during_tool_round():
+    """T09 step 4: when a tool round is in progress, dynamic recall appends at the
+    end instead of splicing before a stale, no-longer-last user message."""
+    plugin = _make_plugin(FakeHindsight(), hindsight_dynamic_recall=True)
+    tool_call_msg = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+    }
+    tool_result_msg = {"role": "tool", "tool_call_id": "1", "content": "result"}
+    messages = [
+        {"role": "system", "content": f"{HINDSIGHT_MEMORY_MARKER}\nbaseline"},
+        {"role": "user", "content": "q"},
+        tool_call_msg,
+        tool_result_msg,
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert new[-1]["content"].startswith(HINDSIGHT_DYNAMIC_MEMORY_MARKER)
+    assert new[-3] == tool_call_msg
+    assert new[-2] == tool_result_msg
+
+
 async def test_dynamic_recall_skips_non_persistent_retry_payload():
     plugin = _make_plugin(FakeHindsight(), hindsight_dynamic_recall=True)
     payload = BeforeChatRequestPayload(

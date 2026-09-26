@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 import pytest
@@ -40,7 +41,9 @@ _plotly_express = types.ModuleType("plotly.express")
 _install_module_if_missing("plotly", _plotly)
 _install_module_if_missing("plotly.express", _plotly_express)
 
+import bot.plugins.codeinterpreter as codeinterpreter  # noqa: E402
 from bot.plugins.codeinterpreter import CodeInterpreterPlugin  # noqa: E402
+from bot import net_safety  # noqa: E402
 
 for _module_name in _INSERTED_MODULES:
     sys.modules.pop(_module_name, None)
@@ -54,6 +57,7 @@ def _plugin(tmp_path):
     plugin.output_dir = tmp_path / "output"
     plugin.plots_dir = tmp_path / "output" / "plots"
     plugin.data = None
+    plugin.max_download_bytes = 50_000_000
     return plugin
 
 
@@ -214,3 +218,53 @@ def test_advanced_visualization_generates_mobile_responsive_shell(tmp_path, monk
     assert "@media (max-width: 640px)" in css
     assert ".result-container" in css
     assert "overflow-x: auto" in css
+
+
+@pytest.mark.asyncio
+async def test_download_file_uses_safe_get_and_writes_content(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+    calls = []
+
+    async def fake_safe_get(url, *, max_bytes, timeout):
+        calls.append({"url": url, "max_bytes": max_bytes, "timeout": timeout})
+        return net_safety.SafeResponse(status_code=200, headers={}, content=b"file-bytes")
+
+    monkeypatch.setattr(codeinterpreter.net_safety, "safe_get", fake_safe_get)
+
+    result = await plugin.download_file("http://example.test/data.csv")
+
+    assert calls == [{
+        "url": "http://example.test/data.csv",
+        "max_bytes": plugin.max_download_bytes,
+        "timeout": 30.0,
+    }]
+    assert result is not None
+    assert Path(result).read_bytes() == b"file-bytes"
+
+
+@pytest.mark.asyncio
+async def test_download_file_returns_none_on_unsafe_url(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+
+    async def fake_safe_get(url, *, max_bytes, timeout):
+        raise net_safety.UnsafeURLError("refused")
+
+    monkeypatch.setattr(codeinterpreter.net_safety, "safe_get", fake_safe_get)
+
+    result = await plugin.download_file("http://169.254.169.254/x")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_download_file_returns_none_on_response_too_large(tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path)
+
+    async def fake_safe_get(url, *, max_bytes, timeout):
+        raise net_safety.ResponseTooLargeError("too big")
+
+    monkeypatch.setattr(codeinterpreter.net_safety, "safe_get", fake_safe_get)
+
+    result = await plugin.download_file("http://example.test/huge.csv")
+
+    assert result is None

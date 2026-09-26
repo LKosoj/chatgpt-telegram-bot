@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Any
 
+from .i18n import localized_text
+
 logger = logging.getLogger(__name__)
 
 EMPTY_MODEL_RESPONSE_ERROR = "Модель вернула пустой ответ"
@@ -95,3 +97,81 @@ def first_choice_or_raise(response: Any) -> Any:
         logger.warning("Model response has no choices")
         raise ValueError(EMPTY_MODEL_RESPONSE_ERROR)
     return choices[0]
+
+
+def leading_system_count(messages: list) -> int:
+    """Count the leading contiguous run of ``role == 'system'`` messages.
+
+    Extracted from the identical loop in ``OpenAIHelper._summarize_and_trim``
+    and ``OpenAIHelper._fallback_trim_with_summary`` (both protect the
+    leading system messages -- assistant_prompt, mode prompt, etc. -- before
+    trimming/summarising the rest of the conversation).
+    """
+    head_end = 0
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "system":
+            head_end += 1
+        else:
+            break
+    return head_end
+
+
+async def finalize_chat_answer(
+    helper: Any,
+    chat_id: int,
+    response: Any,
+    *,
+    plugins_used: tuple = (),
+    token_accumulator: list | None = None,
+    session_id: str | None = None,
+) -> tuple[str, int]:
+    """Build the final answer text and append it to conversation history.
+
+    Shared tail of ``bot.chat_run.ChatRun.run_non_stream`` and
+    ``OpenAIHelper._interpret_image_text_response``: choice numbering when
+    ``n_choices > 1``, writing the assistant message via
+    ``helper._add_to_history``, and the usage/plugins-used footer. The
+    caller still owns usage-split bookkeeping and AIRunEnd events -- this
+    only returns ``(answer, total_tokens)``.
+    """
+    answer = ""
+    if len(response.choices) > 1 and helper.config["n_choices"] > 1:
+        for index, choice in enumerate(response.choices):
+            content = required_choice_message_text(choice)
+            if index == 0:
+                await helper._add_to_history(chat_id, role="assistant", content=content, session_id=session_id)
+            answer += f"{index + 1}⃣\n"
+            answer += content
+            answer += "\n\n"
+    else:
+        answer = required_choice_message_text(first_choice_or_raise(response))
+        await helper._add_to_history(chat_id, role="assistant", content=answer, session_id=session_id)
+
+    bot_language = helper.config["bot_language"]
+    show_plugins_used = len(plugins_used) > 0 and helper.config["show_plugins_used"]
+    plugin_names = tuple(helper.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+    total_tokens = sum(token_accumulator or []) or response_total_tokens(response)
+    if helper.config["show_usage"]:
+        usage_tokens = response_total_tokens(response)
+        answer += (
+            "\n\n---\n"
+            f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
+        )
+        usage = response.usage
+        if (
+            total_tokens == usage_tokens
+            and usage is not None
+            and usage.prompt_tokens is not None
+            and usage.completion_tokens is not None
+        ):
+            answer += (
+                f" ({str(usage.prompt_tokens)} {localized_text('prompt', bot_language)},"
+                f" {str(usage.completion_tokens)} "
+                f"{localized_text('completion', bot_language)})"
+            )
+        if show_plugins_used:
+            answer += f"\n🔌 {', '.join(plugin_names)}"
+    elif show_plugins_used:
+        answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+
+    return answer, total_tokens

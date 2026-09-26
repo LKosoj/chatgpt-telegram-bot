@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 
 import httpx
 
@@ -29,7 +29,7 @@ class WeatherPlugin(Plugin):
         except ValueError as e:
             return {"error": f"Weather response JSON parse error: {e}"}
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         today = datetime.today().strftime("%A, %B %d, %Y")
         latitude_param = {
             "type": "string",
@@ -136,3 +136,5 @@ class WeatherPlugin(Plugin):
                 "today": datetime.today().strftime("%A, %B %d, %Y"),
                 "forecast": results,
             }
+
+        return {"error": f"Unknown function: {function_name}"}

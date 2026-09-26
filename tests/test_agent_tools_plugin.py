@@ -2,7 +2,9 @@ import asyncio
 import importlib.util
 import importlib.machinery
 import json
+import logging
 import sys
+import tempfile
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -359,6 +361,62 @@ class RepeatingToolCompletions:
                 )
             ]
         )
+
+
+class SequencedToolCompletions:
+    """Returns one tool_call per round from ``stages``, then a final text answer."""
+
+    def __init__(self, stages):
+        self.calls = []
+        self.stages = stages
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        round_index = sum(1 for message in kwargs["messages"] if message.get("role") == "tool")
+        if round_index < len(self.stages):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=None, tool_calls=[self.stages[round_index]])
+                    )
+                ]
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="final answer", tool_calls=None))]
+        )
+
+
+class DangerousAfterUntrustedPluginManager(FakePluginManager):
+    def get_functions_specs(self, helper, model_to_use, allowed_plugins):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "skills.list_skills",
+                    "description": "list skills",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal.terminal",
+                    "description": "execute shell command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+
+    def get_plugin(self, plugin_name):
+        if plugin_name == "skills":
+            return SimpleNamespace(returns_untrusted_content=True)
+        if plugin_name == "terminal":
+            return SimpleNamespace(returns_untrusted_content=False)
+        raise KeyError(plugin_name)
+
+    async def call_function(self, function_name, helper, arguments, request_context=None):
+        self.calls.append((function_name, json.loads(arguments)))
+        return json.dumps({"success": True}, ensure_ascii=False)
 
 
 class FakeMessage:
@@ -1113,6 +1171,30 @@ async def test_clear_terminal_plan_tasks_removes_closed_plan(tmp_path, agent_db)
 
 
 @pytest.mark.asyncio
+async def test_get_plan_tasks_matches_tasks_response_snapshot(tmp_path, agent_db):
+    """T12d D2: get_plan_tasks() and manage_plan_tasks(action="list")'s
+    plan_tasks.tasks both build their snapshot via _task_public_view, so for
+    the same stored task set they must produce the same list of dicts."""
+    plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
+
+    added = await plugin.execute(
+        "manage_plan_tasks",
+        helper,
+        chat_id=10,
+        action="add",
+        definition_of_done=PLAN_CONTRACT,
+        tasks=[
+            {"id": "T1", "content": "Collect recipes", "status": "completed"},
+            {"id": "T2", "content": "Create presentation", "status": "in_progress", "depends_on": ["T1"]},
+        ],
+    )
+    assert added["success"] is True
+
+    listed = await plugin.execute("manage_plan_tasks", helper, chat_id=10, user_id=42, action="list")
+    assert listed["plan_tasks"]["tasks"] == plugin.get_plan_tasks(chat_id=10, user_id=42)
+
+
+@pytest.mark.asyncio
 async def test_manage_plan_tasks_rejects_multiple_in_progress(tmp_path, agent_db):
     plugin, helper = _db_backed_agent_plugin(tmp_path, agent_db)
 
@@ -1352,6 +1434,104 @@ async def test_run_subagents_drop_reasoning_traces_from_history(tmp_path):
         "Long intermediate reasoning trace" in str(message.get("content") or "")
         for message in reentry_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_wraps_untrusted_plugin_tool_result(tmp_path):
+    class UntrustedPluginManager(FakePluginManager):
+        def get_plugin(self, plugin_name):
+            if plugin_name == "skills":
+                return SimpleNamespace(returns_untrusted_content=True)
+            raise KeyError(plugin_name)
+
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(plugin_manager=UntrustedPluginManager())
+
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0]["status"] == "completed"
+    reentry_messages = helper.completions.calls[1]["messages"]
+    tool_messages = [message for message in reentry_messages if message.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["content"].startswith('<untrusted_tool_output source="skills">')
+    assert tool_messages[0]["content"].rstrip().endswith("</untrusted_tool_output>")
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_logs_dangerous_tool_warning_after_untrusted_content(tmp_path, caplog):
+    untrusted_call = SimpleNamespace(
+        id="t1",
+        function=SimpleNamespace(name="skills.list_skills", arguments="{}"),
+    )
+    dangerous_call = SimpleNamespace(
+        id="t2",
+        function=SimpleNamespace(
+            name="terminal.terminal",
+            arguments=json.dumps({"cmd": "ls"}),
+        ),
+    )
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(
+        completions=SequencedToolCompletions([untrusted_call, dangerous_call]),
+        plugin_manager=DangerousAfterUntrustedPluginManager(),
+    )
+
+    caplog.set_level(logging.WARNING)
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0]["status"] == "completed"
+    assert [name for name, _args in helper.plugin_manager.calls] == [
+        "skills.list_skills",
+        "terminal.terminal",
+    ]
+    assert "Dangerous tool terminal.terminal called (subagent)" in caplog.text
+    assert "chat_id=10" in caplog.text
+    assert "user_id=42" in caplog.text
+    assert "plugins=['skills']" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_subagents_no_dangerous_tool_warning_without_untrusted_content(tmp_path, caplog):
+    dangerous_call = SimpleNamespace(
+        id="t1",
+        function=SimpleNamespace(
+            name="terminal.terminal",
+            arguments=json.dumps({"cmd": "ls"}),
+        ),
+    )
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = FakeLLMHelper(
+        completions=SequencedToolCompletions([dangerous_call]),
+        plugin_manager=DangerousAfterUntrustedPluginManager(),
+    )
+
+    caplog.set_level(logging.WARNING)
+    result = await plugin.execute(
+        "run_subagents",
+        helper,
+        chat_id=10,
+        user_id=42,
+        subagents=[{"id": "a1", "role": "reviewer", "task": "Check assumptions"}],
+    )
+
+    assert result["subagents"][0]["status"] == "completed"
+    assert [name for name, _args in helper.plugin_manager.calls] == ["terminal.terminal"]
+    assert "Dangerous tool" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2376,6 +2556,58 @@ async def test_deliver_to_user_rejects_missing_or_empty_files(tmp_path):
     )
     assert empty["success"] is False
     assert "is empty" in empty["error"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_rejects_artifact_outside_storage_root_and_temp(
+    tmp_path, monkeypatch, tmp_path_factory
+):
+    plugin = AgentToolsPlugin()
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    plugin.initialize(storage_root=str(storage_root))
+    helper = SimpleNamespace()
+
+    fake_tempdir = tmp_path / "faketemp"
+    fake_tempdir.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tempdir))
+
+    outside_dir = tmp_path_factory.mktemp("outside")
+    artifact_path = outside_dir / "report.txt"
+    artifact_path.write_text("hello", encoding="utf-8")
+
+    result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        artifacts=[{"file_path": str(artifact_path)}],
+    )
+
+    assert result["success"] is False
+    assert "outside allowed delivery locations" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_to_user_rejects_db_path_artifact(tmp_path, monkeypatch):
+    plugin = AgentToolsPlugin()
+    plugin.initialize(storage_root=str(tmp_path))
+    helper = SimpleNamespace()
+
+    db_path = tmp_path / "user_data.db"
+    db_path.write_bytes(b"sqlite")
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    result = await plugin.execute(
+        "deliver_to_user",
+        helper,
+        chat_id=10,
+        user_id=42,
+        artifacts=[{"file_path": str(db_path)}],
+    )
+
+    assert result["success"] is False
+    assert "database file" in result["error"]
 
 
 def test_deliver_to_user_blocked_for_subagents():

@@ -19,3 +19,10 @@ exclude = [
 # ловил только реальные ошибки и не менял поведение молча при обновлении ruff
 # (см. docs/architecture_code_review_2026-09-04.md §3.4). Расширять набор — отдельной задачей.
 select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = ["bot/tests/", "bot/skills/"]
+warn_unused_ignores = true
+files = ["bot"]

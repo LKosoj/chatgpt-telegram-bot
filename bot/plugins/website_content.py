@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 from .plugin import Plugin
 
@@ -8,10 +8,12 @@ class WebsiteContentPlugin(Plugin):
     A plugin to query text from a website through LLMGateway web_read.
     """
 
+    returns_untrusted_content = True
+
     def get_source_name(self) -> str:
         return 'LLMGateway Web Read'
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [
             {
                 'name': 'website_content',

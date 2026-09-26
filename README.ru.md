@@ -251,6 +251,13 @@ Bot API сервер недоступен из контейнера, задай 
 `OPENAI_BASE_URL` по умолчанию пустой и должен указывать на твой gateway,
 например `http://gateway.example/v1`.
 
+Одновременно на одном `TELEGRAM_BOT_TOKEN`/базе может работать только один процесс бота —
+`main()` берёт файловую блокировку на уровне ОС перед стартом. Путь лок-файла по умолчанию —
+`<каталог DB_PATH>/bot.instance.lock`, переопределяется через `INSTANCE_LOCK_PATH`. Второй
+запуск с тем же лок-файлом пишет ERROR в лог и завершается с ненулевым кодом. После
+падения или `docker restart` блокировка снимается автоматически силами ОС — вручную
+ничего чистить не нужно.
+
 ---
 
 ## Конфигурация
@@ -274,6 +281,7 @@ Bot API сервер недоступен из контейнера, задай 
 | `TELEGRAM_BASE_URL` | `http://localhost:8081/bot` (в local-mode) | url | Base URL Bot API. Валидируется как абсолютный http(s). |
 | `ADMIN_USER_IDS` | `-` | csv | Telegram user ID администраторов через запятую. `-` — без админов. |
 | `ALLOWED_TELEGRAM_USER_IDS` | `*` | csv | Allow-list user ID через запятую. `*` — разрешить всем. |
+| `ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER` | `true` | bool | В групповых чатах считать разрешённым любого участника, если в группе также состоит allowed/admin пользователь. `false` — решает только сам отправитель (нужен его ID в `ALLOWED_TELEGRAM_USER_IDS`/`ADMIN_USER_IDS`). |
 | `ENABLE_QUOTING` | `true` | bool | Отвечать через reply на исходное сообщение в личных чатах (в группах reply всегда). |
 | `GROUP_TRIGGER_KEYWORD` | `` | string | Если задано — групповое сообщение должно содержать ключевое слово, чтобы бот среагировал. |
 | `IGNORE_GROUP_TRANSCRIPTIONS` | `true` | bool | Не делать авто-транскрипцию в группах. |
@@ -294,6 +302,7 @@ Bot API сервер недоступен из контейнера, задай 
 | `MODEL_CONTEXT_WINDOWS` | `` | csv `model=tokens` | Переопределение размера контекстного окна для конкретных моделей, например `custom/model=128000,large/model=1000000`. Некорректные и неположительные записи пропускаются с warning'ом. |
 | `MAX_HISTORY_SIZE` | `15` | int | Сколько сообщений истории держать в памяти до суммаризации. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Возраст разговора, после которого он сбрасывается. |
+| `MAX_CHAT_STATES` | `1000` | int | Максимум состояний чатов в памяти (LRU-вытеснение сверх лимита). |
 | `TEMPERATURE` | `1.0` | float | Sampling temperature. |
 | `PRESENCE_PENALTY` | `0.0` | float | OpenAI presence penalty. |
 | `FREQUENCY_PENALTY` | `0.0` | float | OpenAI frequency penalty. |
@@ -362,7 +371,7 @@ Bot API сервер недоступен из контейнера, задай 
 |---|---|---|---|
 | `BUDGET_PERIOD` | `monthly` | string | `daily`, `weekly`, `monthly` или `total`. |
 | `USER_BUDGETS` | `*` | csv / `*` | Лимит на пользователя. `*` снимает лимит. |
-| `GUEST_BUDGET` | `100.0` | float | Бюджет для гостей в групповых чатах. |
+| `GUEST_BUDGET` | `100.0` | float | Общий бюджет для участников группы, допущенных только через `ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER` (сами не входят в `ALLOWED_TELEGRAM_USER_IDS`). Не используется при `false`. |
 | `TOKEN_PRICE` | `0.002` | float | USD за 1K токенов. Применяется к любой модели, которой нет в `MODEL_TOKEN_PRICES`. |
 | `MODEL_TOKEN_PRICES` | `` | csv `model=in:out` | Цены по моделям в USD за 1K токенов, prompt и completion тарифицируются отдельно, например `llmgateway/high=0.005:0.015`. Некорректные и отрицательные записи пропускаются с warning'ом. По умолчанию пусто: модели в репозитории — алиасы gateway, их реальные цены зависят от конкретной установки. |
 | `IMAGE_PRICES` | `0.016,0.018,0.02` | csv float | Стоимость для разных размеров (small / medium / large). |

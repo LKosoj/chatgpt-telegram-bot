@@ -133,7 +133,6 @@ def test_skills_agent_mode_is_registered():
     assert "verification_summary" in mode["prompt_start"]
     assert "выберите ровно одно действие" in mode["prompt_start"]
     assert "Если tool нужен, вызовите его сразу" in mode["prompt_start"]
-    assert "Никогда не выводите служебные reasoning-теги" in mode["prompt_start"]
     assert "Никогда не выводите сырые результаты tools" in mode["prompt_start"]
     assert "Не выдумывайте абсолютные пути" in mode["prompt_start"]
     assert "не повторяйте тот же вызов" in mode["prompt_start"]
@@ -160,3 +159,57 @@ def test_skills_agent_mode_is_detected_by_prompt_markers():
 
     assert mode is not None
     assert mode["defer_direct_results"] is True
+
+
+def test_shared_blocks_are_substituted_and_hidden(tmp_path):
+    yaml_path = tmp_path / "chat_modes.yml"
+    yaml_path.write_text(
+        """
+shared_blocks:
+  foo: |
+    bar
+some_mode:
+  prompt_start: |
+    before {{shared:foo}} after
+  welcome_message: "hello"
+""",
+        encoding="utf-8",
+    )
+    registry = ChatModesRegistry(str(yaml_path))
+
+    mode = registry.get_mode_by_key("some_mode")
+    assert mode is not None
+    assert "bar" in mode["prompt_start"]
+    assert "{{shared:foo}}" not in mode["prompt_start"]
+
+    assert "shared_blocks" not in registry.all_modes()
+    assert not any("shared_blocks" in entry for entry in registry.get_all_modes_list())
+
+
+def test_web_search_rules_shared_block_appears_once_in_real_yaml():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    modes = registry.all_modes()
+    occurrences = sum(
+        mode_data.get("prompt_start", "").count("Для точных фактов (курс валют на дату")
+        for mode_data in modes.values()
+        if isinstance(mode_data, dict)
+    )
+
+    assert occurrences == 23
+    assert all(
+        "{{shared:web_search_rules}}" not in mode_data.get("prompt_start", "")
+        for mode_data in modes.values()
+        if isinstance(mode_data, dict)
+    )
+
+
+def test_real_chat_modes_yaml_has_no_typo():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    modes = registry.all_modes()
+    for mode_data in modes.values():
+        if isinstance(mode_data, dict):
+            assert "исползуй" not in mode_data.get("prompt_start", "")

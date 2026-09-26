@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 import httpx
 
@@ -28,7 +28,7 @@ class CryptoPlugin(Plugin):
         except ValueError as e:
             return {"error": f"Crypto response JSON parse error: {e}"}
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "get_crypto_rate",
             "description": "Get the current rate of various crypto currencies",

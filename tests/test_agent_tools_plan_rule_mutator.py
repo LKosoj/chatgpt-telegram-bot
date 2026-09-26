@@ -134,6 +134,70 @@ async def test_working_checkpoint_skipped_when_agent_tools_not_allowed(tmp_path,
     assert new is None
 
 
+async def test_checkpoint_lands_before_trailing_user_with_earlier_history(tmp_path, agent_db):
+    """T09 step 4: dynamic content (working checkpoint) is spliced right before the
+    trailing user message when earlier history already exists, not near the start."""
+    plugin = AgentToolsPlugin()
+    plugin.initialize(openai=FakeHelper(["agent_tools"]), storage_root=str(tmp_path), db=DbHandle(agent_db))
+    await plugin.execute(
+        "update_working_checkpoint",
+        plugin.openai,
+        chat_id=1,
+        user_id=42,
+        action="update",
+        summary="Inspected source",
+        next_step="Run tests",
+    )
+    messages = [
+        {"role": "system", "content": "mode prompt"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert new[-1] == {"role": "user", "content": "second"}
+    assert new[-2]["content"].startswith(_WORKING_CHECKPOINT_MARKER)
+
+
+async def test_checkpoint_appends_at_end_during_tool_round(tmp_path, agent_db):
+    """T09 step 4: when a tool round is in progress (assistant tool_calls + tool
+    result already follow the last user turn), dynamic content appends at the end
+    instead of splicing before a stale, no-longer-last user message."""
+    plugin = AgentToolsPlugin()
+    plugin.initialize(openai=FakeHelper(["agent_tools"]), storage_root=str(tmp_path), db=DbHandle(agent_db))
+    await plugin.execute(
+        "update_working_checkpoint",
+        plugin.openai,
+        chat_id=1,
+        user_id=42,
+        action="update",
+        summary="Inspected source",
+        next_step="Run tests",
+    )
+    tool_call_msg = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+    }
+    tool_result_msg = {"role": "tool", "tool_call_id": "1", "content": "result"}
+    messages = [
+        {"role": "system", "content": "mode prompt"},
+        {"role": "user", "content": "q"},
+        tool_call_msg,
+        tool_result_msg,
+    ]
+
+    new = await plugin.on_before_chat_request(messages, _payload())
+
+    assert new is not None
+    assert new[-1]["content"].startswith(_WORKING_CHECKPOINT_MARKER)
+    assert new[-3] == tool_call_msg
+    assert new[-2] == tool_result_msg
+
+
 async def test_rule_idempotent_marker():
     plugin = _make_plugin(["agent_tools"])
     messages = [

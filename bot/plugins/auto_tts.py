@@ -1,6 +1,6 @@
 import logging
 import tempfile
-from typing import Dict
+from typing import Dict, List
 
 from .plugin import Plugin
 
@@ -13,7 +13,7 @@ class AutoTextToSpeech(Plugin):
     def get_source_name(self) -> str:
         return "TTS"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "text_to_speech",
             "description": "Convert text to speech",

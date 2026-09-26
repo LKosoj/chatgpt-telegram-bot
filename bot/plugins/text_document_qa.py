@@ -29,6 +29,7 @@ class TextDocumentQAPlugin(Plugin):
     Document Q&A plugin backed by per-chat AnythingLLM workspaces.
     """
 
+    returns_untrusted_content = True
     RAG_MODE_SETTING = "text_document_qa_rag_enabled"
 
     def __init__(self, http_transport: httpx.AsyncBaseTransport | None = None):
@@ -36,8 +37,8 @@ class TextDocumentQAPlugin(Plugin):
         self.workspace_map_path = os.path.join(os.path.dirname(__file__), "anythingllm_workspaces.json")
         os.makedirs(self.metadata_dir, exist_ok=True)
 
-        self.cleanup_task = None
-        self.processing_tasks = {}
+        self.cleanup_task: asyncio.Task | None = None
+        self.processing_tasks: Dict[str, asyncio.Task] = {}
         self.config = {"enable_quoting": False}
         self.max_document_age = 30 * 24 * 60 * 60
         self.warning_before_delete = 24 * 60 * 60

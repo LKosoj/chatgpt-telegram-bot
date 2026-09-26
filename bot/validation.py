@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def validate_openai_config(config: Dict[str, Any]) -> None:
-    required = {
+    required: Dict[str, Any] = {
         "api_key": str,
         "model": str,
         "enable_functions": bool,
@@ -75,7 +75,7 @@ def _format_validation_error(error) -> str:
 
 
 def _join_path(path) -> str:
-    parts = []
+    parts: List[str] = []
     for item in path:
         if isinstance(item, int) and parts:
             parts[-1] = f"{parts[-1]}[{item}]"

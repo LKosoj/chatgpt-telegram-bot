@@ -8,17 +8,19 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..agent_delivery import send_agent_response, send_text_chunks
 from ..ai_events import AIToolCall
+from ..artifact_paths import is_deliverable
+from ..openai_tool_handler import DANGEROUS_TOOL_NAMES, _tainted_plugin_ids
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..tool_result import tool_result_content
-from ..utils import compute_scope_key, get_thread_id, message_text
+from ..utils import compute_scope_key, get_thread_id, message_text, parse_model_choices
 from .hooks import BeforeChatRequestPayload
 from .background import BackgroundTask
 from .plugin import Plugin
@@ -119,16 +121,7 @@ def _model_choices_for_helper(helper) -> list[str]:
         return get_model_choices()
 
     config = getattr(helper, "config", {}) or {}
-    choices = config.get("model_choices") or []
-    if isinstance(choices, str):
-        models = [model.strip() for model in choices.split(",") if model.strip()]
-    else:
-        models = [str(model).strip() for model in choices if str(model).strip()]
-
-    default_model = str(config.get("model") or "").strip()
-    if default_model and default_model not in models:
-        models.insert(0, default_model)
-    return models
+    return parse_model_choices(config.get("model_choices"), config.get("model") or "")
 
 
 def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -181,13 +174,11 @@ _VERIFY_TRIGGER_MARKER = "[verify-step-v1] "
 _PLAN_RULE_MARKER = "[plan-rule-v1] "
 _WORKING_CHECKPOINT_MARKER = "[working-checkpoint-v1] "
 _PLAN_RULE_TEXT = (
-    "Если для выполнения запроса понадобятся 3+ tool-вызова или последовательная координация "
-    "шагов (несколько разных тулов, проверка промежуточных результатов, исправление ошибок) — "
-    "ПЕРВЫМ ходом вызови agent_tools.manage_plan_tasks с goal/success_criteria/verification и "
-    "зафиксируй план. Для тривиальных запросов (быстрый ответ из знаний, один очевидный тул, "
-    "перевод/время/факт) план НЕ создавай. "
-    "Перед каждым нетривиальным tool-вызовом одной строкой укажи намерение: что вызываешь и зачем. "
-    "После результата тула одной строкой оцени, продвинул ли он к цели и что делать дальше."
+    "Если для выполнения запроса понадобится больше двух шагов или последовательная "
+    "координация (несколько разных тулов, проверка промежуточных результатов, "
+    "исправление ошибок) — ПЕРВЫМ ходом вызови agent_tools.manage_plan_tasks с "
+    "goal/success_criteria/verification и зафиксируй план. Для тривиальных запросов "
+    "(быстрый ответ из знаний, один очевидный тул, перевод/время/факт) план НЕ создавай."
 )
 _CHECKPOINT_MAX_TEXT_CHARS = 1600
 _CHECKPOINT_MAX_LIST_ITEMS = 8
@@ -206,6 +197,15 @@ def _load_subagent_system_prompt() -> str:
                 "return concise findings. Do not address the user directly."
             )
     return _SUBAGENT_SYSTEM_PROMPT_CACHE
+
+
+def _dynamic_insert_index(messages: List[Dict[str, Any]]) -> int:
+    """Index for a per-turn dynamic system message: right before the trailing user
+    message, or at the very end when something else (assistant/tool messages from an
+    in-progress tool round) already follows the last user turn."""
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        return len(messages) - 1
+    return len(messages)
 
 
 class _PendingAskReplyFilter(filters.MessageFilter):
@@ -450,31 +450,31 @@ class AgentToolsPlugin(Plugin):
                 insert_at += 1
             else:
                 break
-        injected = 0
         if inject_plan_rule:
             new_messages.insert(insert_at, {
                 "role": "system",
                 "content": _PLAN_RULE_MARKER + _PLAN_RULE_TEXT,
             })
-            injected += 1
+
+        dyn_idx = _dynamic_insert_index(new_messages)
         if checkpoint:
-            new_messages.insert(insert_at + injected, {
+            new_messages.insert(dyn_idx, {
                 "role": "system",
                 "content": _WORKING_CHECKPOINT_MARKER + self._format_working_checkpoint(checkpoint),
             })
-            injected += 1
+            dyn_idx += 1
         if pending:
             reason = str(pending.get("reason") or "errors")
             task_id = str(pending.get("task_id") or "")
             body = self._replan_message_body(reason, task_id)
-            new_messages.insert(insert_at + injected, {
+            new_messages.insert(dyn_idx, {
                 "role": "system",
                 "content": body,
             })
-            injected += 1
+            dyn_idx += 1
         if pending_verify:
             task_id = str(pending_verify.get("task_id") or "")
-            new_messages.insert(insert_at + injected, {
+            new_messages.insert(dyn_idx, {
                 "role": "system",
                 "content": self._verify_message_body(task_id),
             })
@@ -912,7 +912,7 @@ class AgentToolsPlugin(Plugin):
         message = update.effective_message
         if not message:
             return
-        chat_id = update.effective_chat.id
+        chat_id = message.chat_id
         user_id = update.effective_user.id if update.effective_user else chat_id
         args_text = message_text(message).strip()
         if not args_text or args_text == "list":
@@ -948,7 +948,8 @@ class AgentToolsPlugin(Plugin):
             update=update,
         )
         self._background_job_tasks[job["id"]] = task
-        task.add_done_callback(lambda _task, job_id=job["id"]: self._background_job_tasks.pop(job_id, None))
+        job_id = job["id"]
+        task.add_done_callback(lambda _task: self._background_job_tasks.pop(job_id, None))
         await message.reply_text(
             (
                 f"Background job `{job['id']}` started.\n"
@@ -1193,9 +1194,10 @@ class AgentToolsPlugin(Plugin):
                 14400,
             ),
         }
-        if raw.get("token_budget") is not None:
+        token_budget = raw.get("token_budget")
+        if token_budget is not None:
             try:
-                limits["token_budget"] = max(1, int(raw.get("token_budget")))
+                limits["token_budget"] = max(1, int(token_budget))
             except (TypeError, ValueError):
                 pass
         return limits
@@ -1253,8 +1255,8 @@ class AgentToolsPlugin(Plugin):
                 (
                     run_id,
                     scope,
-                    int(chat_id),
-                    int(user_id if user_id is not None else chat_id),
+                    int(cast(int, chat_id)),
+                    int(cast(int, user_id if user_id is not None else chat_id)),
                     kwargs.get("message_id"),
                     getattr(request_context, "message_thread_id", None) if request_context is not None else None,
                     prompt,
@@ -1439,7 +1441,11 @@ class AgentToolsPlugin(Plugin):
                 continue
             task = asyncio.create_task(self._run_goal_run(application, run_id))
             self._goal_run_tasks[run_id] = task
-            task.add_done_callback(lambda _task, rid=run_id: self._goal_run_tasks.pop(rid, None))
+
+            def _forget_goal_run(_task: object, rid: str = run_id) -> None:
+                self._goal_run_tasks.pop(rid, None)
+
+            task.add_done_callback(_forget_goal_run)
 
     async def _interrupt_orphaned_goal_runs(self, active_run_ids: set[str]) -> None:
         rows = await self.db_handle.fetch_all(
@@ -2155,8 +2161,8 @@ class AgentToolsPlugin(Plugin):
     def _verify_message_body(task_id: str) -> str:
         return (
             f"{_VERIFY_TRIGGER_MARKER}task {task_id} помечена completed. "
-            "Прежде чем продолжать, одной фразой подтверди, что результат закрыл "
-            "success_criteria/verification из контракта плана. Если нет — верни "
+            "Перед следующим действием проверь через manage_plan_tasks, что результат "
+            "закрыл success_criteria/verification из контракта плана. Если нет — верни "
             "задачу в работу через manage_plan_tasks(action=update)."
         )
 
@@ -2209,6 +2215,14 @@ class AgentToolsPlugin(Plugin):
     @staticmethod
     def _normalize_depends_on(value: Any) -> List[str]:
         return AgentToolsPlugin._normalize_string_list(value)
+
+    def _task_public_view(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": str(task.get("id") or ""),
+            "content": str(task.get("content") or ""),
+            "status": str(task.get("status") or "pending"),
+            "depends_on": self._normalize_depends_on(task.get("depends_on")),
+        }
 
     def _contract_from_kwargs(self, kwargs: Dict[str, Any]) -> tuple[Any, str | None]:
         if "definition_of_done" not in kwargs:
@@ -2295,7 +2309,7 @@ class AgentToolsPlugin(Plugin):
                 )
         self._orphaned_pending = []
         try:
-            if os.path.exists(self.pending_file):
+            if self.pending_file and os.path.exists(self.pending_file):
                 os.remove(self.pending_file)
         except OSError:
             logging.debug("Failed to remove pending questions snapshot", exc_info=True)
@@ -2307,15 +2321,7 @@ class AgentToolsPlugin(Plugin):
         """
         scope = compute_scope_key(chat_id, user_id)
         tasks = self._get_scope_plan(scope).get("tasks") or []
-        return [
-            {
-                "id": str(task.get("id") or ""),
-                "content": str(task.get("content") or ""),
-                "status": str(task.get("status") or "pending"),
-                "depends_on": self._normalize_depends_on(task.get("depends_on")),
-            }
-            for task in tasks
-        ]
+        return [self._task_public_view(task) for task in tasks]
 
     def clear_plan_tasks(self, chat_id=None, user_id=None) -> bool:
         """Remove all plan tasks for the given scope."""
@@ -2415,10 +2421,10 @@ class AgentToolsPlugin(Plugin):
         ]
         if len(delivery_tasks) > 1:
             first_id = delivery_tasks[0].get("id")
-            duplicate_ids = ", ".join(str(task.get("id") or "") for task in delivery_tasks[1:])
+            duplicate_delivery_ids = ", ".join(str(task.get("id") or "") for task in delivery_tasks[1:])
             return (
                 f"Plan already has open delivery task {first_id}; update it instead "
-                f"of adding duplicate delivery task(s): {duplicate_ids}"
+                f"of adding duplicate delivery task(s): {duplicate_delivery_ids}"
             )
 
         return None
@@ -2469,7 +2475,7 @@ class AgentToolsPlugin(Plugin):
 
     @staticmethod
     def _normalize_checkpoint(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        checkpoint = {
+        checkpoint: Dict[str, Any] = {
             "summary": AgentToolsPlugin._trim_text(kwargs.get("summary")),
             "current_task_id": AgentToolsPlugin._trim_text(kwargs.get("current_task_id"), 80),
             "next_step": AgentToolsPlugin._trim_text(kwargs.get("next_step"), 800),
@@ -2636,8 +2642,8 @@ class AgentToolsPlugin(Plugin):
                 return {"success": False, "error": "No tasks provided"}
             candidate_tasks = self._copy_plan_tasks(tasks)
             changed = contract_changed
-            blocked_transitions: List[str] = []
-            completed_transitions: List[str] = []
+            blocked_transitions = []
+            completed_transitions = []
             for item in items:
                 task_id = str(item.get("id") or "").strip()
                 existing = next((task for task in candidate_tasks if task.get("id") == task_id), None)
@@ -2738,15 +2744,7 @@ class AgentToolsPlugin(Plugin):
         changed: bool,
         contract: Dict[str, Any] | None = None,
     ) -> Dict:
-        snapshot = [
-            {
-                "id": str(task.get("id") or ""),
-                "content": str(task.get("content") or ""),
-                "status": str(task.get("status") or "pending"),
-                "depends_on": self._normalize_depends_on(task.get("depends_on")),
-            }
-            for task in tasks
-        ]
+        snapshot = [self._task_public_view(task) for task in tasks]
         total = len(snapshot)
         closed = sum(1 for task in snapshot if task.get("status") in CLOSED_STATUSES)
         if snapshot:
@@ -2800,9 +2798,8 @@ class AgentToolsPlugin(Plugin):
         plan_error = self._delivery_plan_error(scope, status, verification_summary)
         if plan_error:
             return {"success": False, "error": plan_error}
-        allowed_roots = self._allowed_artifact_roots(helper)
         artifact_items, error = self._normalize_delivery_artifacts(
-            kwargs.get("artifacts"), allowed_roots=allowed_roots,
+            kwargs.get("artifacts"), scope=scope, storage_root=self.storage_root,
         )
         if error:
             return {"success": False, "error": error}
@@ -2901,41 +2898,13 @@ class AgentToolsPlugin(Plugin):
             for skill_id in scope_state
         ]
 
-    @staticmethod
-    def _allowed_artifact_roots(helper) -> List[str]:
-        roots = [Path("/tmp")]
-        plugin_manager = getattr(helper, "plugin_manager", None)
-        storage_root = getattr(plugin_manager, "storage_root", None) if plugin_manager else None
-        if storage_root:
-            roots.append(Path(storage_root))
-        if plugin_manager is not None:
-            try:
-                skills_plugin = plugin_manager.get_plugin("skills")
-            except Exception:
-                skills_plugin = None
-            if skills_plugin is not None:
-                for attr in ("skills_dir", "workdir_root"):
-                    candidate = getattr(skills_plugin, attr, None)
-                    if candidate:
-                        roots.append(Path(candidate))
-        resolved: List[str] = []
-        seen: set[str] = set()
-        for root in roots:
-            try:
-                resolved_root = str(Path(root).resolve())
-            except OSError:
-                continue
-            if resolved_root and resolved_root not in seen:
-                resolved.append(resolved_root)
-                seen.add(resolved_root)
-        return resolved
-
     @classmethod
     def _normalize_delivery_artifacts(
         cls,
         artifacts: Any,
         *,
-        allowed_roots: List[str] | None = None,
+        scope: str,
+        storage_root: str | None = None,
     ) -> tuple[List[Dict[str, Any]], str | None]:
         if artifacts is None:
             return [], None
@@ -2953,6 +2922,7 @@ class AgentToolsPlugin(Plugin):
         items: List[Dict[str, Any]] = []
         for entry in artifacts:
             caption: str | None = None
+            file_path: Any = None
             if isinstance(entry, str):
                 file_path = entry
             elif isinstance(entry, dict):
@@ -2970,16 +2940,9 @@ class AgentToolsPlugin(Plugin):
                 return [], f"Artifact file '{file_path}' does not exist"
             if not os.path.isfile(resolved):
                 return [], f"Artifact path '{file_path}' is not a file"
-            if allowed_roots:
-                in_allowed = any(
-                    resolved == root or resolved.startswith(root + os.sep)
-                    for root in allowed_roots
-                )
-                if not in_allowed:
-                    return [], (
-                        f"Artifact path '{file_path}' is outside allowed roots "
-                        f"({', '.join(allowed_roots)})"
-                    )
+            allowed, reason = is_deliverable(resolved, scope=scope, storage_root=storage_root)
+            if not allowed:
+                return [], f"Artifact path '{file_path}' is outside allowed delivery locations ({reason})"
             try:
                 file_size = os.path.getsize(resolved)
             except OSError as exc:
@@ -3054,7 +3017,7 @@ class AgentToolsPlugin(Plugin):
                 ),
             }
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        normalized_results = []
+        normalized_results: List[Dict[str, Any]] = []
         for item, result in zip(subagents, results):
             subagent_id = str(item.get("id") or "subagent").strip()
             role = str(item.get("role") or "").strip()
@@ -3068,7 +3031,7 @@ class AgentToolsPlugin(Plugin):
                     "error": str(result),
                 })
             else:
-                normalized_results.append(result)
+                normalized_results.append(cast(Dict[str, Any], result))
 
         response = {
             "success": True,
@@ -3269,6 +3232,7 @@ class AgentToolsPlugin(Plugin):
                 override_model,
             )
             override_model = None
+        model_to_use: Any
         if override_model:
             model_to_use = override_model
         else:
@@ -3409,6 +3373,11 @@ class AgentToolsPlugin(Plugin):
         fingerprint_counts: Dict[str, int] = {}
         last_fingerprint = ""
         consecutive_count = 0
+        # Per-run taint tracking for the dangerous-tool-after-untrusted-content
+        # warning (T08/T09 mirror of openai_tool_handler.DANGEROUS_TOOL_NAMES /
+        # _tainted_plugin_ids). Local to this call, so concurrent subagents
+        # (gathered in _run_subagents) never share taint state.
+        run_tools_used: tuple[str, ...] = ()
 
         for round_index in range(max_rounds + 1):
             is_final_round = round_index == max_rounds
@@ -3461,6 +3430,16 @@ class AgentToolsPlugin(Plugin):
                             ensure_ascii=False,
                         )
                         continue
+                    call_name = call.get("name") or ""
+                    if call_name in DANGEROUS_TOOL_NAMES:
+                        tainted = _tainted_plugin_ids(helper, run_tools_used)
+                        if tainted:
+                            logging.warning(
+                                "Dangerous tool %s called (subagent) chat_id=%s user_id=%s "
+                                "after untrusted content from plugins=%s",
+                                call_name, kwargs.get("chat_id"), kwargs.get("user_id"),
+                                sorted(tainted),
+                            )
                     pending_calls.append((index, call))
                 if pending_calls:
                     pending_responses = await asyncio.gather(*[
@@ -3477,11 +3456,26 @@ class AgentToolsPlugin(Plugin):
                     for (index, _call), response in zip(pending_calls, pending_responses):
                         tool_responses[index] = response
                 for call, tool_response in zip(tool_calls, tool_responses):
+                    content = self._tool_result_content(tool_response or "")
+                    get_plugin = getattr(getattr(helper, "plugin_manager", None), "get_plugin", None)
+                    if callable(get_plugin):
+                        plugin_id = str(call.get("name") or "").split(".", 1)[0]
+                        try:
+                            plugin = get_plugin(plugin_id)
+                        except Exception:
+                            plugin = None
+                        if plugin is not None and getattr(plugin, "returns_untrusted_content", False):
+                            from .plugin import wrap_untrusted_tool_output
+                            content = wrap_untrusted_tool_output(plugin_id, content)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": self._tool_result_content(tool_response or ""),
+                        "content": content,
                     })
+                for call in tool_calls:
+                    call_name = call.get("name") or ""
+                    if call_name and call_name not in run_tools_used:
+                        run_tools_used += (call_name,)
                 continue
 
             text = self._choice_text(response)
@@ -3947,11 +3941,7 @@ class AgentToolsPlugin(Plugin):
             if not self._resolve_question(question_id, answer):
                 await query.answer(self.t("agent_tools_question_expired"), show_alert=True)
                 return
-            await query.answer(self.t("agent_tools_answer_received"))
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                logging.debug("Failed to clear ask_user markup", exc_info=True)
+            await self._clear_ask_user_markup(query)
             return
 
         try:
@@ -3987,6 +3977,9 @@ class AgentToolsPlugin(Plugin):
         if not self._resolve_question(question_id, answer):
             await query.answer(self.t("agent_tools_question_expired"), show_alert=True)
             return
+        await self._clear_ask_user_markup(query)
+
+    async def _clear_ask_user_markup(self, query) -> None:
         await query.answer(self.t("agent_tools_answer_received"))
         try:
             await query.edit_message_reply_markup(reply_markup=None)

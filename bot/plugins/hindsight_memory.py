@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import ContextTypes
 
 from .background import BackgroundTask
@@ -25,6 +25,7 @@ from .hooks import (
     UserMessagePayload,
 )
 from .plugin import Plugin
+from ..env_utils import env_bool
 from ..session_logger import get_trace
 from ..utils import (
     get_reply_to_message_id,
@@ -490,6 +491,15 @@ Rules:
 - Only reference numbers that appear in the input list."""
 
 
+def _dynamic_insert_index(messages: List[Dict[str, Any]]) -> int:
+    """Index for a per-turn dynamic system message: right before the trailing user
+    message, or at the very end when something else (assistant/tool messages from an
+    in-progress tool round) already follows the last user turn."""
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        return len(messages) - 1
+    return len(messages)
+
+
 @dataclass
 class _TurnBuffer:
     """Accumulates turns between one user/chat pair's assistant replies until
@@ -526,33 +536,33 @@ class HindsightMemoryPlugin(Plugin):
         )
         self.config.setdefault('hindsight_namespace', env.get('HINDSIGHT_NAMESPACE', 'default'))
         self.config.setdefault('hindsight_bank_prefix', env.get('HINDSIGHT_BANK_PREFIX', 'telegram-'))
-        self.config.setdefault('hindsight_auto_recall', env.get('HINDSIGHT_AUTO_RECALL', 'true').lower() == 'true')
-        self.config.setdefault('hindsight_auto_save', env.get('HINDSIGHT_AUTO_SAVE', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_auto_recall', env_bool('HINDSIGHT_AUTO_RECALL', True))
+        self.config.setdefault('hindsight_auto_save', env_bool('HINDSIGHT_AUTO_SAVE', True))
         self.config.setdefault('hindsight_recall_budget', env.get('HINDSIGHT_RECALL_BUDGET', 'mid'))
         self.config.setdefault('hindsight_recall_max_tokens', int(env.get('HINDSIGHT_RECALL_MAX_TOKENS', '4096')))
         self.config.setdefault('hindsight_recall_query_max_tokens', int(env.get('HINDSIGHT_RECALL_QUERY_MAX_TOKENS', '4000')))
         self.config.setdefault('hindsight_memory_types', env.get('HINDSIGHT_MEMORY_TYPES', f'world,experience,{LESSON_TYPE_VERIFIED}'))
-        self.config.setdefault('hindsight_async_store', env.get('HINDSIGHT_ASYNC_STORE', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_async_store', env_bool('HINDSIGHT_ASYNC_STORE', True))
         self.config.setdefault('hindsight_timeout', float(env.get('HINDSIGHT_TIMEOUT', '30')))
         self.config.setdefault('hindsight_max_auto_save_items', int(env.get('HINDSIGHT_MAX_AUTO_SAVE_ITEMS', '5')))
-        self.config.setdefault('hindsight_dream_enabled', env.get('HINDSIGHT_DREAM_ENABLED', 'false').lower() == 'true')
+        self.config.setdefault('hindsight_dream_enabled', env_bool('HINDSIGHT_DREAM_ENABLED', False))
         self.config.setdefault('hindsight_dream_interval_seconds', int(env.get('HINDSIGHT_DREAM_INTERVAL_SECONDS', str(HINDSIGHT_DREAM_WORKER_INTERVAL_SECONDS))))
         self.config.setdefault('hindsight_dream_max_events', int(env.get('HINDSIGHT_DREAM_MAX_EVENTS', '50')))
         self.config.setdefault('hindsight_dream_max_event_chars', int(env.get('HINDSIGHT_DREAM_MAX_EVENT_CHARS', '1000')))
         self.config.setdefault('hindsight_dream_max_documents', int(env.get('HINDSIGHT_DREAM_MAX_DOCUMENTS', '5')))
-        self.config.setdefault('hindsight_dynamic_recall', env.get('HINDSIGHT_DYNAMIC_RECALL', 'false').lower() == 'true')
+        self.config.setdefault('hindsight_dynamic_recall', env_bool('HINDSIGHT_DYNAMIC_RECALL', False))
         self.config.setdefault('hindsight_dynamic_recall_max_tokens', int(env.get('HINDSIGHT_DYNAMIC_RECALL_MAX_TOKENS', '1024')))
         # Retrieval gate (waku-agent style): cheap light-model classification of
         # whether a recall is worth doing at all. Plugin-only config — not mirrored
         # into openai.config below (nothing outside this plugin reads it).
-        self.config.setdefault('hindsight_retrieval_gate_enabled', env.get('HINDSIGHT_RETRIEVAL_GATE_ENABLED', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_retrieval_gate_enabled', env_bool('HINDSIGHT_RETRIEVAL_GATE_ENABLED', True))
         self.config.setdefault('hindsight_retrieval_gate_timeout_seconds', float(env.get('HINDSIGHT_RETRIEVAL_GATE_TIMEOUT_SECONDS', '3.0')))
         self.config.setdefault('hindsight_retrieval_gate_max_tokens', int(env.get('HINDSIGHT_RETRIEVAL_GATE_MAX_TOKENS', '600')))
         # Turn-buffer burst extraction: accumulate turns mid-conversation and flush
         # them into the same finalize-job queue used by session-close, instead of
         # waiting for the session to end. Gated by is_active/auto_save_enabled
         # (the finalize family), not memory_pipeline_enabled (dream-only).
-        self.config.setdefault('hindsight_burst_enabled', env.get('HINDSIGHT_BURST_ENABLED', 'true').lower() == 'true')
+        self.config.setdefault('hindsight_burst_enabled', env_bool('HINDSIGHT_BURST_ENABLED', True))
         self.config.setdefault('hindsight_burst_max_turns', int(env.get('HINDSIGHT_BURST_MAX_TURNS', '10')))
         self.config.setdefault('hindsight_burst_quiet_seconds', float(env.get('HINDSIGHT_BURST_QUIET_SECONDS', '180')))
         self.config.setdefault(
@@ -1656,12 +1666,12 @@ class HindsightMemoryPlugin(Plugin):
             return safe, redactions
         if isinstance(value, list):
             redactions = 0
-            safe = []
+            safe_list = []
             for item in value:
                 safe_item, item_redactions = self._redact_event_value(item)
-                safe.append(safe_item)
+                safe_list.append(safe_item)
                 redactions += item_redactions
-            return safe, redactions
+            return safe_list, redactions
         return value, 0
 
     @staticmethod
@@ -2288,7 +2298,8 @@ class HindsightMemoryPlugin(Plugin):
             context_text, context_redactions = self._redact_text(context_text)
             if content_redactions or context_redactions or not content_text.strip():
                 continue
-            tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+            raw_tags = item.get("tags")
+            tags = raw_tags if isinstance(raw_tags, list) else []
             tags = [str(tag).strip() for tag in tags if str(tag).strip() and not self._looks_sensitive_memory(str(tag))]
             for tag in ("telegram", "auto_memory", f"user:{user_id}"):
                 if tag not in tags:
@@ -2322,6 +2333,7 @@ class HindsightMemoryPlugin(Plugin):
                     document_id if len(normalized) == 1 else f"{document_id}-{index}"
                 )
 
+        assert self.client is not None
         await self.client.retain_memories(
             bank_id,
             normalized,
@@ -2399,7 +2411,7 @@ class HindsightMemoryPlugin(Plugin):
             context_text, context_redactions = self._redact_text(context_text)
             if content_redactions or context_redactions or not content_text.strip():
                 continue
-            parsed = {
+            parsed: dict[str, Any] = {
                 "content": content_text,
                 "context": context_text,
             }
@@ -2497,7 +2509,7 @@ class HindsightMemoryPlugin(Plugin):
                 max_tokens=int(self.config.get('hindsight_dynamic_recall_max_tokens', 1024)),
             )
             if memory:
-                new_messages.insert(insert_at, {
+                new_messages.insert(_dynamic_insert_index(new_messages), {
                     "role": "system",
                     "content": HINDSIGHT_DYNAMIC_CONTEXT_PROMPT.format(memory=memory),
                 })
@@ -2542,6 +2554,7 @@ class HindsightMemoryPlugin(Plugin):
     async def _recall_memory_text(self, user_id: int, query: str, *, max_tokens: int) -> str:
         query = self._truncate_query_for_recall(query)
         try:
+            assert self.client is not None
             data = await self.client.recall(
                 self.bank_id_for(user_id),
                 query,
@@ -2734,6 +2747,7 @@ class HindsightMemoryPlugin(Plugin):
             return {"error": "Telegram user_id is required for Hindsight memory."}
 
         bank_id = self.bank_id_for(user_id)
+        assert self.client is not None
         client = self.client
 
         if function_name == "recall":
@@ -2822,6 +2836,7 @@ class HindsightMemoryPlugin(Plugin):
             return
         action = str(query.data or "memory:status").split(":", 1)[1]
         if action == "close":
+            assert isinstance(query.message, Message)
             await query.message.delete()
             return
         if action == "export":
@@ -3153,6 +3168,7 @@ class HindsightMemoryPlugin(Plugin):
     async def _send_memory_search(self, message, helper, user_id: int, query: str) -> None:
         bank_id = self.bank_id_for(user_id)
         try:
+            assert self.client is not None
             data = await self.client.recall(
                 bank_id,
                 self._truncate_query_for_recall(query),
@@ -3169,6 +3185,7 @@ class HindsightMemoryPlugin(Plugin):
     async def _send_memory_export(self, message, helper, user_id: int) -> None:
         bank_id = self.bank_id_for(user_id)
         try:
+            assert self.client is not None
             data = await self.client.list_memories(bank_id, limit=1000, offset=0)
             payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
             file_obj = io.BytesIO(payload)
@@ -3214,6 +3231,7 @@ class HindsightMemoryPlugin(Plugin):
 
     async def _render_memory_report_items_section(self, bank_id: str) -> list[str]:
         try:
+            assert self.client is not None
             data = await self.client.list_memories(bank_id, limit=1000, offset=0)
         except Exception as exc:
             logger.warning("Hindsight memory report failed to list memories bank_id=%s: %s", bank_id, exc)
@@ -3280,9 +3298,11 @@ class HindsightMemoryPlugin(Plugin):
             await send_long_response_as_file(config, update, text, f"hindsight-memory-{user_id}")
             return
 
+        message = update.effective_message
+        assert message is not None
         for index, (chunk_text, entities) in enumerate(render_markdown_message_entities(text)):
             try:
-                await update.effective_message.reply_text(
+                await message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(config, update) if index == 0 else None,
                     text=chunk_text,
@@ -3290,7 +3310,7 @@ class HindsightMemoryPlugin(Plugin):
                     entities=entities,
                 )
             except Exception:
-                await update.effective_message.reply_text(
+                await message.reply_text(
                     message_thread_id=get_thread_id(update),
                     reply_to_message_id=get_reply_to_message_id(config, update) if index == 0 else None,
                     text=chunk_text,
@@ -3298,6 +3318,7 @@ class HindsightMemoryPlugin(Plugin):
 
     async def _clear_memory(self, helper, user_id: int) -> None:
         bank_id = self.bank_id_for(user_id)
+        assert self.client is not None
         async with self._memory_user_lock(user_id):
             # Drop (not flush!) any turns buffered before this clear request.
             # Flushing them would enqueue a finalize job stamped with the
@@ -3341,6 +3362,7 @@ class HindsightMemoryPlugin(Plugin):
 
     async def _memory_count_text(self, bank_id: str) -> str:
         try:
+            assert self.client is not None
             stats = await self.client.stats(bank_id)
             count = self._stats_memory_count(stats)
             if count is not None:
@@ -3349,6 +3371,7 @@ class HindsightMemoryPlugin(Plugin):
             pass
 
         try:
+            assert self.client is not None
             data = await self.client.list_memories(bank_id, limit=1000, offset=0)
             count = self._stats_memory_count(data)
             if count is not None:

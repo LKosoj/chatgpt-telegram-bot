@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from .utils import compute_scope_key
 
@@ -63,7 +64,7 @@ def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
 
 
 def _skill_script_routing_payload(error: str, active_scripts: list[dict] | None = None) -> dict:
-    payload = {
+    payload: dict[str, Any] = {
         "error": error,
         "preferred_tool": "skills.run_skill_script",
         "allowed_tools": ["skills.run_skill_script", "terminal.terminal"],

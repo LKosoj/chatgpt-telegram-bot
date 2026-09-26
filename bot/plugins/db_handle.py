@@ -12,6 +12,7 @@ prior writes and exceptions roll the whole unit back.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import sqlite3
 from contextlib import suppress
 from typing import Any, Sequence
@@ -29,25 +30,29 @@ class TransactionScope:
 
     def __init__(self, db: Any) -> None:
         self._db = db
-        self._ctx = None
-        self._conn = None
+        self._ctx: Any | None = None
+        self._conn: Any | None = None
         self._closed = False
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         self._ensure_open()
+        conn = self._conn
+        assert conn is not None
         params = tuple(params)
 
         def _run() -> None:
-            self._conn.execute(sql, params)
+            conn.execute(sql, params)
 
         await _run_db_thread_shielded(self._db, _run)
 
     async def executemany(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> None:
         self._ensure_open()
+        conn = self._conn
+        assert conn is not None
         params_list = [tuple(p) for p in params_seq]
 
         def _run() -> None:
-            self._conn.executemany(sql, params_list)
+            conn.executemany(sql, params_list)
 
         await _run_db_thread_shielded(self._db, _run)
 
@@ -55,10 +60,12 @@ class TransactionScope:
         self, sql: str, params: Sequence[Any] = ()
     ) -> dict | None:
         self._ensure_open()
+        conn = self._conn
+        assert conn is not None
         params = tuple(params)
 
         def _run() -> dict | None:
-            cursor = self._conn.execute(sql, params)
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -70,10 +77,12 @@ class TransactionScope:
         self, sql: str, params: Sequence[Any] = ()
     ) -> list[dict]:
         self._ensure_open()
+        conn = self._conn
+        assert conn is not None
         params = tuple(params)
 
         def _run() -> list[dict]:
-            cursor = self._conn.execute(sql, params)
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             return [_row_to_dict(row, cursor) for row in rows]
 
@@ -98,7 +107,7 @@ class _Transaction:
         self._lock = lock
         self._scope: TransactionScope | None = None
         self._marker: _TransactionMarker | None = None
-        self._open_token = None
+        self._open_token: contextvars.Token | None = None
 
     async def __aenter__(self) -> TransactionScope:
         _raise_if_transaction_open_on_this_task()

@@ -1,6 +1,6 @@
 # plugins/prompt_perfect.py
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, cast
 
 from .plugin import Plugin
 
@@ -13,7 +13,7 @@ class PromptPerfectPlugin(Plugin):
     def get_source_name(self) -> str:
         return "Prompt Perfect"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "optimize_prompt",
             "description": "Rewrite the user's raw prompt into a clearer, more specific instruction for the assistant's next response. The tool does not answer the prompt itself.",
@@ -40,7 +40,7 @@ class PromptPerfectPlugin(Plugin):
             context = kwargs.get('context', '')
 
             chat_id = kwargs.get('chat_id')
-            optimized_prompt = await self._optimize_prompt(chat_id, original_prompt, context, helper)
+            optimized_prompt = await self._optimize_prompt(cast(int, chat_id), original_prompt, context, helper)
 
             # Логируем оригинальный и оптимизированный промпты
             #logging.info(f"Original Prompt: {original_prompt}")

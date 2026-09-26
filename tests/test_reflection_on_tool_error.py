@@ -123,6 +123,11 @@ class FakeHelper:
     def _add_function_call_to_history(self, chat_id, function_name, content, **_kwargs):
         self.history.append((chat_id, function_name, content))
 
+    def _mutable_history(self, chat_id):
+        # T11: openai_tool_handler._conversation_messages() now calls this
+        # instead of helper.conversations.setdefault(...) directly.
+        return self.conversations.setdefault(chat_id, [])
+
     async def _apply_before_chat_request_mutators(self, **kwargs):
         return []
 

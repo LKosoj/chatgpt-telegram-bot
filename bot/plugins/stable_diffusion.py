@@ -1,5 +1,5 @@
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from ..llm_gateway_client import extract_image_result
 from .plugin import Plugin
@@ -15,7 +15,7 @@ class StableDiffusionPlugin(Plugin):
     def get_source_name(self) -> str:
         return "LLMGateway Image"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [
             {
                 "name": "stable_diffusion",
@@ -49,7 +49,7 @@ class StableDiffusionPlugin(Plugin):
         ]
 
     async def _generate_image(self, helper, prompt: str) -> tuple[str, str]:
-        response = await helper.client.images.generate(
+        response = await helper.raw_generate_image(
             prompt=prompt,
             n=1,
             model=helper.config.get("image_model"),

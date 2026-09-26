@@ -21,6 +21,8 @@ class VkusVillPlugin(Plugin):
     Adapter plugin for the VkusVill remote MCP server.
     """
 
+    returns_untrusted_content = True
+
     _tools: dict[str, dict[str, Any]] = {
         "shops": {
             "remote_name": "vkusvill_shops",

@@ -1,4 +1,5 @@
 import logging
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -160,6 +161,37 @@ async def test_send_agent_response_file_path_cleans_up_expanded_home_path(tmp_pa
     assert bot.calls[0][1]["document_name"] == str(artifact)
     assert [message.message_id for message in sent] == [1]
     assert not artifact.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_agent_response_rejects_path_outside_allowed_locations(
+    tmp_path, monkeypatch, tmp_path_factory
+):
+    fake_tempdir = tmp_path / "faketemp"
+    fake_tempdir.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tempdir))
+
+    outside_dir = tmp_path_factory.mktemp("outside")
+    artifact = outside_dir / "report.txt"
+    artifact.write_text("hello", encoding="utf-8")
+    bot = FakeBot()
+
+    sent = await send_agent_response(
+        bot,
+        chat_id=123,
+        response={
+            "direct_result": {
+                "kind": "file",
+                "format": "path",
+                "value": str(artifact),
+            }
+        },
+    )
+
+    assert sent == []
+    assert [kind for kind, _kwargs in bot.calls] == ["message"]
+    kwargs = bot.calls[0][1]
+    assert kwargs["text"] == f"Artifact path is unavailable: {artifact.name}"
 
 
 @pytest.mark.asyncio

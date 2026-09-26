@@ -28,6 +28,10 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Lint with ruff
         run: ruff check bot tests bot/tests
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          python scripts/mypy_baseline.py check
       - name: Run tests
         run: python -m pytest -q
       - name: Audit dependencies

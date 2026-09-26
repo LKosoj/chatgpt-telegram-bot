@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -15,6 +15,8 @@ class GoogleWebSearchPlugin(Plugin):
     A plugin to search the web for a given query, using Google Custom Search API
     """
 
+    returns_untrusted_content = True
+
     def __init__(self):
         self.api_key = os.getenv('GOOGLE_API_KEY')
         self.cse_id = os.getenv('GOOGLE_CSE_ID')
@@ -27,7 +29,7 @@ class GoogleWebSearchPlugin(Plugin):
     def get_source_name(self) -> str:
         return 'Google'
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [
             {
                 'name': 'web_search',

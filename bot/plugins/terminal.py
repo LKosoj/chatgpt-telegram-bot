@@ -214,6 +214,8 @@ class TerminalPlugin(Plugin):
             display,
         )
 
+        assert process.stdout is not None
+        assert process.stderr is not None
         limit = OUTPUT_BYTE_LIMIT
         stdout_task = asyncio.ensure_future(_read_bounded(process.stdout, limit))
         stderr_task = asyncio.ensure_future(_read_bounded(process.stderr, limit))

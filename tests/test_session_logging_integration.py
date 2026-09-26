@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bot.ai_providers.openai_compatible import OpenAICompatibleProvider, raw_chat_completion
 from bot.openai_helper import OpenAIHelper, _TURN_STATS
 from bot.session_logger import SessionLogger, set_trace, clear_trace
 
@@ -53,6 +54,7 @@ def _make_helper(tmp_path) -> OpenAIHelper:
     client_mock.chat.completions = MagicMock()
     client_mock.chat.completions.create = AsyncMock(return_value=fake_resp)
     helper.client = client_mock
+    helper._provider = OpenAICompatibleProvider(raw_chat_completion(lambda: helper.client))
     return helper
 
 
@@ -327,6 +329,7 @@ async def test_no_crash_when_session_logger_absent(tmp_path):
     client_mock = MagicMock()
     client_mock.chat.completions.create = AsyncMock(return_value=fake_resp)
     helper.client = client_mock
+    helper._provider = OpenAICompatibleProvider(raw_chat_completion(lambda: helper.client))
 
     stats_token = _TURN_STATS.set({'round_trips': 0, 'llm_ms': 0.0, 'mutator_ms': 0.0, 'start': time.monotonic()})
     trace_token = set_trace(1, "s", "t")

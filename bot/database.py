@@ -13,6 +13,7 @@ import math
 import hashlib
 import uuid
 from datetime import datetime
+from types import FrameType
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,38 @@ class DatabaseLockTimeoutError(RuntimeError):
 
 SQLITE_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"})
 
+# Слепки prompt_start каждого режима из bot/chat_modes.yml ДО правок T06 (2026-09-25,
+# HEAD 08bc457). Нужны, чтобы миграция 3 могла определить mode_key старых сессий, чей
+# system-контент совпадает с ТЕКСТОМ ДО правки промптов, а не с текущим YAML.
+# sha256(prompt_start.strip()) -> mode_key
+LEGACY_PROMPT_FINGERPRINTS = {
+    "b2c1c8abd73b2c73e540f0373f48303f1c09370ea0f73bc120fec97ab1eaef08": "assistant",
+    "9be4c9b324b6a539d3ff61a4b081ba5e4110c3fedf1d4867e181b5abb6062e98": "text_improver",
+    "7933d561247b29bb3010001a6bba9901b0c7b701c163797d666eee00ebf0ee87": "travel_guide",
+    "b5d714aed40a91e8d6764d640c95e6ed5ae9ef912d42aaf46b177e2b66a5391a": "content_creator",
+    "6d7202e82a2ea741d7f4be75afa5eb23a24bf85f443251a534bdd99ed36c1bd6": "technical_writer",
+    "7ee9d354b4d76eb1169705ec95eb6b2d489d1d24923bc5caf8d9449bdd9ba312": "summary_assistant",
+    "b6ca32103b07a5eca6b3319387679f3d831fb0f82b49bd16e4b33ed3f38208ab": "primitives",
+    "f025f6641ea8c5a20238971c27e0ce66da6cf9fda8100f27d7bf5d7d4573775d": "chief_assistant",
+    "065d4af6dba74620b9793a2eaacd0af408600db3f9f653d8638e43821a2594af": "medical_assistant",
+    "cbe60fa1973fa9447eb97acf1a0ef269736aa31b50cb0f56d14add122556d0c4": "legal_assistant_ru",
+    "3fb6127506423b9afe41c530021d8ce7c2ea263132ab8b9fec9271a1f41d0b47": "code_assistant",
+    "c8656f9a7e3552eabfdb76569a657d08fa536943968f70562eb4b9da37267074": "sql_assistant",
+    "64f4189c68d50ea0230beb85535a3521c1e880114e53792f0079c0f093d601e4": "artist",
+    "f405f6e049ce7228ab0cc2a55e956d63703b5d93d7d1b9e073e836276c097ba9": "english_tutor",
+    "9e124562a5fb93c1d01fae5f877f417df0991f6bffc2d2065fbb3c730a732dc7": "psychologist",
+    "3c232872069309f3726f10a64a14b76fe88c231b510558f299363fe8013557c4": "movie_expert",
+    "db5685b99655ca1eab5f9527f75aa62f37ce81a513a69c22610f57daeb613c0a": "school_tutor",
+    "210dd566b31af11655af47fe77a7d30a5e637b5ef70ec759f3570a749b3b553d": "code_interpreter",
+    "a7d0a0741577c59037d23411a3e7e51ef15327226ec6428f5b1e693ee2d51d9e": "startup_idea_generator",
+    "ac8baf5213845478928347370f322a342b2edd7499996281e8c6ca3eefbd869b": "money_maker",
+    "79f72e51feb8707d25d01919084c59d75656d57e28f2d9990261a31f83bd1921": "accountant",
+    "8f61cbd329dd4429c00457424e991084a2bc972b0fcbb5caccaad43f1e8276a9": "project_manager",
+    "c776c0d7598ed7a35bc43f80f1b3f3f2e8d12e5c5608d393ef132ea6a210ddc3": "meta_writer",
+    "7697f97a7fbafaa604efafe8d8a9316b2b920eaa9fd2b0e40a1ced84563096e2": "personal_finance_planner",
+    "9367c6a4cccb4cc6ab3b6f8d1f55fca35f03a1fa400eb4ca34edf99cae0ffaca": "skills_agent",
+}
+
 
 def _first_openai_model_from_env() -> str:
     return next(
@@ -176,11 +209,18 @@ class Database:
     _lock = threading.Lock()
     _connection_lock = threading.Lock()
     _configured: Dict[str, Any] = {}  # explicit overrides set via configure(), empty by default
+    _local: threading.local
+    db_path: str
+    _op_lock: threading.RLock
+    _executor: Optional[concurrent.futures.ThreadPoolExecutor]
 
     # Текущая целевая версия схемы. Миграция 1 — переход с legacy-таблицы
     # `conversation_context` без session_id на новую схему с сессиями.
     # Миграция 2 — добавление колонки version (монотонный счётчик ревизий).
-    TARGET_SCHEMA_VERSION = 2
+    # Миграция 3 — чисто дата-миграция (без изменения колонок): backfill
+    # mode_key внутрь messages[0] системного сообщения в JSON `context` для
+    # сессий, сохранённых до появления mode_key. См. LEGACY_PROMPT_FINGERPRINTS.
+    TARGET_SCHEMA_VERSION = 3
 
     @classmethod
     def configure(
@@ -263,7 +303,7 @@ class Database:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        frame = sys._getframe(1)
+        frame: FrameType | None = sys._getframe(1)
         while frame is not None and (
             frame.f_code.co_filename == __file__ or frame.f_code.co_filename.endswith("contextlib.py")
         ):
@@ -609,6 +649,7 @@ class Database:
         return (
             (1, self._migrate_conversation_context_to_sessions),
             (2, self._migrate_conversation_context_version_column),
+            (3, self._migrate_conversation_context_backfill_mode_key),
         )
 
     def _apply_schema_migrations(self, cursor: sqlite3.Cursor) -> None:
@@ -624,6 +665,13 @@ class Database:
             )
             current_version = version
 
+    # Миграции 1 и 2 меняют колонки conversation_context — их можно проверить по форме
+    # таблицы. Миграция 3+ — чисто дата-миграции (mode_key живёт в JSON, не в колонке),
+    # форма таблицы их не отражает. Поэтому reconcile не пытается судить о версиях выше
+    # этого потолка — иначе завершённая миграция 3 выглядела бы «убежавшей вперёд формы»
+    # и откатывалась бы на каждом старте.
+    SHAPE_VERIFIABLE_SCHEMA_VERSION = 2
+
     def _reconcile_schema_version_with_shape(self, cursor: sqlite3.Cursor) -> None:
         columns = set(self._conversation_context_columns(cursor))
         actual_version = 0
@@ -633,6 +681,8 @@ class Database:
             actual_version = 2
         recorded_version = self._schema_version(cursor)
         if recorded_version <= actual_version:
+            return
+        if recorded_version > self.SHAPE_VERIFIABLE_SCHEMA_VERSION:
             return
         logger.warning(
             "schema_version=%s is ahead of conversation_context shape=%s; resetting to %s",
@@ -710,6 +760,43 @@ class Database:
         cursor.execute(
             'ALTER TABLE conversation_context ADD COLUMN version INTEGER NOT NULL DEFAULT 0'
         )
+
+    def _migrate_conversation_context_backfill_mode_key(self, cursor: sqlite3.Cursor) -> None:
+        """Миграция 3: чисто данные, без изменения колонок. Для сессий без mode_key
+        в system-сообщении находит режим по sha256 старого (до правок T06) prompt_start
+        и проставляет mode_key. Идемпотентна: пропускает строки, где mode_key уже есть
+        или контент не совпал ни с одним слепком."""
+        cursor.execute("SELECT user_id, session_id, context FROM conversation_context")
+        rows = cursor.fetchall()
+        updated = 0
+        for user_id, session_id, context_json in rows:
+            try:
+                context = json.loads(context_json)
+            except (TypeError, ValueError):
+                continue
+            messages = context.get("messages") if isinstance(context, dict) else None
+            if not isinstance(messages, list) or not messages:
+                continue
+            first = messages[0]
+            if not isinstance(first, dict) or first.get("role") != "system":
+                continue
+            if first.get("mode_key"):
+                continue
+            content = first.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            fingerprint = hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
+            mode_key = LEGACY_PROMPT_FINGERPRINTS.get(fingerprint)
+            if not mode_key:
+                continue
+            first["mode_key"] = mode_key
+            cursor.execute(
+                "UPDATE conversation_context SET context = ?, version = version + 1 "
+                "WHERE user_id = ? AND session_id = ?",
+                (json.dumps(context, ensure_ascii=False), user_id, session_id),
+            )
+            updated += 1
+        logger.info("Migration 3: backfilled mode_key for %d session(s)", updated)
 
     def _recover_from_failed_migration(self, cursor: sqlite3.Cursor) -> None:
         """Восстанавливает БД, если предыдущая миграция упала между RENAME и DROP."""
@@ -974,7 +1061,7 @@ class Database:
             return ''
         return str(content)
 
-    def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100, session_id: str = None, openai_helper = None) -> str:
+    def save_conversation_context(self, user_id: int, context: Dict[str, Any], parse_mode: str, temperature: float, max_tokens_percent: int = 100, session_id: Optional[str] = None, openai_helper = None) -> str:
         """Сохранение контекста разговора с поддержкой сессий"""
         try:
             context_json = json.dumps(context, ensure_ascii=False)
@@ -1085,7 +1172,7 @@ class Database:
         parse_mode: str,
         temperature: float,
         max_tokens_percent: int = 100,
-        session_id: str = None,
+        session_id: Optional[str] = None,
         openai_helper = None,
     ) -> str:
         saved_session_id = await self._run_in_db_thread(
@@ -1139,7 +1226,7 @@ class Database:
         # и сам вызовет db.set_session_name. БД больше не вызывает LLM.
     
     def get_conversation_context(
-        self, user_id: int, session_id: str = None, openai_helper = None
+        self, user_id: int, session_id: Optional[str] = None, openai_helper = None
     ) -> ConversationContextResult:
         """Получение контекста разговора с поддержкой сессий.
 
@@ -1247,6 +1334,7 @@ class Database:
                     INSERT INTO images (user_id, chat_id, file_id, file_id_hash, file_path, status)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (user_id, chat_id, file_id, file_id_hash, file_path, status))
+                assert cursor.lastrowid is not None
                 return cursor.lastrowid
         except Exception as e:
             logger.error(f'Error saving image: {e}', exc_info=True)
@@ -1455,9 +1543,9 @@ class Database:
     def create_session(
         self,
         user_id: int,
-        session_name: str = None,
+        session_name: Optional[str] = None,
         max_sessions: Optional[int] = None,
-        first_message: str = None,
+        first_message: Optional[str] = None,
         openai_helper = None,
         prune_old_sessions: bool = True,
     ) -> Optional[str]:
@@ -1624,7 +1712,7 @@ class Database:
     async def get_conversation_context_async(
         self,
         user_id: int,
-        session_id: str = None,
+        session_id: Optional[str] = None,
         openai_helper = None,
     ) -> ConversationContextResult:
         """См. ``get_conversation_context`` — исключения (включая
@@ -1696,9 +1784,9 @@ class Database:
     async def create_session_async(
         self,
         user_id: int,
-        session_name: str = None,
+        session_name: Optional[str] = None,
         max_sessions: Optional[int] = None,
-        first_message: str = None,
+        first_message: Optional[str] = None,
         openai_helper = None,
         prune_old_sessions: bool = True,
     ) -> Optional[str]:
@@ -1725,7 +1813,7 @@ class Database:
     ) -> Optional[Dict[str, Any]]:
         return await self._run_db_method("get_session_details", user_id, session_id)
 
-    async def export_sessions_to_yaml_async(self, user_id: int) -> str:
+    async def export_sessions_to_yaml_async(self, user_id: int) -> Optional[str]:
         return await self._run_db_method("export_sessions_to_yaml", user_id)
 
     def switch_active_session(self, user_id: int, session_id: str) -> bool:
@@ -1866,19 +1954,19 @@ class Database:
             logger.error(f'Error getting session details: {e}', exc_info=True)
             return None
 
-    def export_sessions_to_yaml(self, user_id: int) -> str:
+    def export_sessions_to_yaml(self, user_id: int) -> Optional[str]:
         """
         Экспорт всех сессий пользователя в YAML-файл
-        
+
         :param user_id: Идентификатор пользователя
         :return: Путь к сгенерированному YAML-файлу
         """
         try:
             # Получаем список всех сессий пользователя
             sessions = self.list_user_sessions(user_id)
-            
+
             # Подготавливаем данные для экспорта
-            export_data = {
+            export_data: Dict[str, Any] = {
                 'user_id': user_id,
                 'total_sessions': len(sessions),
                 'sessions': []

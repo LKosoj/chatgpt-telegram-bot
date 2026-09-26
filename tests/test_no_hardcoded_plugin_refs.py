@@ -59,6 +59,13 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
         "the 'agent_tools.manage_plan_tasks' skip filter, plus 'agent_tools re-plan pre-snapshot failed' and "
         "'agent_tools re-plan bookkeeping failed' debug log messages (4).",
     ),
+    ("bot/openai_tool_handler.py", "skills"): (
+        4,
+        "T08 prompt-injection taint log: DANGEROUS_TOOL_NAMES lists the four mutating "
+        "skills tools (install_skill/create_skill/run_skill_script/run_skill_agent) whose "
+        "call is logged (never blocked) when a returns_untrusted_content plugin already ran "
+        "earlier in the same request.",
+    ),
     ("bot/openai_helper.py", "hindsight_memory"): (
         1,
         "Strategy Z (4B): helper persists plugin-injected memory marker via plugin.is_hindsight_memory_message; documented compromise.",

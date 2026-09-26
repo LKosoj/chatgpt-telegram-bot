@@ -1,20 +1,27 @@
-from typing import Dict
+from typing import Dict, List
 import logging
+import os
 import httpx
 import readability
 from bs4 import BeautifulSoup
 
 from .plugin import Plugin
+from .. import net_safety
+
+MAX_DOWNLOAD_BYTES = int(os.environ.get("TEXT_SUMMARIZER_MAX_DOWNLOAD_BYTES", 10_000_000))
+
 
 class TextSummarizerPlugin(Plugin):
     """
     Плагин для суммаризации текста с использованием внешних сервисов
     """
 
+    returns_untrusted_content = True
+
     def get_source_name(self) -> str:
         return "Суммаризатор текста"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "summarize_text",
             "description": "Суммаризация текста",
@@ -36,27 +43,26 @@ class TextSummarizerPlugin(Plugin):
         Асинхронное извлечение текста со страницы
         """
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
-                
-                # Используем BeautifulSoup для более точного извлечения
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Поиск div с классом summary-scroll
-                summary_div = soup.find('div', class_='summary-scroll')
-                
-                if summary_div:
-                    # Извлекаем текст из найденного div
-                    summary_text = summary_div.get_text(strip=True)
-                    logging.info(f"Извлечен текст из summary-scroll: {summary_text[:200]}...")
-                    return summary_text
-                else:
-                    # Fallback к readability, если div не найден
-                    doc = readability.Document(response.content)
-                    fallback_text = doc.summary()
-                    logging.warning("Div summary-scroll не найден, использован fallback")
-                    return fallback_text
+            response = await net_safety.safe_get(url, max_bytes=MAX_DOWNLOAD_BYTES, timeout=15.0)
+            response.raise_for_status()
+
+            # Используем BeautifulSoup для более точного извлечения
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Поиск div с классом summary-scroll
+            summary_div = soup.find('div', class_='summary-scroll')
+
+            if summary_div:
+                # Извлекаем текст из найденного div
+                summary_text = summary_div.get_text(strip=True)
+                logging.info(f"Извлечен текст из summary-scroll: {summary_text[:200]}...")
+                return summary_text
+            else:
+                # Fallback к readability, если div не найден
+                doc = readability.Document(response.content)
+                fallback_text = doc.summary()
+                logging.warning("Div summary-scroll не найден, использован fallback")
+                return fallback_text
 
         except Exception as e:
             logging.error(f"Ошибка извлечения текста: {e}")

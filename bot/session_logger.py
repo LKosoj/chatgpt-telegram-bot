@@ -267,6 +267,7 @@ class SessionLogger:
         the writer picking up the _StopItem and returning. Nothing would ever
         consume that item, so its awaiting caller would hang forever.
         """
+        assert self._queue is not None
         while True:
             try:
                 pending = self._queue.get_nowait()
@@ -339,11 +340,12 @@ class SessionLogger:
             _cleanup_old_logs(self.base_dir, self.retention_seconds)
             _write_line(path, line, self.max_file_bytes)
 
-        self._otel.on_event(event, user_id, session_id, get_trace().turn_id if get_trace() else None)
+        trace = get_trace()
+        self._otel.on_event(event, user_id, session_id, trace.turn_id if trace else None)
 
-    async def flush_summary(self, user_id, session_id) -> None:
+    async def flush_summary(self, user_id, session_id) -> bool | None:
         if not self.enabled:
-            return
+            return None
         safe_uid = _sanitize_id(user_id)
         safe_sid = _sanitize_id(session_id)
         key = (safe_uid, safe_sid)

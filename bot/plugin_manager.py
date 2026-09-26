@@ -729,17 +729,6 @@ class PluginManager:
             allowed_function_names.add(canonical_name)
         return filtered, allowed_function_names
 
-    def is_subagent_function_allowed(
-        self,
-        function_name,
-        parent_allowed_plugins=None,
-        blocked_function_names=None,
-    ):
-        function_name = self.to_canonical_function_name(function_name)
-        if blocked_function_names and function_name in blocked_function_names:
-            return False
-        return self.is_function_allowed(function_name, parent_allowed_plugins or ['All'])
-
     def __get_plugin_by_function_name(self, function_name):
         """
         Находит плагин по имени функции
@@ -888,49 +877,6 @@ class PluginManager:
                 raise ValueError(msg)
             logger.error(msg)
         return [p for p in allowed_plugins if p in self.plugins]
-
-    def get_all_plugin_descriptions(self) -> list[str]:
-        """Get all plugin descriptions from their get_spec methods."""
-        descriptions = []
-
-        # Iterate through all registered plugins
-        for plugin_name in self.plugins.keys():
-            try:
-                # Используем get_plugin вместо создания нового экземпляра
-                plugin_instance = self.get_plugin(plugin_name)
-                if not plugin_instance:
-                    continue
-
-                # Get specs from the plugin
-                specs = self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-
-                # Extract descriptions from each spec
-                for spec in specs:
-                    if spec and "description" in spec:
-                        descriptions.append({
-                            "plugin": plugin_name,
-                            "function": spec.get("name", "unknown"),
-                            "description": spec["description"]
-                        })
-
-            except Exception as e:
-                logger.error(f"Error getting description from plugin {plugin_name}: {str(e)}")
-                continue
-
-        return descriptions
-
-    def get_plugin_spec(self, plugin_name: str) -> List[Dict]:
-        """Возвращает спецификацию плагина по имени"""
-        if not self.has_plugin(plugin_name):
-            return None
-        try:
-            # Используем get_plugin вместо создания нового экземпляра
-            plugin_instance = self.get_plugin(plugin_name)
-            if not plugin_instance:
-                return None
-            return self._normalize_specs(plugin_instance.get_spec(), plugin_instance)
-        except Exception:
-            return None
 
     def has_plugin(self, plugin_name: str) -> bool:
         """Проверяет существование плагина по имени"""

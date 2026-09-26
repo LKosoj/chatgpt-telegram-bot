@@ -43,7 +43,24 @@ class ChatModesRegistry:
                     self._data = {}
                 return
             self._data = data
+            self._substitute_shared_blocks()
             self._mtime = mtime
+
+    def _substitute_shared_blocks(self) -> None:
+        shared_blocks = self._data.pop("shared_blocks", None)
+        if not isinstance(shared_blocks, dict):
+            return
+        for mode_data in self._data.values():
+            if not isinstance(mode_data, dict):
+                continue
+            prompt = mode_data.get("prompt_start")
+            if not isinstance(prompt, str):
+                continue
+            for key, block in shared_blocks.items():
+                marker = "{{shared:%s}}" % key
+                if marker in prompt:
+                    prompt = prompt.replace(marker, str(block).strip())
+            mode_data["prompt_start"] = prompt
 
     def all_modes(self) -> Dict[str, Dict]:
         self._load_if_needed()

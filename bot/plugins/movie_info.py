@@ -12,6 +12,8 @@ class MovieInfoPlugin(Plugin):
     Плагин для поиска и анализа информации о фильмах
     """
 
+    returns_untrusted_content = True
+
     def __init__(self):
         # Загрузка API ключей из переменных окружения
         self.TMDB_API_KEY = os.getenv('TMDB_API_KEY')

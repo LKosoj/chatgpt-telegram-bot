@@ -243,6 +243,13 @@ Telegram Bot API server is not reachable from inside the container, set
 The default `OPENAI_BASE_URL` is empty and must point at your gateway, e.g.
 `http://gateway.example/v1`.
 
+Only one bot process may run against the same `TELEGRAM_BOT_TOKEN`/database at a time —
+`main()` takes an OS-level file lock before starting up. The lock file defaults to
+`<dir(DB_PATH)>/bot.instance.lock` and can be relocated with `INSTANCE_LOCK_PATH`. A second
+process started against the same lock file logs an ERROR and exits with a non-zero code.
+After a crash or `docker restart`, the lock is released automatically by the OS — no manual
+cleanup needed.
+
 ---
 
 ## Configuration
@@ -266,6 +273,7 @@ by the runtime. **Bold** rows are required.
 | `TELEGRAM_BASE_URL` | `http://localhost:8081/bot` (in local mode) | url | Bot API base URL. Validated as absolute http(s). |
 | `ADMIN_USER_IDS` | `-` | csv | Comma-separated Telegram user IDs with admin privileges. Use `-` for none. |
 | `ALLOWED_TELEGRAM_USER_IDS` | `*` | csv | Comma-separated allow-list of user IDs. `*` allows everyone. |
+| `ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER` | `true` | bool | In group chats, treat any member as allowed when the group also contains an allowed/admin user. Set `false` to require the sender's own ID in `ALLOWED_TELEGRAM_USER_IDS`/`ADMIN_USER_IDS`. |
 | `ENABLE_QUOTING` | `true` | bool | Reply to the original message in private chats (group chats always quote). |
 | `GROUP_TRIGGER_KEYWORD` | `` | string | If set, group messages must contain this keyword to address the bot. |
 | `IGNORE_GROUP_TRANSCRIPTIONS` | `true` | bool | Skip auto-transcription in groups. |
@@ -286,6 +294,7 @@ by the runtime. **Bold** rows are required.
 | `MODEL_CONTEXT_WINDOWS` | `` | csv `model=tokens` | Optional context-window overrides, e.g. `custom/model=128000,large/model=1000000`. |
 | `MAX_HISTORY_SIZE` | `15` | int | Max chat-history messages kept in memory before summarisation. |
 | `MAX_CONVERSATION_AGE_MINUTES` | `180` | int | Age window after which conversations are reset. |
+| `MAX_CHAT_STATES` | `1000` | int | Max per-chat conversation states kept in memory (LRU-evicted beyond this cap). |
 | `TEMPERATURE` | `1.0` | float | Sampling temperature. |
 | `PRESENCE_PENALTY` | `0.0` | float | OpenAI presence penalty. |
 | `FREQUENCY_PENALTY` | `0.0` | float | OpenAI frequency penalty. |
@@ -354,7 +363,7 @@ by the runtime. **Bold** rows are required.
 |---|---|---|---|
 | `BUDGET_PERIOD` | `monthly` | string | `daily`, `weekly`, `monthly`, or `total`. |
 | `USER_BUDGETS` | `*` | csv / `*` | Per-user budget caps. `*` disables the cap. |
-| `GUEST_BUDGET` | `100.0` | float | Budget for guests when group chats are addressed by an allowed user. |
+| `GUEST_BUDGET` | `100.0` | float | Shared budget for group members who are allowed only via `ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER` (not themselves listed in `ALLOWED_TELEGRAM_USER_IDS`). Unused when that flag is `false`. |
 | `TOKEN_PRICE` | `0.002` | float | USD per 1K tokens. Used for any model absent from `MODEL_TOKEN_PRICES`. |
 | `MODEL_TOKEN_PRICES` | `` | csv `model=in:out` | Per-model chat prices in USD per 1K tokens, prompt and completion billed separately, e.g. `llmgateway/high=0.005:0.015`. Invalid or negative entries are skipped with a warning. Empty by default because the models in tree are gateway aliases whose real prices depend on the installation. |
 | `IMAGE_PRICES` | `0.016,0.018,0.02` | csv floats | Per-size image costs (small, medium, large). |

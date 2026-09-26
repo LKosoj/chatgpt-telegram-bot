@@ -1,9 +1,18 @@
 import types
 
+import httpx2
+import openai
 import pytest
 
-from bot.ai_provider import AIProviderRequest, collect_ai_response
-from bot.ai_providers.openai_compatible import OpenAICompatibleProvider
+from bot.ai_provider import (
+    AIProviderRequest,
+    ProviderBadRequestError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderStreamError,
+    collect_ai_response,
+)
+from bot.ai_providers.openai_compatible import OpenAICompatibleProvider, raw_chat_completion
 
 
 class FakeToolCall:
@@ -199,3 +208,79 @@ async def test_openai_compatible_provider_aggregates_streamed_tool_calls():
     assert response.tool_calls[0].name == "skills_run"
     assert response.tool_calls[0].model_name == "skills_run"
     assert response.tool_calls[0].arguments == '{"name":"pptx"}'
+
+
+def _rate_limit_error(message="limited"):
+    request = httpx2.Request("POST", "https://example.com")
+    response = httpx2.Response(429, request=request)
+    return openai.RateLimitError(message, response=response, body=None)
+
+
+def _bad_request_error(message="bad"):
+    request = httpx2.Request("POST", "https://example.com")
+    response = httpx2.Response(400, request=request)
+    return openai.BadRequestError(message, response=response, body=None)
+
+
+def _generic_api_error(message="broken"):
+    request = httpx2.Request("POST", "https://example.com")
+    return openai.APIConnectionError(message=message, request=request)
+
+
+class _FakeSDKClient:
+    """Minimal stand-in for openai.AsyncOpenAI: only chat.completions.create."""
+
+    def __init__(self, *, exc=None, response=None):
+        self._exc = exc
+        self._response = response
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+
+    async def _create(self, **kwargs):
+        if self._exc is not None:
+            raise self._exc
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_raw_chat_completion_translates_rate_limit_error():
+    client = _FakeSDKClient(exc=_rate_limit_error())
+    create = raw_chat_completion(lambda: client)
+
+    with pytest.raises(ProviderRateLimitError):
+        await create(model="m", messages=[])
+
+
+@pytest.mark.asyncio
+async def test_raw_chat_completion_translates_bad_request_error():
+    client = _FakeSDKClient(exc=_bad_request_error())
+    create = raw_chat_completion(lambda: client)
+
+    with pytest.raises(ProviderBadRequestError):
+        await create(model="m", messages=[])
+
+
+@pytest.mark.asyncio
+async def test_raw_chat_completion_translates_generic_api_error():
+    client = _FakeSDKClient(exc=_generic_api_error())
+    create = raw_chat_completion(lambda: client)
+
+    with pytest.raises(ProviderError):
+        await create(model="m", messages=[])
+
+
+@pytest.mark.asyncio
+async def test_raw_chat_completion_stream_translates_mid_iteration_api_error():
+    async def raw_stream():
+        yield FakeStreamChunk("hel")
+        raise _generic_api_error("stream broke")
+
+    client = _FakeSDKClient(response=raw_stream())
+    create = raw_chat_completion(lambda: client)
+
+    translated_stream = await create(model="m", messages=[], stream=True)
+
+    chunks = []
+    with pytest.raises(ProviderStreamError):
+        async for chunk in translated_stream:
+            chunks.append(chunk)
+    assert len(chunks) == 1

@@ -2,7 +2,6 @@ from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack
 from typing import Dict, List, Any, Optional
-import httpx
 import json
 import asyncio
 from urllib.parse import urljoin
@@ -13,6 +12,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp import ClientSession
 
 from .plugin import Plugin
+from .. import net_safety
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,8 @@ class MCPServerPlugin(Plugin):
     Позволяет взаимодействовать с различными API, реализующими протокол MCP.
     """
 
+    returns_untrusted_content = True
+
     def __init__(self):
         """Инициализация плагина"""
         self.openai = None
@@ -71,6 +73,10 @@ class MCPServerPlugin(Plugin):
         self.config_path: Path | None = None
         self.admin_ids = self._get_admin_ids()
         self.allowed_users = self._get_allowed_users()
+        self.allow_private_hosts = os.getenv("MCP_ALLOW_PRIVATE_HOSTS", "false").strip().lower() in {
+            "1", "true", "yes", "on",
+        }  # тот же паттерн, что PluginManager.strict_validation, bot/plugin_manager.py:66
+        self.max_response_bytes = int(os.getenv("MCP_MAX_RESPONSE_BYTES", "10000000"))
         self.sessions: Dict[str, ClientSession] = {}
         # Why: stdio_client + ClientSession используют anyio cancel scopes, которые
         # обязаны закрываться той же task, что открывала. Поэтому per-server
@@ -649,7 +655,7 @@ class MCPServerPlugin(Plugin):
         
         :return: Список серверов с их описаниями
         """
-        result = {
+        result: Dict[str, Any] = {
             "servers": []
         }
         
@@ -750,19 +756,21 @@ class MCPServerPlugin(Plugin):
             
             try:
                 # Выполнение запроса к MCP серверу
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        urljoin(base_url, "/execute"),
-                        headers=headers,
-                        json=request_data
-                    )
-                    
-                    response.raise_for_status()
-                    result = response.json()
-                    
-                    return result
-                    
-            except httpx.HTTPStatusError as e:
+                response = await net_safety.safe_request(
+                    "POST",
+                    urljoin(base_url, "/execute"),
+                    headers=headers,
+                    json=request_data,
+                    timeout=timeout,
+                    max_bytes=self.max_response_bytes,
+                    allow_private=self.allow_private_hosts,
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                return result
+
+            except net_safety.SafeHTTPStatusError as e:
                 logger.error(f"HTTP ошибка при вызове функции {function_name} на сервере {server_name}: {e}")
                 return {
                     "error": self.t(
@@ -833,15 +841,16 @@ class MCPServerPlugin(Plugin):
         timeout = int(os.getenv("MCP_REQUEST_TIMEOUT", "30"))
         
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(
-                    urljoin(base_url, "/tools"),
-                    headers=headers
-                )
-                
-                response.raise_for_status()
-                return response.json()
-                
+            response = await net_safety.safe_get(
+                urljoin(base_url, "/tools"),
+                headers=headers,
+                timeout=timeout,
+                max_bytes=self.max_response_bytes,
+                allow_private=self.allow_private_hosts,
+            )
+            response.raise_for_status()
+            return response.json()
+
         except Exception as e:
             logger.error(f"Ошибка при получении инструментов с {base_url}: {str(e)}")
             return []

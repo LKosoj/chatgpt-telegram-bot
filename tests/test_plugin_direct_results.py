@@ -2,6 +2,7 @@ import importlib.util
 import io
 import logging
 import sys
+import tempfile
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -25,6 +26,7 @@ _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
 from bot.utils import (  # noqa: E402
+    cleanup_intermediate_files,
     direct_result_inline_fallback_text,
     handle_direct_result,
     is_direct_result,
@@ -463,6 +465,81 @@ async def test_handle_direct_result_file_path_read_failure_logs_value(tmp_path, 
     assert "value_shape" in caplog.text
     assert "secret-report-path" in caplog.text
     message.reply_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_rejects_photo_path_outside_allowed_locations(
+    tmp_path, monkeypatch, tmp_path_factory
+):
+    fake_tempdir = tmp_path / "faketemp"
+    fake_tempdir.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tempdir))
+
+    outside_dir = tmp_path_factory.mktemp("outside")
+    artifact_path = outside_dir / "secret.png"
+    artifact_path.write_bytes(b"png")
+
+    message = FakeMessage()
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "photo",
+                "format": "path",
+                "value": str(artifact_path),
+            }
+        },
+    )
+
+    message.reply_text.assert_awaited_once()
+    assert "Artifact path is unavailable" in message.reply_text.await_args.kwargs["text"]
+    message.reply_photo.assert_not_called()
+    message.reply_document.assert_not_called()
+    assert sent_messages == [message.reply_text.return_value]
+
+
+@pytest.mark.asyncio
+async def test_handle_direct_result_rejects_file_path_without_raising(
+    tmp_path, monkeypatch, tmp_path_factory
+):
+    fake_tempdir = tmp_path / "faketemp"
+    fake_tempdir.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tempdir))
+
+    outside_dir = tmp_path_factory.mktemp("outside")
+    artifact_path = outside_dir / "secret-report.pdf"
+    artifact_path.write_bytes(b"pdf")
+
+    message = FakeMessage()
+
+    sent_messages = await handle_direct_result(
+        _config(),
+        FakeUpdate(message),
+        {
+            "direct_result": {
+                "kind": "file",
+                "format": "path",
+                "value": str(artifact_path),
+            }
+        },
+    )
+
+    message.reply_text.assert_awaited_once()
+    assert "Artifact path is unavailable" in message.reply_text.await_args.kwargs["text"]
+    message.reply_document.assert_not_called()
+    assert sent_messages == [message.reply_text.return_value]
+
+
+def test_cleanup_intermediate_files_skips_protected_path(tmp_path, monkeypatch):
+    db_path = tmp_path / "user_data.db"
+    db_path.write_bytes(b"sqlite")
+    monkeypatch.setenv("DB_PATH", str(db_path))
+
+    cleanup_intermediate_files({"direct_result": {"format": "path", "value": str(db_path)}})
+
+    assert db_path.exists()
 
 
 @pytest.mark.asyncio

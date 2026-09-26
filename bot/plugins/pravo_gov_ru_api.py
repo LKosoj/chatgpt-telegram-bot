@@ -30,6 +30,7 @@ class PravoGovRuAPIPlugin(Plugin):
 
     plugin_id = "pravo_gov_ru_api"
     function_prefix = "pravo_gov_ru_api"
+    returns_untrusted_content = True
 
     BASE_URL = "http://publication.pravo.gov.ru/api"
     DOCUMENT_URL = "http://publication.pravo.gov.ru/document/{eo_number}"

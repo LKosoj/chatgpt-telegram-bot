@@ -1,6 +1,5 @@
 import importlib.util
 import importlib.machinery
-import os
 import sys
 import types
 from types import SimpleNamespace
@@ -14,7 +13,21 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
+from bot.database import Database
 from bot.plugins.agent_cron import AgentCronPlugin
+from bot.plugins.db_handle import DbHandle
+
+
+@pytest.fixture()
+def cron_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "t.db"))
+    Database._reset_singleton()
+    db = Database()
+    with db.get_connection() as conn:
+        for stmt in AgentCronPlugin().register_schema():
+            conn.execute(stmt)
+    yield db
+    Database._reset_singleton()
 
 
 class FakeBot:
@@ -58,13 +71,13 @@ def test_agent_cron_parses_supported_natural_schedules(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_cron_manual_run_delivers_result(tmp_path):
+async def test_agent_cron_manual_run_delivers_result(tmp_path, cron_db):
     plugin = AgentCronPlugin()
     helper = FakeHelper()
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    plugin.initialize(openai=helper, db=DbHandle(cron_db), storage_root=str(tmp_path))
     bot = FakeBot()
     parsed = plugin._parse_schedule("daily at 09:30")
-    job = plugin._create_job(
+    job = await plugin._create_job(
         chat_id=100,
         user_id=42,
         schedule="daily at 09:30",
@@ -75,7 +88,7 @@ async def test_agent_cron_manual_run_delivers_result(tmp_path):
 
     await plugin._run_job(bot, job["scope"], job["id"], manual=True)
 
-    stored = plugin.jobs[job["scope"]][job["id"]]
+    stored = await plugin.db_handle.fetch_one("SELECT * FROM agent_cron_jobs WHERE id = ?", (job["id"],))
     assert stored["status"] == "active"
     assert stored["last_tokens"] == 5
     assert helper.requests[0]["chat_id"] == 100
@@ -86,7 +99,7 @@ async def test_agent_cron_manual_run_delivers_result(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_cron_failure_uses_rich_config(tmp_path):
+async def test_agent_cron_failure_uses_rich_config(tmp_path, cron_db):
     class FailingHelper(FakeHelper):
         def __init__(self):
             super().__init__()
@@ -98,10 +111,10 @@ async def test_agent_cron_failure_uses_rich_config(tmp_path):
 
     plugin = AgentCronPlugin()
     helper = FailingHelper()
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    plugin.initialize(openai=helper, db=DbHandle(cron_db), storage_root=str(tmp_path))
     bot = FakeBot()
     parsed = plugin._parse_schedule("daily at 09:30")
-    job = plugin._create_job(
+    job = await plugin._create_job(
         chat_id=100,
         user_id=42,
         schedule="daily at 09:30",
@@ -112,7 +125,7 @@ async def test_agent_cron_failure_uses_rich_config(tmp_path):
 
     await plugin._run_job(bot, job["scope"], job["id"], manual=True)
 
-    stored = plugin.jobs[job["scope"]][job["id"]]
+    stored = await plugin.db_handle.fetch_one("SELECT * FROM agent_cron_jobs WHERE id = ?", (job["id"],))
     assert stored["status"] == "failed"
     assert bot.messages == []
     assert bot.posts == [
@@ -130,18 +143,93 @@ async def test_agent_cron_failure_uses_rich_config(tmp_path):
     ]
 
 
+# --- Job deleted mid-run must not send a message or dispatch the hook (E1) ---
+
+
+@pytest.mark.asyncio
+async def test_run_job_deleted_during_run_skips_completion_message_and_hook(tmp_path, cron_db, monkeypatch):
+    """/cron remove racing a long-running job must not post a completion message
+    or dispatch the autonomous-response hook once the row is gone."""
+    monkeypatch.setenv("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", "true")
+
+    class DeletingHelper(FakeHelper):
+        def __init__(self, db_handle):
+            super().__init__()
+            self.plugin_manager = SimpleNamespace(dispatch_observe=AsyncMock())
+            self._db_handle = db_handle
+
+        async def get_chat_response(self, **kwargs):
+            self.requests.append(kwargs)
+            job_id = kwargs["request_id"][len("agent_cron_"):]
+            await self._db_handle.execute("DELETE FROM agent_cron_jobs WHERE id = ?", (job_id,))
+            return "cron result", 5
+
+    plugin = AgentCronPlugin()
+    db_handle = DbHandle(cron_db)
+    helper = DeletingHelper(db_handle)
+    plugin.initialize(openai=helper, db=db_handle, storage_root=str(tmp_path))
+    bot = FakeBot()
+    parsed = plugin._parse_schedule("daily at 09:30")
+    job = await plugin._create_job(
+        chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
+        parsed=parsed, reply_to_message_id=77,
+    )
+
+    await plugin._run_job(bot, job["scope"], job["id"], manual=True)
+
+    assert bot.messages == []
+    assert bot.posts == []
+    helper.plugin_manager.dispatch_observe.assert_not_awaited()
+    assert await plugin.db_handle.fetch_one(
+        "SELECT * FROM agent_cron_jobs WHERE id = ?", (job["id"],)
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_run_job_deleted_during_run_skips_failure_message(tmp_path, cron_db):
+    """Same as above for the failure branch: a job deleted while helper.get_chat_response
+    is in flight must not get a "failed" message posted after it raises."""
+
+    class DeletingFailingHelper(FakeHelper):
+        def __init__(self, db_handle):
+            super().__init__()
+            self._db_handle = db_handle
+
+        async def get_chat_response(self, **kwargs):
+            self.requests.append(kwargs)
+            job_id = kwargs["request_id"][len("agent_cron_"):]
+            await self._db_handle.execute("DELETE FROM agent_cron_jobs WHERE id = ?", (job_id,))
+            raise RuntimeError("boom")
+
+    plugin = AgentCronPlugin()
+    db_handle = DbHandle(cron_db)
+    helper = DeletingFailingHelper(db_handle)
+    plugin.initialize(openai=helper, db=db_handle, storage_root=str(tmp_path))
+    bot = FakeBot()
+    parsed = plugin._parse_schedule("daily at 09:30")
+    job = await plugin._create_job(
+        chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
+        parsed=parsed, reply_to_message_id=77,
+    )
+
+    await plugin._run_job(bot, job["scope"], job["id"], manual=True)
+
+    assert bot.messages == []
+    assert bot.posts == []
+
+
 # --- Autonomous capture hook (HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED) ---------
 
 
 @pytest.mark.asyncio
-async def test_agent_cron_default_does_not_dispatch_autonomous_hook(tmp_path, monkeypatch):
+async def test_agent_cron_default_does_not_dispatch_autonomous_hook(tmp_path, cron_db, monkeypatch):
     monkeypatch.delenv("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", raising=False)
     plugin = AgentCronPlugin()
     helper = FakeHelper()  # no .plugin_manager attribute
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    plugin.initialize(openai=helper, db=DbHandle(cron_db), storage_root=str(tmp_path))
     bot = FakeBot()
     parsed = plugin._parse_schedule("daily at 09:30")
-    job = plugin._create_job(
+    job = await plugin._create_job(
         chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
         parsed=parsed, reply_to_message_id=77,
     )
@@ -151,20 +239,20 @@ async def test_agent_cron_default_does_not_dispatch_autonomous_hook(tmp_path, mo
     # behavior; assert the run completes normally with today's default (disabled).
     await plugin._run_job(bot, job["scope"], job["id"], manual=True)
 
-    stored = plugin.jobs[job["scope"]][job["id"]]
+    stored = await plugin.db_handle.fetch_one("SELECT * FROM agent_cron_jobs WHERE id = ?", (job["id"],))
     assert stored["status"] == "active"
 
 
 @pytest.mark.asyncio
-async def test_agent_cron_dispatches_autonomous_hook_when_enabled(tmp_path, monkeypatch):
+async def test_agent_cron_dispatches_autonomous_hook_when_enabled(tmp_path, cron_db, monkeypatch):
     monkeypatch.setenv("HINDSIGHT_AUTONOMOUS_CAPTURE_ENABLED", "true")
     plugin = AgentCronPlugin()
     helper = FakeHelper()
     helper.plugin_manager = SimpleNamespace(dispatch_observe=AsyncMock())
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
+    plugin.initialize(openai=helper, db=DbHandle(cron_db), storage_root=str(tmp_path))
     bot = FakeBot()
     parsed = plugin._parse_schedule("daily at 09:30")
-    job = plugin._create_job(
+    job = await plugin._create_job(
         chat_id=100, user_id=42, schedule="daily at 09:30", prompt="make a brief",
         parsed=parsed, reply_to_message_id=77,
     )
@@ -183,55 +271,6 @@ async def test_agent_cron_dispatches_autonomous_hook_when_enabled(tmp_path, monk
 
 
 # --- Tests for surgical bugfixes ---
-
-
-@pytest.mark.asyncio
-async def test_run_job_updates_live_dict_after_load_replaces_jobs(tmp_path):
-    """4a fix A: _run_job re-fetches job from self.jobs after await so that
-    next_run_at is updated in the current dict even if _load_jobs replaced it mid-flight."""
-
-    plugin = AgentCronPlugin()
-
-    # Helper that replaces plugin.jobs mid-await (simulates _load_jobs called from checker)
-    original_jobs_ref = None
-    new_jobs_ref = None
-
-    class ReplacingHelper:
-        async def get_chat_response(self, **kwargs):
-            nonlocal original_jobs_ref, new_jobs_ref
-            # At this point plugin.jobs still points at the original dict
-            original_jobs_ref = plugin.jobs
-            # Simulate _check_due_jobs -> _load_jobs replacing the dict
-            # We rebuild a deep copy of jobs so plugin.jobs is a NEW object
-            import copy
-            new_dict = copy.deepcopy(plugin.jobs)
-            plugin.jobs = new_dict
-            new_jobs_ref = plugin.jobs
-            return "result", 7
-
-    helper = ReplacingHelper()
-    plugin.initialize(openai=helper, storage_root=str(tmp_path))
-    bot = FakeBot()
-
-    parsed = plugin._parse_schedule("every 2 hours")
-    job = plugin._create_job(
-        chat_id=200,
-        user_id=99,
-        schedule="every 2 hours",
-        prompt="check things",
-        parsed=parsed,
-    )
-    scope = job["scope"]
-    job_id = job["id"]
-
-    await plugin._run_job(bot, scope, job_id, manual=False)
-
-    # After run: the live (new) dict should have next_run_at updated to a future time
-    live_job = plugin.jobs[scope][job_id]
-    assert live_job["status"] == "active", "status should be active after success"
-    from datetime import datetime
-    next_run = datetime.fromisoformat(live_job["next_run_at"])
-    assert next_run > datetime.now(), "next_run_at must be in the future after advance"
 
 
 def test_parse_schedule_every_0_minutes_returns_none(tmp_path):
@@ -255,21 +294,3 @@ def test_advance_job_zero_interval_pauses_job(tmp_path):
     plugin._advance_job(job)
     assert job["paused"] is True
     assert job["next_run_at"] is None
-
-
-def test_save_jobs_does_not_leave_tmp_file(tmp_path):
-    """3e: _save_jobs must use atomic tmp+replace and leave no .tmp file behind."""
-    plugin = AgentCronPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    parsed = plugin._parse_schedule("daily at 10:00")
-    plugin._create_job(
-        chat_id=1,
-        user_id=1,
-        schedule="daily at 10:00",
-        prompt="test",
-        parsed=parsed,
-    )
-    # _create_job calls _save_jobs internally; ensure no .tmp leftover
-    tmp_file = plugin.jobs_file + ".tmp"
-    assert not os.path.exists(tmp_file), ".tmp file must not exist after save"
-    assert os.path.exists(plugin.jobs_file), "jobs file must exist after save"

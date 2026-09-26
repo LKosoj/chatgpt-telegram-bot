@@ -45,6 +45,7 @@ _tenacity.wait_fixed = lambda *args, **kwargs: None
 _tenacity.retry_if_exception_type = lambda *args, **kwargs: None
 _install_module_if_missing("tenacity", _tenacity)
 
+from bot.i18n import localized_text  # noqa: E402
 from bot.telegram_bot import ChatGPTTelegramBot  # noqa: E402
 from tests.fakes import FakeEncoding  # noqa: E402
 
@@ -67,17 +68,20 @@ class FakeCallbackQuery:
 
 
 class FakePluginManager:
+    def __init__(self, disabled_plugins=None):
+        self._disabled_plugins = disabled_plugins or set()
+
     def is_plugin_disabled_for_user(self, plugin_name, user_id):
-        return False
+        return plugin_name in self._disabled_plugins
 
     def disabled_plugins_for_user(self, user_id):
         return set()
 
 
-def _make_bot():
+def _make_bot(disabled_plugins=None):
     bot = object.__new__(ChatGPTTelegramBot)
     bot.config = {"allowed_user_ids": "*", "bot_language": "en"}
-    bot.openai = SimpleNamespace(plugin_manager=FakePluginManager())
+    bot.openai = SimpleNamespace(plugin_manager=FakePluginManager(disabled_plugins))
     bot.plugin_menu_page_size = 6
     bot.plugin_menu_entries = [
         {
@@ -158,6 +162,78 @@ async def test_plugin_menu_command_usage_view_has_close_button():
     close_button = reply_markup.inline_keyboard[-1][0]
     assert close_button.text == "❌ Close"
     assert close_button.callback_data == "pluginmenu:close"
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_input_unavailable_command_replies_and_returns():
+    """B7 (C15): action='input' with an unknown cmd_id replies with the
+    'unavailable' message and does not prompt for a ForceReply."""
+    bot = _make_bot()
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:input:notes:99"
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    context = SimpleNamespace(user_data={})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    query.edit_message_text.assert_awaited_once_with(
+        localized_text('plugins_menu_command_unavailable', 'en')
+    )
+    query.message.reply_text.assert_not_called()
+    assert "plugin_menu_pending" not in context.user_data
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_input_disabled_plugin_replies_and_returns():
+    """B7 (C15): action='input' for a disabled plugin replies with the
+    'disabled' message and does not prompt for a ForceReply."""
+    bot = _make_bot(disabled_plugins={"notes"})
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:input:notes:0"
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    context = SimpleNamespace(user_data={})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    query.edit_message_text.assert_awaited_once_with(
+        localized_text('settings_plugin_disabled', 'en').format(plugin="notes")
+    )
+    query.message.reply_text.assert_not_called()
+    assert "plugin_menu_pending" not in context.user_data
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_cmd_unavailable_command_replies_and_returns():
+    """B7 (C15): action='cmd' with an unknown cmd_id replies with the
+    'unavailable' message."""
+    bot = _make_bot()
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:cmd:notes:99"
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    context = SimpleNamespace(user_data={})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    query.edit_message_text.assert_awaited_once_with(
+        localized_text('plugins_menu_command_unavailable', 'en')
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_menu_cmd_disabled_plugin_replies_and_returns():
+    """B7 (C15): action='cmd' for a disabled plugin replies with the
+    'disabled' message."""
+    bot = _make_bot(disabled_plugins={"notes"})
+    query = FakeCallbackQuery()
+    query.data = "pluginmenu:cmd:notes:0"
+    update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=42))
+    context = SimpleNamespace(user_data={})
+
+    await bot.handle_plugin_menu_callback(update, context)
+
+    query.edit_message_text.assert_awaited_once_with(
+        localized_text('settings_plugin_disabled', 'en').format(plugin="notes")
+    )
 
 
 def test_resolve_menu_entries_falls_back_to_global():

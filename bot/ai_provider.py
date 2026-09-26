@@ -46,12 +46,43 @@ class AIProviderResponse:
     choices: tuple[AIProviderChoice, ...] = ()
 
 
+class ProviderError(Exception):
+    """Base class for all AI-provider-level errors. Call sites outside
+    bot/ai_providers/ catch these, never openai.* directly."""
+
+
+class ProviderRateLimitError(ProviderError):
+    """Rate limit exhausted. The SDK already retried internally
+    (max_retries=3); this means retries are exhausted, not that a retry
+    should be attempted by caller code."""
+
+
+class ProviderBadRequestError(ProviderError):
+    """Request rejected by the backend (4xx, not a rate limit)."""
+
+
+class ProviderStreamError(ProviderError):
+    """Raised mid-iteration of a streaming response."""
+
+
 class AIProvider(Protocol):
     def stream_response(
         self,
         request: AIProviderRequest,
     ) -> AsyncIterator[AIEvent]:
         ...
+
+    async def generate_image(self, **kwargs: Any) -> Any: ...
+
+    async def edit_image(self, **kwargs: Any) -> Any: ...
+
+    async def speech(self, **kwargs: Any) -> Any: ...
+
+    async def transcribe(self, **kwargs: Any) -> Any: ...
+
+    async def list_models(self) -> Any: ...
+
+    async def list_voices(self, **kwargs: Any) -> Any: ...
 
 
 async def collect_ai_response(events: AsyncIterator[AIEvent]) -> AIProviderResponse:

@@ -1,11 +1,14 @@
 import asyncio
+import json
 import logging
 import sqlite3
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
+from bot.chat_modes_registry import ChatModesRegistry
 from bot.database import (
     ConversationContextCorruptError,
     ConversationContextError,
@@ -389,7 +392,7 @@ def test_fresh_database_records_ordered_schema_versions(db):
             row[0]
             for row in conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
         ]
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
 
 
 def test_schema_migration_registry_matches_target_version(db):
@@ -464,7 +467,7 @@ def test_failed_migration_old_table_with_more_rows_is_recovered(tmp_path, monkey
             for row in conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
         ]
     assert old_table is None
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
 
 
 def test_failed_migration_without_new_table_resets_schema_version(tmp_path, monkeypatch):
@@ -510,7 +513,7 @@ def test_failed_migration_without_new_table_resets_schema_version(tmp_path, monk
         ]
     assert "session_id" in cols
     assert "version" in cols
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
 
 
 def test_recovery_reconciles_stale_schema_version_when_new_table_kept(tmp_path, monkeypatch):
@@ -580,7 +583,7 @@ def test_recovery_reconciles_stale_schema_version_when_new_table_kept(tmp_path, 
         ]
     assert old_table is None
     assert "version" in cols
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
 
     migrated.save_conversation_context(
         1,
@@ -1023,10 +1026,10 @@ def test_migration_adds_version_column_to_legacy_db(tmp_path, monkeypatch):
     assert len(sessions) == 1
     assert sessions[0]["session_id"] == "ses1"
 
-    # schema_version должна содержать запись 2.
+    # schema_version должна содержать запись 3 (текущий TARGET_SCHEMA_VERSION).
     with migrated.get_connection() as conn:
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert ver == 2
+    assert ver == 3
 
 
 def test_legacy_no_session_id_migration_creates_version_column(tmp_path, monkeypatch):
@@ -1073,7 +1076,216 @@ def test_legacy_no_session_id_migration_creates_version_column(tmp_path, monkeyp
     assert session_id
     with migrated.get_connection() as conn:
         ver = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert ver == 2
+    assert ver == 3
+
+
+# Жёстко закодированный текст prompt_start режима assistant ИЗ bot/chat_modes.yml ДО правок
+# T06 (HEAD 08bc457) — специально не читается из текущего файла, иначе тест перестанет
+# проверять именно миграцию старых сессий после правки текстов. Слепок этого текста —
+# ключ "assistant" в bot.database.LEGACY_PROMPT_FINGERPRINTS.
+LEGACY_ASSISTANT_PROMPT = (
+    "Вы - продвинутый AI-ассистент с глубоким пониманием контекста.\n"
+    "Пожалуйста, обеспечьте ясный, структурированный и понятный для любого пользователя ответ "
+    "на следующий запрос.\n"
+    "Следуйте этим рекомендациям:\n"
+    "1. Излагайте информацию по пунктам или шагам для удобства восприятия.\n"
+    "2. При необходимости уточняйте детали задачи, чтобы исключить недопонимание.\n"
+    "3. Приводите конкретные примеры, если это поможет объяснению.\n"
+    "4. Адаптируйте ответы под уровень пользователя (если он известен).\n"
+    "5. Предлагайте сопутствующие варианты дальнейших действий или решения.\n"
+    "6. Если в запросе есть неясности, обязательно задавайте уточняющие вопросы.\n"
+    "7. Используйте актуальные источники информации (например, website_content), если это "
+    "требуется для ответа.\n"
+    "8. При необходимости используйте дополнительные инструменты (tools) для поиска, анализа "
+    "и обработки информации.\n"
+    "9. Указывайте, какой инструмент используется и для чего.\n"
+    "10. Применяйте инструменты только тогда, когда это действительно необходимо для получения "
+    "точного и актуального ответа.\n"
+    "11. При кратких или нечетких запросах используйте один раз функцию оптимизации промпта "
+    "(optimize_prompt). Не оптимизируйте уже оптимизированный промпт.\n"
+    "12. При вопросах, связанных с программированием, переходите в режим Code Assistant "
+    "(/reset code_assistant).\n"
+    "13. Если не знаете ответа, честно признайте это и, по возможности, предложите пути поиска "
+    "решения.\n"
+    "14. В конце всегда интересуйтесь, нужна ли дополнительная помощь или подробное пояснение.\n"
+    "15. ВАЖНО! ЕСЛИ НЕОБХОДИМО ИСКАТЬ В ИНТЕРНЕТЕ, ПРАВИЛА ВЫБОРА МЕТОДА ПОИСКА:\n"
+    ' - Если запрос общий (например, "как работает блокчейн"), используй web_research\n'
+    ' - Если запрос конкретный (например, "курс доллара на дату", "расстояние от Москвы до '
+    'Санкт-Петербурга"), используй web_search и website_content\n'
+)
+
+
+def _create_v2_conversation_context_db(db_path):
+    """Собирает БД в форме "после миграций 1 и 2" (session_id + version колонки есть,
+    schema_version=2), но без миграции 3 — общий setup для тестов backfill mode_key."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT INTO schema_version (version) VALUES (2)")
+        conn.execute("""
+            CREATE TABLE conversation_context (
+                user_id INTEGER,
+                context TEXT NOT NULL,
+                model TEXT NOT NULL,
+                parse_mode TEXT NOT NULL,
+                temperature FLOAT NOT NULL,
+                max_tokens_percent INTEGER DEFAULT 100,
+                session_id TEXT,
+                session_name TEXT DEFAULT NULL,
+                is_active INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                version INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, session_id)
+            )
+        """)
+        conn.commit()
+
+
+def test_migration_backfills_mode_key_for_legacy_assistant_session(tmp_path, monkeypatch):
+    """Миграция 3: сессия со старым (до правок T06) текстом assistant-режима без mode_key
+    получает mode_key == 'assistant' по sha256-слепку, а режим по-прежнему резолвится через
+    ChatModesRegistry текущего bot/chat_modes.yml."""
+    db_path = tmp_path / "legacy-mode-key.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._reset_singleton()
+
+    context_json = json.dumps(
+        {"messages": [{"role": "system", "content": LEGACY_ASSISTANT_PROMPT}]},
+        ensure_ascii=False,
+    )
+    _create_v2_conversation_context_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversation_context "
+            "(user_id, context, model, parse_mode, temperature, session_id, is_active, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, context_json, "llmgateway/high", "HTML", 0.8, "s1", 1, 0),
+        )
+        conn.commit()
+
+    migrated = Database()
+
+    with migrated.get_connection() as conn:
+        row = conn.execute(
+            "SELECT context, version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, "s1"),
+        ).fetchone()
+    saved_context = json.loads(row[0])
+    assert saved_context["messages"][0]["mode_key"] == "assistant"
+    assert row[1] == 1
+
+    registry = ChatModesRegistry(str(Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"))
+    assert registry.get_mode_by_key("assistant") is not None
+
+
+def test_migration_backfill_mode_key_is_idempotent(tmp_path, monkeypatch):
+    """Повторный вызов миграции 3 на уже помеченной сессии не меняет mode_key и не
+    увеличивает row-level version повторно."""
+    db_path = tmp_path / "idempotent-mode-key.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._reset_singleton()
+
+    context_json = json.dumps(
+        {"messages": [{"role": "system", "content": LEGACY_ASSISTANT_PROMPT}]},
+        ensure_ascii=False,
+    )
+    _create_v2_conversation_context_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversation_context "
+            "(user_id, context, model, parse_mode, temperature, session_id, is_active, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, context_json, "llmgateway/high", "HTML", 0.8, "s1", 1, 0),
+        )
+        conn.commit()
+
+    migrated = Database()
+
+    with migrated.get_connection() as conn:
+        cursor = conn.cursor()
+        migrated._migrate_conversation_context_backfill_mode_key(cursor)
+        conn.commit()
+        row = conn.execute(
+            "SELECT context, version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, "s1"),
+        ).fetchone()
+    saved_context = json.loads(row[0])
+    assert saved_context["messages"][0]["mode_key"] == "assistant"
+    assert row[1] == 1
+
+
+def test_reconcile_does_not_roll_back_schema_version_after_migration_3(db):
+    """Регрессия на §3.3 T06: миграция 3 не меняет форму таблицы conversation_context, так
+    что _reconcile_schema_version_with_shape() увидела бы recorded_version=3 "впереди"
+    формы (actual_version=2 по колонкам) и без потолка SHAPE_VERIFIABLE_SCHEMA_VERSION
+    удалила бы запись schema_version=3 на каждом старте."""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._reconcile_schema_version_with_shape(cursor)
+        conn.commit()
+        versions = [
+            row[0]
+            for row in conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+        ]
+    assert versions == [1, 2, 3]
+
+
+def test_migration_backfill_mode_key_is_noop_for_non_system_or_already_tagged(tmp_path, monkeypatch):
+    """Миграция 3 не трогает сессии, где messages[0] не system-сообщение, или где mode_key
+    уже проставлен — контент и row-level version остаются байт-в-байт неизменными."""
+    db_path = tmp_path / "noop-mode-key.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    Database._reset_singleton()
+
+    non_system_context = json.dumps(
+        {"messages": [{"role": "user", "content": "У этой сессии нет системного сообщения"}]},
+        ensure_ascii=False,
+    )
+    already_tagged_context = json.dumps(
+        {
+            "messages": [
+                {"role": "system", "content": "Свой собственный промпт", "mode_key": "custom_mode"}
+            ]
+        },
+        ensure_ascii=False,
+    )
+    _create_v2_conversation_context_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversation_context "
+            "(user_id, context, model, parse_mode, temperature, session_id, is_active, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, non_system_context, "llmgateway/high", "HTML", 0.8, "s1", 1, 0),
+        )
+        conn.execute(
+            "INSERT INTO conversation_context "
+            "(user_id, context, model, parse_mode, temperature, session_id, is_active, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (2, already_tagged_context, "llmgateway/high", "HTML", 0.8, "s2", 1, 0),
+        )
+        conn.commit()
+
+    migrated = Database()
+
+    with migrated.get_connection() as conn:
+        row1 = conn.execute(
+            "SELECT context, version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (1, "s1"),
+        ).fetchone()
+        row2 = conn.execute(
+            "SELECT context, version FROM conversation_context WHERE user_id = ? AND session_id = ?",
+            (2, "s2"),
+        ).fetchone()
+    assert row1[0] == non_system_context
+    assert row1[1] == 0
+    assert row2[0] == already_tagged_context
+    assert row2[1] == 0
 
 
 def test_executor_single_worker(db):

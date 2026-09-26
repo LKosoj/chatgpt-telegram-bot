@@ -83,3 +83,21 @@ async def test_write_failure_does_not_raise(monkeypatch, tmp_path):
     result = await plugin.execute("screenshot_website", helper=None, url="https://example.com")
 
     assert result == {"result": "Unable to screenshot website"}
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_oversized_response(monkeypatch, tmp_path):
+    """T03: a response bigger than MAX_WEBSHOT_BYTES must be refused, no file written."""
+    fake_response = SimpleNamespace(status_code=200, content=b"x" * 11)
+    fake_requests = FakeRequests(fake_response)
+
+    monkeypatch.setattr(webshot, "requests", fake_requests)
+    monkeypatch.setattr(webshot.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(webshot, "MAX_WEBSHOT_BYTES", 10)
+    monkeypatch.chdir(tmp_path)
+
+    plugin = webshot.WebshotPlugin()
+    result = await plugin.execute("screenshot_website", helper=None, url="https://example.com")
+
+    assert result == {"result": "Unable to screenshot website"}
+    assert not (tmp_path / "uploads" / "webshot").exists()

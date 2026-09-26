@@ -7,9 +7,9 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from typing import Any
 
-import openai
-
+from .ai_provider import ProviderStreamError
 from .i18n import localized_text
 from .skill_script_routing import (
     _is_skills_agent_mode,
@@ -17,6 +17,7 @@ from .skill_script_routing import (
     _system_message,
 )
 from .tool_result import (
+    _artifact_path,
     direct_result_payload as _normalized_direct_result_payload,
     normalize_tool_result,
 )
@@ -252,7 +253,7 @@ def _chat_state_key(helper, chat_id):
 
 
 def _conversation_messages(helper, chat_id):
-    return helper.conversations.setdefault(_chat_state_key(helper, chat_id), [])
+    return helper._mutable_history(chat_id)
 
 
 def _model_owner(chat_id, user_id, session_id):
@@ -290,6 +291,53 @@ DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
 DELIVERY_PLUGIN_PREFIX = DELIVERY_TOOL_NAME.rsplit(".", 1)[0] + "."
 MANAGE_PLAN_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "manage_plan_tasks"
 ASK_USER_TOOL_NAME = DELIVERY_PLUGIN_PREFIX + "ask_telegram_user"
+
+# Инструменты с эффектом за пределами рассуждений модели (шелл, код, установка/
+# создание скиллов, регистрация MCP-сервера, автономный cron, финальная доставка).
+# Если в этом запросе уже отработал плагин с returns_untrusted_content=True,
+# вызов одного из них всё равно выполняется — только громко логируется
+# (T08, prompt injection).
+DANGEROUS_TOOL_NAMES = frozenset({
+    "terminal.terminal",
+    "codeinterpreter.deep_analysis",
+    "skills.install_skill",
+    "skills.create_skill",
+    "skills.run_skill_script",
+    "skills.run_skill_agent",
+    "mcp_server.register_mcp_server",
+    "agent_cron.create_cron_job",
+    DELIVERY_TOOL_NAME,
+})
+
+
+def _tainted_plugin_ids(helper, tools_used) -> set[str]:
+    """plugin_id из ``tools_used``, чьи плагины помечены returns_untrusted_content.
+
+    ``tools_used`` копится по кругам одного и того же запроса (см. рекурсию
+    handle_function_call) и обновляется только ПОСЛЕ того как результаты
+    текущего батча известны — то есть на момент подготовки батча N здесь лежат
+    только инструменты из круга 1..N-1, никогда из текущего батча. Это и даёт
+    семантику "уже выполнялся до этого вызова", а не гонку внутри одного
+    параллельного gather.
+    Defensive: многие тестовые PluginManager-дублёры не реализуют get_plugin.
+    """
+    get_plugin = getattr(helper.plugin_manager, "get_plugin", None)
+    if not callable(get_plugin):
+        return set()
+    tainted: set[str] = set()
+    for used_name in tools_used:
+        plugin_id = str(used_name or "").split(".", 1)[0]
+        if not plugin_id or plugin_id in tainted:
+            continue
+        try:
+            plugin = get_plugin(plugin_id)
+        except Exception:
+            continue
+        if plugin is not None and getattr(plugin, "returns_untrusted_content", False):
+            tainted.add(plugin_id)
+    return tainted
+
+
 DELIVERY_REPAIR_MAX_ATTEMPTS = 2
 DELIVERY_GRACE_ROUNDS = 2  # extra re-entry rounds beyond max_consecutive_calls while
                            # final_delivery_required=True and deliver_to_user has not
@@ -670,15 +718,6 @@ _DIRECT_RESULT_ARTIFACT_KEYS = (
 )
 
 
-def _artifact_path(value) -> str | None:
-    if not isinstance(value, str):
-        return None
-    path = value.strip()
-    if not path or "\n" in path or "://" in path:
-        return None
-    return path if os.path.isabs(path) else None
-
-
 def _append_artifact_entry(manifest: list[dict], seen_paths: set[str], entry: dict) -> None:
     path = _artifact_path(entry.get("path"))
     if not path or path in seen_paths:
@@ -690,7 +729,7 @@ def _append_artifact_entry(manifest: list[dict], seen_paths: set[str], entry: di
 def _artifact_manifest_message(manifest: list[dict]) -> str:
     visible = manifest[-_ARTIFACT_MANIFEST_LIMIT:]
     omitted = max(0, len(manifest) - len(visible))
-    payload = {
+    payload: dict[str, Any] = {
         "current_run_artifacts": visible,
         "instruction": (
             "Use these exact paths for artifacts created in this request. "
@@ -1197,7 +1236,7 @@ async def handle_function_call(
                 async for next_item in response:
                     buffered_items.append(next_item)
                     text_parts.append(_stream_item_content(next_item))
-            except openai.APIError as e:
+            except ProviderStreamError as e:
                 logger.error(
                     "API Error while buffering plain-text tool intent stream error=%s",
                     log_exception_shape(e),
@@ -1257,7 +1296,7 @@ async def handle_function_call(
                         if repaired is not None:
                             return repaired
                         return _prepend_stream_item(item, response), tools_used
-            except openai.APIError as e:
+            except ProviderStreamError as e:
                 logger.error(
                     "API Error in function call streaming error=%s",
                     log_exception_shape(e),
@@ -1403,6 +1442,14 @@ async def handle_function_call(
                 else:
                     args['chat_id'] = int(chat_id) if chat_id is not None else chat_id
                     args['user_id'] = user_id if user_id is not None else args['chat_id']
+                if tool_name in DANGEROUS_TOOL_NAMES:
+                    tainted = _tainted_plugin_ids(helper, tools_used)
+                    if tainted:
+                        logger.warning(
+                            "Dangerous tool %s called chat_id=%s user_id=%s after untrusted "
+                            "content from plugins=%s",
+                            tool_name, chat_id, user_id, sorted(tainted),
+                        )
                 routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
                 if routing_error:
                     logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)

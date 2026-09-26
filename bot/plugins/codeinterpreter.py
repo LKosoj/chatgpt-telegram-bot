@@ -21,6 +21,7 @@ import importlib
 import shutil
 from pathlib import Path
 from .plugin import Plugin
+from .. import net_safety
 from ..runtime_paths import (
     ensure_runtime_dir,
     runtime_data_dir,
@@ -91,6 +92,7 @@ class CodeInterpreterPlugin(Plugin):
         super().__init__()
         self.data: Optional[pd.DataFrame] = None
         self.timeout_seconds = 120
+        self.max_download_bytes = int(os.getenv("CODEINTERPRETER_MAX_DOWNLOAD_BYTES", 50_000_000))
         self.python_alias_dir = "/tmp/chatgpt_telegram_bot_codeinterpreter_bin"
         self.data_dir = runtime_data_dir()
         self.output_dir = runtime_output_dir()
@@ -223,7 +225,7 @@ class CodeInterpreterPlugin(Plugin):
         return await self.run_code(data_path, code_prompt)
 
     @async_handle_exceptions
-    async def generate_code(self, prompt: str, session_id: str = None) -> Optional[str]:
+    async def generate_code(self, prompt: str, session_id: Optional[str] = None) -> Optional[str]:
         """
         Генерирует Python-код на основе текста.
         
@@ -288,6 +290,7 @@ class CodeInterpreterPlugin(Plugin):
             return proc.returncode == 0
         except Exception as e:
             logging.error(f"Ошибка при установке пакета {package_name}: {e}")
+            return False
 
     @handle_exceptions
     def analyze_code_syntax(self, code):
@@ -837,18 +840,17 @@ class CodeInterpreterPlugin(Plugin):
             save_path = str(data_dir / filename)
             
             # Асинхронно скачиваем файл
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url)
-                response.raise_for_status()  # Проверяем статус ответа
-                
-                # Сохраняем файл
-                with open(save_path, 'wb') as f:
-                    f.write(response.content)
-                
-                logging.info(f"Файл успешно скачан и сохранен: {save_path}")
-                return save_path
-                
-        except httpx.HTTPError as e:
+            response = await net_safety.safe_get(url, max_bytes=self.max_download_bytes, timeout=30.0)
+            response.raise_for_status()  # Проверяем статус ответа
+
+            # Сохраняем файл
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+
+            logging.info(f"Файл успешно скачан и сохранен: {save_path}")
+            return save_path
+
+        except (httpx.HTTPError, net_safety.SafeHTTPStatusError) as e:
             logging.error(f"Ошибка HTTP при скачивании файла: {e}")
             return None
         except Exception as e:

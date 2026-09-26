@@ -1686,7 +1686,7 @@ class HTMLVisualizer:
                 if f'_{session_id}' in file:
                     os.remove(os.path.join(directory, file))
 
-    def _generate_plantuml(self, session_id: str) -> str:
+    def _generate_plantuml(self, session_id: str) -> None:
         """Генерирует изображение из PlantUML кода"""
 
         plots_dir = ensure_runtime_dir(self.plots_dir)

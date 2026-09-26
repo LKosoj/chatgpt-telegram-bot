@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import openai
+
 from bot.ai_events import (
     AIEvent,
     AIMessage,
@@ -14,9 +16,74 @@ from bot.ai_events import (
     AIToolCallReceived,
     AIUsage,
 )
-from bot.ai_provider import AIProviderRequest
+from bot.ai_provider import (
+    AIProviderRequest,
+    ProviderBadRequestError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderStreamError,
+)
 
 CreateChatCompletion = Callable[..., Awaitable[Any]]
+
+
+def build_openai_client(config: dict, http_client) -> "openai.AsyncOpenAI":
+    """Moved from OpenAIHelper.__init__ verbatim (retries only in the SDK,
+    max_retries=3)."""
+    client_kwargs = {
+        "api_key": config["api_key"],
+        "http_client": http_client,
+        "timeout": 300.0,
+        "max_retries": 3,
+    }
+    if config["openai_base"]:
+        client_kwargs["base_url"] = config["openai_base"]
+    return openai.AsyncOpenAI(**client_kwargs)
+
+
+def _translate(exc: Exception) -> Exception:
+    if isinstance(exc, openai.RateLimitError):
+        return ProviderRateLimitError(str(exc))
+    if isinstance(exc, openai.BadRequestError):
+        return ProviderBadRequestError(str(exc))
+    if isinstance(exc, openai.APIError):
+        return ProviderError(str(exc))
+    return exc
+
+
+async def _translate_stream_errors(raw_stream):
+    """Wrap a raw SDK stream so mid-iteration openai.* errors surface as
+    Provider* to every consumer (_AIProviderStreamProxy, openai_tool_handler).
+    Forwards aclose() to raw_stream in `finally` so closing this wrapper
+    (e.g. via _AIProviderStreamProxy.aclose()) still closes the underlying
+    SDK stream, not just this generator."""
+    try:
+        async for chunk in raw_stream:
+            yield chunk
+    except openai.APIError as exc:
+        raise ProviderStreamError(str(exc)) from exc
+    finally:
+        aclose = getattr(raw_stream, "aclose", None)
+        if callable(aclose):
+            await aclose()
+
+
+def raw_chat_completion(get_client):
+    """Build the CreateChatCompletion callable used by the production
+    OpenAICompatibleProvider. `get_client` is called fresh on every request
+    (not captured once) so tests that reassign `helper.client` after
+    construction keep working unchanged. No retry here — SDK max_retries=3
+    (build_openai_client) is the only retry layer."""
+    async def _create(**kwargs):
+        client = get_client()
+        try:
+            response = await client.chat.completions.create(**kwargs)
+        except openai.APIError as exc:
+            raise _translate(exc) from exc
+        if kwargs.get("stream"):
+            return _translate_stream_errors(response)
+        return response
+    return _create
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +100,13 @@ class OpenAICompatibleProvider:
         create_chat_completion: CreateChatCompletion,
         *,
         provider_name: str = "openai-compatible",
+        get_client=None,
+        get_gateway_client=None,
     ):
         self._create_chat_completion = create_chat_completion
         self.provider_name = provider_name
+        self._get_client = get_client
+        self._get_gateway_client = get_gateway_client
 
     async def stream_response(self, request: AIProviderRequest) -> AsyncIterator[AIEvent]:
         yield AIResponseStart(model=request.model, provider=self.provider_name)
@@ -49,6 +120,36 @@ class OpenAICompatibleProvider:
 
     async def create_response(self, request: AIProviderRequest) -> Any:
         return await self._create_chat_completion(**_request_to_kwargs(request))
+
+    async def generate_image(self, **kwargs: Any) -> Any:
+        try:
+            return await self._get_client().images.generate(**kwargs)
+        except openai.APIError as exc:
+            raise _translate(exc) from exc
+
+    async def list_models(self) -> Any:
+        try:
+            return await self._get_client().models.list()
+        except openai.APIError as exc:
+            raise _translate(exc) from exc
+
+    async def speech(self, **kwargs: Any) -> Any:
+        try:
+            return await self._get_client().audio.speech.create(**kwargs)
+        except openai.APIError as exc:
+            raise _translate(exc) from exc
+
+    async def transcribe(self, **kwargs: Any) -> Any:
+        try:
+            return await self._get_client().audio.transcriptions.create(**kwargs)
+        except openai.APIError as exc:
+            raise _translate(exc) from exc
+
+    async def edit_image(self, **kwargs: Any) -> Any:
+        return await self._get_gateway_client().image_edit_file(**kwargs)
+
+    async def list_voices(self, **kwargs: Any) -> Any:
+        return await self._get_gateway_client().audio_voices(**kwargs)
 
 
 def _request_to_kwargs(request: AIProviderRequest) -> dict[str, Any]:

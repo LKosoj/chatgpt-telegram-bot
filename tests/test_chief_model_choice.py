@@ -59,6 +59,16 @@ async def test_parse_menu_preferences_uses_light_model(plugin):
     assert helper.calls == [{"model": "cheap-model", "json_mode": True}]
 
 
+async def test_parse_menu_preferences_raises_value_error_when_no_json_found(plugin):
+    """До фикса функция неявно возвращает None, и эта же строка падает с
+    TypeError: cannot unpack non-iterable NoneType object — тем же способом,
+    каким падает вызывающий код в execute() (chief.py:548)."""
+    helper = FakeHelper("Извините, не могу разобрать ваши пожелания.")
+
+    with pytest.raises(ValueError, match="Не удалось разобрать предпочтения"):
+        preferences, tokens_used = await plugin._parse_menu_preferences("что-то", helper, user_id=1)
+
+
 async def test_enhance_recipe_keeps_the_main_model(plugin):
     """Its output is prose shown to the user, so it must not be downgraded."""
     helper = FakeHelper("Совет: посолите в конце.")

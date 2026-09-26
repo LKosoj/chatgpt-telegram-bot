@@ -1,5 +1,5 @@
 import os
-from typing import Dict
+from typing import Dict, List
 
 import spotipy
 from spotipy import SpotifyOAuth
@@ -31,7 +31,7 @@ class SpotifyPlugin(Plugin):
     def get_source_name(self) -> str:
         return "Spotify"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         time_range_param = {
             "type": "string",
             "enum": ["short_term", "medium_term", "long_term"],
@@ -130,6 +130,8 @@ class SpotifyPlugin(Plugin):
             search_type = kwargs.get('type', 'track')
             return self.search_by_id(content_id, search_type)
 
+        return {"error": f"Unknown function: {function_name}"}
+
     def fetch_currently_playing(self) -> Dict:
         """
         Fetch user's currently playing song from Spotify
@@ -191,7 +193,7 @@ class SpotifyPlugin(Plugin):
         """
         Search content by query on Spotify
         """
-        results = {}
+        results: Dict[str, List[Dict]] = {}
         search_response = self.spotify.search(q=query, limit=limit, type=search_type)
         if not search_response:
             return {"results": "No content found"}

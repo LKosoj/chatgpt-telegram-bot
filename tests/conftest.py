@@ -24,6 +24,13 @@ def _close_pytest_asyncio_baseline_loop():
     asyncio.set_event_loop(None)
 
 
+@pytest.fixture(autouse=True)
+def _instance_lock_path_in_tmp(tmp_path, monkeypatch):
+    """Keep bot/instance_lock.py's default lock file out of the source tree during tests
+    (bot/__main__.py reads INSTANCE_LOCK_PATH before falling back to a path next to DB_PATH)."""
+    monkeypatch.setenv("INSTANCE_LOCK_PATH", str(tmp_path / "bot.instance.lock"))
+
+
 @pytest.fixture()
 def agent_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "agent.db"))

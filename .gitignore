@@ -31,3 +31,6 @@ presentation_analysis_*.txt
 .ai-docs/
 .attachments/
 .cli-proxy/runtime/
+.mypy_cache/
+.coverage
+*.instance.lock

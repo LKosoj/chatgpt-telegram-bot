@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -33,6 +33,12 @@ WEEKDAYS = {
     "sun": 6, "sunday": 6, "воскресенье": 6, "вс": 6,
 }
 
+# Lease window for a claimed-but-not-finished cron job. A run is a full agent
+# turn (helper.get_chat_response, possibly several tool-call rounds), longer
+# than a single hindsight-extraction lease (900s), so this is sized with extra
+# headroom rather than copied from that unrelated worker.
+AGENT_CRON_JOB_LEASE_SECONDS = 1800
+
 
 class AgentCronPlugin(Plugin):
     plugin_id = "agent_cron"
@@ -40,19 +46,21 @@ class AgentCronPlugin(Plugin):
 
     def __init__(self):
         self.jobs_file = os.path.join(os.path.dirname(__file__), "agent_cron_jobs.json")
-        self.jobs: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self.db_handle: Any = None
         self._checker_task: asyncio.Task | None = None
         self._running_tasks: Dict[str, asyncio.Task] = {}
-        self._load_jobs()
 
     def get_source_name(self) -> str:
         return "Agent Cron"
 
-    def initialize(self, openai=None, bot=None, storage_root: str | None = None) -> None:
+    def initialize(self, openai=None, bot=None, storage_root: str | None = None,
+                    db=None, plugin_config=None) -> None:
         super().initialize(openai=openai, bot=bot, storage_root=storage_root)
+        self.db_handle = db
         if storage_root:
             self.jobs_file = os.path.join(storage_root, "agent_cron_jobs.json")
-            self._load_jobs()
+        if self.db_handle is not None:
+            self.db_handle.run_sync_blocking(self._import_json_jobs_sync)
 
     async def on_startup(self, application) -> None:
         if self._checker_task is None or self._checker_task.done():
@@ -64,6 +72,45 @@ class AgentCronPlugin(Plugin):
         for task in list(self._running_tasks.values()):
             task.cancel()
         self._running_tasks.clear()
+
+    def register_schema(self) -> List[str]:
+        return [
+            '''
+            CREATE TABLE IF NOT EXISTS agent_cron_jobs (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                schedule TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                schedule_type TEXT NOT NULL,
+                next_run_at TEXT,
+                interval_seconds INTEGER,
+                hour INTEGER,
+                minute INTEGER,
+                weekday INTEGER,
+                status TEXT NOT NULL DEFAULT 'active',
+                paused INTEGER NOT NULL DEFAULT 0,
+                reply_to_message_id INTEGER,
+                message_thread_id INTEGER,
+                created_at TEXT NOT NULL,
+                last_started_at TEXT,
+                last_finished_at TEXT,
+                last_error TEXT,
+                last_tokens INTEGER,
+                locked_at TEXT,
+                locked_by TEXT
+            )
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_agent_cron_jobs_due
+                ON agent_cron_jobs(paused, next_run_at)
+            ''',
+            '''
+            CREATE INDEX IF NOT EXISTS idx_agent_cron_jobs_scope
+                ON agent_cron_jobs(scope)
+            ''',
+        ]
 
     def get_spec(self) -> List[Dict]:
         return [{
@@ -90,9 +137,9 @@ class AgentCronPlugin(Plugin):
         parsed = self._parse_schedule(schedule)
         if not parsed:
             return {"error": self._usage()}
-        chat_id = int(kwargs.get("chat_id") or kwargs.get("user_id"))
+        chat_id = int(cast(int, kwargs.get("chat_id") or kwargs.get("user_id")))
         user_id = int(kwargs.get("user_id") or chat_id)
-        job = self._create_job(chat_id=chat_id, user_id=user_id, schedule=schedule, prompt=prompt, parsed=parsed)
+        job = await self._create_job(chat_id=chat_id, user_id=user_id, schedule=schedule, prompt=prompt, parsed=parsed)
         return {"direct_result": {"kind": "text", "format": "markdown", "value": self._format_created(job)}}
 
     def get_commands(self) -> List[Dict]:
@@ -108,11 +155,11 @@ class AgentCronPlugin(Plugin):
         message = update.effective_message
         if not message:
             return
-        chat_id = update.effective_chat.id
+        chat_id = message.chat_id
         user_id = update.effective_user.id if update.effective_user else chat_id
         args_text = message_text(message).strip()
         if not args_text or args_text == "list":
-            await message.reply_text(self._format_jobs(chat_id, user_id))
+            await message.reply_text(await self._format_jobs(chat_id, user_id))
             return
 
         action, _, rest = args_text.partition(" ")
@@ -126,7 +173,7 @@ class AgentCronPlugin(Plugin):
             if not parsed:
                 await message.reply_text(self._usage(), parse_mode="Markdown")
                 return
-            job = self._create_job(
+            job = await self._create_job(
                 chat_id=chat_id,
                 user_id=user_id,
                 schedule=schedule.strip(),
@@ -146,32 +193,48 @@ class AgentCronPlugin(Plugin):
 
     async def _handle_job_action(self, action: str, job_id: str, chat_id: int, user_id: int, bot, message) -> None:
         scope = compute_scope_key(chat_id=chat_id, user_id=user_id)
-        job = (self.jobs.get(scope) or {}).get(job_id)
+        job = await self.db_handle.fetch_one(
+            "SELECT * FROM agent_cron_jobs WHERE id = ? AND scope = ?", (job_id, scope)
+        )
         if not job:
             await message.reply_text("Cron job not found.")
             return
         if action == "pause":
-            job["paused"] = True
-            self._save_jobs()
+            await self.db_handle.execute(
+                "UPDATE agent_cron_jobs SET paused = 1 WHERE id = ? AND scope = ?", (job_id, scope)
+            )
             await message.reply_text(f"Cron job `{job_id}` paused.", parse_mode="Markdown")
             return
         if action == "resume":
-            job["paused"] = False
             if self._parse_iso(job.get("next_run_at")) is None:
                 parsed = self._parse_schedule(job.get("schedule", ""))
                 if parsed:
-                    job.update(parsed)
-            self._save_jobs()
+                    await self.db_handle.execute(
+                        '''UPDATE agent_cron_jobs
+                           SET paused = 0, schedule_type = ?, next_run_at = ?, interval_seconds = ?,
+                               hour = ?, minute = ?, weekday = ?
+                           WHERE id = ? AND scope = ?''',
+                        (
+                            parsed.get("schedule_type"), parsed.get("next_run_at"), parsed.get("interval_seconds"),
+                            parsed.get("hour"), parsed.get("minute"), parsed.get("weekday"), job_id, scope,
+                        ),
+                    )
+                    await message.reply_text(f"Cron job `{job_id}` resumed.", parse_mode="Markdown")
+                    return
+            await self.db_handle.execute(
+                "UPDATE agent_cron_jobs SET paused = 0 WHERE id = ? AND scope = ?", (job_id, scope)
+            )
             await message.reply_text(f"Cron job `{job_id}` resumed.", parse_mode="Markdown")
             return
         if action == "remove":
-            del self.jobs[scope][job_id]
-            self._save_jobs()
+            await self.db_handle.execute(
+                "DELETE FROM agent_cron_jobs WHERE id = ? AND scope = ?", (job_id, scope)
+            )
             await message.reply_text(f"Cron job `{job_id}` removed.", parse_mode="Markdown")
             return
         task = asyncio.create_task(self._run_job(bot, scope, job_id, manual=True))
         self._running_tasks[job_id] = task
-        task.add_done_callback(lambda _task, jid=job_id: self._running_tasks.pop(jid, None))
+        task.add_done_callback(lambda _task: self._running_tasks.pop(job_id, None))
         await message.reply_text(f"Cron job `{job_id}` queued for manual run.", parse_mode="Markdown")
 
     async def _checker_loop(self, bot) -> None:
@@ -185,25 +248,101 @@ class AgentCronPlugin(Plugin):
             await asyncio.sleep(60)
 
     async def _check_due_jobs(self, bot) -> None:
-        self._load_jobs()
+        if self.db_handle is None:
+            return
+        now_iso, lease_cutoff_iso, worker_id = self._lease_params()
+        # Exclude ids already tracked in _running_tasks (e.g. a manual /cron run
+        # queued moments ago, before it has performed its own DB claim) so the
+        # automatic path never claims a row it isn't going to execute — see W1.
+        claimed = await self.db_handle.run_sync(
+            self._claim_due_jobs_sync, now_iso, lease_cutoff_iso, worker_id,
+            frozenset(self._running_tasks.keys()),
+        )
+        for job in claimed:
+            job_id = job["id"]
+            if job_id in self._running_tasks:
+                continue
+            task = asyncio.create_task(self._run_job(bot, job["scope"], job_id))
+            self._running_tasks[job_id] = task
+
+            def _forget_cron_job(_task: object, jid: Any = job_id) -> None:
+                self._running_tasks.pop(jid, None)
+
+            task.add_done_callback(_forget_cron_job)
+
+    @staticmethod
+    def _lease_params() -> tuple[str, str, str]:
         now = datetime.now()
-        for scope, jobs in list(self.jobs.items()):
-            for job_id, job in list(jobs.items()):
-                if job.get("paused") or job.get("status") == "running":
-                    continue
-                next_run = self._parse_iso(job.get("next_run_at"))
-                if next_run and next_run <= now and job_id not in self._running_tasks:
-                    task = asyncio.create_task(self._run_job(bot, scope, job_id))
-                    self._running_tasks[job_id] = task
-                    task.add_done_callback(lambda _task, jid=job_id: self._running_tasks.pop(jid, None))
+        now_iso = now.isoformat(timespec="seconds")
+        lease_cutoff_iso = (now - timedelta(seconds=AGENT_CRON_JOB_LEASE_SECONDS)).isoformat(timespec="seconds")
+        worker_id = str(os.getpid())
+        return now_iso, lease_cutoff_iso, worker_id
+
+    def _claim_due_jobs_sync(
+        self, db, now_iso: str, lease_cutoff_iso: str, worker_id: str,
+        exclude_ids: frozenset[str] = frozenset(),
+    ) -> List[Dict[str, Any]]:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                '''
+                SELECT id FROM agent_cron_jobs
+                WHERE paused = 0
+                  AND next_run_at IS NOT NULL
+                  AND next_run_at <= ?
+                  AND (status != 'running' OR locked_at IS NULL OR locked_at <= ?)
+                ORDER BY next_run_at ASC
+                ''',
+                (now_iso, lease_cutoff_iso),
+            )
+            job_ids = [row[0] for row in cursor.fetchall() if row[0] not in exclude_ids]
+            if not job_ids:
+                return []
+            placeholders = ",".join("?" for _ in job_ids)
+            cursor.execute(
+                f'''UPDATE agent_cron_jobs
+                    SET status='running', locked_at=?, locked_by=?, last_started_at=?
+                    WHERE id IN ({placeholders})''',
+                (now_iso, worker_id, now_iso, *job_ids),
+            )
+            cursor.execute(f"SELECT * FROM agent_cron_jobs WHERE id IN ({placeholders})", job_ids)
+            rows = [dict(r) for r in cursor.fetchall()]
+        order = {jid: i for i, jid in enumerate(job_ids)}
+        rows.sort(key=lambda r: order.get(r["id"], 0))
+        return rows
+
+    def _claim_job_by_id_sync(
+        self, db, job_id: str, scope: str, now_iso: str, lease_cutoff_iso: str, worker_id: str
+    ) -> Dict[str, Any] | None:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                '''UPDATE agent_cron_jobs
+                   SET status='running', locked_at=?, locked_by=?, last_started_at=?
+                   WHERE id = ? AND scope = ?
+                     AND (status != 'running' OR locked_at IS NULL OR locked_at <= ?)''',
+                (now_iso, worker_id, now_iso, job_id, scope, lease_cutoff_iso),
+            )
+            if cursor.rowcount == 0:
+                return None
+            cursor.execute("SELECT * FROM agent_cron_jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
 
     async def _run_job(self, bot, scope: str, job_id: str, *, manual: bool = False) -> None:
-        job = (self.jobs.get(scope) or {}).get(job_id)
+        now_iso, lease_cutoff_iso, worker_id = self._lease_params()
+        if manual:
+            job = await self.db_handle.run_sync(
+                self._claim_job_by_id_sync, job_id, scope, now_iso, lease_cutoff_iso, worker_id
+            )
+        else:
+            job = await self.db_handle.fetch_one(
+                "SELECT * FROM agent_cron_jobs WHERE id = ? AND scope = ?", (job_id, scope)
+            )
         if not job:
             return
-        job["status"] = "running"
-        job["last_started_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_jobs()
         try:
             helper = getattr(self, "openai", None)
             if not helper or not hasattr(helper, "get_chat_response"):
@@ -221,7 +360,7 @@ class AgentCronPlugin(Plugin):
                 user_id=int(job["user_id"]),
                 request_context=request_context,
             )
-            live = (self.jobs.get(scope) or {}).get(job_id)
+            live = await self.db_handle.fetch_one("SELECT * FROM agent_cron_jobs WHERE id = ?", (job_id,))
             if live is None:
                 return
             job = live
@@ -231,7 +370,7 @@ class AgentCronPlugin(Plugin):
             job["last_tokens"] = total_tokens
             if not manual:
                 self._advance_job(job)
-            self._save_jobs()
+            await self._finish_job(job)
             await self._maybe_dispatch_autonomous_response_hook(helper, job, job_id, response, total_tokens)
             await send_agent_response(
                 bot,
@@ -244,7 +383,7 @@ class AgentCronPlugin(Plugin):
             )
         except Exception as exc:
             logger.exception("Agent cron job %s failed", job_id)
-            live = (self.jobs.get(scope) or {}).get(job_id)
+            live = await self.db_handle.fetch_one("SELECT * FROM agent_cron_jobs WHERE id = ?", (job_id,))
             if live is None:
                 return
             job = live
@@ -252,7 +391,7 @@ class AgentCronPlugin(Plugin):
             job["last_error"] = str(exc)
             if not manual:
                 self._advance_job(job)
-            self._save_jobs()
+            await self._finish_job(job)
             await send_text_chunks(
                 bot,
                 chat_id=int(job["chat_id"]),
@@ -261,6 +400,19 @@ class AgentCronPlugin(Plugin):
                 message_thread_id=job.get("message_thread_id"),
                 config=getattr(locals().get("helper"), "config", None),
             )
+
+    async def _finish_job(self, job: Dict[str, Any]) -> None:
+        await self.db_handle.execute(
+            '''UPDATE agent_cron_jobs
+               SET status = ?, last_finished_at = ?, last_error = ?, last_tokens = ?,
+                   paused = ?, next_run_at = ?, locked_at = NULL, locked_by = NULL
+               WHERE id = ?''',
+            (
+                job.get("status"), job.get("last_finished_at"), job.get("last_error"),
+                job.get("last_tokens"), int(bool(job.get("paused"))), job.get("next_run_at"),
+                job["id"],
+            ),
+        )
 
     @staticmethod
     def _autonomous_capture_enabled() -> bool:
@@ -304,42 +456,59 @@ class AgentCronPlugin(Plugin):
         except Exception:
             logger.exception("Agent cron autonomous response hook dispatch failed for job_id=%s", job_id)
 
-    def _load_jobs(self) -> None:
+    def _import_json_jobs_sync(self, db) -> None:
+        with db.get_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_cron_jobs").fetchone()[0]
+        if count > 0:
+            # Table already has data: either import already ran, or the
+            # process crashed after the INSERT commit below but before the
+            # rename. Finish the rename so the legacy file doesn't linger
+            # forever, but never re-import (idempotent).
+            if os.path.exists(self.jobs_file):
+                os.replace(self.jobs_file, self.jobs_file + ".migrated")
+            return
+        if not os.path.exists(self.jobs_file):
+            return
         try:
-            if not os.path.exists(self.jobs_file):
-                self.jobs = {}
-                return
             with open(self.jobs_file, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            self.jobs = data if isinstance(data, dict) else {}
-            changed = False
-            for jobs in self.jobs.values():
-                if not isinstance(jobs, dict):
+        except Exception:
+            logger.exception("Failed to read agent_cron_jobs.json for import")
+            return
+        if not isinstance(data, dict):
+            return
+        rows = []
+        for scope, jobs in data.items():
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
                     continue
-                for job_id, job in jobs.items():
-                    if isinstance(job, dict) and job.get("status") == "running":
-                        if job_id not in self._running_tasks:
-                            job["status"] = "active"
-                            changed = True
-            if changed:
-                self._save_jobs()
-        except Exception:
-            logger.exception("Failed to load agent cron jobs")
-            self.jobs = {}
+                status = job.get("status")
+                rows.append((
+                    job_id, scope, job.get("chat_id"), job.get("user_id"),
+                    job.get("schedule", ""), job.get("prompt", ""),
+                    job.get("schedule_type", "once"), job.get("next_run_at"),
+                    job.get("interval_seconds"), job.get("hour"), job.get("minute"),
+                    job.get("weekday"), "active" if status == "running" else (status or "active"),
+                    int(bool(job.get("paused"))), job.get("reply_to_message_id"),
+                    job.get("message_thread_id"), job.get("created_at") or datetime.now().isoformat(timespec="seconds"),
+                    job.get("last_started_at"), job.get("last_finished_at"),
+                    job.get("last_error"), job.get("last_tokens"), None, None,
+                ))
+        with db.get_connection() as conn:
+            conn.executemany(
+                '''INSERT OR IGNORE INTO agent_cron_jobs (
+                    id, scope, chat_id, user_id, schedule, prompt, schedule_type, next_run_at,
+                    interval_seconds, hour, minute, weekday, status, paused, reply_to_message_id,
+                    message_thread_id, created_at, last_started_at, last_finished_at, last_error,
+                    last_tokens, locked_at, locked_by
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                rows,
+            )
+        os.replace(self.jobs_file, self.jobs_file + ".migrated")
 
-    def _save_jobs(self) -> None:
-        try:
-            jobs_dir = os.path.dirname(self.jobs_file)
-            if jobs_dir:
-                os.makedirs(jobs_dir, exist_ok=True)
-            tmp_path = self.jobs_file + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(self.jobs, fh, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.jobs_file)
-        except Exception:
-            logger.exception("Failed to save agent cron jobs")
-
-    def _create_job(
+    async def _create_job(
         self,
         *,
         chat_id: int,
@@ -366,8 +535,20 @@ class AgentCronPlugin(Plugin):
             "message_thread_id": message_thread_id,
             **parsed,
         }
-        self.jobs.setdefault(scope, {})[job_id] = job
-        self._save_jobs()
+        await self.db_handle.execute(
+            '''INSERT INTO agent_cron_jobs (
+                id, scope, chat_id, user_id, schedule, prompt, schedule_type, next_run_at,
+                interval_seconds, hour, minute, weekday, status, paused, reply_to_message_id,
+                message_thread_id, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (
+                job["id"], job["scope"], job["chat_id"], job["user_id"], job["schedule"], job["prompt"],
+                job.get("schedule_type"), job.get("next_run_at"), job.get("interval_seconds"),
+                job.get("hour"), job.get("minute"), job.get("weekday"), job["status"],
+                int(job["paused"]), job.get("reply_to_message_id"), job.get("message_thread_id"),
+                job["created_at"],
+            ),
+        )
         return job
 
     def _advance_job(self, job: Dict[str, Any]) -> None:
@@ -404,14 +585,15 @@ class AgentCronPlugin(Plugin):
                 next_run += timedelta(days=7)
             job["next_run_at"] = next_run.isoformat(timespec="seconds")
 
-    def _format_jobs(self, chat_id: int, user_id: int) -> str:
+    async def _format_jobs(self, chat_id: int, user_id: int) -> str:
         scope = compute_scope_key(chat_id=chat_id, user_id=user_id)
-        jobs = list((self.jobs.get(scope) or {}).values())
+        jobs = await self.db_handle.fetch_all(
+            "SELECT * FROM agent_cron_jobs WHERE scope = ? ORDER BY created_at DESC LIMIT 20", (scope,)
+        )
         if not jobs:
             return self._usage()
-        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         lines = ["Agent cron jobs:"]
-        for job in jobs[:20]:
+        for job in jobs:
             prompt = str(job.get("prompt") or "").replace("\n", " ")
             if len(prompt) > 70:
                 prompt = prompt[:67] + "..."

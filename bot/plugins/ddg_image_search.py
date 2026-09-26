@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 from .ddg_web_search import _language_from_region
 from .plugin import Plugin
@@ -12,7 +12,7 @@ class DDGImageSearchPlugin(Plugin):
     def get_source_name(self) -> str:
         return "LLMGateway Image Search"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "search_images",
             "description": (

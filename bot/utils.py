@@ -10,14 +10,16 @@ import base64
 import re
 import time
 from PIL import Image
+from typing import Any, cast
 import uuid
 
 import telegram
 import telegramify_markdown
-from telegram import Message, MessageEntity, Update, ChatMember, constants
+from telegram import Message, MessageEntity, Update, User, ChatMember, constants
 from telegram.ext import CallbackContext, ContextTypes
 from .i18n import localized_text
 
+from .artifact_paths import is_deliverable, is_protected_path
 from .usage_tracker import UsageTracker
 from .pricing import resolve_chat_cost
 from .html_utils import HTMLVisualizer
@@ -144,7 +146,7 @@ class BusyStatusMessage:
         self.config = config
         self.interval = interval
         self.plan_provider = plan_provider
-        self.message = None
+        self.message: Message | None = None
         self._started_at = time.monotonic()
         self._task = None
         self._stopped = False
@@ -325,7 +327,7 @@ def split_into_chunks(text: str, chunk_size: int = 4096) -> list[str]:
     chunks = []
     current_chunk = ""
     current_len = 0
-    markdown_stack = []  # Стек для отслеживания открытых Markdown-элементов
+    markdown_stack: list[str] = []  # Стек для отслеживания открытых Markdown-элементов
 
     def close_markdown_markers(chunk: str) -> str:
         for md in reversed(markdown_stack):
@@ -494,7 +496,7 @@ async def try_send_rich_markdown_response(
     text = str(text or "")
     required = rich_messages_required(config)
     if not rich_markdown_fits(text):
-        error = ValueError(
+        error: Exception = ValueError(
             "Telegram rich markdown exceeds "
             f"{MAX_RICH_MARKDOWN_BYTES} bytes"
         )
@@ -549,7 +551,7 @@ async def try_send_rich_markdown_response(
 
 
 async def wrap_with_indicator(update: Update, context: CallbackContext, coroutine,
-                            chat_action: constants.ChatAction = "", is_inline=False):
+                            chat_action: constants.ChatAction | str = "", is_inline=False):
     """
     Wraps a coroutine while repeatedly sending a chat action to the user.
     """
@@ -560,8 +562,9 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
             while not task.done():
                 if not is_inline:
                     try:
+                        assert update.effective_chat is not None
                         await update.effective_chat.send_action(
-                            chat_action, 
+                            chat_action,
                             message_thread_id=get_thread_id(update)
                         )
                     except Exception as e:
@@ -664,7 +667,7 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
         return True
 
     if is_inline and update.inline_query:
-        user = update.inline_query.from_user
+        user: User | None = update.inline_query.from_user
     elif update.callback_query:
         user = update.callback_query.from_user
     elif update.message:
@@ -682,11 +685,12 @@ async def is_allowed(config, update: Update, context: CallbackContext, is_inline
     if str(user_id) in allowed_user_ids:
         return True
     # Check if it's a group a chat with at least one authorized member
-    if not is_inline and is_group_chat(update):
+    if (not is_inline and is_group_chat(update)
+            and config.get('allow_group_members_via_authorized_user', True)):
         admin_user_ids = [x.strip() for x in config['admin_user_ids'].split(',') if x.strip()]
-        for user in itertools.chain(allowed_user_ids, admin_user_ids):
-            if await is_user_in_group(update, context, user):
-                logging.info(f'{user} is a member. Allowing group chat message...')
+        for candidate_id in itertools.chain(allowed_user_ids, admin_user_ids):
+            if await is_user_in_group(update, context, candidate_id):
+                logging.info(f'{candidate_id} is a member. Allowing group chat message...')
                 return True
         logging.info(f'Group chat messages from user {name} '
                      f'(id: {user_id}) are not allowed')
@@ -758,7 +762,7 @@ def get_remaining_budget(config, usage, update: Update, is_inline=False) -> floa
     }
 
     if is_inline and update.inline_query:
-        user = update.inline_query.from_user
+        user: User | None = update.inline_query.from_user
     elif update.callback_query:
         user = update.callback_query.from_user
     elif update.message:
@@ -811,7 +815,7 @@ _BUDGET_COST_MAP = {
 
 def _budget_user_and_name(update: Update, is_inline: bool):
     if is_inline and update.inline_query:
-        user = update.inline_query.from_user
+        user: User | None = update.inline_query.from_user
     elif update.callback_query:
         user = update.callback_query.from_user
     elif update.message:
@@ -865,7 +869,7 @@ def _charge_user_and_guest(usage, config, user_id, charge_fn):
         return False
     try:
         charge_fn(usage[user_id])
-        allowed_user_ids = config['allowed_user_ids'].split(',')
+        allowed_user_ids = [x.strip() for x in config['allowed_user_ids'].split(',') if x.strip()]
         if str(user_id) not in allowed_user_ids and 'guests' in usage:
             charge_fn(usage['guests'])
         return True
@@ -879,7 +883,7 @@ async def _charge_user_and_guest_async(usage, config, user_id, charge_fn_async):
         return False
     try:
         await charge_fn_async(usage[user_id])
-        allowed_user_ids = config['allowed_user_ids'].split(',')
+        allowed_user_ids = [x.strip() for x in config['allowed_user_ids'].split(',') if x.strip()]
         if str(user_id) not in allowed_user_ids and 'guests' in usage:
             await charge_fn_async(usage['guests'])
         return True
@@ -1056,7 +1060,13 @@ def compute_scope_key(chat_id=None, user_id=None) -> str:
     return "global"
 
 
-def is_direct_result(response: any) -> bool:
+def _artifact_scope_for_update(update: Update) -> str:
+    chat_id = getattr(getattr(update, "effective_chat", None), "id", None)
+    user_id = getattr(getattr(update, "effective_user", None), "id", None)
+    return compute_scope_key(chat_id, user_id)
+
+
+def is_direct_result(response: Any) -> bool:
     """
     Checks if the dict contains a structurally valid direct_result payload that can be
     sent directly to the user. Requires a dict with a non-empty `kind` field.
@@ -1064,7 +1074,7 @@ def is_direct_result(response: any) -> bool:
     return direct_result_payload(response) is not None
 
 
-def direct_result_inline_fallback_text(response: any, unavailable_message: str, *, max_chars: int = 3500) -> str:
+def direct_result_inline_fallback_text(response: Any, unavailable_message: str, *, max_chars: int = 3500) -> str:
     if type(response) is not dict:
         try:
             response = json.loads(response)
@@ -1184,27 +1194,29 @@ def resize_image_if_needed(image_path: str, max_dimension: int = 10000) -> tuple
     """
     with Image.open(image_path) as img:
         # Получаем формат изображения
+        assert img.format is not None
         format = img.format.lower()
-        
+
         # Проверяем размеры
         width, height = img.size
+        resized_img: Image.Image = img
         if width > max_dimension or height > max_dimension:
             # Вычисляем новые размеры с сохранением пропорций
             ratio = min(max_dimension / width, max_dimension / height)
             new_width = int(width * ratio)
             new_height = int(height * ratio)
-            
+
             # Изменяем размер
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
+            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
         # Сохраняем в BytesIO
         output = io.BytesIO()
-        img.save(output, format=format)
+        resized_img.save(output, format=format)
         output.seek(0)
         
         return output, format
 
-async def handle_direct_result(config, update: Update, response: any, *, bot=None):
+async def handle_direct_result(config, update: Update, response: Any, *, bot=None):
     """
     Handles a direct result from a plugin
     """
@@ -1247,6 +1259,14 @@ async def handle_direct_result(config, update: Update, response: any, *, bot=Non
     if not message:
         logging.error("No message available to send direct result")
         return
+    # PTB only yields MaybeInaccessibleMessage for query.message when the
+    # Application is built with Defaults(block=False) and an out-of-TTL
+    # update; this project's builder (bot/telegram_bot.py) does not set
+    # Defaults(block=False), so message is always a full Message here.
+    # cast (not isinstance/assert): callers in tests pass duck-typed message
+    # doubles that are not actual telegram.Message instances, and this must
+    # stay a type-only annotation with no runtime check to avoid breaking them.
+    message = cast(Message, message)
 
     common_args = {
         'message_thread_id': get_thread_id(update),
@@ -1287,41 +1307,74 @@ async def handle_direct_result(config, update: Update, response: any, *, bot=Non
         return sent_messages
 
     caption = result.get('caption')
-    caption_kwargs = {'caption': str(caption)} if caption else {}
+    caption_kwargs: dict[str, Any] = {'caption': str(caption)} if caption else {}
 
     if kind == 'photo':
         if result_format == 'url':
+            assert value is not None, "direct_result photo/url requires 'value'"
             sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
         elif result_format == 'path':
-            try:
-                if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
-                    # Пробуем отправить как документ
-                    with open(value, 'rb') as fh:
-                        sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
-                else:
-                    # Пробуем отправить как фото
-                    sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
-            except Exception as e:
-                logging.error(
-                    "Error handling photo direct result error=%s value_shape=%s",
-                    log_exception_shape(e),
-                    log_value_shape(value, key="value"),
-                )
-                # Проверяем и изменяем размеры изображения при необходимости
-                photo_file, photo_format = resize_image_if_needed(value)
-                sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=photo_file))
+            allowed, reason = is_deliverable(str(value), scope=_artifact_scope_for_update(update))
+            if not allowed:
+                logging.warning("Rejected direct_result photo path=%s reason=%s", value, reason)
+                sent_messages.append(await message.reply_text(
+                    **common_args,
+                    text=f"Artifact path is unavailable: {os.path.basename(str(value))}",
+                    parse_mode=None,
+                ))
+            else:
+                assert value is not None, "is_deliverable only allows a real 'value' path"
+                try:
+                    if get_image_size(value)[0] > 10000 or get_image_size(value)[1] > 10000:
+                        # Пробуем отправить как документ
+                        with open(value, 'rb') as fh:
+                            sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
+                    else:
+                        # Пробуем отправить как фото
+                        sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=value))
+                except Exception as e:
+                    logging.error(
+                        "Error handling photo direct result error=%s value_shape=%s",
+                        log_exception_shape(e),
+                        log_value_shape(value, key="value"),
+                    )
+                    # Проверяем и изменяем размеры изображения при необходимости
+                    photo_file, photo_format = resize_image_if_needed(value)
+                    sent_messages.append(await message.reply_photo(**common_args, **caption_kwargs, photo=photo_file))
     elif kind == 'gif':
         if result_format == 'url':
+            assert value is not None, "direct_result gif/url requires 'value'"
             sent_messages.append(await message.reply_animation(**common_args, **caption_kwargs, animation=value))
         elif result_format == 'path':
-            with open(value, 'rb') as fh:
-                sent_messages.append(await message.reply_animation(**common_args, **caption_kwargs, animation=fh))
+            allowed, reason = is_deliverable(str(value), scope=_artifact_scope_for_update(update))
+            if not allowed:
+                logging.warning("Rejected direct_result gif path=%s reason=%s", value, reason)
+                sent_messages.append(await message.reply_text(
+                    **common_args,
+                    text=f"Artifact path is unavailable: {os.path.basename(str(value))}",
+                    parse_mode=None,
+                ))
+            else:
+                assert value is not None, "is_deliverable only allows a real 'value' path"
+                with open(value, 'rb') as fh:
+                    sent_messages.append(await message.reply_animation(**common_args, **caption_kwargs, animation=fh))
     elif kind == 'file':
         if result_format == 'url':
+            assert value is not None, "direct_result file/url requires 'value'"
             sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=value))
         elif result_format == 'path':
-            with open(value, 'rb') as fh:
-                sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
+            allowed, reason = is_deliverable(str(value), scope=_artifact_scope_for_update(update))
+            if not allowed:
+                logging.warning("Rejected direct_result file path=%s reason=%s", value, reason)
+                sent_messages.append(await message.reply_text(
+                    **common_args,
+                    text=f"Artifact path is unavailable: {os.path.basename(str(value))}",
+                    parse_mode=None,
+                ))
+            else:
+                assert value is not None, "is_deliverable only allows a real 'value' path"
+                with open(value, 'rb') as fh:
+                    sent_messages.append(await message.reply_document(**common_args, **caption_kwargs, document=fh))
     elif kind == 'reaction':
         target_message = getattr(message, 'reply_to_message', None)
         set_reaction = getattr(target_message, 'set_reaction', None) if target_message else None
@@ -1364,7 +1417,7 @@ async def handle_direct_result(config, update: Update, response: any, *, bot=Non
             message_parts = [] if rich_messages else render_markdown_message_entities(text)
             sent_messages.extend(rich_messages)
         else:
-            message_parts = [(chunk, None) for chunk in chunks]
+            message_parts = [(chunk, []) for chunk in chunks]
 
         # Отправляем как файл если: 
         # - ответ больше 3х частей ИЛИ 
@@ -1434,7 +1487,7 @@ async def handle_direct_result(config, update: Update, response: any, *, bot=Non
         cleanup_intermediate_files(response)
     return sent_messages
 
-def cleanup_intermediate_files(response: any):
+def cleanup_intermediate_files(response: Any):
     """
     Deletes intermediate files created by plugins
     """
@@ -1459,7 +1512,7 @@ def cleanup_intermediate_files(response: any):
     )
 
     if format == 'path' and value and not result.get("preserve_after_delivery"):
-        if os.path.exists(value):
+        if os.path.exists(value) and not is_protected_path(value):
             os.remove(value)
 
 # Function to encode the image
@@ -1517,6 +1570,7 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
     filename = f"{safe_session_name}_{timestamp}.html"
     
     # Отправляем файл пользователю
+    assert update.effective_message is not None
     sent_message = await update.effective_message.reply_document(
         message_thread_id=get_thread_id(update),
         reply_to_message_id=get_reply_to_message_id(config, update),
@@ -1537,3 +1591,26 @@ async def send_long_response_as_file(config, update: Update, response: str, sess
         )
 
     return sent_message
+
+
+def parse_model_choices(raw: str | list[str] | None, default_model: str) -> list[str]:
+    """Parse a model-choices value into a list with the default first.
+
+    Common shape of ``OpenAIHelper.get_model_choices()``,
+    ``ChatGPTTelegramBot._configured_openai_models()``'s fallback block, and
+    ``bot.plugins.agent_tools._model_choices_for_helper()``'s fallback
+    block: ``raw`` as a comma-separated string is split and stripped; as a
+    list, each element is stripped; empty entries are dropped either way.
+    Entries are not deduplicated. ``default_model`` is inserted at the front
+    only if not already present among the parsed entries (its existing
+    position, if any, is left untouched).
+    """
+    if isinstance(raw, str):
+        models = [model.strip() for model in raw.split(",") if model.strip()]
+    else:
+        models = [str(model).strip() for model in (raw or []) if str(model).strip()]
+
+    default_model = str(default_model or "").strip()
+    if default_model and default_model not in models:
+        models.insert(0, default_model)
+    return models

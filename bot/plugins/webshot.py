@@ -4,8 +4,10 @@ import os
 import requests
 import random
 import string
-from typing import Dict
+from typing import Dict, List
 from .plugin import Plugin
+
+MAX_WEBSHOT_BYTES = int(os.environ.get("WEBSHOT_MAX_IMAGE_BYTES", 8_000_000))
 
 class WebshotPlugin(Plugin):
     """
@@ -14,7 +16,7 @@ class WebshotPlugin(Plugin):
     def get_source_name(self) -> str:
         return "WebShot"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "screenshot_website",
             "description": "Show screenshot/image of a website from a given url or domain name.",
@@ -42,6 +44,13 @@ class WebshotPlugin(Plugin):
             response = await asyncio.to_thread(requests.get, image_url, timeout=30)
 
             if response.status_code == 200:
+                # requests.get(...) above is not stream=True, so the full response is
+                # already buffered in memory before this check runs. This limit stops
+                # an oversized image from being written to disk/sent to the user, but
+                # not the transient memory cost of receiving it in the first place.
+                if len(response.content) > MAX_WEBSHOT_BYTES:
+                    return {'result': 'Unable to screenshot website'}
+
                 if not os.path.exists("uploads/webshot"):
                     os.makedirs("uploads/webshot")
 

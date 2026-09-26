@@ -132,7 +132,7 @@ class ChiefPlugin(Plugin):
         if not all([self.edamam_app_id, self.edamam_app_key, self.edamam_user_id]):
             raise ValueError("Edamam credentials not set (APP_ID, APP_KEY, USER_ID required)")
 
-    async def _parse_with_retry(self, user_query: str, helper, user_id: int, retries=3) -> Tuple[Dict, int]:
+    async def _parse_with_retry(self, user_query: str, helper, user_id: int, retries=3) -> Tuple[Optional[Dict], int]:
         """Парсит запрос пользователя с несколькими попытками"""
         prompt = f"""Проанализируй запрос пользователя о приготовлении блюда и верни только JSON с такими полями:
         - ingredients: массив основных ингредиентов для поиска рецепта
@@ -340,7 +340,7 @@ class ChiefPlugin(Plugin):
         
         return output
 
-    async def _generate_daily_menu(self, preferences: Dict, helper, user_id: int) -> Tuple[Dict, int]:
+    async def _generate_daily_menu(self, preferences: Dict, helper, user_id: int) -> Tuple[Dict[str, str], int]:
         """Генерирует меню на один день с учетом предпочтений"""
         total_tokens_used = 0
         daily_menu = {}
@@ -464,11 +464,14 @@ class ChiefPlugin(Plugin):
                 
                 validate(instance=preferences, schema=self.menu_plan_schema)
                 return preferences, tokens_used
+            else:
+                logging.error("Error parsing menu preferences: no JSON object found in response")
+                raise ValueError("Не удалось разобрать предпочтения. Пожалуйста, уточните ваши пожелания.")
         except (json.JSONDecodeError, ValidationError) as e:
             logging.error(f"Error parsing menu preferences: {str(e)}")
             raise ValueError("Не удалось разобрать предпочтения. Пожалуйста, уточните ваши пожелания.")
 
-    def _format_menu_plan(self, menu_plan: Dict[str, Dict[str, str]]) -> str:
+    def _format_menu_plan(self, menu_plan: Dict[int, Dict[str, str]]) -> str:
         """Форматирует план меню в читаемый текст"""
         output = "📋 План меню:\n\n"
         
@@ -565,6 +568,7 @@ class ChiefPlugin(Plugin):
                     },
                     "tokens_used": total_tokens_used
                 }
-                
+
+            return {"error": f"Unknown function: {function_name}"}
         except Exception as e:
             return {"error": self.t("chief_request_error", error=str(e))}

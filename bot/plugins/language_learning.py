@@ -3,7 +3,7 @@ import os
 import json
 import random
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, cast
 
 from .plugin import Plugin
 
@@ -38,7 +38,7 @@ class LanguageLearningPlugin(Plugin):
     def get_source_name(self) -> str:
         return "LanguageLearning"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "daily_practice",
             "description": "Generate daily language practice exercises",
@@ -166,8 +166,8 @@ class LanguageLearningPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         """Execute plugin functions"""
         if function_name == "daily_practice":
-            language = kwargs.get('language').lower()
-            level = kwargs.get('level')
+            language = cast(str, kwargs.get('language')).lower()
+            level = cast(str, kwargs.get('level'))
             exercise_type = kwargs.get('exercise_type', 'vocabulary')
             
             if language not in self.supported_languages:
@@ -201,7 +201,7 @@ class LanguageLearningPlugin(Plugin):
             user_id = self._get_owner_user_id(kwargs)
             if user_id is None:
                 return {"error": "Telegram user_id is required for language progress tracking"}
-            language = kwargs.get('language').lower()
+            language = cast(str, kwargs.get('language')).lower()
             completed = kwargs.get('completed_exercise')
             
             if user_id not in self.users_progress:

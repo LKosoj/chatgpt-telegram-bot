@@ -8,18 +8,16 @@ test scans for regressions: any future `self.openai._foo` / `helper._foo` / the
 explicit shared-state dict names, direct or via getattr(). If a new access is
 legitimate, add it to ALLOWED with a reason -- do not silently raise the threshold.
 
-Scanned: bot/telegram_bot.py, bot/plugins/*.py and bot/skill_script_routing.py --
-the three places that consume an OpenAIHelper instance from outside.
-
-Deliberately NOT scanned: bot/openai_tool_handler.py. It is not a consumer of the
-helper but a piece of the helper's own request machinery that was split into its own
-module, and it reaches into ~16 helper internals on purpose
-(`_add_function_call_to_history`, `_apply_before_chat_request_mutators`,
-`_without_chat_lock`, ...). Guarding it would freeze OpenAIHelper's internals rather
-than a boundary. Two of those accesses do mutate the shared history cache from outside
-the class (`helper.conversations.setdefault` at bot/openai_tool_handler.py:255,
-`helper.conversations.get` at :1658); converting them to the public API was outside
-T19's scope and is a known remaining gap.
+Scanned: bot/telegram_bot.py, bot/plugins/*.py, bot/skill_script_routing.py, and (since
+T11) bot/openai_tool_handler.py -- it is not a consumer of the helper but a piece of the
+helper's own request machinery that was split into its own module, and it reaches into
+the helper's internals on purpose (`_add_function_call_to_history`,
+`_apply_before_chat_request_mutators`, `_without_chat_lock`, ...), so it gets its own
+ALLOWED entries below rather than being held to zero. T11 converted the one remaining
+direct mutation of the shared history cache (`helper.conversations.setdefault` at
+bot/openai_tool_handler.py:254) to `helper._mutable_history(chat_id)`; the one read-only
+`helper.conversations.get(...)` logging call (:1712) was deliberately left as-is (smaller
+diff, read-only, already goes through the public-shaped `conversations` property).
 """
 
 from __future__ import annotations
@@ -34,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TELEGRAM_BOT_FILE = REPO_ROOT / "bot" / "telegram_bot.py"
 PLUGINS_DIR = REPO_ROOT / "bot" / "plugins"
 SKILL_ROUTING_FILE = REPO_ROOT / "bot" / "skill_script_routing.py"
+OPENAI_TOOL_HANDLER_FILE = REPO_ROOT / "bot" / "openai_tool_handler.py"
 
 # Names that are not underscore-prefixed but are still considered private
 # per-chat state, mirroring OpenAIHelper._clear_chat_state's docstring.
@@ -49,6 +48,35 @@ ALLOWED: Dict[Tuple[str, str], Tuple[int, str]] = {
         1, "read-only system-message lookup via getattr(), bot/skill_script_routing.py:20"),
     ("bot/skill_script_routing.py", "_mode_from_system_message"): (
         1, "read-only mode resolution via getattr(), bot/skill_script_routing.py:31"),
+
+    # bot/openai_tool_handler.py: piece of the helper's own request machinery (see module
+    # docstring), not an outside consumer -- allow-listed rather than held to zero.
+    ("bot/openai_tool_handler.py", "_tool_call_global_semaphore_bundle"): (
+        2, "per-loop semaphore cache, read via getattr + written directly, :93/:98"),
+    ("bot/openai_tool_handler.py", "_tool_call_global_semaphore"): (
+        1, "per-loop semaphore cache write, :99"),
+    ("bot/openai_tool_handler.py", "_without_chat_lock"): (
+        1, "re-entrant tool-call context manager, via getattr(), :129"),
+    ("bot/openai_tool_handler.py", "_mode_from_system_message"): (
+        1, "skills-agent mode detection, via getattr(), :925"),
+    ("bot/openai_tool_handler.py", "_apply_before_chat_request_mutators"): (
+        3, "on_before_chat_request hook dispatch, :1020/:1099/:1728"),
+    ("bot/openai_tool_handler.py", "_chat_state_key"): (
+        1, "per-chat state-key resolution, via getattr(), :247 (module-level helper, not "
+        "the helper.conversations.setdefault touch this used to guard)"),
+    ("bot/openai_tool_handler.py", "_mutable_history"): (
+        1, "T11: live-history append for tool-result recording, :254 -- replaces the old "
+        "direct helper.conversations.setdefault(...) mutation"),
+    ("bot/openai_tool_handler.py", "conversations"): (
+        1, "T11: read-only logging snapshot left as-is, :1712 (see module docstring)"),
+    ("bot/openai_tool_handler.py", "_uses_structured_tool_history"): (
+        1, "history-shape detection, via getattr(), :1374"),
+    ("bot/openai_tool_handler.py", "_add_assistant_tool_calls_to_history"): (
+        1, "structured tool-call history append, :1375"),
+    ("bot/openai_tool_handler.py", "_defer_direct_tool_results"): (
+        1, "direct-result deferral flag, via getattr(), :1384"),
+    ("bot/openai_tool_handler.py", "_add_function_call_to_history"): (
+        2, "tool-result history append, :1396/:1404"),
 }
 
 
@@ -133,4 +161,15 @@ def test_skill_script_routing_does_not_add_helper_privates() -> None:
         "bot/skill_script_routing.py reaches into OpenAIHelper privates:\n"
         + "\n".join(failures)
         + "\n\nUse a public accessor, or add a documented ALLOWED entry."
+    )
+
+
+def test_openai_tool_handler_does_not_touch_new_helper_privates() -> None:
+    violations = _check_file(OPENAI_TOOL_HANDLER_FILE, {"helper"})
+    rel = "bot/openai_tool_handler.py"
+    failures = _assert_against_allowlist(rel, violations)
+    assert not failures, (
+        f"{rel} reaches into OpenAIHelper privates:\n" + "\n".join(failures)
+        + "\n\nOnly the already-allow-listed internals may be touched from here; add a "
+        "documented ALLOWED entry if a new one is genuinely needed."
     )

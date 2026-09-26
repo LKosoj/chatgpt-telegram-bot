@@ -13,6 +13,8 @@ class WebResearchPlugin(Plugin):
     Web research plugin backed by LLMGateway research/deep-research.
     """
 
+    returns_untrusted_content = True
+
     def get_source_name(self) -> str:
         return 'LLMGateway Web Research'
 

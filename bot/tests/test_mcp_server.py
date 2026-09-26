@@ -3,12 +3,14 @@ import json
 import pytest
 
 pytest.importorskip("mcp")
+import httpx
 from mcp import types
 from unittest.mock import patch, AsyncMock, MagicMock
 
 # Импортируем класс плагина
 from bot.plugins.mcp_server import MCPServerPlugin
 from bot.i18n import localized_text
+from bot import net_safety
 
 
 @pytest.fixture
@@ -264,7 +266,7 @@ async def test_refresh_server_tools_invalidates_function_index(mcp_plugin, mock_
 
 
 @pytest.mark.asyncio
-async def test_call_mcp_function(mcp_plugin, mock_env_vars):
+async def test_call_mcp_function(mcp_plugin, mock_env_vars, monkeypatch):
     """Тест вызова функции на MCP сервере"""
     # Добавляем тестовый сервер
     mcp_plugin.servers = {
@@ -274,44 +276,116 @@ async def test_call_mcp_function(mcp_plugin, mock_env_vars):
             "tools": [{"name": "test_function"}]
         }
     }
-    
-    # Мокаем httpx клиент
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value={"result": "success"})
-    
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    # call_mcp_function uses `async with httpx.AsyncClient(...) as client`
-    # (bot/plugins/mcp_server.py:715), so without this the client bound inside
-    # the block is __aenter__'s own auto-generated AsyncMock -- .json() would
-    # then return a coroutine instead of the payload below.
-    mock_client.__aenter__.return_value = mock_client
-    
-    # Вызываем функцию с моком httpx клиента
-    with patch('httpx.AsyncClient', return_value=mock_client):
-        result = await mcp_plugin.call_mcp_function(
-            server_name="test_server",
-            function_name="test_function",
-            param1="value1"
-        )
-    
+
+    def handler(request):
+        assert request.method == "POST"
+        assert str(request.url) == "http://example.com/execute"
+        assert request.headers["authorization"] == "Bearer test_key"
+        body = json.loads(request.content)
+        assert body["name"] == "test_function"
+        assert body["arguments"]["param1"] == "value1"
+        return httpx.Response(200, json={"result": "success"})
+
+    original_safe_request = net_safety.safe_request
+    monkeypatch.setattr(net_safety.socket, "getaddrinfo", lambda *a, **kw: [
+        (net_safety.socket.AF_INET, net_safety.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))
+    ])
+    monkeypatch.setattr(
+        net_safety,
+        "safe_request",
+        lambda *a, **kw: original_safe_request(*a, **kw, transport=httpx.MockTransport(handler)),
+    )
+
+    # Вызываем функцию, HTTP уходит через httpx.MockTransport (см. handler выше)
+    result = await mcp_plugin.call_mcp_function(
+        server_name="test_server",
+        function_name="test_function",
+        param1="value1"
+    )
+
     # Проверяем результат
     assert result == {"result": "success"}
-    
-    # Проверяем, что был выполнен запрос с правильными параметрами
-    mock_client.post.assert_called_once()
-    call_args = mock_client.post.call_args[1]
-    
-    # Проверяем URL (передаётся позиционно: bot/plugins/mcp_server.py:716-717)
-    assert "http://example.com/execute" in mock_client.post.call_args[0][0]
-    
-    # Проверяем заголовки
-    assert call_args['headers']['Authorization'] == "Bearer test_key"
-    
-    # Проверяем тело запроса
-    assert call_args['json']['name'] == "test_function"
-    assert call_args['json']['arguments']['param1'] == "value1"
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_function_rejects_private_base_url_by_default(mcp_plugin, mock_env_vars, monkeypatch):
+    """SSRF-защита: без MCP_ALLOW_PRIVATE_HOSTS вызов на приватный base_url не уходит в сеть."""
+    mcp_plugin.servers = {
+        "test_server": {
+            "base_url": "http://127.0.0.1:9999",
+            "api_key": "test_key",
+            "tools": [{"name": "test_function"}]
+        }
+    }
+
+    def handler(request):
+        raise AssertionError("HTTP request must not be made for a private base_url")
+
+    original_safe_request = net_safety.safe_request
+    monkeypatch.setattr(
+        net_safety,
+        "safe_request",
+        lambda *a, **kw: original_safe_request(*a, **kw, transport=httpx.MockTransport(handler)),
+    )
+
+    result = await mcp_plugin.call_mcp_function(
+        server_name="test_server",
+        function_name="test_function",
+        param1="value1"
+    )
+
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_call_mcp_function_allows_private_base_url_with_flag(mcp_plugin, mock_env_vars, monkeypatch):
+    """С allow_private_hosts=True вызов на приватный base_url доходит до сервера."""
+    mcp_plugin.allow_private_hosts = True
+    mcp_plugin.servers = {
+        "test_server": {
+            "base_url": "http://127.0.0.1:9999",
+            "api_key": "test_key",
+            "tools": [{"name": "test_function"}]
+        }
+    }
+
+    def handler(request):
+        assert request.method == "POST"
+        return httpx.Response(200, json={"result": "success"})
+
+    original_safe_request = net_safety.safe_request
+    monkeypatch.setattr(
+        net_safety,
+        "safe_request",
+        lambda *a, **kw: original_safe_request(*a, **kw, transport=httpx.MockTransport(handler)),
+    )
+
+    result = await mcp_plugin.call_mcp_function(
+        server_name="test_server",
+        function_name="test_function",
+        param1="value1"
+    )
+
+    assert result == {"result": "success"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_server_tools_rejects_private_base_url_by_default(mcp_plugin, mock_env_vars, monkeypatch):
+    """SSRF-защита: _fetch_server_tools на приватный base_url без флага не уходит в сеть."""
+
+    def handler(request):
+        raise AssertionError("HTTP request must not be made for a private base_url")
+
+    original_safe_get = net_safety.safe_get
+    monkeypatch.setattr(
+        net_safety,
+        "safe_get",
+        lambda *a, **kw: original_safe_get(*a, **kw, transport=httpx.MockTransport(handler)),
+    )
+
+    result = await mcp_plugin._fetch_server_tools("http://127.0.0.1:9999")
+
+    assert result == []
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from telegram.error import RetryAfter, TimedOut
@@ -25,6 +26,20 @@ from telegram.error import RetryAfter, TimedOut
 from .utils import is_direct_result, log_exception_shape, split_into_chunks
 
 logger = logging.getLogger(__name__)
+
+
+def retry_after_seconds(exc: RetryAfter) -> float:
+    """Normalize ``RetryAfter.retry_after`` to a plain float of seconds.
+
+    In python-telegram-bot 22.x ``retry_after`` is ``int`` by default and
+    ``datetime.timedelta`` when ``PTB_TIMEDELTA=true`` (opt-in early for a future
+    major version where ``timedelta`` becomes the only type); ``asyncio.sleep``
+    does not accept ``timedelta`` directly.
+    """
+    value = exc.retry_after
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    return float(value)
 
 # Колбэки — единственное, что знает о конкретном транспорте (обычный чат по
 # chat_id+message_id, инлайн по inline_message_id, vision-реплай и т.п.).
@@ -196,7 +211,7 @@ async def stream_to_telegram(
             await asyncio.sleep(inter_edit_delay)
         except RetryAfter as exc:
             backoff += 5
-            await asyncio.sleep(exc.retry_after)
+            await asyncio.sleep(retry_after_seconds(exc))
         except TimedOut:
             backoff += 5
             await asyncio.sleep(0.5)

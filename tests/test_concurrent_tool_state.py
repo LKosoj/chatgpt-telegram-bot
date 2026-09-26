@@ -21,7 +21,9 @@ _markdown2 = types.ModuleType("markdown2")
 _markdown2.markdown = lambda text, *args, **kwargs: text
 _install_module_if_missing("markdown2", _markdown2)
 
+from bot.database import Database  # noqa: E402
 from bot.openai_tool_handler import handle_function_call  # noqa: E402
+from bot.plugins.db_handle import DbHandle  # noqa: E402
 from bot.plugins.language_learning import LanguageLearningPlugin  # noqa: E402
 from bot.plugins.reminders import RemindersPlugin  # noqa: E402
 from bot.plugins.task_management import TaskManagementPlugin  # noqa: E402
@@ -351,10 +353,24 @@ async def test_language_learning_missing_user_id_returns_controlled_error(tmp_pa
     assert plugin.users_progress == {}
 
 
+@pytest.fixture()
+def reminders_db(tmp_path, monkeypatch):
+    """Local fixture (only used by the reminders tests below): temp SQLite DB with
+    the reminders schema applied, matching the pattern in test_reminders_fixes.py."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "t.db"))
+    Database._reset_singleton()
+    db = Database()
+    with db.get_connection() as conn:
+        for stmt in RemindersPlugin().register_schema():
+            conn.execute(stmt)
+    yield db
+    Database._reset_singleton()
+
+
 @pytest.mark.asyncio
-async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_path):
+async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_path, reminders_db):
     plugin = RemindersPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
+    plugin.initialize(storage_root=str(tmp_path), db=DbHandle(reminders_db))
     request_context = RequestContext(
         chat_id=555,
         user_id=777,
@@ -374,14 +390,17 @@ async def test_reminder_uses_request_context_message_id_not_shared_helper(tmp_pa
         request_context=request_context,
     )
 
-    reminder = next(iter(plugin.reminders[str(request_context.plugin_chat_id)].values()))
+    reminder = await plugin.db_handle.fetch_one(
+        "SELECT * FROM reminders WHERE owner_id = ?", (str(request_context.plugin_chat_id),)
+    )
+    assert reminder is not None
     assert reminder["reply_to_message_id"] == request_context.message_id
 
 
 @pytest.mark.asyncio
-async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_path):
+async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_path, reminders_db):
     plugin = RemindersPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
+    plugin.initialize(storage_root=str(tmp_path), db=DbHandle(reminders_db))
     plugin_manager = RacingPluginManager(reminder_plugin=plugin)
     helper = SharedHelper(plugin_manager)
     first_context = RequestContext(
@@ -433,16 +452,20 @@ async def test_concurrent_reminder_calls_keep_reply_message_ids_separate(tmp_pat
 
     await asyncio.gather(first, second)
 
-    first_reminder = next(iter(plugin.reminders[str(first_context.user_id)].values()))
-    second_reminder = next(iter(plugin.reminders[str(second_context.user_id)].values()))
+    first_reminder = await plugin.db_handle.fetch_one(
+        "SELECT * FROM reminders WHERE owner_id = ?", (str(first_context.user_id),)
+    )
+    second_reminder = await plugin.db_handle.fetch_one(
+        "SELECT * FROM reminders WHERE owner_id = ?", (str(second_context.user_id),)
+    )
     assert first_reminder["reply_to_message_id"] == first_context.message_id
     assert second_reminder["reply_to_message_id"] == second_context.message_id
 
 
 @pytest.mark.asyncio
-async def test_reminder_uses_explicit_message_id_without_request_context(tmp_path):
+async def test_reminder_uses_explicit_message_id_without_request_context(tmp_path, reminders_db):
     plugin = RemindersPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
+    plugin.initialize(storage_root=str(tmp_path), db=DbHandle(reminders_db))
     helper = ForbiddenLegacyHelper()
 
     await plugin.execute(
@@ -456,14 +479,15 @@ async def test_reminder_uses_explicit_message_id_without_request_context(tmp_pat
         message_id=444,
     )
 
-    reminder = next(iter(plugin.reminders["555"].values()))
+    reminder = await plugin.db_handle.fetch_one("SELECT * FROM reminders WHERE owner_id = ?", ("555",))
+    assert reminder is not None
     assert reminder["reply_to_message_id"] == 444
 
 
 @pytest.mark.asyncio
-async def test_reminder_list_tool_returns_empty_state(tmp_path):
+async def test_reminder_list_tool_returns_empty_state(tmp_path, reminders_db):
     plugin = RemindersPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
+    plugin.initialize(storage_root=str(tmp_path), db=DbHandle(reminders_db))
 
     result = await plugin.execute(
         "list_reminders",
@@ -481,17 +505,15 @@ async def test_reminder_list_tool_returns_empty_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reminder_list_tool_returns_saved_reminders(tmp_path):
+async def test_reminder_list_tool_returns_saved_reminders(tmp_path, reminders_db):
     plugin = RemindersPlugin()
-    plugin.initialize(storage_root=str(tmp_path))
-    plugin.reminders["555"] = {
-        "rem-1": {
-            "time": "2030-01-01T12:30:00",
-            "message": "check state",
-            "integration": "telegram",
-        }
-    }
-    plugin.save_reminders()
+    plugin.initialize(storage_root=str(tmp_path), db=DbHandle(reminders_db))
+    await plugin.db_handle.execute(
+        '''INSERT INTO reminders (id, owner_id, target_chat_id, time, message, integration, created_at)
+           VALUES (?,?,?,?,?,?,?)''',
+        ("rem-1", "555", "555", "2030-01-01T12:30:00", "check state", "telegram",
+         "2020-01-01T00:00:00"),
+    )
 
     result = await plugin.execute(
         "list_reminders",

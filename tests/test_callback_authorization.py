@@ -400,6 +400,56 @@ async def test_session_change_model_shows_openai_model_choices():
     assert reply_markup.inline_keyboard[1][0].callback_data == "session:set_model:1"
 
 
+def _grouped_chat_modes():
+    return {
+        "assistant": {"name": "Assistant", "group": "General"},
+        "coder": {"name": "Coder", "group": "General"},
+        "artist": {"name": "Artist", "group": "Creative"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_prompt_selection_promptback_builds_mode_group_keyboard():
+    """B7 (C15): 'promptback' (from handle_prompt_selection) groups chat
+    modes by 'group', sorted, plus a back-to-sessions button."""
+    bot = _make_bot(allowed_user_ids="*")
+    bot.get_chat_modes = MagicMock(return_value=_grouped_chat_modes())
+    update = FakeCallbackUpdate("promptback:main", user_id=999)
+
+    await bot.handle_prompt_selection(update, _make_context())
+
+    kwargs = update.callback_query.edit_message_text.await_args.kwargs
+    assert kwargs["text"] == localized_text("prompt_choose_group", "en")
+    keyboard = kwargs["reply_markup"].inline_keyboard
+    assert [row[0].text for row in keyboard] == [
+        "Creative", "General", localized_text("session_back_to_sessions", "en"),
+    ]
+    assert [row[0].callback_data for row in keyboard] == [
+        "promptgroup:Creative", "promptgroup:General", "session:back",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_change_mode_builds_mode_group_keyboard():
+    """B7 (C15): 'session:change_mode' groups chat modes the same way as
+    'promptback' above, via the shared _build_mode_group_keyboard helper."""
+    bot = _make_bot(allowed_user_ids="*")
+    bot.get_chat_modes = MagicMock(return_value=_grouped_chat_modes())
+    update = FakeCallbackUpdate("session:change_mode", user_id=999)
+
+    await bot.handle_session_callback(update, _make_context())
+
+    kwargs = update.callback_query.edit_message_text.await_args.kwargs
+    assert kwargs["text"] == localized_text("session_choose_mode_group", "en")
+    keyboard = kwargs["reply_markup"].inline_keyboard
+    assert [row[0].text for row in keyboard] == [
+        "Creative", "General", localized_text("session_back_to_sessions", "en"),
+    ]
+    assert [row[0].callback_data for row in keyboard] == [
+        "promptgroup:Creative", "promptgroup:General", "session:back",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_session_set_model_saves_selected_openai_model_choice():
     bot = _make_bot(allowed_user_ids="*")
@@ -477,6 +527,60 @@ async def test_restricted_group_membership_unexpected_bad_request_is_not_cached(
     assert context.bot.get_chat_member.await_count == 2
     assert utils_module._GROUP_MEMBERSHIP_CACHE.get((-100789, "111")) is not None
     utils_module._GROUP_MEMBERSHIP_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_group_membership_grant_disabled_rejects_non_member_without_api_call():
+    update = FakeCallbackUpdate("session:back", user_id=999, chat_id=-100321)
+    update.effective_chat.type = "supergroup"
+    context = _make_context()
+    config = {
+        "allowed_user_ids": "111",
+        "admin_user_ids": "-",
+        "bot_language": "en",
+        "allow_group_members_via_authorized_user": False,
+    }
+
+    allowed = await is_allowed(config, update, context)
+
+    assert allowed is False
+    context.bot.get_chat_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_callback_rejected_when_membership_grant_disabled():
+    bot = _make_bot(allowed_user_ids="111")
+    bot.config["allow_group_members_via_authorized_user"] = False
+    update = FakeCallbackUpdate("session:back", user_id=999, chat_id=-100654)
+    update.effective_chat.type = "supergroup"
+    context = _make_context()
+    # Даже если бы код спросил Telegram, ответ был бы "участник" -- проверяем,
+    # что при выключенном флаге код вообще не долетает до этого вызова.
+    context.bot.get_chat_member.return_value = SimpleNamespace(status=ChatMember.MEMBER)
+
+    await bot.reset(update, context)
+
+    bot.db.list_user_sessions.assert_not_called()
+    context.bot.get_chat_member.assert_not_awaited()
+    update.callback_query.edit_message_text.assert_awaited_once_with(
+        text=localized_text("access_denied_command", "en")
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_callback_allowed_member_passes_without_api_call_when_membership_grant_disabled():
+    bot = _make_bot(allowed_user_ids="111")
+    bot.config["allow_group_members_via_authorized_user"] = False
+    update = FakeCallbackUpdate("session:back", user_id=111, chat_id=-100987)
+    update.effective_chat.type = "supergroup"
+    context = _make_context()
+
+    await bot.reset(update, context)
+
+    # Группа -- conversation key это chat_id, а не user_id (get_conversation_key,
+    # bot/conversation_key.py:6-12); проверяем именно то, с чем вызван list_user_sessions.
+    bot.db.list_user_sessions.assert_called_once_with(-100987)
+    context.bot.get_chat_member.assert_not_awaited()
 
 
 @pytest.mark.asyncio

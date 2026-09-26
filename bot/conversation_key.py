@@ -9,6 +9,7 @@ def get_conversation_key(update: Update) -> int:
         constants.ChatType.SUPERGROUP,
     ):
         return update.effective_chat.id
+    assert update.effective_user is not None
     return update.effective_user.id
 
 

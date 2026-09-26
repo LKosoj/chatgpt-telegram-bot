@@ -7,7 +7,7 @@ import io
 import base64
 import json
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, IO, List, Optional, cast
 from PIL import Image
 from datetime import datetime, timedelta
 from asyncio import Queue, Task
@@ -18,7 +18,9 @@ from telegram import (
     InlineKeyboardButton,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    Update
+    Message,
+    Update,
+    User,
 )
 from telegram.ext import ContextTypes, ConversationHandler, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import hashlib
@@ -27,6 +29,7 @@ from telegram import constants
 
 from .plugin import Plugin
 from ..utils import escape_markdown
+from .. import net_safety
 # API Configuration
 API_URL = "https://api.vsegpt.ru/v1/video"
 MAX_RETRIES = 4
@@ -57,8 +60,8 @@ class TempFileManager:
             suffix: Optional file extension for the temporary file
         """
         self.suffix = suffix
-        self.temp_file = None
-        self.path = None
+        self.temp_file: Optional[IO[bytes]] = None
+        self.path: Optional[str] = None
 
     def __enter__(self) -> 'TempFileManager':
         """
@@ -215,6 +218,7 @@ class HaiperImageToVideoPlugin(Plugin):
         self.user_settings: Dict[int, Dict[str, str]] = {}  # Для хранения настроек пользователей
         self.openai = None
         self.bot = None
+        self.max_video_bytes = int(os.getenv("HAIPER_MAX_VIDEO_BYTES", 49 * 1024 * 1024))
 
     def get_source_name(self) -> str:
         return "HaiperImageToVideo"
@@ -356,9 +360,16 @@ class HaiperImageToVideoPlugin(Plugin):
 
     def get_callback_handlers(self) -> List[Dict]:
         """Возвращает список обработчиков callback запросов"""
+        async def _apply_settings_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            # apply_settings() expects a CallbackQuery (see the call at
+            # handle_callback_query's data == "apply_settings" branch), not the
+            # (update, context) pair PTB passes to a CallbackQueryHandler callback.
+            if update.callback_query:
+                await self.apply_settings(update.callback_query)
+
         return [
             {
-                "handler": CallbackQueryHandler(self.apply_settings, pattern="^haiper_apply_settings$"),
+                "handler": CallbackQueryHandler(_apply_settings_from_callback, pattern="^haiper_apply_settings$"),
                 "handler_kwargs": {}
             }
         ]
@@ -423,7 +434,7 @@ class HaiperImageToVideoPlugin(Plugin):
             file = await self.bot.get_file(task.file_id)
             image_bytes = await file.download_as_bytearray()
             
-            img = Image.open(io.BytesIO(image_bytes))
+            img: Image.Image = Image.open(io.BytesIO(image_bytes))
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
@@ -574,6 +585,7 @@ class HaiperImageToVideoPlugin(Plugin):
             logger.info(f"Found image {file_id} for user {chat_id}")
 
             # Создаем новую задачу
+            assert chat_id is not None, "chat_id обязателен для создания VideoTask"
             task = VideoTask(
                 task_id=self.get_file_id_hash(file_id),
                 user_id=chat_id,
@@ -602,6 +614,7 @@ class HaiperImageToVideoPlugin(Plugin):
             
         message = update.message
         chat_id = message.chat.id
+        assert message.from_user is not None
         user_id = message.from_user.id
         logger.info(f"handle_animate_command called with chat_id: {chat_id}, user_id: {user_id}")
         
@@ -614,13 +627,14 @@ class HaiperImageToVideoPlugin(Plugin):
             prompt = message.text[8:].strip() if message.text else self.t("haiper_default_prompt")
             
             # Проверяем, является ли сообщение ответом на фотографию
-            if message.reply_to_message and (message.reply_to_message.photo or 
-                (message.reply_to_message.document and 
-                 message.reply_to_message.document.mime_type.startswith('image/'))):
+            if message.reply_to_message and (message.reply_to_message.photo or
+                (message.reply_to_message.document and
+                 cast(str, message.reply_to_message.document.mime_type).startswith('image/'))):
                 # Берем file_id из фото или документа
                 if message.reply_to_message.photo:
                     file_id = message.reply_to_message.photo[-1].file_id
                 else:
+                    assert message.reply_to_message.document is not None
                     file_id = message.reply_to_message.document.file_id
                     
                 logger.info(f"Processing animation for replied photo with file_id: {file_id}")
@@ -729,13 +743,12 @@ class HaiperImageToVideoPlugin(Plugin):
 
                 # Скачиваем видео во временный файл
                 temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(video_url) as response:
-                        if response.status != 200:
-                            raise ValueError(
-                                self.t("haiper_video_download_failed", status=response.status)
-                            )
-                        temp_file.write(await response.read())
+                response = await net_safety.safe_get(video_url, max_bytes=self.max_video_bytes, timeout=60.0)
+                if response.status_code != 200:
+                    raise ValueError(
+                        self.t("haiper_video_download_failed", status=response.status_code)
+                    )
+                temp_file.write(response.content)
                 temp_file.close()
 
                 await status_message.edit_text(
@@ -798,6 +811,7 @@ class HaiperImageToVideoPlugin(Plugin):
     async def handle_animate_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, **kwargs) -> None:
         """Обработчик команды /animate_help"""
         help_text = self.t("haiper_help_text")
+        assert update.message is not None
         await update.message.reply_text(
             escape_markdown(help_text),
             parse_mode=constants.ParseMode.MARKDOWN_V2
@@ -807,6 +821,7 @@ class HaiperImageToVideoPlugin(Plugin):
         """Обработчик сообщений с фотографиями"""
         try:
             message = update.message
+            assert message is not None
             # Получаем caption сообщения
             caption = message.caption
             if caption and caption.lower().startswith('/animate'):
@@ -815,6 +830,7 @@ class HaiperImageToVideoPlugin(Plugin):
             else:
                 # Если нет команды, показываем кнопку для анимации
                 # Получаем хеш из БД
+                assert message.from_user is not None
                 user_images = await self._get_user_images(
                     message.from_user.id,
                     str(message.chat.id),
@@ -838,9 +854,11 @@ class HaiperImageToVideoPlugin(Plugin):
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик всех callback-запросов"""
         query = update.callback_query
+        assert query is not None
         user_id = query.from_user.id
-        
+
         try:
+            assert query.data is not None
             if not query.data.startswith('haiper_'):
                 return
 
@@ -852,7 +870,13 @@ class HaiperImageToVideoPlugin(Plugin):
             if data == "close_menu":
                 #logger.info("Закрытие меню конструктора")
                 await query.answer(self.t("haiper_menu_closed"))
-                await query.message.delete()
+                # cast, not assert: query.message can statically be a
+                # MaybeInaccessibleMessage, but this project's Application is
+                # never built with Defaults(block=False), so it is always a
+                # full Message here; cast keeps this a type-only annotation
+                # (no isinstance check) so duck-typed test doubles still work.
+                msg = cast(Message, query.message)
+                await msg.delete()
                 return
                 
             # Сначала обрабатываем специфичные паттерны
@@ -937,7 +961,9 @@ class HaiperImageToVideoPlugin(Plugin):
 
         except Exception as e:
             logger.error(f"Ошибка в handle_callback_query: {e}", exc_info=True)
-            await query.message.reply_text(
+            # cast, not assert: see the close_menu branch above for why.
+            msg = cast(Message, query.message)
+            await msg.reply_text(
                 self.t("haiper_generic_error")
             )
 
@@ -1236,25 +1262,65 @@ class HaiperImageToVideoPlugin(Plugin):
             is_personal=True
         )
 
+    def _build_settings_summary_text(self, settings: dict) -> str:
+        """Собирает текст меню конструктора промптов с отметками о выбранных настройках"""
+        menu_text = self.t("haiper_menu_title") + "\n\n"
+        if settings:
+            menu_text += self.t("haiper_menu_selected_title") + "\n"
+            if settings.get('style'):
+                style_name = self.get_style_name(settings['style'])
+                menu_text += self.t("haiper_menu_selected_style", value=style_name) + "\n"
+            if settings.get('effect'):
+                effect_name = self.get_effect_name(settings['effect'])
+                menu_text += self.t("haiper_menu_selected_effect", value=effect_name) + "\n"
+            if settings.get('preset'):
+                preset_name = self.get_preset_name(settings['preset'])
+                menu_text += self.t("haiper_menu_selected_preset", value=preset_name) + "\n"
+            menu_text += "\n"
+
+        menu_text += self.t("haiper_menu_choose_type") + "\n\n"
+        menu_text += self.t("haiper_menu_style_hint") + "\n"
+        menu_text += self.t("haiper_menu_effect_hint") + "\n"
+        menu_text += self.t("haiper_menu_preset_hint")
+        return menu_text
+
+    def _build_style_effect_keyboard(self, settings: dict) -> list:
+        """Строит клавиатуру выбора стиля/эффекта/пресета с отметками о выбранных настройках"""
+        style_text = self.t("haiper_menu_style_button") + (" ✓" if settings.get('style') else "")
+        effect_text = self.t("haiper_menu_effect_button") + (" ✓" if settings.get('effect') else "")
+        preset_text = self.t("haiper_menu_preset_button") + (" ✓" if settings.get('preset') else "")
+
+        return [
+            [
+                InlineKeyboardButton(style_text, callback_data="haiper_show_styles"),
+                InlineKeyboardButton(effect_text, callback_data="haiper_show_effects")
+            ],
+            [
+                InlineKeyboardButton(preset_text, callback_data="haiper_show_presets"),
+                InlineKeyboardButton(self.t("haiper_menu_reset_button"), callback_data="haiper_prompt_restart")
+            ]
+        ]
+
     async def handle_prompt_constructor_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """
         Telegram обработчик команды /animate_prompt для ConversationHandler
         """
         return await self.handle_prompt_constructor("animate_prompt", self.openai, update)
 
-    async def handle_prompt_constructor(self, function_name: str, openai, update: Update = None, **kwargs) -> None:
+    async def handle_prompt_constructor(self, function_name: str, openai, update: Optional[Update] = None, **kwargs) -> int:
         """
         Обработчик для конструктора промптов
         """
         try:
-            user_id = update.message.from_user.id if update and update.message else None
+            user_id = cast(User, update.message.from_user).id if update and update.message else None
             logger.info(f"[ConversationHandler] handle_prompt_constructor вызван: user_id={user_id}")
             logger.info("Вызван handle_prompt_constructor")
             if not update or not update.message:
                 logger.error("update или message отсутствуют")
                 return ConversationHandler.END
-                
+
             message = update.message
+            assert message.from_user is not None
             chat_id = str(message.chat.id)
             user_id = message.from_user.id
             logger.info(f"Конструктор промптов запущен для пользователя {user_id} в чате {chat_id}")
@@ -1275,48 +1341,16 @@ class HaiperImageToVideoPlugin(Plugin):
             # Создаем компактное меню с эмодзи для визуального разделения
             settings = self.user_settings.get(user_id, {})
             logger.info(f"Текущие настройки пользователя {user_id}: {settings}")
-            
-            # Добавляем отметки к названиям кнопок, если что-то выбрано
-            style_text = self.t("haiper_menu_style_button") + (" ✓" if settings.get('style') else "")
-            effect_text = self.t("haiper_menu_effect_button") + (" ✓" if settings.get('effect') else "")
-            preset_text = self.t("haiper_menu_preset_button") + (" ✓" if settings.get('preset') else "")
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton(style_text, callback_data="haiper_show_styles"),
-                    InlineKeyboardButton(effect_text, callback_data="haiper_show_effects")
-                ],
-                [
-                    InlineKeyboardButton(preset_text, callback_data="haiper_show_presets"),
-                    InlineKeyboardButton(self.t("haiper_menu_reset_button"), callback_data="haiper_prompt_restart")
-                ]
-            ]
-            
+
+            keyboard = self._build_style_effect_keyboard(settings)
+
             # Добавляем кнопку закрытия
             keyboard.append([
                 InlineKeyboardButton(self.t("haiper_menu_close_button"), callback_data="haiper_close_menu")
             ])
-            
-            # Формируем текст с выбранными настройками
-            menu_text = self.t("haiper_menu_title") + "\n\n"
-            if settings:
-                menu_text += self.t("haiper_menu_selected_title") + "\n"
-                if settings.get('style'):
-                    style_name = self.get_style_name(settings['style'])
-                    menu_text += self.t("haiper_menu_selected_style", value=style_name) + "\n"
-                if settings.get('effect'):
-                    effect_name = self.get_effect_name(settings['effect'])
-                    menu_text += self.t("haiper_menu_selected_effect", value=effect_name) + "\n"
-                if settings.get('preset'):
-                    preset_name = self.get_preset_name(settings['preset'])
-                    menu_text += self.t("haiper_menu_selected_preset", value=preset_name) + "\n"
-                menu_text += "\n"
-            
-            menu_text += self.t("haiper_menu_choose_type") + "\n\n"
-            menu_text += self.t("haiper_menu_style_hint") + "\n"
-            menu_text += self.t("haiper_menu_effect_hint") + "\n"
-            menu_text += self.t("haiper_menu_preset_hint")
-            
+
+            menu_text = self._build_settings_summary_text(settings)
+
             reply_markup = InlineKeyboardMarkup(keyboard)
             await message.reply_text(
                 menu_text,
@@ -1344,53 +1378,20 @@ class HaiperImageToVideoPlugin(Plugin):
             settings = self.user_settings.get(user_id, {})
             logger.info(f"Текущие настройки пользователя: {settings}")
             
-            # Формируем текст с выбранными настройками
-            menu_text = self.t("haiper_menu_title") + "\n\n"
-            if settings:
-                menu_text += self.t("haiper_menu_selected_title") + "\n"
-                if settings.get('style'):
-                    style_name = self.get_style_name(settings['style'])
-                    menu_text += self.t("haiper_menu_selected_style", value=style_name) + "\n"
-                if settings.get('effect'):
-                    effect_name = self.get_effect_name(settings['effect'])
-                    menu_text += self.t("haiper_menu_selected_effect", value=effect_name) + "\n"
-                if settings.get('preset'):
-                    preset_name = self.get_preset_name(settings['preset'])
-                    menu_text += self.t("haiper_menu_selected_preset", value=preset_name) + "\n"
-                menu_text += "\n"
-            
-            # Добавляем отметки к названиям кнопок, если что-то выбрано
-            style_text = self.t("haiper_menu_style_button") + (" ✓" if settings.get('style') else "")
-            effect_text = self.t("haiper_menu_effect_button") + (" ✓" if settings.get('effect') else "")
-            preset_text = self.t("haiper_menu_preset_button") + (" ✓" if settings.get('preset') else "")
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton(style_text, callback_data="haiper_show_styles"),
-                    InlineKeyboardButton(effect_text, callback_data="haiper_show_effects")
-                ],
-                [
-                    InlineKeyboardButton(preset_text, callback_data="haiper_show_presets"),
-                    InlineKeyboardButton(self.t("haiper_menu_reset_button"), callback_data="haiper_prompt_restart")
-                ]
-            ]
-            
+            menu_text = self._build_settings_summary_text(settings)
+            keyboard = self._build_style_effect_keyboard(settings)
+
             # Добавляем кнопку применения, если есть выбранные настройки
             if settings:
                 keyboard.append([
                     InlineKeyboardButton(self.t("haiper_menu_apply_button"), callback_data="haiper_apply_settings")
                 ])
-            
+
             # Добавляем кнопку закрытия
             keyboard.append([
                 InlineKeyboardButton(self.t("haiper_menu_close_button"), callback_data="haiper_close_menu")
             ])
-            
-            menu_text += self.t("haiper_menu_choose_type") + "\n\n"
-            menu_text += self.t("haiper_menu_style_hint") + "\n"
-            menu_text += self.t("haiper_menu_effect_hint") + "\n"
-            menu_text += self.t("haiper_menu_preset_hint")
-            
+
             await message.edit_text(
                 menu_text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -1414,46 +1415,50 @@ class HaiperImageToVideoPlugin(Plugin):
         """Возвращает читаемое название эффекта"""
         return self.t(f"haiper_effect_{effect_id}_name")
     
-    async def handle_prompt_reply(self, update: Update, context: CallbackContext) -> int:
+    async def handle_prompt_reply(self, update: Update, context: CallbackContext) -> Optional[int]:
         """Обработчик ответа на запрос дополнительного текста промпта"""
-        user_id = update.message.from_user.id
+        message = update.message
+        assert message is not None
+        assert message.from_user is not None
+        user_id = message.from_user.id
         logger.info(f"[ConversationHandler] handle_prompt_reply вызван: user_id={user_id}")
-        logger.info(f"[ConversationHandler] Текст сообщения: {update.message.text}")
-        
+        logger.info(f"[ConversationHandler] Текст сообщения: {message.text}")
+
         # Проверяем, что это ответ на сообщение от нашего бота
-        if not update.message.reply_to_message:
+        if not message.reply_to_message:
             logger.warning("[ConversationHandler] Ответ не является ответом на сообщение бота")
-            return
-            
+            return None
+
         # Проверяем, что это ответ на правильное сообщение
-        reply_text = update.message.reply_to_message.text
+        reply_text = message.reply_to_message.text
         logger.info(f"[ConversationHandler] Текст reply_to_message: {reply_text}")
-        
+
         if not reply_text or self.t("haiper_prompt_additional_question") not in reply_text:
             logger.warning("[ConversationHandler] Ответ не на правильное сообщение")
-            return
+            return None
 
         settings = self.user_settings.get(user_id, {})
 
         if not settings or not settings.get('file_id'):
-            await update.message.reply_text(self.t("haiper_prompt_error_retry"))
+            await message.reply_text(self.t("haiper_prompt_error_retry"))
             logger.error("Настройки пользователя не найдены или отсутствует file_id")
             return ConversationHandler.END
 
         # Проверяем ответ пользователя
-        if update.message.text.lower() == self.t("haiper_prompt_no").lower():
+        assert message.text is not None
+        if message.text.lower() == self.t("haiper_prompt_no").lower():
             prompt = settings.get('base_prompt', self.t("haiper_default_prompt"))
         else:
             base_prompt = settings.get('base_prompt', self.t("haiper_default_prompt"))
-            prompt = f"{base_prompt}, {update.message.text}"
+            prompt = f"{base_prompt}, {message.text}"
 
         # Запускаем анимацию
         if settings.get('file_id'):
-            await self._process_animate_command(update.message, settings['file_id'], prompt)
+            await self._process_animate_command(message, settings['file_id'], prompt)
             logger.info(f"Анимация запущена с промптом: {prompt}")
         else:
             logger.error("file_id отсутствует в настройках пользователя")
-            await update.message.reply_text(self.t("haiper_animation_start_failed"))
+            await message.reply_text(self.t("haiper_animation_start_failed"))
 
         # Очищаем настройки после применения
         if user_id in self.user_settings:
@@ -1464,12 +1469,15 @@ class HaiperImageToVideoPlugin(Plugin):
 
     async def cancel_prompt(self, update: Update, context: CallbackContext) -> int:
         """Отменяет текущий диалог"""
-        user_id = update.message.from_user.id
+        message = update.message
+        assert message is not None
+        assert message.from_user is not None
+        user_id = message.from_user.id
         logger.info(f"[ConversationHandler] cancel_prompt вызван: user_id={user_id}")
         if user_id in self.user_settings:
             del self.user_settings[user_id]
-            
-        await update.message.reply_text(
+
+        await message.reply_text(
             self.t("haiper_prompt_constructor_cancelled")
         )
         return ConversationHandler.END

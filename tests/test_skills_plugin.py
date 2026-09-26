@@ -3,6 +3,7 @@ import importlib.util
 import json
 import logging
 import shutil
+import socket
 import sys
 import tarfile
 import types
@@ -18,6 +19,7 @@ if importlib.util.find_spec("markdown2") is None:
     _markdown2.markdown = lambda text, *args, **kwargs: text
     sys.modules["markdown2"] = _markdown2
 
+import bot.plugins.skills as skills
 from bot.plugin_manager import PluginManager
 from bot.plugins.skills import SkillsPlugin
 
@@ -1196,6 +1198,108 @@ async def test_install_skill_supports_markdown_file_source(tmp_path, monkeypatch
     assert (tmp_path / "skills" / "single-skill" / "SKILL.md").exists()
 
 
+def test_download_url_to_path_delegates_to_net_safety(tmp_path, monkeypatch):
+    """_download_url_to_path must go through net_safety.safe_urlopen, not some
+    accidentally-unwired copy of the old urllib logic."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, data: bytes):
+            self._data = data
+            self._pos = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self, amt=None):
+            if amt is None:
+                chunk = self._data[self._pos:]
+                self._pos = len(self._data)
+                return chunk
+            chunk = self._data[self._pos:self._pos + amt]
+            self._pos += len(chunk)
+            return chunk
+
+    def fake_safe_urlopen(url, *, timeout, max_bytes):
+        calls.append({"url": url, "timeout": timeout, "max_bytes": max_bytes})
+        return FakeResponse(b"zip-bytes")
+
+    monkeypatch.setattr(skills.net_safety, "safe_urlopen", fake_safe_urlopen)
+
+    # 93.184.216.34 is a public IP literal, so validate_public_url's getaddrinfo()
+    # resolves it locally without a real DNS query or network reachability check.
+    target_path, error = plugin._download_url_to_path(
+        "https://93.184.216.34/remote-skill.zip", tmp_path
+    )
+
+    assert error is None
+    assert calls == [{
+        "url": "https://93.184.216.34/remote-skill.zip",
+        "timeout": plugin.install_timeout,
+        "max_bytes": plugin.install_max_bytes,
+    }]
+    assert target_path.read_bytes() == b"zip-bytes"
+
+
+def test_validate_external_url_wrapper_matches_net_safety(tmp_path, monkeypatch):
+    """_validate_external_url/_resolve_safe_ip must delegate to net_safety, not a
+    stale local copy of the same logic."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(skills.net_safety, "validate_public_url", lambda url: f"refused:{url}")
+    assert plugin._validate_external_url("http://example.test/x") == "refused:http://example.test/x"
+
+    monkeypatch.setattr(skills.net_safety, "resolve_public_ip", lambda host: f"resolved:{host}")
+    assert plugin._resolve_safe_ip("example.test") == "resolved:example.test"
+
+
+def test_download_url_to_path_handles_unicode_error_like_other_validation_errors(tmp_path, monkeypatch):
+    """A hostname label > 63 octets makes socket.getaddrinfo raise UnicodeError (IDNA
+    encoding fails before any DNS lookup) instead of socket.gaierror. Before T03-review.md
+    round 1 WARNING 2 was fixed, this UnicodeError escaped net_safety.validate_public_url
+    unhandled and propagated out of _download_url_to_path raw, instead of the graceful
+    (None, "Refused to download skill source URL: ...") every other rejection reason
+    returns. No monkeypatching of getaddrinfo: the failure is a pure IDNA-encoding error,
+    not a network call."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    target_path, error = plugin._download_url_to_path(
+        "http://" + "a" * 300 + ".example/skill.zip", tmp_path
+    )
+
+    assert target_path is None
+    assert error is not None
+    assert error.startswith("Refused to download skill source URL:")
+
+
+@pytest.mark.asyncio
+async def test_install_skill_rejects_url_resolving_to_private_ip(tmp_path, monkeypatch):
+    """End-to-end: install_skill with a URL resolving to a private/link-local IP
+    (the cloud metadata endpoint) is refused without ever reaching _safe_open."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    def fake_getaddrinfo(host, *_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr(skills.net_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+    result = await plugin.execute(
+        "install_skill",
+        helper=None,
+        package="http://169.254.169.254/x.zip",
+        confirmed=True,
+        chat_id=10,
+        user_id=999,
+    )
+
+    assert result["success"] is False
+    assert "169.254.169.254" in result["error"]
+
+
 @pytest.mark.asyncio
 async def test_install_skill_supports_url_archive_source(tmp_path, monkeypatch):
     archive_path = tmp_path / "remote-skill.zip"
@@ -1267,7 +1371,7 @@ async def test_install_skill_supports_github_repo_url_install_all(tmp_path, monk
         lambda name: "/usr/bin/git" if name == "git" else real_which(name),
     )
 
-    def fake_clone(source, temp_dir):
+    def fake_clone(source, temp_dir, branch=None):
         assert source == "https://github.com/LKosoj/skills"
         target = temp_dir / "git-source"
         shutil.copytree(repo_dir, target)
@@ -1358,7 +1462,7 @@ async def test_install_skill_lists_candidates_for_multi_skill_repo_without_insta
         lambda name: "/usr/bin/git" if name == "git" else real_which(name),
     )
 
-    def fake_clone(source, temp_dir):
+    def fake_clone(source, temp_dir, branch=None):
         target = temp_dir / "git-source"
         shutil.copytree(repo_dir, target)
         return target, None
@@ -1490,7 +1594,7 @@ async def test_install_skill_supports_github_blob_url_pointing_at_skill_md(
         shutil.copytree(repo_dir, target)
         return target, None
 
-    plugin._clone_git_source_branch = fake_clone_branch
+    plugin._clone_git_source = fake_clone_branch
 
     result = await plugin.execute(
         "install_skill",
@@ -1633,12 +1737,7 @@ async def test_install_skill_supports_github_tree_url_with_subpath(tmp_path, mon
         shutil.copytree(repo_dir, target)
         return target, None
 
-    plugin._clone_git_source_branch = fake_clone_branch
-
-    def reject_plain_clone(source, temp_dir):
-        raise AssertionError("plain clone should not be used for tree-URL with branch")
-
-    plugin._clone_git_source = reject_plain_clone
+    plugin._clone_git_source = fake_clone_branch
 
     result = await plugin.execute(
         "install_skill",
@@ -1680,7 +1779,7 @@ async def test_install_skill_github_tree_url_rejects_missing_subpath(tmp_path, m
         shutil.copytree(repo_dir, target)
         return target, None
 
-    plugin._clone_git_source_branch = fake_clone_branch
+    plugin._clone_git_source = fake_clone_branch
 
     result = await plugin.execute(
         "install_skill",
@@ -2366,16 +2465,67 @@ async def test_on_before_chat_request_lists_scripts_for_active_skills(tmp_path, 
     new_messages = await plugin.on_before_chat_request(messages, payload)
 
     assert new_messages is not None
-    content = new_messages[1]["content"]
+    content = new_messages[2]["content"]
     assert "Активные skills в этой сессии" in content
     assert "demo:" in content
     # as_posix() output is what we render
     assert (tmp_path / "skills" / "demo" / "scripts" / "echo.py").as_posix() in content
+    assert "Активные skills в этой сессии" not in new_messages[1]["content"]
     # Active-skill scripts section is irrelevant to other scopes
     other_payload = BeforeChatRequestPayload(chat_id=999, user_id=999, request_id=None)
     other_messages = await plugin.on_before_chat_request(messages, other_payload)
     assert other_messages is not None
     assert "Активные skills в этой сессии" not in other_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_active_catalog_lands_before_trailing_user_with_earlier_history(tmp_path, monkeypatch):
+    """T09 step 4: the active-skills catalog is spliced right before the trailing
+    user message when earlier history already exists, not near the start."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    messages = [
+        _skills_agent_system_message(),
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+    ]
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+    new_messages = await plugin.on_before_chat_request(messages, payload)
+
+    assert new_messages is not None
+    assert new_messages[-1] == {"role": "user", "content": "second"}
+    assert "Активные skills в этой сессии" in new_messages[-2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_active_catalog_appends_at_end_during_tool_round(tmp_path, monkeypatch):
+    """T09 step 4: when a tool round is in progress, the active-skills catalog
+    appends at the end instead of splicing before a stale, no-longer-last user
+    message."""
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    await plugin.execute("activate_skill", helper=None, skill_name="demo", chat_id=10, user_id=42)
+
+    tool_call_msg = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+    }
+    tool_result_msg = {"role": "tool", "tool_call_id": "1", "content": "result"}
+    messages = [
+        _skills_agent_system_message(),
+        {"role": "user", "content": "q"},
+        tool_call_msg,
+        tool_result_msg,
+    ]
+    payload = BeforeChatRequestPayload(chat_id=10, user_id=42, request_id=None)
+    new_messages = await plugin.on_before_chat_request(messages, payload)
+
+    assert new_messages is not None
+    assert "Активные skills в этой сессии" in new_messages[-1]["content"]
+    assert new_messages[-3] == tool_call_msg
+    assert new_messages[-2] == tool_result_msg
 
 
 @pytest.mark.asyncio

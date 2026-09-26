@@ -1,5 +1,5 @@
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from .plugin import Plugin
 
@@ -22,7 +22,7 @@ class DDGTranslatePlugin(Plugin):
     def get_source_name(self) -> str:
         return "Translate"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "translate",
             "description": "Translate a given text from a language to another",

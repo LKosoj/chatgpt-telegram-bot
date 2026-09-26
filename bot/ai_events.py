@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
 JSONValue: TypeAlias = (
     None
@@ -26,9 +26,9 @@ class AIUsage:
 class AIToolCall:
     """Tool call at the current boundary.
 
-    Provider adapters use the model-visible tool name. PluginToolAdapter
-    canonicalizes it before execution and preserves the raw provider name in
-    model_name.
+    Provider adapters use the model-visible tool name.
+    PluginManager.to_canonical_function_name canonicalizes it before
+    execution and preserves the raw provider name in model_name.
     """
 
     id: str
@@ -151,7 +151,7 @@ def event_to_log_dict(event: AIEvent) -> dict[str, Any]:
 
 def _to_plain_dict(value: Any) -> Any:
     if is_dataclass(value):
-        return _to_plain_dict(asdict(value))
+        return _to_plain_dict(asdict(cast(Any, value)))
     if isinstance(value, Mapping):
         return {str(key): _to_plain_dict(item) for key, item in value.items()}
     if isinstance(value, tuple):

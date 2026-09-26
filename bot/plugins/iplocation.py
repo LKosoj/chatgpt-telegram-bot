@@ -1,5 +1,5 @@
 import ipaddress
-from typing import Dict
+from typing import Dict, List
 
 import httpx
 
@@ -27,7 +27,7 @@ class IpLocationPlugin(Plugin):
         except ValueError as e:
             return {"error": f"IP location response JSON parse error: {e}"}
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "iplocation",
             "description": "Get location and ASN details for an IP address.",

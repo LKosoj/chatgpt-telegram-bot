@@ -3,6 +3,7 @@ no Telegram API, only the injected edit/send callbacks.
 
 See docs/remediation_2026-09-04/T12-telegram-stream.md.
 """
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -294,3 +295,18 @@ async def test_inline_does_not_split_long_content_into_chunks():
 
     edit.assert_awaited_once_with(None, "aaaa\nbbbb", True)
     assert outcome.delivered is True
+
+
+def test_retry_after_seconds_passes_through_int():
+    assert telegram_stream.retry_after_seconds(SimpleNamespace(retry_after=3)) == 3.0
+
+
+def test_retry_after_seconds_converts_timedelta():
+    exc = SimpleNamespace(retry_after=timedelta(seconds=2.5))
+    assert telegram_stream.retry_after_seconds(exc) == 2.5
+
+
+def test_retry_after_seconds_converts_real_retry_after_timedelta(monkeypatch):
+    monkeypatch.setenv("PTB_TIMEDELTA", "true")
+    exc = RetryAfter(retry_after=2)
+    assert telegram_stream.retry_after_seconds(exc) == 2.0

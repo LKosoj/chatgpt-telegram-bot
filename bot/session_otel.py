@@ -104,7 +104,8 @@ def _extract_assistant_response_attrs(event: dict) -> dict:
 
 
 def _extract_provider_error_attrs(event: dict) -> dict:
-    data = event.get('data') if isinstance(event.get('data'), dict) else {}
+    raw_data = event.get('data')
+    data: dict = raw_data if isinstance(raw_data, dict) else {}
     attrs = {'message': event.get('message'), 'recoverable': event.get('recoverable')}
     for key in ('kind', 'provider', 'stage'):
         if key in data:
@@ -113,7 +114,8 @@ def _extract_provider_error_attrs(event: dict) -> dict:
 
 
 def _extract_retry_attrs(event: dict) -> dict:
-    data = event.get('data') if isinstance(event.get('data'), dict) else {}
+    raw_data = event.get('data')
+    data: dict = raw_data if isinstance(raw_data, dict) else {}
     attrs = {
         'message': event.get('message'),
         'attempt': event.get('attempt'),
@@ -151,7 +153,8 @@ def _safe_attrs(event: dict, max_chars: int) -> dict:
     Unknown event types (not in `_EVENT_ATTR_EXTRACTORS`) yield an empty
     dict here — callers add `type`/`ts` themselves where relevant.
     """
-    extractor = _EVENT_ATTR_EXTRACTORS.get(event.get('type'))
+    etype = event.get('type')
+    extractor = _EVENT_ATTR_EXTRACTORS.get(etype) if isinstance(etype, str) else None
     if extractor is None:
         return {}
     raw = extractor(event) or {}
@@ -346,7 +349,7 @@ class _OtelBridge:
             span.set_attribute(key, value)
         span.end(end_time=now_ns)
 
-    def _add_event_on_parent(self, event: dict, etype: str, turn_id, now_ns: int) -> None:
+    def _add_event_on_parent(self, event: dict, etype: str | None, turn_id, now_ns: int) -> None:
         if turn_id is None:
             return
         parent = self._turn_spans.get(turn_id)

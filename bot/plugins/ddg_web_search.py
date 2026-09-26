@@ -1,5 +1,5 @@
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from .plugin import Plugin
 
@@ -20,10 +20,12 @@ class DDGWebSearchPlugin(Plugin):
     Backward-compatible web search plugin backed by LLMGateway.
     """
 
+    returns_untrusted_content = True
+
     def get_source_name(self) -> str:
         return "LLMGateway Web Search"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "web_search",
             "description": (

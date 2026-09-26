@@ -8,13 +8,15 @@ from dotenv import load_dotenv
 from .model_constants import (
     MAX_OUTPUT_TOKENS,
 )
+from .instance_lock import acquire_instance_lock, InstanceLockError, default_lock_path
 from .pricing import load_model_token_prices
 from .plugin_manager import PluginManager
 from .openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from .telegram_bot import ChatGPTTelegramBot
 from .database import Database
+from .env_utils import env_bool
 from .i18n import configured_language
-from .utils import log_value_shape
+from .utils import log_exception_shape, log_value_shape
 
 
 DEFAULT_TELEGRAM_BASE_URL = 'http://localhost:8081/bot'
@@ -32,23 +34,6 @@ def parse_bool_env(name, default):
         return False
 
     raise ValueError(f'{name} must be a boolean value')
-
-
-def env_bool(name: str, default: bool) -> bool:
-    """Soft boolean env parsing — replaces the inline ``.lower() == 'true'`` idiom.
-
-    Byte-for-byte equivalent of the historical per-call-site expression:
-    unset env -> ``default``; **any** other value (including recognizable
-    synonyms like ``'1'``/``'yes'``) -> ``False`` unless it is exactly
-    ``'true'`` case-insensitively. Never raises. Do not use this for env
-    vars whose invalid-value handling must reject startup — those keep using
-    the stricter ``parse_bool_env`` above (see
-    ``test_invalid_telegram_local_mode_rejected_before_polling``).
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.lower() == 'true'
 
 
 def parse_telegram_rich_mode_env(name='TELEGRAM_RICH_MESSAGES', default='auto'):
@@ -202,6 +187,15 @@ def main():
         logging.error(f'The following environment values are missing in your .env: {", ".join(missing_values)}')
         exit(1)
 
+    lock_path = os.environ.get('INSTANCE_LOCK_PATH') or default_lock_path(
+        os.environ.get('DB_PATH')
+    )
+    try:
+        acquire_instance_lock(lock_path)
+    except InstanceLockError as exc:
+        logging.error("Instance lock unavailable error=%s", log_exception_shape(exc))
+        exit(1)
+
     # Setup configurations
     model_choices = parse_model_list_env('OPENAI_MODEL', required=True)
     model = model_choices[0]
@@ -325,6 +319,9 @@ def main():
         'telegram_base_url': telegram_base_url,
         'admin_user_ids': os.environ.get('ADMIN_USER_IDS', '-'),
         'allowed_user_ids': os.environ.get('ALLOWED_TELEGRAM_USER_IDS', '*'),
+        'allow_group_members_via_authorized_user': env_bool(
+            'ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER', True,
+        ),
         'enable_quoting': env_bool('ENABLE_QUOTING', True),
         'enable_image_generation': env_bool('ENABLE_IMAGE_GENERATION', True),
         'enable_transcription': env_bool('ENABLE_TRANSCRIPTION', True),
@@ -357,6 +354,18 @@ def main():
         'image_retention_days': _parse_numeric_env('IMAGE_RETENTION_DAYS', 7, int, minimum=0),
         'usage_retention_days': _parse_numeric_env('USAGE_RETENTION_DAYS', 30, int, minimum=0),
     }
+
+    if telegram_config['allow_group_members_via_authorized_user']:
+        logging.info(
+            'Group access mode: ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER is enabled -- '
+            'any member of a group chat is treated as allowed if the group also '
+            'contains an allowed/admin user.'
+        )
+    else:
+        logging.info(
+            'Group access mode: ALLOW_GROUP_MEMBERS_VIA_AUTHORIZED_USER is disabled -- '
+            'group chat messages are allowed only from the sender\'s own allowed/admin id.'
+        )
 
     plugin_config = {
         'plugins': [p.strip() for p in os.environ.get('PLUGINS', '').split(',') if p.strip()]

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Sequence
 
 import telegram
-from telegram import constants
+from telegram import MessageEntity, constants
 
 from .telegram_rich import (
     MAX_RICH_MARKDOWN_BYTES,
@@ -14,9 +14,11 @@ from .telegram_rich import (
     rich_messages_required,
     send_rich_markdown,
 )
+from .artifact_paths import is_deliverable
 from .tool_result import direct_result_payload
 from .utils import (
     cleanup_intermediate_files,
+    compute_scope_key,
     is_direct_result,
     render_markdown_message_entities,
     split_into_chunks,
@@ -69,6 +71,7 @@ async def send_text_chunks(
                 len(text.encode("utf-8")),
                 MAX_RICH_MARKDOWN_BYTES,
             )
+    message_parts: Sequence[tuple[str, list[MessageEntity] | None]]
     if parse_mode == constants.ParseMode.MARKDOWN:
         message_parts = render_markdown_message_entities(text)
     else:
@@ -180,7 +183,7 @@ async def _send_direct_payload(
             config=config,
         )
 
-    common = {"chat_id": chat_id}
+    common: dict[str, Any] = {"chat_id": chat_id}
     if reply_to_message_id:
         common["reply_to_message_id"] = reply_to_message_id
     if message_thread_id:
@@ -203,6 +206,18 @@ async def _send_direct_payload(
 
     if kind in {"file", "photo", "gif"} and result_format == "path":
         path = os.path.realpath(os.path.expanduser(str(value)))
+        allowed, reason = is_deliverable(path, scope=compute_scope_key(chat_id))
+        if not allowed:
+            logger.warning("Rejected direct_result artifact path=%s reason=%s", path, reason)
+            await send_text_chunks(
+                bot,
+                chat_id=chat_id,
+                text=f"Artifact path is unavailable: {os.path.basename(path)}",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+                parse_mode=None,
+            )
+            return sent
         if not os.path.isfile(path):
             await send_text_chunks(
                 bot,

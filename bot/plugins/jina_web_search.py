@@ -13,7 +13,8 @@ class JinaWebSearchPlugin(Plugin):
     """
     Плагин для поиска в интернете через Jina AI Search API
     """
-    
+
+    returns_untrusted_content = True
     BASE_URL = "https://s.jina.ai"
     
     def __init__(self):

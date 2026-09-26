@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from typing import Dict
+from typing import Dict, List
 
 from pytubefix import YouTube
 
@@ -16,7 +16,7 @@ class YouTubeAudioExtractorPlugin(Plugin):
     def get_source_name(self) -> str:
         return "YouTube Audio Extractor"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "extract_youtube_audio",
             "description": "Extract audio from a YouTube video",

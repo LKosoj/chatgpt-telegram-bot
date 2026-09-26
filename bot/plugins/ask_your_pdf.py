@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
+from .plugin import Plugin
+
+pypdf: Any
 try:
     import pypdf
 except ImportError:
@@ -16,18 +19,19 @@ try:
 except ImportError:
     textract = None
 
+pdfminer_extract_text: Any
 try:
     from pdfminer.high_level import extract_text as pdfminer_extract_text
 except ImportError:
     pdfminer_extract_text = None
-
-from .plugin import Plugin
 
 
 class AskYourPDFPlugin(Plugin):
     """
     Extract and analyze content from PDF files with advanced caching.
     """
+
+    returns_untrusted_content = True
 
     def __init__(self):
         self.temp_dir = os.path.join(os.path.dirname(__file__), "temp_pdfs")
@@ -186,7 +190,7 @@ class AskYourPDFPlugin(Plugin):
     def _cache_file_path(self, file_hash: str, query: str) -> str:
         return os.path.join(self.cache_dir, f"{self._cache_key(file_hash, query)}.json")
 
-    def load_cache(self, file_hash: str, query: str) -> Dict:
+    def load_cache(self, file_hash: str, query: str) -> Dict | None:
         try:
             cache_key = self._cache_key(file_hash, query)
             cache_file = self._cache_file_path(file_hash, query)
@@ -366,5 +370,7 @@ class AskYourPDFPlugin(Plugin):
 
                 self.save_cache(file_hash, query, result)
                 return result
+
+            return {"error": f"Unknown function: {function_name}"}
         except Exception as e:
             return {"error": self.t("ask_your_pdf_error", error=str(e))}

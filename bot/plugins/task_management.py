@@ -2,7 +2,7 @@
 import os
 import json
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 from .plugin import Plugin
 
 
@@ -24,7 +24,7 @@ class TaskManagementPlugin(Plugin):
     def get_source_name(self) -> str:
         return "TaskManagement"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "create_task",
             "description": "Create a new task with priority and deadline",

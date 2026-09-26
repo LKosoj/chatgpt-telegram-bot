@@ -1,5 +1,5 @@
 import os
-from typing import Dict
+from typing import Dict, List
 
 import wolframalpha
 
@@ -19,7 +19,7 @@ class WolframAlphaPlugin(Plugin):
     def get_source_name(self) -> str:
         return "WolframAlpha"
 
-    def get_spec(self) -> [Dict]:
+    def get_spec(self) -> List[Dict]:
         return [{
             "name": "answer_with_wolfram_alpha",
             "description": (

@@ -3,15 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import http.client
-import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
 import signal
-import socket
 import stat
 import subprocess
 import sys
@@ -19,7 +16,6 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -28,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .. import net_safety
 from ..utils import compute_scope_key
 from ..user_settings import USER_DISABLED_SKILLS_SETTING, get_user_settings, normalize_string_list
 from .plugin import Plugin
@@ -83,6 +80,16 @@ ARCHIVE_SUFFIXES = (
     ".zip",
 )
 
+
+def _dynamic_insert_index(messages: List[Dict[str, Any]]) -> int:
+    """Index for a per-turn dynamic system message: right before the trailing user
+    message, or at the very end when something else (assistant/tool messages from an
+    in-progress tool round) already follows the last user turn."""
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        return len(messages) - 1
+    return len(messages)
+
+
 class SkillsPlugin(Plugin):
     """
     Exposes local Codex-style skills as tools for the existing function-calling loop.
@@ -108,6 +115,7 @@ class SkillsPlugin(Plugin):
         self.install_admin_all = False
         self.script_timeout = 120
         self.install_timeout = SKILLS_CLI_TIMEOUT_SECONDS
+        self.install_max_bytes = 50_000_000
         self.output_max_chars = 12000
         self.interim_after_seconds = 20
         self._state_lock = threading.RLock()
@@ -138,6 +146,9 @@ class SkillsPlugin(Plugin):
             "SKILLS_INSTALL_TIMEOUT",
             default=SKILLS_CLI_TIMEOUT_SECONDS,
             minimum=10,
+        )
+        self.install_max_bytes = self._env_int(
+            "SKILLS_INSTALL_MAX_BYTES", default=50_000_000, minimum=1_000_000,
         )
         self.output_max_chars = self._env_int("SKILLS_SCRIPT_OUTPUT_MAX_CHARS", default=12000, minimum=1000)
         self.interim_after_seconds = self._env_int(
@@ -236,8 +247,9 @@ class SkillsPlugin(Plugin):
         scope = compute_scope_key(chat_id, user_id) if chat_id is not None else None
         active_scope_state = self.active_skills.get(scope, {}) if scope is not None else {}
 
-        catalog_text = self._build_session_skills_catalog(disabled_skills, active_scope_state)
-        if not catalog_text:
+        static_text = self._build_static_skills_catalog(disabled_skills)
+        active_text = self._build_active_skills_catalog(active_scope_state)
+        if not static_text and not active_text:
             return None
 
         new_messages = list(messages)
@@ -247,7 +259,13 @@ class SkillsPlugin(Plugin):
                 insert_at += 1
             else:
                 break
-        new_messages.insert(insert_at, {"role": "system", "content": catalog_text})
+        if static_text:
+            new_messages.insert(insert_at, {"role": "system", "content": static_text})
+        if active_text:
+            new_messages.insert(_dynamic_insert_index(new_messages), {
+                "role": "system",
+                "content": active_text,
+            })
         return new_messages
 
     def _is_skills_agent_mode(self, system_message: Dict[str, Any]) -> bool:
@@ -268,11 +286,7 @@ class SkillsPlugin(Plugin):
             return False
         return target is not None and resolved is target
 
-    def _build_session_skills_catalog(
-        self,
-        disabled_skills: set[str],
-        active_scope_state: Dict[str, Any],
-    ) -> str:
+    def _build_static_skills_catalog(self, disabled_skills: set[str]) -> str:
         catalog_lines: List[str] = []
         for skill_id, info in self.available_skills.items():
             if skill_id in disabled_skills:
@@ -283,13 +297,13 @@ class SkillsPlugin(Plugin):
             catalog_lines.append(f"- {skill_id}: {desc}" if desc else f"- {skill_id}")
         if not catalog_lines:
             return ""
-
-        sections: List[str] = [
+        return "\n\n".join([
             "Доступные локальные skills (id: description). Активируйте через "
             "skills.activate_skill, читайте через skills.get_skill:",
             "\n".join(catalog_lines),
-        ]
+        ])
 
+    def _build_active_skills_catalog(self, active_scope_state: Dict[str, Any]) -> str:
         active_lines: List[str] = []
         for skill_id in sorted(active_scope_state.keys()):
             info = self.available_skills.get(skill_id)
@@ -304,15 +318,14 @@ class SkillsPlugin(Plugin):
             for script_name in scripts:
                 abs_path = (scripts_dir / script_name).as_posix()
                 active_lines.append(f"  - {script_name}  →  {abs_path}")
-        if active_lines:
-            sections.append(
-                "Активные skills в этой сессии и их scripts. Запускайте через "
-                "skills.run_skill_script(skill_name=..., script_name=...); абсолютные "
-                "пути даны как fallback на случай, если требуется terminal.terminal:"
-            )
-            sections.append("\n".join(active_lines))
-
-        return "\n\n".join(sections)
+        if not active_lines:
+            return ""
+        return "\n\n".join([
+            "Активные skills в этой сессии и их scripts. Запускайте через "
+            "skills.run_skill_script(skill_name=..., script_name=...); абсолютные "
+            "пути даны как fallback на случай, если требуется terminal.terminal:",
+            "\n".join(active_lines),
+        ])
 
     def _auto_mode_direct_match_block(self, query: Any, disabled_skills: set[str]) -> str:
         query_text = str(query or "").lower()
@@ -1044,11 +1057,12 @@ class SkillsPlugin(Plugin):
             ):
                 continue
             paths.append(skill_path)
+        skills_dir = self.skills_dir
         return sorted(
             paths,
             key=lambda path: (
-                len(path.relative_to(self.skills_dir).parts),
-                path.relative_to(self.skills_dir).as_posix().lower(),
+                len(path.relative_to(skills_dir).parts),
+                path.relative_to(skills_dir).as_posix().lower(),
             ),
         )
 
@@ -1199,6 +1213,8 @@ class SkillsPlugin(Plugin):
 
         while markdown_queue:
             markdown_path = markdown_queue.pop(0)
+            if self.skills_dir is None:
+                continue
             try:
                 relative_markdown = markdown_path.relative_to(self.skills_dir).as_posix()
             except (TypeError, ValueError):
@@ -1554,8 +1570,8 @@ class SkillsPlugin(Plugin):
             return {"success": False, "error": name_error}
         source_skill_name = self._infer_skill_name_from_package(package_id) or target_name.rsplit("/", 1)[-1]
 
-        self._ensure_paths()
-        target_path = (self.skills_dir / target_name).resolve()
+        skills_dir = self._ensure_paths()
+        target_path = (skills_dir / target_name).resolve()
         if target_path.exists():
             return {
                 "success": False,
@@ -1669,7 +1685,7 @@ class SkillsPlugin(Plugin):
         install_all: bool,
         user_id: int | None,
     ) -> Dict[str, Any]:
-        self._ensure_paths()
+        skills_dir = self._ensure_paths()
         with tempfile.TemporaryDirectory(prefix="skills-install-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
             source_path, materialize_error = self._materialize_skill_source(source, source_kind, temp_dir)
@@ -1718,9 +1734,9 @@ class SkillsPlugin(Plugin):
             if name_error:
                 return {"success": False, "package": source, "source_kind": source_kind, "error": name_error}
 
-            target_path = (self.skills_dir / target_name).resolve()
-            skills_dir = self.skills_dir.resolve()
-            if not self._is_relative_to(target_path, skills_dir):
+            target_path = (skills_dir / target_name).resolve()
+            resolved_skills_dir = skills_dir.resolve()
+            if not self._is_relative_to(target_path, resolved_skills_dir):
                 return {
                     "success": False,
                     "package": source,
@@ -1804,10 +1820,10 @@ class SkillsPlugin(Plugin):
         if not body:
             return {"success": False, "error": "instructions must be a non-empty markdown string"}
 
-        self._ensure_paths()
-        target_path = (self.skills_dir / target_name).resolve()
-        skills_dir = self.skills_dir.resolve()
-        if not self._is_relative_to(target_path, skills_dir):
+        skills_dir = self._ensure_paths()
+        target_path = (skills_dir / target_name).resolve()
+        resolved_skills_dir = skills_dir.resolve()
+        if not self._is_relative_to(target_path, resolved_skills_dir):
             return {"success": False, "skill": target_name, "error": "Target skill path escapes SKILLS_DIR."}
         if target_path.exists():
             return {
@@ -1888,12 +1904,7 @@ class SkillsPlugin(Plugin):
                     clone_url = f"https://github.com/{owner}/{repo}"
 
             if shutil.which("git"):
-                if tree_branch:
-                    path, err = self._clone_git_source_branch(
-                        clone_url, temp_dir, branch=tree_branch
-                    )
-                else:
-                    path, err = self._clone_git_source(clone_url, temp_dir)
+                path, err = self._clone_git_source(clone_url, temp_dir, branch=tree_branch)
                 if err is not None or path is None:
                     return None, err
                 if tree_subpath:
@@ -1965,35 +1976,17 @@ class SkillsPlugin(Plugin):
             )
         return None
 
-    def _clone_git_source(self, source: str, temp_dir: Path) -> tuple[Path | None, str | None]:
-        git_path = shutil.which("git")
-        if not git_path:
-            return None, "git executable not found; use an archive URL instead"
-        clone_dir = temp_dir / "git-source"
-        command = [git_path, "clone", "--depth", "1", source, str(clone_dir)]
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=self.install_timeout,
-                check=False,
-            )
-        except Exception as exc:
-            return None, f"Failed to clone git source: {exc}"
-        if result.returncode != 0:
-            stderr = self._truncate(self._strip_ansi(result.stderr or ""))
-            return None, f"git clone failed with code {result.returncode}: {stderr}"
-        return clone_dir, None
-
-    def _clone_git_source_branch(
-        self, source: str, temp_dir: Path, branch: str
+    def _clone_git_source(
+        self, source: str, temp_dir: Path, branch: str | None = None
     ) -> tuple[Path | None, str | None]:
         git_path = shutil.which("git")
         if not git_path:
             return None, "git executable not found; use an archive URL instead"
         clone_dir = temp_dir / "git-source"
-        command = [git_path, "clone", "--depth", "1", "-b", branch, source, str(clone_dir)]
+        command = [git_path, "clone", "--depth", "1"]
+        if branch:
+            command += ["-b", branch]
+        command += [source, str(clone_dir)]
         try:
             result = subprocess.run(
                 command,
@@ -2067,119 +2060,16 @@ class SkillsPlugin(Plugin):
 
     def _resolve_safe_ip(self, host: str) -> Optional[str]:
         """Возвращает первый IP с is_global==True для host, иначе None."""
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
-            return None
-        for info in infos:
-            ip_str = info[4][0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-            if ip.is_global:
-                return ip_str
-        return None
+        return net_safety.resolve_public_ip(host)
 
     def _safe_open(self, url, timeout):
-        # Why: закрываем сразу две дыры:
-        # 1) urlopen по умолчанию слепо следует за редиректами → атакующий отдаёт
-        #    302 на http://169.254.169.254/. Свой HTTPRedirectHandler пере-валидирует
-        #    каждый new URL.
-        # 2) DNS rebinding: между _validate_external_url и реальным connect стандартный
-        #    HTTPSConnection делает ещё один getaddrinfo, который атакующий может
-        #    отравить через short-TTL DNS. Пин IP перед connect устраняет TOCTOU.
-        validator = self._validate_external_url
-        resolver = self._resolve_safe_ip
-
-        class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-            def connect(self):
-                sock = socket.create_connection(
-                    (self._pinned_ip, self.port), self.timeout
-                )
-                self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
-
-        class _PinnedHTTPConnection(http.client.HTTPConnection):
-            def connect(self):
-                self.sock = socket.create_connection(
-                    (self._pinned_ip, self.port), self.timeout
-                )
-
-        def _build_conn(scheme, host, **kw):
-            # urllib передаёт host вида "example.com:8443" или "[::1]:443" — getaddrinfo
-            # не принимает host:port, поэтому вытаскиваем чистый hostname для resolve.
-            hostname = urllib.parse.urlparse(f"//{host}").hostname or host
-            ip = resolver(hostname)
-            if ip is None:
-                raise urllib.error.URLError(f"refused: {hostname} has no public IP")
-            cls = _PinnedHTTPSConnection if scheme == "https" else _PinnedHTTPConnection
-            conn = cls(host, **kw)
-            conn._pinned_ip = ip
-            return conn
-
-        class _PinnedHTTPHandler(urllib.request.HTTPHandler):
-            def http_open(self, req):
-                return self.do_open(
-                    lambda h, **kw: _build_conn("http", h, **kw), req
-                )
-
-        class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
-            def https_open(self, req):
-                return self.do_open(
-                    lambda h, **kw: _build_conn("https", h, **kw),
-                    req,
-                    context=self._context,
-                    check_hostname=self._check_hostname,
-                )
-
-        class _Validating(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                err = validator(newurl)
-                if err is not None:
-                    raise urllib.error.HTTPError(
-                        newurl, code, f"redirect refused: {err}", headers, fp,
-                    )
-                return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-        opener = urllib.request.build_opener(
-            _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _Validating()
-        )
-        return opener.open(url, timeout=timeout)
+        # SSRF-защита (пин IP, ре-валидация редиректов, схема/приватные адреса) живёт
+        # в net_safety.safe_urlopen — см. bot/net_safety.py.
+        return net_safety.safe_urlopen(url, timeout=timeout, max_bytes=self.install_max_bytes)
 
     def _validate_external_url(self, url: str) -> Optional[str]:
-        """Возвращает None если URL безопасен, иначе строку с причиной отказа.
-
-        Защищает urllib.request.urlopen от: file:// (LFI), ftp:// и прочих
-        схем, hostname'ов, резолвящихся в private/loopback/link-local IP
-        (SSRF на внутренние сервисы — облачные metadata-эндпоинты, локальные
-        админ-панели и т.п.). DNS-resolve блокирующий, но это install-путь,
-        вызываемый редко и из админа.
-        """
-        try:
-            parsed = urllib.parse.urlparse(url)
-        except Exception as exc:  # pragma: no cover - urlparse редко падает
-            return f"invalid URL: {exc}"
-        if parsed.scheme not in {"http", "https"}:
-            return f"URL scheme '{parsed.scheme}' is not allowed; use http(s)://"
-        host = parsed.hostname
-        if not host:
-            return "URL has no hostname"
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except socket.gaierror as exc:
-            return f"DNS resolution failed for {host}: {exc}"
-        for info in infos:
-            sockaddr = info[4]
-            ip_str = sockaddr[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-            # is_global отрицает private/loopback/link-local/multicast/reserved/
-            # unspecified + CGNAT (100.64/10) + TEST-NET (198.18/15).
-            if not ip.is_global:
-                return f"URL host {host} resolves to non-public address {ip_str}"
-        return None
+        """Возвращает None если URL безопасен, иначе строку с причиной отказа."""
+        return net_safety.validate_public_url(url)
 
     def _github_blob_info(
         self, source: str
@@ -2297,6 +2187,7 @@ class SkillsPlugin(Plugin):
         *,
         user_id: int | None,
     ) -> Dict[str, Any]:
+        skills_dir = self._ensure_paths()
         try:
             candidates = self._skill_source_candidates(source_path)
         except OSError as exc:
@@ -2329,7 +2220,7 @@ class SkillsPlugin(Plugin):
                 })
                 continue
             seen_targets.add(target_name)
-            target_path = (self.skills_dir / target_name).resolve()
+            target_path = (skills_dir / target_name).resolve()
             if target_path.exists():
                 skipped.append({
                     "skill": target_name,
@@ -2527,6 +2418,8 @@ class SkillsPlugin(Plugin):
         except Exception as exc:
             return {"success": False, "returncode": None, "stdout": "", "stderr": f"Failed to start skills CLI: {exc}"}
 
+        assert process.stdout is not None
+        assert process.stderr is not None
         byte_limit = self.output_max_chars * 4
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -3249,6 +3142,7 @@ class SkillsPlugin(Plugin):
                 "skill": skill_id,
                 "script": script_name,
             }
+        assert command is not None
 
         started = time.monotonic()
         logger.info(
@@ -3273,6 +3167,8 @@ class SkillsPlugin(Plugin):
                 env=self._script_env(skill_id=skill_id, scope=scope, workdir=workdir),
                 start_new_session=True,
             )
+            assert process.stdout is not None
+            assert process.stderr is not None
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 asyncio.gather(
                     self._read_capped(process.stdout, byte_limit),
@@ -3641,14 +3537,16 @@ class SkillsPlugin(Plugin):
             except Exception as exc:
                 logger.warning("Failed to save skills state: %s", exc)
 
-    def _ensure_paths(self) -> None:
+    def _ensure_paths(self) -> Path:
         if self.skills_dir is None:
             self.initialize(
                 openai=getattr(self, "openai", None),
                 bot=getattr(self, "bot", None),
                 storage_root=getattr(self, "storage_root", None),
             )
+        assert self.skills_dir is not None
         self.skills_dir.mkdir(parents=True, exist_ok=True)
+        return self.skills_dir
 
     def _env_flag(self, name: str, *, default: bool) -> bool:
         value = os.getenv(name)

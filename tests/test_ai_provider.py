@@ -102,6 +102,69 @@ async def test_fake_provider_fails_loudly_when_no_response_is_queued():
 
 
 @pytest.mark.asyncio
+async def test_fake_provider_generate_image_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_image("image-result-1")
+
+    result = await provider.generate_image(prompt="a cat")
+
+    assert result == "image-result-1"
+    assert provider.image_calls == [{"prompt": "a cat"}]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_edit_image_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_image("edited-result-1")
+
+    result = await provider.edit_image(prompt="add a hat", image_bytes=b"x")
+
+    assert result == "edited-result-1"
+    assert provider.image_calls == [{"prompt": "add a hat", "image_bytes": b"x"}]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_speech_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_speech("speech-result-1")
+
+    result = await provider.speech(text="hello", voice="alice")
+
+    assert result == "speech-result-1"
+    assert provider.speech_calls == [{"text": "hello", "voice": "alice"}]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_transcribe_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_transcribe("transcript-1")
+
+    result = await provider.transcribe(file=b"audio-bytes")
+
+    assert result == "transcript-1"
+    assert provider.transcribe_calls == [{"file": b"audio-bytes"}]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_list_models_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_models(["model-a", "model-b"])
+
+    assert await provider.list_models() == ["model-a", "model-b"]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_list_voices_queue_round_trip():
+    provider = FakeAIProvider()
+    provider.queue_voices(["alice", "bob"])
+
+    result = await provider.list_voices(model="tts-1")
+
+    assert result == ["alice", "bob"]
+    assert provider.voices_calls == [{"model": "tts-1"}]
+
+
+@pytest.mark.asyncio
 async def test_usage_keeps_missing_prompt_completion_as_none():
     """Шлюз прислал total_tokens, но не прислал prompt/completion_tokens.
 

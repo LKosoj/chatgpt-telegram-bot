@@ -22,6 +22,7 @@ import pytest
 
 pytest.importorskip("tiktoken")
 
+from bot.ai_providers.openai_compatible import OpenAICompatibleProvider, raw_chat_completion
 from bot.openai_helper import OpenAIHelper
 from bot.session_logger import clear_trace, set_trace
 
@@ -105,11 +106,14 @@ async def test_summarise_window_uses_provider_wrapper_by_default():
     helper.session_logger = CaptureSessionLogger()
     calls = []
 
-    async def fake_sdk_create(*, kind, **kwargs):
-        calls.append((kind, kwargs))
+    async def fake_sdk_create(**kwargs):
+        calls.append(kwargs)
         return _summary_response()
 
-    helper._create_chat_completion_with_rate_limit_retry = fake_sdk_create
+    helper.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=fake_sdk_create))
+    )
+    helper._provider = OpenAICompatibleProvider(raw_chat_completion(lambda: helper.client))
 
     token = set_trace(1, "summary-session", "summary-turn")
     try:
@@ -120,7 +124,7 @@ async def test_summarise_window_uses_provider_wrapper_by_default():
         clear_trace(token)
 
     assert summary == "compact summary"
-    assert calls[0][0] == "summary"
+    assert calls[0]["model"] == "cheap-model"
     provider_events = [
         event for event in helper.session_logger.events
         if event["type"] == "ai_provider_response"
