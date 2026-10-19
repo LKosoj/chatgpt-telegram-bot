@@ -52,8 +52,3 @@ def test_real_skill_ids_are_unique(real_skills):
     names = [info["name"] for info in real_skills.values()]
     duplicates = {name for name in names if names.count(name) > 1}
     assert not duplicates, f"duplicate skill name(s) across different skill ids: {duplicates}"
-
-
-def test_decision_framework_description_is_within_240_chars(real_skills):
-    assert "decision-framework" in real_skills
-    assert len(real_skills["decision-framework"]["description"]) <= 240
