@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -83,12 +84,12 @@ async def test_handle_animate_command_uses_async_image_lookup(monkeypatch):
     message = FakeMessage()
     processed = []
 
-    async def fake_process_animate_command(message_arg, file_id, prompt=None):
+    async def fake_process_animate_command(message_arg, file_id, prompt=None, *, user_id=None):
         processed.append((message_arg, file_id, prompt))
 
     monkeypatch.setattr(plugin, "_process_animate_command", fake_process_animate_command)
 
-    await plugin.handle_animate_command(SimpleNamespace(message=message), context=None)
+    await plugin.handle_animate_command(SimpleNamespace(message=message, effective_user=message.from_user, callback_query=None), context=None)
 
     assert db.sync_calls == 0
     assert db.async_calls == [(123, 456, 1)]
@@ -155,7 +156,7 @@ async def test_handle_prompt_constructor_uses_async_image_lookup():
     result = await plugin.handle_prompt_constructor(
         "animate_prompt",
         openai,
-        update=SimpleNamespace(message=message),
+        update=SimpleNamespace(message=message, effective_user=message.from_user),
     )
 
     assert result == WAITING_PROMPT
@@ -182,6 +183,28 @@ class FakeStatusMessage:
 
     async def edit_text(self, text, **kwargs):
         self.edits.append((text, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_process_animate_command_queues_task_for_clicking_user():
+    plugin, _ = make_plugin([])
+    message = FakeMessage(user_id=999)
+    message.reply_text = AsyncMock(return_value=SimpleNamespace(edit_text=AsyncMock()))
+    queued = []
+
+    async def fake_start_worker():
+        task = plugin.task_queue.get_nowait()
+        queued.append(task)
+        task.status = TaskStatus.FAILED
+        task.error = "test stop"
+
+    plugin.start_worker = fake_start_worker
+
+    await plugin._process_animate_command(message, "file-a", user_id=42)
+
+    assert len(queued) == 1
+    assert queued[0].user_id == 42
+    assert queued[0].file_id == "file-a"
 
 
 def _make_animate_plugin_with_completed_task(monkeypatch, video_url):

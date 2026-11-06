@@ -100,7 +100,7 @@ async def test_prompt_constructor_and_delete_callback_agree_on_keyboard(reminder
     )
 
     message = FakeMessage(user_id=42)
-    await plugin_a.handle_prompt_constructor(SimpleNamespace(message=message), context=None)
+    await plugin_a.handle_prompt_constructor(SimpleNamespace(message=message, effective_user=message.from_user), context=None)
     keyboard_from_list = _button_texts(message.replies[0]["reply_markup"])
 
     # Scenario B: r1, r2, r3 exist for a different owner; delete r3 via the

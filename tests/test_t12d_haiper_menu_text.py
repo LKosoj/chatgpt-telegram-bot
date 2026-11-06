@@ -59,7 +59,7 @@ async def test_prompt_constructor_and_main_menu_agree_on_summary_text(settings):
     constructor_plugin = _make_plugin(dict(settings))
     message = FakeMessage()
     await constructor_plugin.handle_prompt_constructor(
-        "animate_prompt", constructor_plugin.openai, update=SimpleNamespace(message=message),
+        "animate_prompt", constructor_plugin.openai, update=SimpleNamespace(message=message, effective_user=message.from_user),
     )
     constructor_text = message.replies[0]["text"]
     constructor_rows = _style_effect_rows(message.replies[0]["reply_markup"])

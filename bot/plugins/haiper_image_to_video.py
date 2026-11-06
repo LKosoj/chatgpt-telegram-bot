@@ -20,7 +20,6 @@ from telegram import (
     InputTextMessageContent,
     Message,
     Update,
-    User,
 )
 from telegram.ext import ContextTypes, ConversationHandler, CallbackContext, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 import hashlib
@@ -614,8 +613,8 @@ class HaiperImageToVideoPlugin(Plugin):
             
         message = update.message
         chat_id = message.chat.id
-        assert message.from_user is not None
-        user_id = message.from_user.id
+        assert update.effective_user is not None
+        user_id = update.effective_user.id
         logger.info(f"handle_animate_command called with chat_id: {chat_id}, user_id: {user_id}")
         
         if not self.openai:
@@ -624,7 +623,7 @@ class HaiperImageToVideoPlugin(Plugin):
         
         try:
             # Получаем промпт из сообщения (убираем команду /animate)
-            prompt = message.text[8:].strip() if message.text else self.t("haiper_default_prompt")
+            prompt = message.text[8:].strip() if message.text and not update.callback_query else self.t("haiper_default_prompt")
             
             # Проверяем, является ли сообщение ответом на фотографию
             if message.reply_to_message and (message.reply_to_message.photo or
@@ -639,7 +638,7 @@ class HaiperImageToVideoPlugin(Plugin):
                     
                 logger.info(f"Processing animation for replied photo with file_id: {file_id}")
                 # Сразу обрабатываем фото с промптом
-                await self._process_animate_command(message, file_id, prompt)
+                await self._process_animate_command(message, file_id, prompt, user_id=user_id)
                 return
 
             # Если это не ответ на фото, продолжаем стандартную логику
@@ -651,7 +650,7 @@ class HaiperImageToVideoPlugin(Plugin):
 
             # Если есть только одно изображение, используем его
             if len(user_images) == 1:
-                await self._process_animate_command(message, user_images[0]['file_id'], prompt)
+                await self._process_animate_command(message, user_images[0]['file_id'], prompt, user_id=user_id)
                 return
 
             # Создаем клавиатуру с кнопками для выбора изображения
@@ -676,7 +675,7 @@ class HaiperImageToVideoPlugin(Plugin):
                 self.t("haiper_command_error", error=str(e))
             )
 
-    async def _process_animate_command(self, message, file_id, prompt=None):
+    async def _process_animate_command(self, message, file_id, prompt=None, *, user_id=None):
         """Внутренний метод для обработки команды animate с конкретным изображением"""
         temp_file = None
         start_time = datetime.now()
@@ -690,7 +689,7 @@ class HaiperImageToVideoPlugin(Plugin):
             # Create and queue new task
             task = VideoTask(
                 task_id=f"{message.chat.id}_{datetime.now().timestamp()}",
-                user_id=message.from_user.id,
+                user_id=user_id if user_id is not None else message.from_user.id,
                 chat_id=message.chat.id,
                 file_id=file_id,
                 prompt=prompt if prompt else self.t("haiper_default_prompt"),
@@ -1312,7 +1311,7 @@ class HaiperImageToVideoPlugin(Plugin):
         Обработчик для конструктора промптов
         """
         try:
-            user_id = cast(User, update.message.from_user).id if update and update.message else None
+            user_id = update.effective_user.id if update and update.effective_user else None
             logger.info(f"[ConversationHandler] handle_prompt_constructor вызван: user_id={user_id}")
             logger.info("Вызван handle_prompt_constructor")
             if not update or not update.message:
@@ -1320,9 +1319,9 @@ class HaiperImageToVideoPlugin(Plugin):
                 return ConversationHandler.END
 
             message = update.message
-            assert message.from_user is not None
+            assert update.effective_user is not None
             chat_id = str(message.chat.id)
-            user_id = message.from_user.id
+            user_id = update.effective_user.id
             logger.info(f"Конструктор промптов запущен для пользователя {user_id} в чате {chat_id}")
             
             self.openai = openai

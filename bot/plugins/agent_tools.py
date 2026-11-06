@@ -914,7 +914,7 @@ class AgentToolsPlugin(Plugin):
             return
         chat_id = message.chat_id
         user_id = update.effective_user.id if update.effective_user else chat_id
-        args_text = message_text(message).strip()
+        args_text = "" if update.callback_query else message_text(message).strip()
         if not args_text or args_text == "list":
             await message.reply_text(self._format_background_jobs(chat_id, user_id))
             return

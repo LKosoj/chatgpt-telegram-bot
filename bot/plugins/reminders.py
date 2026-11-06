@@ -175,8 +175,8 @@ class RemindersPlugin(Plugin):
         message = update.message
         if message is None:
             return
-        assert message.from_user is not None
-        user_id = str(message.from_user.id)
+        assert update.effective_user is not None
+        user_id = str(update.effective_user.id)
         rows = await self.db_handle.fetch_all(
             "SELECT * FROM reminders WHERE owner_id = ? AND status != 'sent' ORDER BY created_at ASC", (user_id,)
         )
