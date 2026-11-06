@@ -741,10 +741,21 @@ standard conversation path.
 | `chief` | `get_recipe`, `plan_menu` | Edamam recipes / meal planning. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | VkusVill grocery integration. |
 | `reaction` | `react_with_emoji` | Reactions on assistant messages. |
-| `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | Persistent JSON-backed reminders. |
+| `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | One-time and recurring reminders stored in SQLite. |
 | `task_management` | `create_task`, `list_tasks`, `update_task` | User-visible task list (separate from `agent_tools.manage_plan_tasks`). |
 | `language_learning` | `daily_practice`, `track_progress` | Vocabulary / grammar / conversation drills. |
 | `conversation_analytics` | `analyze_conversation`, `get_personalized_recommendations` | Rolling conversation analytics. |
+
+For `reminders`, ask e.g. “Remind me daily at 09:00 to drink water, 10 times in total.”
+`set_reminder` accepts `repeat_frequency`: `daily`, `weekly`, or `monthly`, optional
+`repeat_count` (total sends including the first), and `repeat_until` (inclusive local
+date, `YYYY-MM-DD`). When both limits are set, the earlier one stops the reminder;
+without limits it repeats until deleted. Monthly schedules use the last day of a
+shorter month and restore the original day afterwards. After downtime, one overdue
+notification is sent and the schedule advances to the next future occurrence;
+nothing is sent after the end date. Lists show the frequency and remaining sends.
+Successful one-time reminders are deleted; failed deletions leave a persisted
+“sent” marker for later cleanup without resending.
 
 > **Note.** Tool function names are namespaced: `ddg_translate` declares a spec
 > named `translate`, which becomes the canonical name `ddg_translate.translate`

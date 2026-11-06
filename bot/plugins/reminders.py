@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List
 from .plugin import Plugin
@@ -35,7 +36,8 @@ class RemindersPlugin(Plugin):
                 "Schedule a delayed Telegram notification for the current user at an absolute date/time. "
                 "Call when the user asks to be reminded about something later — resolve any relative "
                 "phrasing ('tomorrow', 'in 2 hours') into the absolute YYYY-MM-DD HH:MM 'time' value "
-                "yourself before calling."
+                "yourself before calling. For repeating reminders set repeat_frequency and optionally "
+                "repeat_count (total sends including the first) and/or repeat_until (inclusive local date)."
             ),
             "parameters": {
                 "type": "object",
@@ -59,7 +61,20 @@ class RemindersPlugin(Plugin):
                         "type": "string",
                         "description": "Delivery channel for the reminder; only 'telegram' is supported.",
                         "enum": ["telegram",]
-                    }
+                    },
+                    "repeat_frequency": {
+                        "type": "string",
+                        "enum": ["none", "daily", "weekly", "monthly"],
+                        "description": "Default none (one-time). Monthly keeps the original day, using the last day in shorter months."
+                    },
+                    "repeat_count": {
+                        "type": "integer", "minimum": 1,
+                        "description": "Optional total number of sends, including the first; requires a repeat frequency."
+                    },
+                    "repeat_until": {
+                        "type": "string",
+                        "description": "Optional inclusive end date YYYY-MM-DD in the same local time as time; requires a repeat frequency. Both limits stop at whichever comes first."
+                    },
                 },
                 "required": ["time", "message", "integration","current_time"]
             }
@@ -154,7 +169,7 @@ class RemindersPlugin(Plugin):
                         "reminders_button_label",
                         time=formatted_time,
                         message=r['message']
-                    ),
+                    ) + self._repeat_summary(r),
                     callback_data=f"reminder:view:{r['id']}"
                 ),
                 InlineKeyboardButton(
@@ -204,6 +219,7 @@ class RemindersPlugin(Plugin):
         if storage_root:
             self.reminders_file = os.path.join(storage_root, "reminders.json")
         if self.db_handle is not None:
+            self.db_handle.run_sync_blocking(self._ensure_repeat_columns_sync)
             self.db_handle.run_sync_blocking(self._import_json_reminders_sync)
 
     def register_schema(self) -> List[str]:
@@ -222,6 +238,10 @@ class RemindersPlugin(Plugin):
                 status TEXT NOT NULL DEFAULT 'pending',
                 locked_at TEXT,
                 locked_by TEXT,
+                repeat_frequency TEXT,
+                repeat_remaining INTEGER,
+                repeat_until TEXT,
+                repeat_day INTEGER,
                 created_at TEXT NOT NULL
             )
             ''',
@@ -232,6 +252,16 @@ class RemindersPlugin(Plugin):
             CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, fire_at_utc, time)
             ''',
         ]
+
+    def _ensure_repeat_columns_sync(self, db) -> None:
+        with db.get_connection() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(reminders)")}
+            for name, column_type in (
+                ("repeat_frequency", "TEXT"), ("repeat_remaining", "INTEGER"),
+                ("repeat_until", "TEXT"), ("repeat_day", "INTEGER"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE reminders ADD COLUMN {name} {column_type}")
 
     def _import_json_reminders_sync(self, db) -> None:
         with db.get_connection() as conn:
@@ -319,6 +349,62 @@ class RemindersPlugin(Plugin):
     async def _check_reminders_tick(self, *, application) -> None:
         await self.check_reminders(application.bot)
 
+    def _repeat_summary(self, reminder: Dict) -> str:
+        frequency = reminder.get("repeat_frequency")
+        if not frequency:
+            return ""
+        parts = [self.t(f"reminders_repeat_{frequency}")]
+        if reminder.get("repeat_remaining") is not None:
+            parts.append(self.t("reminders_repeat_remaining", count=reminder["repeat_remaining"]))
+        if reminder.get("repeat_until"):
+            parts.append(self.t("reminders_repeat_until", date=reminder["repeat_until"]))
+        return " · " + " · ".join(parts)
+
+    def _reminder_local_now(self, reminder: Dict) -> datetime:
+        if reminder.get("fire_at_utc"):
+            offset = datetime.fromisoformat(reminder["time"]) - datetime.fromisoformat(reminder["fire_at_utc"])
+            return datetime.now(timezone.utc).replace(tzinfo=None) + offset
+        return datetime.now()
+
+    def _next_repeat_time(self, reminder: Dict) -> datetime | None:
+        if reminder.get("repeat_remaining") is not None and reminder["repeat_remaining"] <= 1:
+            return None
+        next_time = datetime.fromisoformat(reminder["time"])
+        now = self._reminder_local_now(reminder)
+        while True:
+            frequency = reminder["repeat_frequency"]
+            if frequency == "monthly":
+                year, month_index = divmod(next_time.year * 12 + next_time.month, 12)
+                month = month_index + 1
+                day = min(reminder["repeat_day"], monthrange(year, month)[1])
+                next_time = next_time.replace(year=year, month=month, day=day)
+            else:
+                next_time += timedelta(days=1 if frequency == "daily" else 7)
+            if reminder.get("repeat_until") and next_time.date().isoformat() > reminder["repeat_until"]:
+                return None
+            if next_time > now:
+                return next_time
+
+    async def _finish_sent_reminder(self, reminder: Dict) -> None:
+        next_time = self._next_repeat_time(reminder) if reminder.get("repeat_frequency") else None
+        if next_time is None:
+            await self.db_handle.execute(
+                "DELETE FROM reminders WHERE id = ? AND status = 'sent'", (reminder["id"],)
+            )
+            return
+        fire_at_utc = None
+        if reminder.get("fire_at_utc"):
+            delta = next_time - datetime.fromisoformat(reminder["time"])
+            fire_at_utc = (datetime.fromisoformat(reminder["fire_at_utc"]) + delta).isoformat()
+        remaining = reminder.get("repeat_remaining")
+        await self.db_handle.execute(
+            '''UPDATE reminders SET time = ?, fire_at_utc = ?, repeat_remaining = ?,
+               status = 'pending', send_attempts = 0, locked_at = NULL, locked_by = NULL
+               WHERE id = ? AND status = 'sent' AND time = ?''',
+            (next_time.isoformat(), fire_at_utc, remaining - 1 if remaining is not None else None,
+             reminder["id"], reminder["time"]),
+        )
+
     def _claim_due_reminders_sync(
         self, db, now_local_iso: str, now_utc_iso: str, lease_cutoff_iso: str, worker_id: str
     ) -> List[Dict[str, Any]]:
@@ -355,16 +441,15 @@ class RemindersPlugin(Plugin):
         if self.db_handle is None:
             return
 
-        # Rows left in status='sent' had a successful send whose follow-up
-        # DELETE failed on a prior tick; retry only the delete here, never
-        # the send (see the send/delete split in the loop below).
-        sent_rows = await self.db_handle.fetch_all("SELECT id FROM reminders WHERE status = 'sent'")
+        # Finish persisted successful sends before claiming anything due;
+        # a failed delete/reschedule must never cause another send.
+        sent_rows = await self.db_handle.fetch_all("SELECT * FROM reminders WHERE status = 'sent'")
         for row in sent_rows:
             try:
-                await self.db_handle.execute("DELETE FROM reminders WHERE id = ?", (row["id"],))
+                await self._finish_sent_reminder(row)
             except Exception:
                 logging.exception(
-                    "Reminders: retry-delete failed for reminder %s marked as sent", row["id"],
+                    "Reminders: cleanup failed for reminder %s marked as sent", row["id"],
                 )
 
         now_local_iso = datetime.now().isoformat(timespec="seconds")
@@ -381,6 +466,9 @@ class RemindersPlugin(Plugin):
 
         for reminder in reminders:
             reminder_id = reminder["id"]
+            if reminder.get("repeat_until") and self._reminder_local_now(reminder).date().isoformat() > reminder["repeat_until"]:
+                await self.db_handle.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+                continue
             try:
                 reminder_for_send = dict(reminder)
                 reminder_for_send["user_id"] = reminder["owner_id"]
@@ -406,18 +494,14 @@ class RemindersPlugin(Plugin):
                     )
                 continue
 
-            # Send succeeded outside the except above: a failure past this
-            # point must never be treated as a send failure (that would
-            # resend on the next tick). Fall back to a 'sent' marker so a
-            # later tick retries only the deletion, never the send.
+            # Persist success before attempting deletion or rescheduling.
             try:
-                await self.db_handle.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+                await self.db_handle.execute("UPDATE reminders SET status = 'sent' WHERE id = ?", (reminder_id,))
+                await self._finish_sent_reminder(reminder)
             except Exception:
                 logging.exception(
-                    "Reminders: sent reminder %s but failed to delete the row; marking as "
-                    "sent so a later tick retries only the deletion", reminder_id,
+                    "Reminders: failed to persist/finish successful send for reminder %s", reminder_id,
                 )
-                await self.db_handle.execute("UPDATE reminders SET status = 'sent' WHERE id = ?", (reminder_id,))
 
     async def send_reminder(self, reminder: Dict, helper) -> None:
         """
@@ -451,6 +535,25 @@ class RemindersPlugin(Plugin):
             reminder_id = f'{datetime.now().strftime("%Y%m%d%H%M%S")}_{owner_id}'
             # Convert datetime to ISO format string
             reminder_time = datetime.strptime(kwargs["time"], "%Y-%m-%d %H:%M")
+            frequency = kwargs.get("repeat_frequency", "none")
+            remaining = kwargs.get("repeat_count")
+            until = kwargs.get("repeat_until")
+            try:
+                if frequency not in ("none", "daily", "weekly", "monthly"):
+                    raise ValueError("Invalid repeat frequency")
+                if remaining is not None and (type(remaining) is not int or remaining < 1):
+                    raise ValueError("Invalid repeat count")
+                if until is not None and datetime.strptime(until, "%Y-%m-%d").date() < reminder_time.date():
+                    raise ValueError("End date precedes first reminder")
+                if frequency == "none" and (remaining is not None or until is not None):
+                    raise ValueError("Repeat limits require a frequency")
+                if frequency != "none":
+                    datetime.strptime(kwargs.get("current_time", ""), "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                return {"error": self.t("reminders_repeat_invalid")}
+            frequency = None if frequency == "none" else frequency
+            if until is not None:
+                until = datetime.strptime(until, "%Y-%m-%d").date().isoformat()
 
             # Вычислить fire_at_utc из current_time если передан (исправление TZ)
             fire_at_utc = None
@@ -471,11 +574,12 @@ class RemindersPlugin(Plugin):
             await self.db_handle.execute(
                 '''INSERT INTO reminders (
                     id, owner_id, target_chat_id, time, fire_at_utc, message, integration,
-                    reply_to_message_id, created_at
-                ) VALUES (?,?,?,?,?,?,?,?,?)''',
+                    reply_to_message_id, created_at, repeat_frequency, repeat_remaining, repeat_until, repeat_day
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (
                     reminder_id, owner_id, target_chat_id, reminder_time.isoformat(), fire_at_utc,
                     kwargs["message"], kwargs["integration"], reply_to_message_id, created_at,
+                    frequency, remaining, until, reminder_time.day if frequency else None,
                 ),
             )
 
@@ -483,7 +587,9 @@ class RemindersPlugin(Plugin):
                 "direct_result": {
                     "kind": "text",
                     "format": "markdown",
-                    "value": self.t("reminders_set_at", time=kwargs['time'])
+                    "value": self.t("reminders_set_at", time=kwargs['time']) + self._repeat_summary({
+                        "repeat_frequency": frequency, "repeat_remaining": remaining, "repeat_until": until,
+                    })
                 }
             }
 
@@ -498,7 +604,7 @@ class RemindersPlugin(Plugin):
                 for reminder in rows:
                     reminder_time = datetime.fromisoformat(reminder['time'])
                     formatted_time = reminder_time.strftime('%d.%m.%Y %H:%M')
-                    lines.append(f"- {formatted_time} - {reminder['message']} (id: `{reminder['id']}`)")
+                    lines.append(f"- {formatted_time} - {reminder['message']} (id: `{reminder['id']}`)" + self._repeat_summary(reminder))
                 value = "\n".join(lines)
 
             return {
@@ -571,7 +677,7 @@ class RemindersPlugin(Plugin):
                             "reminders_popup_details",
                             time=formatted_time,
                             message=row['message']
-                        ),
+                        ) + self._repeat_summary(row),
                         show_alert=True,
                         cache_time=0
                     )

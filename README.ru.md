@@ -748,10 +748,22 @@ RAG в меню `/rag` возвращает текстовые сообщени�
 | `chief` | `get_recipe`, `plan_menu` | Рецепты и меню Edamam. |
 | `vkusvill` | `shops`, `products_search`, `recipes`, `basket_create_link` | Интеграция с ВкусВиллом. |
 | `reaction` | `react_with_emoji` | Реакции на ответы ассистента. |
-| `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | Напоминания, persistent JSON. |
+| `reminders` | `set_reminder`, `list_reminders`, `delete_reminder` | Одноразовые и повторяющиеся напоминания в SQLite. |
 | `task_management` | `create_task`, `list_tasks`, `update_task` | Пользовательский task-list (отдельный от `agent_tools.manage_plan_tasks`). |
 | `language_learning` | `daily_practice`, `track_progress` | Vocabulary / grammar / conversation. |
 | `conversation_analytics` | `analyze_conversation`, `get_personalized_recommendations` | Скользящая аналитика разговоров. |
+
+Для `reminders` можно написать, например: «Напоминай каждый день в 09:00 выпить воду,
+всего 10 раз» или «Напоминай раз в месяц 31 числа до 31 декабря 2030 года».
+`set_reminder` принимает `repeat_frequency`: `daily`, `weekly` или `monthly`,
+необязательное общее число отправок `repeat_count` (включая первую) и конечную дату
+`repeat_until` в формате `YYYY-MM-DD` (включительно). Если указаны оба ограничения,
+действует то, которое наступит раньше; без ограничений повторы продолжаются до удаления.
+В коротком месяце используется последний день месяца, затем исходное число восстанавливается.
+После простоя отправляется одно просроченное уведомление, затем выбирается ближайшая
+будущая дата; после конечной даты уведомления не отправляются. В списке видны периодичность
+и оставшееся число отправок. После успешной отправки одноразовая запись удаляется;
+при сбое удаления она остаётся с отметкой «отправлено» и очищается позже без повторной отправки.
 
 > **Замечание.** Имена tool-функций неймспейснутые: `ddg_translate` объявляет
 > спеку с именем `translate`, внутри она получает каноническое имя
