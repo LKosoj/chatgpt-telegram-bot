@@ -183,6 +183,9 @@ class DelayedOpenAI:
     async def should_force_non_stream_first_turn_async(self, chat_id, user_id):
         return False
 
+    async def prepare_chat_mode(self, chat_id, query, user_id, session_id=None, conversation_state_key=None):
+        return False
+
     async def get_chat_response(self, *, chat_id, query, **kwargs):
         self.requests.append({"chat_id": chat_id, "query": query, **kwargs})
         self.active_calls += 1

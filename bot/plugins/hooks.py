@@ -64,6 +64,7 @@ class SessionResetPayload:
     user_id: int | None
     reason: str
     terminal_only: bool
+    session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +72,8 @@ class SessionBeforeDeletePayload:
     user_id: int
     session_id: str
     messages: tuple[dict, ...]
+    chat_id: int | None = None
+    is_deletion: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,7 @@ class BeforeChatRequestPayload:
     user_id: int | None
     request_id: str | None
     allow_dynamic_recall: bool = True
+    session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

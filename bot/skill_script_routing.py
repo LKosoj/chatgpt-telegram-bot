@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .utils import compute_scope_key
+from .utils import compute_session_scope_key
 
 SKILL_SCRIPT_PATH_RE = re.compile(
     r"(?:^|[\s'\"`=(:])(?:[A-Za-z]:)?[^\s'\"`]*skills[/\\](?:[^\s'\"`/\\]+[/\\])+scripts[/\\][^\s'\"`]+",
@@ -18,7 +18,9 @@ SCRIPT_FILE_CREATION_RE = re.compile(
 
 
 def _system_message(helper, chat_id) -> dict | None:
-    messages = getattr(helper, "conversations", {}).get(chat_id, [])
+    snapshot = getattr(helper, "history_snapshot", None)
+    messages = snapshot(chat_id) if callable(snapshot) else getattr(helper, "conversations", {}).get(chat_id, [])
+    messages = messages or []
     return next((msg for msg in messages if msg.get("role") == "system"), None)
 
 
@@ -40,7 +42,7 @@ def _is_skills_agent_mode(helper, chat_id) -> bool:
     return bool(current_mode and skills_mode and current_mode == skills_mode)
 
 
-def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
+def _active_skill_scripts(helper, tool_args: dict, session_id=None) -> list[dict]:
     plugin_manager = getattr(helper, "plugin_manager", None)
     get_plugin = getattr(plugin_manager, "get_plugin", None)
     if not callable(get_plugin):
@@ -50,7 +52,7 @@ def _active_skill_scripts(helper, tool_args: dict) -> list[dict]:
     if not skills_plugin:
         return []
 
-    scope = compute_scope_key(tool_args.get("chat_id"), tool_args.get("user_id"))
+    scope = compute_session_scope_key(tool_args.get("chat_id"), tool_args.get("user_id"), session_id)
     active_skills = getattr(skills_plugin, "active_skills", {}).get(scope, {})
     available_skills = getattr(skills_plugin, "available_skills", {})
     scripts = []
@@ -98,7 +100,7 @@ def _refers_to_active_script(text: str, active_scripts: list[dict]) -> bool:
     return False
 
 
-def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict) -> dict | None:
+def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict, session_id=None) -> dict | None:
     if tool_name != "codeinterpreter.deep_analysis":
         return None
 
@@ -107,7 +109,7 @@ def _skill_script_routing_error(helper, chat_id, tool_name: str, tool_args: dict
         for field in ("code_prompt", "data_path")
     )
 
-    active_scripts = _active_skill_scripts(helper, tool_args)
+    active_scripts = _active_skill_scripts(helper, tool_args, session_id)
     if active_scripts and _refers_to_active_script(text, active_scripts):
         return _skill_script_routing_payload(
             "Routing denied: this script belongs to an active skill and must be run "

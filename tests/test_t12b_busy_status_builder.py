@@ -85,11 +85,15 @@ def test_build_busy_status_without_agent_tools_plugin():
 
 
 def test_build_busy_status_with_agent_tools_plugin_uses_plan_provider():
-    bot = _make_bot(plan_tasks_provider=lambda chat_id, user_id: [{"id": "t1"}])
+    def plan_tasks_provider(chat_id, user_id, session_id):
+        assert (chat_id, user_id, session_id) == (1, 2, "pinned-session")
+        return [{"id": "t1"}]
+
+    bot = _make_bot(plan_tasks_provider=plan_tasks_provider)
     update = SimpleNamespace()
     context = SimpleNamespace()
 
-    status = bot._build_busy_status(update, context, chat_id=1, user_id=2)
+    status = bot._build_busy_status(update, context, chat_id=1, user_id=2, session_id="pinned-session")
 
     assert status.plan_provider is not None
     assert status.plan_provider() == [{"id": "t1"}]

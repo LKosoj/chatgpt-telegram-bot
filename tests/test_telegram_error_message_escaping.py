@@ -151,9 +151,11 @@ async def test_inline_callback_loading_message_escapes_cached_query(monkeypatch)
     bot = _make_bot()
     bot.config["stream"] = False
     bot.usage = {42: SimpleNamespace()}
+    bot._pinned_session_id = AsyncMock(return_value="session-1")
     bot.openai = SimpleNamespace(
         plugin_manager=SimpleNamespace(dispatch_observe=AsyncMock()),
         should_force_non_stream_first_turn_async=AsyncMock(return_value=False),
+        prepare_chat_mode=AsyncMock(return_value=False),
         get_chat_response=AsyncMock(side_effect=RuntimeError("stop-after-loading-edit")),
     )
     bot.inline_queries_cache = {"uid-1": "hello_world *bold*"}

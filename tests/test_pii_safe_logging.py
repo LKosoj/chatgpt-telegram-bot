@@ -195,7 +195,7 @@ async def test_edit_message_with_retry_failure_logs_exception_value(caplog):
 
 
 @pytest.mark.asyncio
-async def test_error_handler_logs_exception_value(caplog):
+async def test_error_handler_logs_exception_type_without_value(caplog):
     caplog.set_level(logging.ERROR)
 
     await error_handler(
@@ -203,4 +203,5 @@ async def test_error_handler_logs_exception_value(caplog):
         SimpleNamespace(error=RuntimeError("private-error-handler-secret")),
     )
 
-    assert "Exception while handling an update error=RuntimeError: private-error-handler-secret" in caplog.text
+    assert "Exception while handling an update error=RuntimeError" in caplog.text
+    assert "private-error-handler-secret" not in caplog.text

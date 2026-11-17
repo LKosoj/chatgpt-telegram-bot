@@ -937,3 +937,38 @@ async def test_call_function_records_ok_false_as_error(tmp_path):
     assert len(events) == 1
     assert events[0]["status"] == "error"
     assert events[0]["error"] == "blocked"
+
+@pytest.mark.asyncio
+async def test_subagent_preserves_empty_parent_allow_list(tmp_path):
+    from bot.plugins.agent_tools import AgentToolsPlugin
+    plugin_dir = tmp_path / 'plugins'
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / 'example.py', 'Example', 'work')
+    manager = PluginManager(config={'plugins': []}, plugins_directory=str(plugin_dir))
+    manager.load_plugins()
+    helper = SimpleNamespace(resolve_allowed_plugins=AsyncMock(return_value=[]))
+    allowed = await AgentToolsPlugin._resolve_parent_allowed_plugins(
+        helper, RequestContext(chat_id=10, user_id=42, session_id='a'), {})
+    specs, names = manager.get_subagent_function_specs(helper, 'model', parent_allowed_plugins=allowed)
+    assert allowed == []
+    assert specs == []
+    assert names == set()
+
+@pytest.mark.asyncio
+async def test_subagent_unavailable_parent_permissions_are_empty(tmp_path):
+    from bot.plugins.agent_tools import AgentToolsPlugin
+    context = RequestContext(chat_id=10, user_id=42, session_id='a')
+    resolver = AgentToolsPlugin._resolve_parent_allowed_plugins
+    assert await resolver(SimpleNamespace(), context, {}) == []
+    missing_chat = SimpleNamespace(resolve_allowed_plugins=AsyncMock(return_value=['All']))
+    assert await resolver(missing_chat, None, {}) == []
+    missing_chat.resolve_allowed_plugins.assert_not_awaited()
+    assert await resolver(SimpleNamespace(resolve_allowed_plugins=AsyncMock(return_value=None)), context, {}) == []
+    assert await resolver(SimpleNamespace(resolve_allowed_plugins=AsyncMock(side_effect=RuntimeError('offline'))), context, {}) == []
+    assert await resolver(SimpleNamespace(resolve_allowed_plugins=AsyncMock(return_value=['All'])), context, {}) == ['All']
+    plugin_dir = tmp_path / 'plugins'
+    plugin_dir.mkdir()
+    _write_plugin(plugin_dir / 'example.py', 'Example', 'work')
+    manager = PluginManager(config={'plugins': []}, plugins_directory=str(plugin_dir))
+    manager.load_plugins()
+    assert manager.get_subagent_function_specs(SimpleNamespace(), 'model') == ([], set())

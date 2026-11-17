@@ -86,6 +86,17 @@ def _make_plugin(tmp_path, monkeypatch, *, allow_scripts=False, admin_ids=""):
     return plugin
 
 
+async def _approved_skill_execute(plugin, function_name, helper=None, **kwargs):
+    from bot.request_context import RequestContext
+    class Agent:
+        async def _ask_telegram_user(self, helper, **options):
+            return {"success": True, "answer": "Разрешить"}
+    manager = SimpleNamespace(get_plugin=lambda name: Agent())
+    helper = SimpleNamespace(plugin_manager=manager)
+    context = RequestContext(chat_id=kwargs.get("chat_id"), user_id=kwargs.get("user_id"))
+    return await plugin.execute(function_name, helper, request_context=context, **kwargs)
+
+
 class FakeSettingsDB:
     def __init__(self, settings):
         self.settings = settings
@@ -698,7 +709,8 @@ async def test_auto_mode_fragment_marks_direct_skill_matches():
         SimpleNamespace(user_id=42, query="Создай презентацию pptx по рецепту"),
     )
 
-    assert "прямое совпадение" in fragment
+    assert "Возможные совпадения" in fragment
+    assert "Одного совпадения темы или формата недостаточно" in fragment
     assert "powerpoint" in fragment
     assert "pptx" in fragment
 
@@ -898,7 +910,7 @@ async def test_install_skill_can_be_disabled_by_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SKILLS_ALLOW_INSTALLS", "false")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="anthropics/skills@webapp-testing",
@@ -941,7 +953,7 @@ async def test_install_skill_allows_all_users_by_default(tmp_path, monkeypatch):
 
     plugin._run_skills_cli = fake_run
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="anthropics/skills@webapp-testing",
@@ -962,7 +974,7 @@ async def test_install_skill_restricts_to_configured_users(tmp_path, monkeypatch
     monkeypatch.setenv("SKILLS_INSTALL_ADMIN_USER_IDS", "42")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="owner/repo@restricted-skill",
@@ -1007,7 +1019,7 @@ async def test_install_skill_syncs_existing_cli_install_when_add_fails(tmp_path,
 
     plugin._run_skills_cli = fake_run
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="owner/repo@existing-skill",
@@ -1053,7 +1065,7 @@ async def test_install_skill_supports_nested_target_path(tmp_path, monkeypatch):
 
     plugin._run_skills_cli = fake_run
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="owner/repo@existing-skill",
@@ -1086,7 +1098,7 @@ async def test_install_skill_supports_local_directory_source(tmp_path, monkeypat
     )
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package=str(source_dir),
@@ -1119,7 +1131,7 @@ async def test_install_skill_supports_zip_archive_source(tmp_path, monkeypatch):
         )
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package=str(archive_path),
@@ -1153,7 +1165,7 @@ async def test_install_skill_supports_tar_archive_source(tmp_path, monkeypatch):
         archive.add(source_dir, arcname="bundle/tar-skill")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package=str(archive_path),
@@ -1183,7 +1195,7 @@ async def test_install_skill_supports_markdown_file_source(tmp_path, monkeypatch
     )
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package=str(source_file),
@@ -1287,7 +1299,7 @@ async def test_install_skill_rejects_url_resolving_to_private_ip(tmp_path, monke
 
     monkeypatch.setattr(skills.net_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="http://169.254.169.254/x.zip",
@@ -1324,7 +1336,7 @@ async def test_install_skill_supports_url_archive_source(tmp_path, monkeypatch):
 
     plugin._download_url_to_path = fake_download
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://example.test/remote-skill.zip",
@@ -1379,7 +1391,7 @@ async def test_install_skill_supports_github_repo_url_install_all(tmp_path, monk
 
     plugin._clone_git_source = fake_clone
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/LKosoj/skills",
@@ -1433,7 +1445,7 @@ async def test_install_skill_github_repo_url_falls_back_to_archive_without_git(t
     plugin._clone_git_source = fail_clone
     plugin._download_github_repo_source = fake_download_github
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/LKosoj/skills",
@@ -1469,7 +1481,7 @@ async def test_install_skill_lists_candidates_for_multi_skill_repo_without_insta
 
     plugin._clone_git_source = fake_clone
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/LKosoj/skills",
@@ -1596,7 +1608,7 @@ async def test_install_skill_supports_github_blob_url_pointing_at_skill_md(
 
     plugin._clone_git_source = fake_clone_branch
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/wgwtest/novel-writing/blob/main/novel-writing/SKILL.md",
@@ -1634,7 +1646,7 @@ async def test_install_skill_supports_github_blob_url_pointing_at_markdown_file(
 
     plugin._download_url_to_path = fake_download
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/owner/repo/blob/main/docs/helper.md",
@@ -1663,7 +1675,7 @@ async def test_install_skill_rejects_github_blob_url_for_non_markdown(
 
     plugin._download_url_to_path = fail_download
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/owner/repo/blob/main/LICENSE",
@@ -1693,7 +1705,7 @@ async def test_install_skill_rejects_html_disguised_as_markdown(
 
     plugin._download_url_to_path = fake_download
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://example.com/page.md",
@@ -1739,7 +1751,7 @@ async def test_install_skill_supports_github_tree_url_with_subpath(tmp_path, mon
 
     plugin._clone_git_source = fake_clone_branch
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/wgwtest/novel-writing/tree/main/novel-writing",
@@ -1781,7 +1793,7 @@ async def test_install_skill_github_tree_url_rejects_missing_subpath(tmp_path, m
 
     plugin._clone_git_source = fake_clone_branch
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/wgwtest/novel-writing/tree/main/does-not-exist",
@@ -1838,7 +1850,7 @@ async def test_install_skill_github_tree_url_falls_back_to_archive_without_git(
 
     plugin._download_github_repo_source = fake_download_github
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package="https://github.com/wgwtest/novel-writing/tree/main/novel-writing",
@@ -1861,7 +1873,7 @@ async def test_install_skill_rejects_archive_path_traversal(tmp_path, monkeypatc
         archive.writestr("../escape/SKILL.md", "# Escape\n")
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "install_skill",
         helper=None,
         package=str(archive_path),
@@ -1879,7 +1891,7 @@ async def test_install_skill_rejects_archive_path_traversal(tmp_path, monkeypatc
 async def test_create_skill_creates_skill_markdown_and_refreshes_registry(tmp_path, monkeypatch):
     plugin = _make_plugin(tmp_path, monkeypatch)
 
-    result = await plugin.execute(
+    result = await _approved_skill_execute(plugin,
         "create_skill",
         helper=None,
         skill_name="custom/reviewer",
@@ -1896,7 +1908,7 @@ async def test_create_skill_creates_skill_markdown_and_refreshes_registry(tmp_pa
     assert "custom/reviewer" in plugin.available_skills
     skill_md = tmp_path / "skills" / "custom" / "reviewer" / "SKILL.md"
     assert skill_md.exists()
-    details = await plugin.execute(
+    details = await _approved_skill_execute(plugin,
         "get_skill",
         helper=None,
         skill_name="custom/reviewer",
@@ -1922,7 +1934,7 @@ async def test_create_skill_requires_confirmation(tmp_path, monkeypatch):
     )
 
     assert result["success"] is False
-    assert "confirmed" in result["error"]
+    assert "confirmation" in result["error"]
     assert "custom/reviewer" not in plugin.available_skills
 
 
@@ -2635,3 +2647,123 @@ async def test_skill_script_large_output_is_capped_and_does_not_hang(tmp_path, m
     # The captured bytes must not exceed cap * 4 bytes decoded to chars, with the
     # truncation suffix; verify it's far shorter than the raw 200 KB.
     assert len(result["stdout"]) < 10000
+
+@pytest.mark.asyncio
+async def test_session_skill_state_persists_and_cleanup_is_isolated(tmp_path, monkeypatch):
+    from bot.request_context import RequestContext
+    from bot.plugins.hooks import SessionBeforeDeletePayload
+
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    contexts = [RequestContext(chat_id=10, user_id=42, session_id=sid) for sid in ('a', 'b')]
+    for ctx in contexts:
+        result = await plugin.execute('activate_skill', None, skill_name='demo',
+            initial_context={'task': ctx.session_id}, chat_id=10, user_id=42, request_context=ctx)
+        assert result['success']
+    restored = SkillsPlugin()
+    restored.initialize(storage_root=str(tmp_path / 'storage'))
+    await restored.on_session_before_delete(SessionBeforeDeletePayload(user_id=42, chat_id=10, session_id='a', messages=(), is_deletion=False))
+    assert (await restored.execute('get_skill_status', None, skill_name='demo', chat_id=10, user_id=42, request_context=contexts[0]))['success']
+    await restored.on_session_before_delete(SessionBeforeDeletePayload(user_id=42, chat_id=10, session_id='a', messages=(), is_deletion=True))
+    a = await restored.execute('get_skill_status', None, skill_name='demo', chat_id=10, user_id=42, request_context=contexts[0])
+    b = await restored.execute('get_skill_status', None, skill_name='demo', chat_id=10, user_id=42, request_context=contexts[1])
+    assert not a['success']
+    assert b['state']['context']['task'] == 'b'
+
+@pytest.mark.asyncio
+async def test_creation_requires_real_owner_callback(tmp_path, monkeypatch):
+    import asyncio
+    from bot.plugins.agent_tools import AgentToolsPlugin
+    from bot.request_context import RequestContext
+
+    skills_plugin = _make_plugin(tmp_path, monkeypatch)
+    agent = AgentToolsPlugin()
+    agent.initialize(storage_root=str(tmp_path / 'agent'))
+    class Bot:
+        async def send_message(self, **kwargs):
+            self.message = kwargs
+            return SimpleNamespace(message_id=1)
+    bot = Bot()
+    helper = SimpleNamespace(bot=bot, plugin_manager=SimpleNamespace(get_plugin=lambda name: agent))
+    ctx = RequestContext(chat_id=10, user_id=42, session_id='a')
+    task = asyncio.create_task(skills_plugin.execute('create_skill', helper,
+        request_context=ctx, chat_id=999, user_id=999, confirmed=True,
+        skill_name='fresh', name='Fresh', description='Demo', instructions='Use it'))
+    for _ in range(20):
+        if agent.pending_by_chat:
+            break
+        await asyncio.sleep(0)
+    assert agent.pending_by_chat
+    assert 'instructions: Use it' in bot.message['text']
+    assert not (tmp_path / 'skills' / 'fresh').exists()
+    question_id = agent.pending_by_chat[10]
+    class Query:
+        data = f'agentask:{question_id}:0'
+        def __init__(self, user_id):
+            self.from_user = SimpleNamespace(id=user_id)
+        async def answer(self, *args, **kwargs):
+            pass
+        async def edit_message_reply_markup(self, **kwargs):
+            pass
+    await agent.handle_ask_callback(SimpleNamespace(callback_query=Query(99)), None)
+    assert not task.done()
+    await agent.handle_ask_callback(SimpleNamespace(callback_query=Query(42)), None)
+    result = await task
+    assert result['success']
+    assert (tmp_path / 'skills' / 'fresh' / 'SKILL.md').exists()
+
+@pytest.mark.asyncio
+async def test_install_decline_does_not_execute_and_displays_exact_choice(tmp_path, monkeypatch):
+    from bot.request_context import RequestContext
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    class Agent:
+        async def _ask_telegram_user(self, helper, **kwargs):
+            self.question = kwargs
+            return {'success': True, 'answer': 'Отказать'}
+    agent = Agent()
+    helper = SimpleNamespace(plugin_manager=SimpleNamespace(get_plugin=lambda name: agent))
+    async def unexpected(*args, **kwargs):
+        pytest.fail('installation was invoked without approval')
+    monkeypatch.setattr(plugin, '_install_skill', unexpected)
+    result = await plugin.execute('install_skill', helper, confirmed=True,
+        package='owner/repo', skill_name='demo', install_all=True,
+        request_context=RequestContext(chat_id=10, user_id=42), user_id=99, chat_id=99)
+    assert not result['success']
+    assert agent.question['user_id'] == 42
+    assert 'package: owner/repo' in agent.question['question']
+    assert 'skill_name: demo' in agent.question['question']
+    assert 'install_all: True' in agent.question['question']
+
+@pytest.mark.asyncio
+async def test_long_creation_sends_full_details_with_approval_buttons(tmp_path, monkeypatch):
+    import asyncio
+    from bot.plugins.agent_tools import AgentToolsPlugin
+    from bot.request_context import RequestContext
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    agent = AgentToolsPlugin()
+    agent.initialize(storage_root=str(tmp_path / 'agent'))
+    class Bot:
+        async def send_document(self, **kwargs):
+            self.document = kwargs
+            return SimpleNamespace(message_id=1)
+    bot = Bot()
+    helper = SimpleNamespace(bot=bot, plugin_manager=SimpleNamespace(get_plugin=lambda name: agent))
+    instructions = '🧭' * 2100
+    task = asyncio.create_task(plugin.execute('create_skill', helper, skill_name='long',
+        instructions=instructions, request_context=RequestContext(chat_id=10, user_id=42)))
+    for _ in range(20):
+        if getattr(bot, 'document', None):
+            break
+        await asyncio.sleep(0)
+    assert instructions.strip().encode() in bot.document['document'].input_file_content
+    assert bot.document['reply_markup'].inline_keyboard
+    question_id = agent.pending_by_chat[10]
+    class Query:
+        data = f'agentask:{question_id}:1'
+        from_user = SimpleNamespace(id=42)
+        async def answer(self, *args, **kwargs):
+            pass
+        async def edit_message_reply_markup(self, **kwargs):
+            pass
+    await agent.handle_ask_callback(SimpleNamespace(callback_query=Query()), None)
+    assert not (await task)['success']
+    assert not (tmp_path / 'skills' / 'long').exists()

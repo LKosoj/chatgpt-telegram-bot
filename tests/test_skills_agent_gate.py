@@ -1,20 +1,11 @@
-"""Tests for the skills_agent first-turn planner gate in bot/openai_helper.py.
-
-Gate contract (briefly):
-- Active iff: current mode is skills_agent, function calling is enabled, the request
-  has a non-empty `tools` list, the request is non-streaming, and no plan task
-  exists yet for the scope.
-- If active and the model returns any execution-tool call (anything not in
-  INFORMATION_ONLY_TOOLS) on the FIRST turn of the request, drop the response and
-  retry with tool_choice pinned to manage_plan_tasks.
-- Fires at most once per request (_gate_fired flag).
-"""
+"""Tests for mode selection and planner preflight decisions."""
 
 from __future__ import annotations
 
 import importlib.util
 import sys
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -206,6 +197,56 @@ def _tools_list_with_planner():
     ]
 
 
+@pytest.mark.asyncio
+async def test_manual_mode_is_not_replaced_on_first_message():
+    helper, _ = _make_helper(mode_key="skills_agent")
+    helper.config = {"auto_chat_modes": True}
+    helper.chat_completion = AsyncMock()
+    await helper._maybe_apply_auto_chat_mode(
+        42, "hello", session_id="session-1", parse_mode=None,
+        temperature=None, max_tokens_percent=None, user_id=42,
+    )
+    helper.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_failure_keeps_existing_mode():
+    helper, key = _make_helper(mode_key=None)
+    helper.config = {"auto_chat_modes": True, "model": "test"}
+    helper._build_auto_chat_mode_prompt = AsyncMock(return_value="choose")
+    helper.get_max_tokens = lambda *args: 20
+    helper.chat_completion = AsyncMock(side_effect=RuntimeError("unavailable"))
+    before = dict(helper.conversations[key][0])
+    await helper._maybe_apply_auto_chat_mode(
+        42, "hello", session_id="session-1", parse_mode=None,
+        temperature=None, max_tokens_percent=None, user_id=42,
+    )
+    assert helper.conversations[key][0] == before
+
+
+def test_preflight_checks_each_batch_after_information_tool():
+    helper, _ = _make_helper(tasks=[])
+    info = [{"name": "skills.list_skills"}]
+    execution = [{"name": "terminal.terminal"}]
+    assert not helper.plan_preflight_required(42, 42, None, info)
+    assert helper.plan_preflight_required(42, 42, None, execution)
+    assert not helper.plan_preflight_required(42, 42, None, [{"name": "agent_tools.deliver_to_user"}])
+
+
+@pytest.mark.asyncio
+async def test_prepare_mode_loads_pinned_session_before_stream_decision():
+    helper, key = _make_helper(mode_key="default")
+    helper.config = {"auto_chat_modes": True}
+    helper.conversations = {}
+    helper.loaded_conversation_sessions = {}
+    messages = [{"role": "system", "mode_key": "skills_agent", "content": "prompt"}]
+    helper._db_call = AsyncMock(return_value=({"messages": messages}, None, 0.1, 80, "session-1"))
+    helper.chat_completion = AsyncMock()
+    assert await helper.prepare_chat_mode(42, "work", 42, "session-1")
+    assert helper.loaded_conversation_sessions[key] == "session-1"
+    helper.chat_completion.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _skills_agent_gate_should_fire
 # ---------------------------------------------------------------------------
@@ -306,54 +347,6 @@ def test_is_skills_agent_mode_false_when_no_system_message():
 
 
 # ---------------------------------------------------------------------------
-# _build_force_planner_tool_choice
-# ---------------------------------------------------------------------------
-
-
-def test_gate_forced_retry_uses_correct_tool_choice_shape():
-    helper, _ = _make_helper()
-    tools = _tools_list_with_planner()
-    choice = helper._build_force_planner_tool_choice(tools)
-    assert choice == {
-        "type": "function",
-        "function": {"name": "agent_tools.manage_plan_tasks"},
-    }
-
-
-def test_build_force_planner_falls_back_to_auto_when_no_planner():
-    helper, _ = _make_helper()
-    tools = [
-        {
-            "type": "function",
-            "function": {"name": "terminal.terminal", "parameters": {}},
-        }
-    ]
-    assert helper._build_force_planner_tool_choice(tools) == "auto"
-
-
-def test_build_force_planner_handles_empty_tools():
-    helper, _ = _make_helper()
-    assert helper._build_force_planner_tool_choice([]) == "auto"
-
-
-def test_build_force_planner_handles_bare_name_suffix():
-    """The lookup is suffix-based on .endswith('manage_plan_tasks') — defensive
-    against unexpected prefixes from non-OpenAI gateways."""
-    helper, _ = _make_helper()
-    tools = [
-        {
-            "type": "function",
-            "function": {"name": "weird_prefix/manage_plan_tasks"},
-        }
-    ]
-    choice = helper._build_force_planner_tool_choice(tools)
-    assert choice == {
-        "type": "function",
-        "function": {"name": "weird_prefix/manage_plan_tasks"},
-    }
-
-
-# ---------------------------------------------------------------------------
 # should_force_non_stream_first_turn_async (telegram_bot dispatch helper)
 # ---------------------------------------------------------------------------
 
@@ -381,228 +374,3 @@ async def test_should_force_non_stream_first_turn_false_when_flag_off():
     helper, _ = _make_helper(skills_agent_mode={"key": "skills_agent"})
     # No force_non_stream_first_turn -> dispatcher streams as usual.
     assert await helper.should_force_non_stream_first_turn_async(42, 7) is False
-
-
-# ---------------------------------------------------------------------------
-# End-to-end gate behavior through __common_get_chat_response
-# ---------------------------------------------------------------------------
-
-
-class FakeToolCall:
-    def __init__(self, name, arguments="{}", id=None):
-        self.id = id or f"call_{name.replace('.', '_')}"
-        self.function = types.SimpleNamespace(name=name, arguments=arguments)
-
-
-class FakeResponse:
-    def __init__(self, tool_calls=None, content="", total_tokens=3):
-        self.choices = [FakeChoice(tool_calls=tool_calls, content=content)]
-        self.usage = types.SimpleNamespace(
-            total_tokens=total_tokens,
-            prompt_tokens=1,
-            completion_tokens=2,
-        )
-
-
-class RecordingClient:
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.calls = []
-        self.chat = types.SimpleNamespace(
-            completions=types.SimpleNamespace(create=self._create)
-        )
-
-    async def _create(self, **kwargs):
-        self.calls.append(kwargs)
-        if self._responses:
-            return self._responses.pop(0)
-        return FakeResponse(content="done")
-
-
-async def _invoke_common(helper, *, chat_id, tools, stream=False, model="gpt-4o"):
-    """Bypass all session/history/summarization machinery and invoke just the
-    gate-relevant logic from __common_get_chat_response. We replicate the
-    create-call + gate block manually so the test focuses on the gate."""
-
-    state_key = helper._chat_state_key(chat_id)
-    memory_user_id = 7
-    common_args = {
-        "model": model,
-        "messages": [{"role": "user", "content": "hi"}],
-        "tools": tools,
-        "tool_choice": "auto",
-        "stream": stream,
-    }
-
-    # Mirror the gate block from __common_get_chat_response.
-    gate_active = (
-        not common_args.get("stream")
-        and bool(common_args.get("tools"))
-        and helper._is_skills_agent_mode(chat_id)
-        and helper._skills_agent_gate_enabled_for_mode()
-        and not helper._skills_agent_has_plan(chat_id, memory_user_id)
-    )
-    gate_fired = helper._gate_fired.get(state_key, False)
-
-    response = await helper.client.chat.completions.create(**common_args)
-
-    if gate_active and not gate_fired:
-        try:
-            raw_tool_calls = getattr(response.choices[0].message, "tool_calls", None) or []
-            tool_calls_normalized = [
-                {"name": getattr(getattr(tc, "function", None), "name", None)}
-                for tc in raw_tool_calls
-            ]
-        except Exception:
-            tool_calls_normalized = []
-        if helper._skills_agent_gate_should_fire(tool_calls_normalized):
-            retry_args = dict(common_args)
-            retry_args["tool_choice"] = helper._build_force_planner_tool_choice(
-                retry_args.get("tools") or []
-            )
-            helper._gate_fired[state_key] = True
-            response = await helper.client.chat.completions.create(**retry_args)
-
-    return response
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_forces_retry_when_execution_tool_called_first():
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[
-            # First call: model jumps straight to terminal.terminal — bad.
-            FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")]),
-            # Retry: model now calls manage_plan_tasks.
-            FakeResponse(tool_calls=[FakeToolCall("agent_tools.manage_plan_tasks")]),
-        ]
-    )
-
-    response = await _invoke_common(
-        helper, chat_id=42, tools=_tools_list_with_planner()
-    )
-
-    assert len(helper.client.calls) == 2
-    first, retry = helper.client.calls
-    assert first["tool_choice"] == "auto"
-    assert retry["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "agent_tools.manage_plan_tasks"},
-    }
-    final_call_name = response.choices[0].message.tool_calls[0].function.name
-    assert final_call_name == "agent_tools.manage_plan_tasks"
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_does_not_retry_for_information_only_tool():
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=[FakeToolCall("skills.list_skills")])]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_skips_when_plan_exists():
-    helper, _ = _make_helper(
-        tasks=[{"id": "t1", "content": "x", "status": "pending"}]
-    )
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    # Even though terminal.terminal was called, the plan already exists, so the
-    # gate is inactive and no retry happens.
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_inactive_in_other_modes():
-    helper, _ = _make_helper(mode_key="default", tasks=[])
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_inactive_when_enable_functions_false():
-    """If function calling is disabled, the request has no tools list (the
-    helper never sets one) — the gate predicate excludes empty-tools requests."""
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[FakeResponse(content="just text, no tools")]
-    )
-    # tools=[] simulates enable_functions=False / model without function support.
-    await _invoke_common(helper, chat_id=42, tools=[])
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_fires_only_once_per_request():
-    """Even if the retry response somehow still calls an execution-tool, the
-    gate must not retry again — _gate_fired is now True."""
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[
-            FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")]),
-            # Hypothetical second response still calls terminal (gateway/SDK
-            # disrespected tool_choice).
-            FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")]),
-        ]
-    )
-
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    # Exactly two calls: one original + one forced retry. No third call.
-    assert len(helper.client.calls) == 2
-    state_key = helper._chat_state_key(42)
-    assert helper._gate_fired.get(state_key) is True
-
-    # A second "_invoke_common" without resetting _gate_fired must NOT retry.
-    helper.client._responses.append(
-        FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 3  # only the new initial call, no retry
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_skips_pure_text_response():
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=None, content="just a plain text reply")]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_skips_when_planner_already_called():
-    helper, _ = _make_helper(tasks=[])
-    helper.client = RecordingClient(
-        responses=[
-            FakeResponse(
-                tool_calls=[FakeToolCall("agent_tools.manage_plan_tasks")]
-            )
-        ]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_gate_e2e_inactive_when_mode_flag_off():
-    """When the skills_agent mode dict lacks force_non_stream_first_turn, the
-    gate is the no-op legacy path even on terminal tool calls. Keeps backward
-    compatibility for tests/users that mock the registry without the flag."""
-    helper, _ = _make_helper(
-        skills_agent_mode={"key": "skills_agent"},  # no force_non_stream_first_turn
-        tasks=[],
-    )
-    helper.client = RecordingClient(
-        responses=[FakeResponse(tool_calls=[FakeToolCall("terminal.terminal")])]
-    )
-    await _invoke_common(helper, chat_id=42, tools=_tools_list_with_planner())
-    assert len(helper.client.calls) == 1

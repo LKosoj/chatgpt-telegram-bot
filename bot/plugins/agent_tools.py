@@ -10,7 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..agent_delivery import send_agent_response, send_text_chunks
@@ -20,7 +20,7 @@ from ..openai_tool_handler import DANGEROUS_TOOL_NAMES, _tainted_plugin_ids
 from ..request_context import RequestContext
 from ..skill_script_routing import _skill_script_routing_error
 from ..tool_result import tool_result_content
-from ..utils import compute_scope_key, get_thread_id, message_text, parse_model_choices
+from ..utils import compute_session_scope_key, compute_scope_key, get_thread_id, message_text, parse_model_choices
 from .hooks import BeforeChatRequestPayload
 from .background import BackgroundTask
 from .plugin import Plugin
@@ -371,7 +371,7 @@ class AgentToolsPlugin(Plugin):
         user_id = getattr(payload, "user_id", None)
 
         # Pop pending re-plan / verify triggers ONCE per scope; idempotent.
-        scope = compute_scope_key(chat_id, user_id)
+        scope = compute_session_scope_key(chat_id, user_id, getattr(payload, "session_id", None))
         pending = None
         pending_verify = None
         try:
@@ -417,7 +417,7 @@ class AgentToolsPlugin(Plugin):
         if inject_plan_rule or (self.db is not None and not checkpoint_present):
             try:
                 allowed = await helper.resolve_allowed_plugins(
-                    chat_id, session_id=None, user_id=user_id,
+                    chat_id, session_id=getattr(payload, "session_id", None), user_id=user_id,
                 )
             except Exception:
                 logging.debug(
@@ -1586,13 +1586,14 @@ class AgentToolsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         request_context = kwargs.pop("request_context", None)
         self._trust_request_context_args(kwargs, request_context)
+        kwargs["session_id"] = getattr(request_context, "session_id", None)
         if function_name == "manage_plan_tasks":
             # _manage_plan_tasks ходит в SQLite через sync get_connection
             # (_db_get_plan / _db_save_plan / _db_clear_plan). На event loop это
             # давало блокирующий write под WAL-busy. to_thread снимает блокировку.
             # Per-scope lock prevents lost updates when parallel tool calls arrive
             # for the same scope (read→modify→write must be atomic per scope).
-            scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+            scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
             async with self._get_plan_scope_lock(scope):
                 try:
                     result = await asyncio.to_thread(self._manage_plan_tasks, helper, **kwargs)
@@ -1603,6 +1604,7 @@ class AgentToolsPlugin(Plugin):
         if function_name == "update_working_checkpoint":
             return await asyncio.to_thread(self._manage_working_checkpoint, helper, **kwargs)
         if function_name == "ask_telegram_user":
+            kwargs.pop("document", None)
             return await self._ask_telegram_user(helper, **kwargs)
         if function_name == "cancel_pending_question":
             return await self._cancel_pending_question(helper, **kwargs)
@@ -1940,7 +1942,7 @@ class AgentToolsPlugin(Plugin):
     async def on_session_reset(self, payload) -> None:
         if self.db_handle is None:
             return
-        scope = compute_scope_key(payload.chat_id, payload.user_id)
+        scope = compute_session_scope_key(payload.chat_id, payload.user_id, getattr(payload, "session_id", None))
         try:
             if payload.terminal_only:
                 cleared = await self._db_clear_terminal_tasks_async(scope)
@@ -1956,8 +1958,8 @@ class AgentToolsPlugin(Plugin):
                     "Cleared agent plan scope=%s reason=%s terminal_only=%s",
                     scope, payload.reason, payload.terminal_only,
                 )
-        except Exception:
-            logging.exception("agent_tools.on_session_reset failed scope=%s", scope)
+        except Exception as exc:
+            logging.error("agent_tools.on_session_reset failed scope=%s error=%s", scope, type(exc).__name__)
         # Re-plan trigger state is in-process only and lives until the next
         # chat request. Only wipe it on a full session reset (terminal_only=False);
         # a terminal-only reset clears finished tasks but the session continues,
@@ -1966,6 +1968,16 @@ class AgentToolsPlugin(Plugin):
         if not payload.terminal_only:
             async with self._get_replan_lock():
                 self._clear_runtime_scope_locked(scope)
+
+    async def on_session_before_delete(self, payload) -> None:
+        if not getattr(payload, "is_deletion", True):
+            return
+        chat_id = getattr(payload, "chat_id", None)
+        scope = compute_session_scope_key(chat_id if chat_id is not None else payload.user_id, None, payload.session_id)
+        if self.db_handle is not None:
+            await self._db_clear_all_tasks_async(scope)
+        async with self._get_replan_lock():
+            self._clear_runtime_scope_locked(scope)
 
     def _prune_stale_tasks(self) -> bool:
         cutoff = int(time.time()) - self.TASKS_TTL_SECONDS
@@ -2314,27 +2326,27 @@ class AgentToolsPlugin(Plugin):
         except OSError:
             logging.debug("Failed to remove pending questions snapshot", exc_info=True)
 
-    def get_plan_tasks(self, chat_id=None, user_id=None) -> List[Dict[str, Any]]:
+    def get_plan_tasks(self, chat_id=None, user_id=None, session_id=None) -> List[Dict[str, Any]]:
         """
         Return a snapshot of the current plan tasks for the given scope, ordered as stored.
         Used by the live status message to render plan progress to the user.
         """
-        scope = compute_scope_key(chat_id, user_id)
+        scope = compute_session_scope_key(chat_id, user_id, session_id)
         tasks = self._get_scope_plan(scope).get("tasks") or []
         return [self._task_public_view(task) for task in tasks]
 
-    def clear_plan_tasks(self, chat_id=None, user_id=None) -> bool:
+    def clear_plan_tasks(self, chat_id=None, user_id=None, session_id=None) -> bool:
         """Remove all plan tasks for the given scope."""
-        scope = compute_scope_key(chat_id, user_id)
+        scope = compute_session_scope_key(chat_id, user_id, session_id)
         tasks = self._get_scope_plan(scope).get("tasks") or []
         if not tasks:
             return False
         self._clear_scope_tasks(scope)
         return True
 
-    def clear_terminal_plan_tasks(self, chat_id=None, user_id=None) -> bool:
+    def clear_terminal_plan_tasks(self, chat_id=None, user_id=None, session_id=None) -> bool:
         """Remove the plan only when every task in the scope is already closed."""
-        scope = compute_scope_key(chat_id, user_id)
+        scope = compute_session_scope_key(chat_id, user_id, session_id)
         tasks = self._get_scope_plan(scope).get("tasks") or []
         if not tasks:
             return False
@@ -2538,7 +2550,7 @@ class AgentToolsPlugin(Plugin):
         if self.db is None:
             return {"success": False, "error": "agent_tools checkpoint storage requires database"}
         action = str(kwargs.get("action") or "").strip().lower()
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         if action == "list":
             return self._checkpoint_response(action, self._db_get_checkpoint(scope), changed=False)
         if action == "clear":
@@ -2556,7 +2568,7 @@ class AgentToolsPlugin(Plugin):
         if self.db is None:
             return {"success": False, "error": "agent_tools plan storage requires database"}
         action = str(kwargs.get("action") or "").strip()
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         runtime_effects: Dict[str, Any] = {"scope": scope}
         plan = self._get_scope_plan(scope)
         tasks = plan.get("tasks") or []
@@ -2795,7 +2807,8 @@ class AgentToolsPlugin(Plugin):
         if status == "blocked" and not final_text and blocked_reason:
             final_text = blocked_reason
         scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
-        plan_error = self._delivery_plan_error(scope, status, verification_summary)
+        plan_scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
+        plan_error = self._delivery_plan_error(plan_scope, status, verification_summary)
         if plan_error:
             return {"success": False, "error": plan_error}
         artifact_items, error = self._normalize_delivery_artifacts(
@@ -2888,7 +2901,7 @@ class AgentToolsPlugin(Plugin):
         if skills_plugin is None:
             return []
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
 
         active_skills = getattr(skills_plugin, "active_skills", None) or {}
         scope_state = active_skills.get(scope) or {}
@@ -3104,7 +3117,7 @@ class AgentToolsPlugin(Plugin):
         if skills_plugin is None:
             return ""
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         active_skills = getattr(skills_plugin, "active_skills", None) or {}
         scope_state = active_skills.get(scope) or {}
         if not scope_state:
@@ -3158,8 +3171,8 @@ class AgentToolsPlugin(Plugin):
             result = task.result()
         except asyncio.CancelledError:
             return
-        except Exception:
-            logging.exception("Background subagent failed")
+        except Exception as exc:
+            logging.error("Background subagent failed error=%s", type(exc).__name__)
             return
         logging.info(
             "Background subagent finished id=%s status=%s",
@@ -3171,7 +3184,7 @@ class AgentToolsPlugin(Plugin):
     async def _resolve_parent_allowed_plugins(helper, request_context, kwargs: Dict[str, Any]) -> List[str]:
         resolver = getattr(helper, "resolve_allowed_plugins", None)
         if not callable(resolver):
-            return ["All"]
+            return []
         chat_id = (
             getattr(request_context, "chat_id", None) if request_context is not None else None
         ) or kwargs.get("chat_id")
@@ -3182,11 +3195,11 @@ class AgentToolsPlugin(Plugin):
         if user_id is None:
             user_id = kwargs.get("user_id")
         try:
-            allowed = await resolver(chat_id, session_id, user_id) if chat_id is not None else ["All"]
-        except Exception:
-            logging.exception("Failed to resolve parent allowed_plugins for subagents")
-            return ["All"]
-        return list(allowed) if allowed else ["All"]
+            allowed = await resolver(chat_id, session_id, user_id) if chat_id is not None else []
+        except Exception as exc:
+            logging.warning("Failed to resolve parent allowed_plugins for subagents error=%s", type(exc).__name__)
+            return []
+        return list(allowed) if allowed is not None else []
 
     @staticmethod
     async def _resolve_current_model(helper, user_id):
@@ -3657,12 +3670,6 @@ class AgentToolsPlugin(Plugin):
             plugin_manager = getattr(helper, "plugin_manager", None)
             if plugin_manager is not None and hasattr(plugin_manager, "to_canonical_function_name"):
                 tool_name = plugin_manager.to_canonical_function_name(tool_name)
-        if tool_name == INTERNAL_PUBLISH_TOOL:
-            try:
-                args = json.loads(call.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                return json.dumps({"error": f"Invalid arguments for {tool_name}"}, ensure_ascii=False)
-            return self._handle_internal_publish(args, published)
         if tool_name not in allowed_function_names:
             return json.dumps({"error": f"Tool {tool_name} is not available to subagents"}, ensure_ascii=False)
 
@@ -3683,7 +3690,8 @@ class AgentToolsPlugin(Plugin):
             kwargs.get("user_id") if kwargs.get("user_id") is not None else kwargs.get("chat_id")
         )
         routing_error = _skill_script_routing_error(
-            helper, kwargs.get("chat_id"), tool_name, args
+            helper, kwargs.get("chat_id"), tool_name, args,
+            session_id=getattr(request_context, "session_id", None),
         )
         if routing_error:
             return json.dumps(routing_error, ensure_ascii=False)
@@ -3784,13 +3792,15 @@ class AgentToolsPlugin(Plugin):
         self.pending_by_chat[chat_id] = question_id
 
         try:
-            sent_message = await bot.send_message(
-                chat_id=chat_id,
-                text=question,
-                reply_markup=self._question_markup(
-                    question_id, options, allow_free_text, multi_select=multi_select,
-                ),
-            )
+            markup = self._question_markup(question_id, options, allow_free_text, multi_select=multi_select)
+            document = kwargs.get("document")
+            if document is not None:
+                sent_message = await bot.send_document(
+                    chat_id=chat_id, document=InputFile(document, filename="skill-operation.txt"),
+                    caption=question, reply_markup=markup,
+                )
+            else:
+                sent_message = await bot.send_message(chat_id=chat_id, text=question, reply_markup=markup)
             pending = self.pending_questions.get(question_id)
             if pending is not None:
                 pending["message_id"] = getattr(sent_message, "message_id", None)

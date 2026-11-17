@@ -1,4 +1,7 @@
 import json
+from threading import get_ident
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -193,6 +196,32 @@ def test_rag_mode_state_is_persisted_per_chat_in_database(tmp_path, monkeypatch)
     restored.db = db
     assert restored.is_rag_enabled("123") is True
     assert restored.is_rag_enabled("456") is False
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_rag_prompt_reads_settings_off_the_event_loop(tmp_path, enabled):
+    plugin = _plugin(tmp_path, httpx.MockTransport(lambda request: httpx.Response(404)))
+    event_loop_thread = get_ident()
+
+    def get_chat_settings(chat_id):
+        assert chat_id == "123"
+        assert get_ident() != event_loop_thread
+        return {plugin.RAG_MODE_SETTING: enabled}
+
+    plugin.db = SimpleNamespace(get_chat_settings=get_chat_settings)
+    plugin.execute = AsyncMock(return_value="answer")
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=123))
+
+    result = await plugin.handle_rag_prompt("question", update, context=None)
+
+    if enabled:
+        assert result == "answer"
+        plugin.execute.assert_awaited_once_with(
+            "ask_workspace", None, chat_id="123", query="question", update=update,
+        )
+    else:
+        assert result is False
+        plugin.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

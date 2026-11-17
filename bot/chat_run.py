@@ -12,7 +12,7 @@ from .chat_response_utils import (
     response_total_tokens,
 )
 from .session_logger import get_trace
-from .utils import is_direct_result, log_exception_shape
+from .utils import is_direct_result
 
 logger = logging.getLogger(__name__)
 
@@ -223,5 +223,5 @@ class ChatRun:
         except Exception as e:
             helper._chat_request_extra_tokens.pop(helper._chat_state_key(chat_id), None)
             self._record(AIRunEnd(reason="error"))
-            logger.error("Error in get_chat_response error=%s", log_exception_shape(e))
+            logger.error("Error in get_chat_response error=%s", type(e).__name__)
             raise

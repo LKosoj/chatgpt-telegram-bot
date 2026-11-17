@@ -196,12 +196,13 @@ class FakePluginManager:
         blocked_function_names=None,
     ):
         blocked = set(blocked_function_names or ())
-        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ["All"])
+        allowed = parent_allowed_plugins or []
+        specs = self.get_functions_specs(helper, model_to_use, allowed) if allowed else []
         filtered = []
         names = set()
         for tool in specs or []:
             name = (tool.get("function") or {}).get("name")
-            if not name or name in blocked:
+            if not name or name in blocked or (allowed != ["All"] and name.split(".")[0] not in allowed):
                 continue
             filtered.append(tool)
             names.add(name)
@@ -268,6 +269,9 @@ class FakeLLMHelper:
 
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)
+
+    async def resolve_allowed_plugins(self, chat_id, session_id=None, user_id=None):
+        return ["All"]
 
 
 class FakeBackgroundHelper(FakeLLMHelper):
@@ -2100,6 +2104,9 @@ class _DeepAnalysisHelper:
     def get_output_max_tokens(self):
         return MAX_OUTPUT_TOKENS
 
+    async def resolve_allowed_plugins(self, chat_id, session_id=None, user_id=None):
+        return ["All"]
+
     async def chat_completion(self, **kwargs):
         return await self.client.chat.completions.create(**kwargs)
 
@@ -2918,3 +2925,16 @@ class TestEvictStaleDeliveries:
         # Дедуп-проверка: elapsed < window → должен сработать
         ts = plugin._recent_deliveries["key:1"]
         assert (now - ts) < window
+
+@pytest.mark.asyncio
+async def test_internal_publish_requires_offered_tool():
+    from bot.plugins.agent_tools import INTERNAL_PUBLISH_MODEL_TOOL, INTERNAL_PUBLISH_TOOL
+    plugin = AgentToolsPlugin()
+    published = []
+    call = {'name': INTERNAL_PUBLISH_MODEL_TOOL, 'arguments': json.dumps({'kind': 'text', 'value': 'result'})}
+    denied = json.loads(await plugin._call_subagent_tool(SimpleNamespace(), call, set(), {}, published=published))
+    assert 'not available' in denied['error']
+    assert not published
+    result = await plugin._call_subagent_tool(SimpleNamespace(), call, {INTERNAL_PUBLISH_TOOL}, {}, published=published)
+    assert 'stored' in result
+    assert published == [{'kind': 'text', 'value': 'result'}]

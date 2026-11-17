@@ -38,7 +38,7 @@ from .chat_response_utils import (
     response_prompt_completion_tokens as _response_prompt_completion_tokens,
 )
 from .session_logger import get_trace
-from .utils import compute_scope_key, log_exception_shape
+from .utils import compute_session_scope_key, is_direct_result
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,9 @@ async def _call_function_bounded(
                 result = await helper.plugin_manager.call_function(
                     name, helper, args, request_context=request_context
                 )
+            normalized = normalize_tool_result(result, tool_name=name)
+            ok = normalized.success
+            error = normalized.error
             result_content = _compact_event_content(result)
             return result
         except Exception as exc:
@@ -273,7 +276,7 @@ async def _reentry_session(helper, chat_id, user_id, request_context):
             logger.warning(
                 "Failed to load request session %s for tool reentry error=%s",
                 session_id,
-                log_exception_shape(exc),
+                type(exc).__name__,
             )
             return session_id, 80
         return resolved_session_id or session_id, max_tokens_percent or 80
@@ -285,6 +288,12 @@ async def _reentry_session(helper, chat_id, user_id, request_context):
         active_session['session_id'] if active_session else None,
         active_session['max_tokens_percent'] if active_session else 80,
     )
+
+
+def _reentry_max_tokens(helper, chat_id, model, max_tokens_percent, messages, tools):
+    max_tokens = helper.get_max_tokens(model, max_tokens_percent, chat_id)
+    check_budget = getattr(helper, "check_chat_request_budget", None)
+    return check_budget(messages, tools, model, max_tokens) if callable(check_budget) else max_tokens
 
 
 DELIVERY_TOOL_NAME = "agent_tools.deliver_to_user"
@@ -474,10 +483,77 @@ def _format_repeated_failure_note(repeated_calls: list[tuple[str, str]], *, skil
     return f"{REPEATED_FAILURE_NOTE_PREFIX}{names_part}. {instruction}"
 
 
-async def _prepend_stream_item(first_item, response):
-    yield first_item
+async def _prepend_stream_items(items, response):
+    for item in items:
+        yield item
     async for item in response:
         yield item
+
+
+class _PrefixedStream:
+    def __init__(self, item, response):
+        self.item = item
+        self.response = response
+        self.offered_tool_names = getattr(response, "offered_tool_names", None)
+
+    def __aiter__(self):
+        return _prepend_stream_items((self.item,), self.response)
+
+    def record_completed(self):
+        record = getattr(self.response, "record_completed", None)
+        if callable(record):
+            record()
+
+    async def aclose(self):
+        close = getattr(self.response, "aclose", None)
+        if callable(close):
+            await close()
+
+
+class _MixedToolStream:
+    def __init__(self, items, response, dispatch, tools_used):
+        self.items = items
+        self.response = response
+        self.dispatch = dispatch
+        self.tools_used = tools_used
+        self.offered_tool_names = getattr(response, "offered_tool_names", None)
+        self._iterator = None
+
+    def __aiter__(self):
+        if self._iterator is None:
+            self._iterator = self._iterate()
+        return self._iterator
+
+    async def aclose(self):
+        try:
+            if self._iterator is not None:
+                await self._iterator.aclose()
+        finally:
+            close = getattr(self.response, "aclose", None)
+            if callable(close):
+                await close()
+
+    async def _iterate(self):
+        async for item in _prepend_stream_items(self.items, self.response):
+            if item is None:
+                continue
+            if stream_chunk_tool_call_deltas(item):
+                if stream_chunk_text_delta(item):
+                    yield item
+                result, self.tools_used = await self.dispatch(item, self.response)
+                if is_direct_result(result):
+                    yield result
+                else:
+                    try:
+                        async for chunk in result:
+                            yield chunk
+                        self.tools_used = getattr(result, "tools_used", self.tools_used)
+                    finally:
+                        close = getattr(result, "aclose", None)
+                        if callable(close):
+                            await close()
+                return
+            yield item
 
 
 async def _replay_stream_items(items):
@@ -583,10 +659,6 @@ def _filter_tools_to_names(tools, allowed_names: set[str], plugin_manager=None):
     return tools
 
 
-def _json_for_log(value) -> str:
-    return json.dumps(value, ensure_ascii=False, default=str)
-
-
 def _tool_calls_payload(tool_calls: list[dict]) -> list[dict]:
     return [
         {
@@ -632,19 +704,14 @@ def _log_model_tool_calls(
     stream: bool,
     tool_calls: list[dict],
 ) -> None:
-    payload = _tool_calls_payload(tool_calls)
-    names = [
-        call.get("name") or call.get("model_name") or "<unknown>"
-        for call in tool_calls
-    ]
+    trace = get_trace()
     logger.info(
-        "Model tool calls received chat_id=%s model=%s stream=%s count=%d names=%s payload=%s",
+        "Model tool calls received request_id=%s chat_id=%s model=%s stream=%s count=%d",
+        trace.turn_id if trace else None,
         chat_id,
         model_to_use,
         stream,
         len(tool_calls),
-        names,
-        _json_for_log(payload),
     )
 
 
@@ -1022,7 +1089,7 @@ async def _retry_missing_delivery_tool(
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
+        max_tokens=_reentry_max_tokens(helper, chat_id, model_to_use, max_tokens_percent, messages, tools),
         stream=stream,
     )
     return await handle_function_call(
@@ -1101,7 +1168,7 @@ async def _retry_plain_text_tool_intent(
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
+        max_tokens=_reentry_max_tokens(helper, chat_id, model_to_use, max_tokens_percent, messages, tools),
         stream=stream,
     )
     return await handle_function_call(
@@ -1147,6 +1214,7 @@ async def handle_function_call(
     usage_accumulator=None,
 ):
     tool_calls = []
+    offered_tool_names = getattr(response, "offered_tool_names", None)
     try:
         if token_accumulator is not None:
             tokens = _response_total_tokens(response)
@@ -1168,13 +1236,16 @@ async def handle_function_call(
             allowed_plugins = ['All']
         allowed_plugins = helper.plugin_manager.filter_allowed_plugins(allowed_plugins)
 
-        async def enforce_delivery_contract_if_needed(plain_text=None):
-            if not _delivery_contract_required(
+        def delivery_contract_required():
+            return _delivery_contract_required(
                 helper,
                 chat_id,
                 final_delivery_required,
                 initial_plain_response=times == 0 and not tools_used,
-            ):
+            )
+
+        async def enforce_delivery_contract_if_needed(plain_text=None):
+            if not delivery_contract_required():
                 return None
             if delivery_repair_attempts >= DELIVERY_REPAIR_MAX_ATTEMPTS:
                 logger.error("Delivery contract retry failed for chat_id=%s", chat_id)
@@ -1224,38 +1295,71 @@ async def handle_function_call(
                 usage_accumulator=usage_accumulator,
             )
 
-        async def retry_stream_plain_text_tool_intent_or_replay(first_item):
-            if (
-                not retry_plain_text_tool_intent
-                or tool_intent_repair_attempts >= TOOL_INTENT_REPAIR_MAX_ATTEMPTS
-            ):
+        repair_tool_intent = (
+            retry_plain_text_tool_intent
+            and tool_intent_repair_attempts < TOOL_INTENT_REPAIR_MAX_ATTEMPTS
+        )
+
+        async def inspect_text_stream(first_item):
+            requires_delivery = delivery_contract_required()
+            if not requires_delivery and not repair_tool_intent:
                 return None
             buffered_items = [first_item]
             text_parts = [_stream_item_content(first_item)]
             try:
                 async for next_item in response:
+                    if stream_chunk_tool_call_deltas(next_item):
+                        if requires_delivery:
+                            return await dispatch_later(next_item, response)
+                        buffered_items.append(next_item)
+                        return _MixedToolStream(buffered_items, response, dispatch_later, tools_used), tools_used
                     buffered_items.append(next_item)
                     text_parts.append(_stream_item_content(next_item))
             except ProviderStreamError as e:
                 logger.error(
                     "API Error while buffering plain-text tool intent stream error=%s",
-                    log_exception_shape(e),
+                    type(e).__name__,
                 )
-                return _replay_stream_items(buffered_items), tools_used
+                if not requires_delivery:
+                    return _replay_stream_items(buffered_items), tools_used
             plain_text = "".join(text_parts)
+            enforced = await enforce_delivery_contract_if_needed(plain_text)
+            if enforced is not None:
+                return enforced
             repaired = await retry_plain_text_tool_intent_if_needed(plain_text)
             if repaired is not None:
                 return repaired
             return _replay_stream_items(buffered_items), tools_used
+
+        async def dispatch_later(first_item, remaining):
+            prefixed = _PrefixedStream(first_item, remaining)
+            prefixed.offered_tool_names = offered_tool_names
+            return await handle_function_call(
+                helper, chat_id, prefixed, True,
+                times, tools_used, allowed_plugins, user_id, request_context,
+                final_delivery_required, model_to_use, delivery_repair_attempts,
+                artifact_manifest, suppressed_reentry_tools, retry_plain_text_tool_intent,
+                tool_intent_repair_attempts, token_accumulator, failure_escalation_state,
+                usage_accumulator=usage_accumulator,
+            )
 
         if stream:
             try:
                 tool_call_parts = {}
                 async for item in response:
                     if not stream_chunk_has_choice(item):
-                        continue
+                        if tool_call_parts or delivery_contract_required() or repair_tool_intent:
+                            continue
+                        return _MixedToolStream((item,), response, dispatch_later, tools_used), tools_used
                     tool_call_deltas = stream_chunk_tool_call_deltas(item)
                     if tool_call_deltas:
+                        if (
+                            stream_chunk_text_delta(item)
+                            and not tool_call_parts
+                            and not isinstance(response, _PrefixedStream)
+                            and not delivery_contract_required()
+                        ):
+                            return _MixedToolStream((item,), response, dispatch_later, tools_used), tools_used
                         logger.info("found tool calls")
                         for tc in tool_call_deltas:
                             idx = tc.index
@@ -1285,21 +1389,22 @@ async def handle_function_call(
                             except Exception as exc:
                                 logger.debug(
                                     "Stream close after tool_calls finish failed error=%s",
-                                    log_exception_shape(exc),
+                                    type(exc).__name__,
                                 )
                         break
+                    elif tool_call_parts:
+                        continue
+                    elif not stream_chunk_text_delta(item) and not stream_chunk_finish_reason(item):
+                        continue
                     else:
-                        enforced = await enforce_delivery_contract_if_needed()
-                        if enforced is not None:
-                            return enforced
-                        repaired = await retry_stream_plain_text_tool_intent_or_replay(item)
+                        repaired = await inspect_text_stream(item)
                         if repaired is not None:
                             return repaired
-                        return _prepend_stream_item(item, response), tools_used
+                        return _MixedToolStream((item,), response, dispatch_later, tools_used), tools_used
             except ProviderStreamError as e:
                 logger.error(
                     "API Error in function call streaming error=%s",
-                    log_exception_shape(e),
+                    type(e).__name__,
                 )
                 return response, tools_used
             for idx, entry in sorted(tool_call_parts.items(), key=lambda x: x[0]):
@@ -1344,6 +1449,12 @@ async def handle_function_call(
             if enforced is not None:
                 return enforced
             return response, tools_used
+
+        if offered_tool_names == frozenset() and times > (
+            helper.config['functions_max_consecutive_calls']
+            + (DELIVERY_GRACE_ROUNDS if final_delivery_required else 0)
+        ):
+            raise RuntimeError("The model requested tools after the tool-call limit.")
 
         request_session_id = getattr(request_context, "session_id", None)
         model_to_use = model_to_use or await _get_current_model(
@@ -1403,29 +1514,36 @@ async def handle_function_call(
 
         prepared = []
         errors = []
+        offered_canonical_names = (
+            {_to_canonical_tool_name(helper.plugin_manager, name) for name in offered_tool_names}
+            if offered_tool_names is not None else None
+        )
         for call in tool_calls:
             tool_call_id = call.get("id")
             tool_name = call["name"]
             model_tool_name = call.get("model_name") or tool_name
             arguments = call["arguments"]
             canonical_arguments = _canonical_tool_arguments(arguments)
+            if offered_canonical_names is not None and tool_name not in offered_canonical_names:
+                error = 'The model requested a tool that was not offered in this request'
+                logger.warning("%s chat_id=%s tool_call_id=%s", error, chat_id, tool_call_id)
+                errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
+                continue
             logger.info(
-                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s arguments=%s",
+                "Preparing tool call chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s",
                 chat_id,
                 tool_call_id,
                 model_tool_name,
                 tool_name,
-                arguments,
             )
             if not helper.plugin_manager.is_function_allowed(tool_name, allowed_plugins):
                 error = f'Tool {tool_name} is not allowed in the current chat mode'
                 logger.warning(
-                    "%s chat_id=%s tool_call_id=%s model_name=%s arguments=%s",
+                    "%s chat_id=%s tool_call_id=%s model_name=%s",
                     error,
                     chat_id,
                     tool_call_id,
                     model_tool_name,
-                    arguments,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': error}, ensure_ascii=False)))
                 continue
@@ -1450,9 +1568,12 @@ async def handle_function_call(
                             "content from plugins=%s",
                             tool_name, chat_id, user_id, sorted(tainted),
                         )
-                routing_error = _skill_script_routing_error(helper, chat_id, tool_name, args)
+                routing_error = _skill_script_routing_error(
+                    helper, chat_id, tool_name, args,
+                    session_id=getattr(request_context, "session_id", None),
+                )
                 if routing_error:
-                    logger.warning("%s Tool=%s", routing_error.get("error"), tool_name)
+                    logger.warning("Skill routing rejected tool=%s", tool_name)
                     errors.append((
                         tool_name,
                         _canonical_tool_arguments(json.dumps(args, ensure_ascii=False)),
@@ -1470,26 +1591,46 @@ async def handle_function_call(
                 ))
             except json.JSONDecodeError as exc:
                 logger.error(
-                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    "Failed to parse tool arguments JSON chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error_type=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
-                    log_exception_shape(exc),
-                    arguments,
+                    type(exc).__name__,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
             except TypeError as exc:
                 logger.error(
-                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error=%s arguments=%s",
+                    "Invalid tool arguments chat_id=%s tool_call_id=%s model_name=%s canonical_name=%s error_type=%s",
                     chat_id,
                     tool_call_id,
                     model_tool_name,
                     tool_name,
-                    log_exception_shape(exc),
-                    arguments,
+                    type(exc).__name__,
                 )
                 errors.append((tool_name, canonical_arguments, tool_call_id, json.dumps({'error': f'Invalid arguments for {tool_name}'}, ensure_ascii=False)))
+
+        plan_preflight = getattr(helper, "plan_preflight_required", None)
+        plan_required = bool(
+            prepared
+            and callable(plan_preflight)
+            and await asyncio.to_thread(
+                plan_preflight, chat_id, user_id, request_session_id,
+                [{"name": call[0]} for call in prepared],
+            )
+        )
+        if plan_required:
+            planner_calls = []
+            for call in prepared:
+                tool_name, _, _, canonical_arguments, tool_call_id = call
+                if tool_name == MANAGE_PLAN_TOOL_NAME:
+                    planner_calls.append(call)
+                    continue
+                errors.append((
+                    tool_name, canonical_arguments, tool_call_id,
+                    json.dumps({"error": f"Call {MANAGE_PLAN_TOOL_NAME} to create a plan before executing tools."}),
+                ))
+            prepared = planner_calls
 
         # Snapshot the in_progress task BEFORE running the batch. If the batch
         # itself contains manage_plan_tasks (which can flip the in_progress task),
@@ -1500,7 +1641,9 @@ async def handle_function_call(
         try:
             agent_plugin_snapshot = helper.plugin_manager.get_plugin(DELIVERY_PLUGIN_PREFIX[:-1])
             if agent_plugin_snapshot is not None:
-                snapshot_scope = compute_scope_key(chat_id, user_id)
+                snapshot_scope = compute_session_scope_key(
+                    chat_id, user_id, getattr(request_context, "session_id", None),
+                )
                 pre_task_id = await asyncio.to_thread(
                     agent_plugin_snapshot._current_in_progress_task_id,
                     snapshot_scope,
@@ -1509,7 +1652,7 @@ async def handle_function_call(
         except Exception as exc:
             logger.debug(
                 "agent_tools re-plan pre-snapshot failed error=%s",
-                log_exception_shape(exc),
+                type(exc).__name__,
             )
 
         semaphore = _tool_call_batch_semaphore()
@@ -1540,9 +1683,9 @@ async def handle_function_call(
                 tool_response = json.dumps({'error': str(tool_response)}, ensure_ascii=False)
             tool_result = normalize_tool_result(tool_response, tool_name=tool_name)
             logger.info(
-                "Function %s response: %s",
+                "Function %s completed success=%s",
                 tool_name,
-                tool_result.content,
+                tool_result.success,
             )
             if tool_name not in tools_used:
                 tools_used += (tool_name,)
@@ -1666,7 +1809,7 @@ async def handle_function_call(
         except Exception as exc:
             logger.debug(
                 "agent_tools re-plan bookkeeping failed error=%s",
-                log_exception_shape(exc),
+                type(exc).__name__,
             )
 
         if repeated_failures and not direct_results_collected:
@@ -1701,9 +1844,8 @@ async def handle_function_call(
         session_id, max_tokens_percent = await _reentry_session(helper, chat_id, user_id, request_context)
 
         logger.info(
-            "Function calls completed. conversation: %s session_id=%s",
-            _json_for_log(helper.conversations.get(_chat_state_key(helper, chat_id))),
-            session_id,
+            "Function calls completed session_id=%s count=%d",
+            session_id, len(tool_calls),
         )
 
         max_consecutive_calls = helper.config['functions_max_consecutive_calls']
@@ -1717,6 +1859,15 @@ async def handle_function_call(
             max_consecutive_calls=max_consecutive_calls,
             final_delivery_required=final_delivery_required,
         )
+        if plan_required and not prepared and times < max_consecutive_calls and tool_choice != "none":
+            planner_specs = _filter_tools_to_names(tools, {MANAGE_PLAN_TOOL_NAME}, helper.plugin_manager)
+            planner_name = _tool_spec_name(planner_specs[0]) if isinstance(planner_specs, list) and planner_specs else None
+            if planner_name:
+                tools = planner_specs
+                tool_choice = {"type": "function", "function": {"name": planner_name}}
+            else:
+                tools = []
+                tool_choice = "none"
 
         messages = await helper._apply_before_chat_request_mutators(
             chat_id=chat_id,
@@ -1730,7 +1881,7 @@ async def handle_function_call(
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
-            max_tokens=helper.get_max_tokens(model_to_use, max_tokens_percent, chat_id),
+            max_tokens=_reentry_max_tokens(helper, chat_id, model_to_use, max_tokens_percent, messages, tools),
             stream=stream,
         )
         return await handle_function_call(
@@ -1755,5 +1906,5 @@ async def handle_function_call(
             usage_accumulator=usage_accumulator,
         )
     except Exception as exc:
-        logger.error('Error in function call handling error=%s', log_exception_shape(exc))
+        logger.error('Error in function call handling error=%s', type(exc).__name__)
         raise

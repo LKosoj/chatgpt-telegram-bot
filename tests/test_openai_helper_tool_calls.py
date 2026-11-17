@@ -231,7 +231,9 @@ class RetrySessionDB(DummyDB):
 class DummyPluginManager:
     def __init__(self, responses, specs=None, plugins=None):
         self.responses = responses
-        self.specs = specs or []
+        self.specs = specs if specs is not None else [
+            {"type": "function", "function": {"name": name}} for name in responses
+        ]
         self.plugins = plugins or {}
         self.calls = []
         self.call_contexts = []
@@ -633,6 +635,7 @@ async def test_streamed_tool_call_records_provider_response_on_terminal_chunk():
             model="llmgateway/high",
             messages=[],
             stream=True,
+            tools=[{"type": "function", "function": {"name": "p.do"}}],
         )
         response, tools_used = await helper._handle_function_call(
             chat_id=1,
@@ -897,13 +900,13 @@ async def test_get_chat_response_provider_failure_logs_debug_values(caplog):
         )
 
     log_text = caplog.text
-    assert "LLM request failed kind=main" in log_text
+    assert "LLM request failed request_id=" in log_text
     assert "Unexpected error in chat response generation" in log_text
     assert "Error in get_chat_response" in log_text
-    assert "payload=" in log_text
-    assert "RuntimeError: provider secret request fragment" in log_text
-    assert "secret user prompt" in log_text
-    assert "provider secret request fragment" in log_text
+    assert "payload=" not in log_text
+    assert "RuntimeError" in log_text
+    assert "secret user prompt" not in log_text
+    assert "provider secret request fragment" not in log_text
 
 
 @pytest.mark.asyncio
@@ -2100,6 +2103,32 @@ async def test_get_chat_response_stream_rejects_call_from_active_turn():
         openai_helper_module._CHAT_STATE_KEY.reset(token)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_chat_response_runs_in_scoped_session(stream):
+    response = _fake_stream(["done"]) if stream else FakeResponse(content="done")
+    helper = _make_helper(DummyPluginManager({}), client=DummyClient([response]))
+    session_key = (1, "new-session")
+    original_history = helper.history_snapshot(1)
+
+    with helper.chat_state_scope(session_key):
+        if stream:
+            chunks = [
+                chunk async for chunk in helper.get_chat_response_stream(
+                    1, "queued message", user_id=1, conversation_state_key=session_key,
+                )
+            ]
+            answer = chunks[-1][0]
+        else:
+            answer, _ = await helper.get_chat_response(
+                1, "queued message", user_id=1, conversation_state_key=session_key,
+            )
+
+        assert answer == "done"
+        assert helper.history_snapshot(1)[-1] == {"role": "assistant", "content": "done"}
+
+    assert helper.history_snapshot(1) == original_history
+
+
 @pytest.mark.asyncio
 async def test_get_chat_response_rejects_empty_model_content():
     pm = DummyPluginManager({})
@@ -2525,11 +2554,11 @@ async def test_invalid_tool_arguments_logs_debug_values_and_keeps_sanitized_sess
     assert "Model tool calls received" in log_text
     assert "Appending assistant tool calls to history" in log_text
     assert "Failed to parse tool arguments JSON" in log_text
-    assert "LLM request payload kind=chat_completion" in log_text
+    assert "kind=chat_completion" in log_text
     assert "call-debug-1" in log_text
     assert "skills_run_skill_agent" in log_text
-    assert "arguments=" in log_text
-    assert bad_arguments in log_text
+    assert "arguments=" not in log_text
+    assert bad_arguments not in log_text
     assert any(
         event.get("type") == "tool_calls_received"
         and event["tool_calls"][0]["tool_call_id"] == "call-debug-1"
@@ -2581,12 +2610,12 @@ async def test_tool_arguments_and_response_are_visible_in_normal_logs(caplog):
     log_text = caplog.text
     assert out.choices[0].message.content == "done"
     assert set(tools_used) == {"p1.do"}
-    assert "arguments=" in log_text
-    assert "response:" in log_text
+    assert "arguments=" not in log_text
+    assert "completed success=True" in log_text
     assert "call-redact" in log_text
     assert "p1.do" in log_text
-    assert "private search phrase" in log_text
-    assert "private tool response" in log_text
+    assert "private search phrase" not in log_text
+    assert "private tool response" not in log_text
     assert any(
         "private tool response" in str(message.get("content") or "")
         for message in helper.conversations[1]
@@ -2615,7 +2644,8 @@ async def test_streaming_api_error_log_includes_error_text(caplog):
     assert out is response
     assert tools_used == ()
     assert "API Error in function call streaming" in caplog.text
-    assert "ProviderStreamError: secret streaming api error" in caplog.text
+    assert "ProviderStreamError" in caplog.text
+    assert "secret streaming api error" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2640,7 +2670,8 @@ async def test_streaming_plain_text_tool_intent_buffer_api_error_log_includes_er
     assert await _collect_stream_content(out) == "plain text"
     assert tools_used == ()
     assert "API Error while buffering plain-text tool intent stream" in caplog.text
-    assert "ProviderStreamError: secret buffering api error" in caplog.text
+    assert "ProviderStreamError" in caplog.text
+    assert "secret buffering api error" not in caplog.text
 
 
 def test_repair_tool_call_history_emits_synthetic_tool_result():
@@ -4265,7 +4296,8 @@ async def test_new_session_reloads_mode_before_deferring_direct_results():
     helper = _make_helper(
         DummyPluginManager(
             responses,
-            specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
+            specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+                   {"type": "function", "function": {"name": "stable_diffusion.stable_diffusion"}}],
         ),
         db=MultiSessionDB(contexts),
         client=DummyClient([
@@ -4870,6 +4902,7 @@ async def test_deliver_to_user_carries_cleanup_directive_in_payload():
 
 @pytest.mark.asyncio
 async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
+    planner = types.SimpleNamespace(get_plan_tasks=lambda **kwargs: [{"id": "T1"}])
     pm = DummyPluginManager(
         {
             "codeinterpreter.deep_analysis": {"result": "42"},
@@ -4884,7 +4917,7 @@ async def test_active_skill_does_not_block_unrelated_codeinterpreter_calls():
             },
         },
         specs=[{"type": "function", "function": {"name": "agent_tools.deliver_to_user"}}],
-        plugins={"skills": FakeSkillsPlugin()},
+        plugins={"skills": FakeSkillsPlugin(), "agent_tools": planner},
     )
     helper = _make_helper(pm, client=DummyClient([
         FakeResponse(content="calculated"),

@@ -677,7 +677,7 @@ class ChatGPTTelegramBot:
                     log_exception_shape(exc),
                 )
 
-    def _build_plan_status_provider(self, chat_id, user_id):
+    def _build_plan_status_provider(self, chat_id, user_id, session_id=None):
         """
         Return (plan_provider, interval) for BusyStatusMessage. The provider yields
         the agent's current plan_tasks for this scope so the live status message
@@ -699,14 +699,14 @@ class ChatGPTTelegramBot:
 
         def _provider():
             try:
-                return get_plan_tasks(chat_id=chat_id, user_id=user_id)
+                return get_plan_tasks(chat_id=chat_id, user_id=user_id, session_id=session_id)
             except Exception:
                 return []
 
         return _provider, 5.0
 
-    def _build_busy_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id, user_id) -> BusyStatusMessage:
-        plan_provider, plan_interval = self._build_plan_status_provider(chat_id, user_id)
+    def _build_busy_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id, user_id, session_id=None) -> BusyStatusMessage:
+        plan_provider, plan_interval = self._build_plan_status_provider(chat_id, user_id, session_id)
         return BusyStatusMessage(
             update,
             context,
@@ -756,7 +756,7 @@ class ChatGPTTelegramBot:
             return sent_message, int(tokens)
         return None, None
 
-    async def _handle_direct_result(self, update: Update, response):
+    async def _handle_direct_result(self, update: Update, response, session_id=None):
         sent_messages = []
         delivery_error: Exception | None = None
         try:
@@ -798,10 +798,10 @@ class ChatGPTTelegramBot:
         chat = getattr(update, "effective_chat", None)
         user = getattr(update, "effective_user", None)
         await self._dispatch_session_reset(
-            getattr(chat, "id", None), getattr(user, "id", None), reason="final_delivery",
+            getattr(chat, "id", None), getattr(user, "id", None), reason="final_delivery", session_id=session_id,
         )
 
-    async def _dispatch_session_reset(self, chat_id, user_id, *, reason: str) -> None:
+    async def _dispatch_session_reset(self, chat_id, user_id, *, reason: str, session_id=None) -> None:
         """Fire the `on_session_reset` observer hook with a `SessionResetPayload`
         built from the given args."""
         await self.openai.plugin_manager.dispatch_observe(
@@ -811,6 +811,7 @@ class ChatGPTTelegramBot:
                 user_id=user_id,
                 reason=reason,
                 terminal_only=False,
+                session_id=session_id,
             ),
             user_id=user_id,
         )
@@ -979,7 +980,7 @@ class ChatGPTTelegramBot:
         payload = SessionBeforeDeletePayload(
             user_id=user_id,
             session_id=session_id,
-            messages=tuple(messages),
+            messages=tuple(messages), chat_id=user_id, is_deletion=True,
         )
         try:
             await pm.dispatch_blocking(
@@ -1169,7 +1170,7 @@ class ChatGPTTelegramBot:
                 conversation_state_key=conversation_state_key,
             )
             if is_direct_result(interpretation):
-                await self._handle_direct_result(update, interpretation)
+                await self._handle_direct_result(update, interpretation, session_id=session_id)
                 if user_id not in self.usage:
                     self.usage[user_id] = make_usage_tracker(self.config, user_id, update.effective_user.name)
                 await record_vision_tokens_async(self.usage, self.config, user_id, total_tokens)
@@ -2895,6 +2896,7 @@ class ChatGPTTelegramBot:
                 user_id=user_id,
                 message_id=message.message_id,
                 request_id=f"{chat_id}_{message.message_id}",
+                session_id=session_id,
             )
 
             try:
@@ -2927,10 +2929,11 @@ class ChatGPTTelegramBot:
                         }
                     else:
                         kwargs = {}
-                    await self._dispatch_session_reset(chat_id, user_id, reason="request_start")
+                    await self._dispatch_session_reset(chat_id, user_id, reason="request_start", session_id=session_id)
                     response, total_tokens = await self.openai.get_chat_response(
                         chat_id=chat_id,
                         query=transcript,
+                        session_id=session_id,
                         user_id=user_id,
                         request_context=request_context,
                         **kwargs,
@@ -2939,7 +2942,7 @@ class ChatGPTTelegramBot:
                     await self._record_chat_usage(chat_id, user_id, total_tokens)
 
                     if is_direct_result(response):
-                        return await self._handle_direct_result(update, response)
+                        return await self._handle_direct_result(update, response, session_id=session_id)
                     
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     transcript_output = (
@@ -3111,7 +3114,7 @@ class ChatGPTTelegramBot:
             is_command=False,
             ts=first_item["message_timestamp"],
         )
-        await self._dispatch_session_reset(chat_id, user_id, reason="request_start")
+        await self._dispatch_session_reset(chat_id, user_id, reason="request_start", session_id=session_id)
 
         async def _execute():
             bot_language = self.config['bot_language']
@@ -3157,7 +3160,7 @@ class ChatGPTTelegramBot:
                     raise RuntimeError("OpenAI helper does not support multi-image vision requests")
 
                 if is_direct_result(interpretation):
-                    await self._handle_direct_result(update, interpretation)
+                    await self._handle_direct_result(update, interpretation, session_id=session_id)
                     await record_vision_tokens_async(self.usage, self.config, user_id, total_tokens)
                     return
 
@@ -3171,7 +3174,7 @@ class ChatGPTTelegramBot:
                 )
             await record_vision_tokens_async(self.usage, self.config, user_id, total_tokens)
 
-        busy_status = self._build_busy_status(update, context, chat_id, user_id)
+        busy_status = self._build_busy_status(update, context, chat_id, user_id, session_id)
         # Why: параллельный текстовый prompt по этому же conversation_key пишет в
         # self.openai.conversations под conversation_lock (process_message, :3943-3944);
         # альбом должен брать тот же замок, иначе гонка по истории разговора.
@@ -3276,7 +3279,7 @@ class ChatGPTTelegramBot:
                 is_command=False,
                 ts=request_started_at,
             )
-            await self._dispatch_session_reset(chat_id, user_id, reason="request_start")
+            await self._dispatch_session_reset(chat_id, user_id, reason="request_start", session_id=session_id)
 
             async def _execute():
                 bot_language = self.config['bot_language']
@@ -3358,7 +3361,7 @@ class ChatGPTTelegramBot:
                             )
 
                         async def _on_direct_result(content, tokens):
-                            await self._handle_direct_result(update, content)
+                            await self._handle_direct_result(update, content, session_id=session_id)
                             await record_vision_tokens_async(self.usage, self.config, user_id, tokens)
 
                         outcome = await stream_to_telegram(
@@ -3385,7 +3388,7 @@ class ChatGPTTelegramBot:
                             )
 
                             if is_direct_result(interpretation):
-                                await self._handle_direct_result(update, interpretation)
+                                await self._handle_direct_result(update, interpretation, session_id=session_id)
                                 await record_vision_tokens_async(self.usage, self.config, user_id, total_tokens)
                                 return
 
@@ -3424,7 +3427,7 @@ class ChatGPTTelegramBot:
                             )
                     await record_vision_tokens_async(self.usage, self.config, user_id, total_tokens)
 
-                busy_status = self._build_busy_status(update, context, chat_id, user_id)
+                busy_status = self._build_busy_status(update, context, chat_id, user_id, session_id)
                 await busy_status.start()
                 try:
                     await _run_vision_model_request()
@@ -4249,9 +4252,11 @@ class ChatGPTTelegramBot:
                 prompt = self._prompt_with_replied_file_context(prompt, replied_file_context)
 
             model_to_use = await self.openai.get_current_model_async(conversation_key, session_id=session_id)
-            await self._dispatch_session_reset(chat_id, user_id, reason="request_start")
+            await self._dispatch_session_reset(chat_id, user_id, reason="request_start", session_id=session_id)
 
-            force_non_stream = await self._should_force_non_stream_first_turn(chat_id, user_id)
+            force_non_stream = await self.openai.prepare_chat_mode(
+                chat_id, prompt, user_id, session_id, conversation_state_key
+            )
             if self.config['stream'] and not force_non_stream:
 
                 await message.reply_chat_action(
@@ -4267,6 +4272,7 @@ class ChatGPTTelegramBot:
                     user_id=user_id,
                     request_context=request_context,
                     conversation_state_key=conversation_state_key,
+                    mode_prepared=True,
                 )
                 rich_stream_active = self._should_stream_rich_drafts(update)
                 rich_stream_required = rich_messages_required(self.config)
@@ -4324,7 +4330,7 @@ class ChatGPTTelegramBot:
                     async def _on_direct_result(content, tokens):
                         nonlocal assistant_response_text
                         assistant_response_text = self._direct_result_observer_text(content)
-                        await self._handle_direct_result(update, content)
+                        await self._handle_direct_result(update, content, session_id=session_id)
 
                     outcome = await stream_to_telegram(
                         stream_response,
@@ -4385,7 +4391,7 @@ class ChatGPTTelegramBot:
                             if tokens != 'not_finished':
                                 total_tokens = int(tokens)
                             assistant_response_text = self._direct_result_observer_text(content)
-                            await self._handle_direct_result(update, content)
+                            await self._handle_direct_result(update, content, session_id=session_id)
                             await self._dispatch_assistant_response_observer(
                                 chat_id=chat_id,
                                 user_id=user_id,
@@ -4594,7 +4600,7 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens, assistant_response_text
-                    busy_status = self._build_busy_status(update, context, chat_id, user_id)
+                    busy_status = self._build_busy_status(update, context, chat_id, user_id, session_id)
                     await busy_status.start()
                     try:
                         response, total_tokens = await self.openai.get_chat_response(
@@ -4605,12 +4611,13 @@ class ChatGPTTelegramBot:
                             user_id=user_id,
                             request_context=request_context,
                             conversation_state_key=conversation_state_key,
+                            mode_prepared=True,
                         )
                         await busy_status.stop()
 
                         if is_direct_result(response):
                             assistant_response_text = self._direct_result_observer_text(response)
-                            return await self._handle_direct_result(update, response)
+                            return await self._handle_direct_result(update, response, session_id=session_id)
 
                         assistant_response_text = response
                         rich_messages = await try_send_rich_markdown_response(
@@ -4676,7 +4683,7 @@ class ChatGPTTelegramBot:
             #    await self.reset(update, context, True)
 
         except Exception as e:
-            logger.error("Chat message processing failed error=%s", log_exception_shape(e))
+            logger.error("Chat message processing failed error=%s", type(e).__name__)
             from .utils import escape_markdown
             error_message = escape_markdown(str(e))
             await message.reply_text(
@@ -4963,17 +4970,22 @@ class ChatGPTTelegramBot:
 
                 async def _run_gpt_callback():
                     nonlocal total_tokens
-                    request_context = RequestContext(chat_id=user_id, user_id=user_id)
-                    await self._dispatch_session_reset(user_id, user_id, reason="request_start")
+                    inline_session_id = await self._pinned_session_id(user_id, None)
+                    request_context = RequestContext(chat_id=user_id, user_id=user_id, session_id=inline_session_id)
+                    await self._dispatch_session_reset(user_id, user_id, reason="request_start", session_id=inline_session_id)
 
                     unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
-                    inline_force_non_stream = await self._should_force_non_stream_first_turn(user_id, user_id)
+                    inline_force_non_stream = await self.openai.prepare_chat_mode(
+                        user_id, query, user_id, inline_session_id
+                    )
                     if self.config['stream'] and not inline_force_non_stream:
                         stream_response = self.openai.get_chat_response_stream(
                             chat_id=user_id,
                             query=query,
                             user_id=user_id,
                             request_context=request_context,
+                            session_id=inline_session_id,
+                            mode_prepared=True,
                         )
                         # T12: инлайн-режим не умеет открывать новое сообщение —
                         # send=None, единственная операция — edit уже существующего
@@ -5035,6 +5047,8 @@ class ChatGPTTelegramBot:
                                 query=query,
                                 user_id=user_id,
                                 request_context=request_context,
+                                session_id=inline_session_id,
+                                mode_prepared=True,
                             )
 
                             if is_direct_result(response):
@@ -5069,7 +5083,7 @@ class ChatGPTTelegramBot:
         except Exception as e:
             logger.error(
                 "Failed to respond to an inline query via button callback error=%s",
-                log_exception_shape(e),
+                type(e).__name__,
             )
             localized_answer = localized_text('chat_fail', self.config['bot_language'])
             await edit_message_with_retry(context, chat_id=None, message_id=inline_message_id,

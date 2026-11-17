@@ -101,7 +101,7 @@ async def test_timed_create_writes_llm_call_event(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_timed_create_logs_payload_and_keeps_session_payload(tmp_path, caplog):
+async def test_timed_create_logs_metadata_and_keeps_session_payload(tmp_path, caplog):
     helper = _make_helper(tmp_path)
     secret_prompt = "secret prompt for session trace"
 
@@ -120,8 +120,10 @@ async def test_timed_create_logs_payload_and_keeps_session_payload(tmp_path, cap
         _TURN_STATS.reset(stats_token)
         clear_trace(trace_token)
 
-    assert "payload=" in caplog.text
-    assert secret_prompt in caplog.text
+    assert "kind=test_kind" in caplog.text
+    assert "model=test-model" in caplog.text
+    assert "payload=" not in caplog.text
+    assert secret_prompt not in caplog.text
 
     await helper.session_logger.drain()
 

@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from .. import net_safety
-from ..utils import compute_scope_key
+from ..utils import compute_session_scope_key, compute_scope_key
 from ..user_settings import USER_DISABLED_SKILLS_SETTING, get_user_settings, normalize_string_list
 from .plugin import Plugin
 
@@ -186,8 +186,8 @@ class SkillsPlugin(Plugin):
             if skill_id in disabled_skills:
                 continue
             desc = (info.get("description") or "").strip().replace("\n", " ")
-            if len(desc) > 240:
-                desc = desc[:240].rstrip() + "..."
+            if len(desc) > 120:
+                desc = desc[:120].rstrip() + "..."
             summary_lines.append(f"{skill_id}: {desc}" if desc else skill_id)
         if not summary_lines:
             return None
@@ -198,16 +198,9 @@ class SkillsPlugin(Plugin):
         )
         return (
             "ПРИОРИТЕТНОЕ ПРАВИЛО (применяется ПЕРВЫМ, до всех остальных правил):\n"
-            "Если хотя бы один из установленных локальных skills (см. список ниже) по своему "
-            "description покрывает домен задачи пользователя — верни skills_agent. Точка. "
-            "Это правило ПЕРЕБИВАЕТ любые другие режимы, даже если они выглядят ближе по названию: "
-            "content_creator, writing_assistant, code_assistant и подобные НЕ заменяют skills_agent "
-            "при наличии релевантного skill, потому что только skills_agent умеет следовать "
-            "пошаговой инструкции skill (planning → drafting → review) и подгружать его references. "
-            "Сравнение делай по семантике description: skill про fiction/прозу/рассказы → подходит "
-            "для запроса на рассказ, стих, главу, художественный текст; skill про код-ревью → "
-            "подходит для запроса на проверку кода; и т.п. Если хотя бы одно описание skill "
-            "семантически пересекается с задачей — выбирай skills_agent.\n\n"
+            "Выбирай skills_agent, когда пользователь явно просит применить skill или "
+            "его инструкции существенно нужны для выполнения задачи. Одного совпадения "
+            "темы или формата недостаточно: для простого запроса выбирай подходящий простой режим.\n\n"
             "Установленные локальные skills (id: description):\n"
             f"{joined}\n\n"
             f"{direct_match_block}"
@@ -244,7 +237,7 @@ class SkillsPlugin(Plugin):
         chat_id = getattr(payload, "chat_id", None)
         user_id = getattr(payload, "user_id", None)
         disabled_skills = self._disabled_skills_for_user(getattr(self, "openai", None), user_id)
-        scope = compute_scope_key(chat_id, user_id) if chat_id is not None else None
+        scope = compute_session_scope_key(chat_id, user_id, getattr(payload, "session_id", None)) if chat_id is not None else None
         active_scope_state = self.active_skills.get(scope, {}) if scope is not None else {}
 
         static_text = self._build_static_skills_catalog(disabled_skills)
@@ -356,8 +349,7 @@ class SkillsPlugin(Plugin):
         if not matches:
             return ""
         return (
-            "Для текущего сообщения уже найдено прямое совпадение с локальными skills. "
-            "Если этот список непустой, верни skills_agent и не применяй остальные правила:\n"
+            "Возможные совпадения с локальными skills; оцени, нужны ли их инструкции:\n"
             f"{chr(10).join(matches)}\n\n"
         )
 
@@ -489,8 +481,8 @@ class SkillsPlugin(Plugin):
                 "name": "install_skill",
                 "description": (
                     "Install a skill into SKILLS_DIR from a source given in package, then refresh "
-                    "the local skill registry. Call only after the user has explicitly approved this "
-                    "exact source (confirmed=true). Gated by SKILLS_ALLOW_INSTALLS and the "
+                    "the local skill registry. Telegram requests approval for this "
+                    "exact source. Gated by SKILLS_ALLOW_INSTALLS and the "
                     "SKILLS_INSTALL_ADMIN_USER_IDS allow-list."
                 ),
                 "parameters": {
@@ -514,7 +506,7 @@ class SkillsPlugin(Plugin):
                         },
                         "confirmed": {
                             "type": "boolean",
-                            "description": "Must be true only after the user explicitly approved this exact package install.",
+                            "description": "Compatibility field; Telegram approval is still required.",
                         },
                         "install_all": {
                             "type": "boolean",
@@ -525,7 +517,7 @@ class SkillsPlugin(Plugin):
                             "default": False,
                         },
                     },
-                    "required": ["package", "confirmed"],
+                    "required": ["package"],
                 },
             },
             {
@@ -533,7 +525,7 @@ class SkillsPlugin(Plugin):
                 "description": (
                     "Create a new local skill directory under SKILLS_DIR with a generated SKILL.md. "
                     "Call when the user explicitly asks to author a fresh skill instead of installing "
-                    "an existing one (confirmed=true after approval). Same gating as install_skill."
+                    "an existing one. Telegram requests approval. Same gating as install_skill."
                 ),
                 "parameters": {
                     "type": "object",
@@ -556,10 +548,10 @@ class SkillsPlugin(Plugin):
                         },
                         "confirmed": {
                             "type": "boolean",
-                            "description": "Must be true only after the user explicitly approved creating this skill.",
+                            "description": "Compatibility field; Telegram approval is still required.",
                         },
                     },
-                    "required": ["skill_name", "instructions", "confirmed"],
+                    "required": ["skill_name", "instructions"],
                 },
             },
             {
@@ -766,6 +758,7 @@ class SkillsPlugin(Plugin):
     async def execute(self, function_name: str, helper, **kwargs) -> Dict:
         self._ensure_ready()
         request_context = kwargs.pop("request_context", None)
+        kwargs["session_id"] = getattr(request_context, "session_id", None)
         user_id = kwargs.get("user_id")
         disabled_skills = self._disabled_skills_for_user(helper, user_id)
         if function_name == "list_skills":
@@ -793,6 +786,56 @@ class SkillsPlugin(Plugin):
             return self._get_skill_resource(skill_name, str(kwargs.get("resource_path") or ""))
         if function_name == "find_installable_skills":
             return await self._find_installable_skills(str(kwargs.get("query") or ""))
+        if function_name in {"install_skill", "create_skill"}:
+            operation = "installation" if function_name == "install_skill" else "creation"
+            if not self.allow_installs:
+                return {"success": False, "error": f"Skill {operation} is disabled by SKILLS_ALLOW_INSTALLS=false."}
+            if request_context is None or request_context.user_id is None or request_context.chat_id is None:
+                return {"success": False, "error": "Telegram user confirmation is required."}
+            kwargs["chat_id"] = request_context.plugin_chat_id
+            kwargs["user_id"] = request_context.user_id
+            if not self._is_install_admin(request_context.user_id):
+                return {"success": False, "error": f"Skill {operation} is restricted by the SKILLS_INSTALL_ADMIN_USER_IDS user allow-list."}
+            if function_name == "install_skill":
+                package = str(kwargs.get("package") or "").strip()
+                if not package:
+                    return {"success": False, "error": "package must be a non-empty source string"}
+                if self._skill_install_source_kind(package) not in {"git", "url", "local"} and any(c.isspace() for c in package):
+                    return {"success": False, "error": "skills package id must not contain whitespace"}
+                selected = str(kwargs.get("skill_name") or "").strip()
+                install_all = self._bool_arg(kwargs.get("install_all"), default=False)
+                details = f"package: {package}\nskill_name: {selected}\ninstall_all: {install_all}"
+            else:
+                target, error = self._normalize_skill_target_name(str(kwargs.get("skill_name") or ""))
+                if error:
+                    return {"success": False, "error": error}
+                body = str(kwargs.get("instructions") or "").strip()
+                if not body:
+                    return {"success": False, "error": "instructions must be a non-empty markdown string"}
+                target_path = (self._ensure_paths() / target).resolve()
+                if target_path.exists():
+                    return {"success": False, "skill": target, "error": f"Skill '{target}' already exists in SKILLS_DIR.", "path": str(target_path)}
+                display_name = str(kwargs.get("name") or "").strip() or target.rsplit("/", 1)[-1]
+                description = str(kwargs.get("description") or "").strip()
+                details = (f"skill_name: {target}\nname: {display_name}\n"
+                           f"description: {description}\ninstructions: {body}")
+            question = f"Подтвердите {function_name}:\n{details}"
+            document = None
+            if len(question.encode('utf-16-le')) // 2 > 4000:
+                document = question.encode("utf-8")
+                question = f"Подтвердите {function_name}. Полные параметры операции приложены файлом."
+            manager = getattr(helper, "plugin_manager", None)
+            agent = manager.get_plugin("agent_tools") if manager else None
+            if agent is None:
+                return {"success": False, "error": "Telegram user confirmation is unavailable."}
+            answer = await agent._ask_telegram_user(
+                helper, chat_id=request_context.plugin_chat_id, user_id=request_context.user_id,
+                question=question, options=["Разрешить", "Отказать"], allow_free_text=False,
+                document=document,
+            )
+            if not answer.get("success") or answer.get("answer") != "Разрешить":
+                return {"success": False, "error": "Skill operation was not approved."}
+            kwargs["confirmed"] = True
         if function_name == "install_skill":
             call_kwargs = dict(kwargs)
             package = str(call_kwargs.pop("package", "") or "")
@@ -2713,7 +2756,7 @@ class SkillsPlugin(Plugin):
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         now = int(time.time())
         with self._state_lock:
             scope_state = self.active_skills.setdefault(scope, {})
@@ -2745,7 +2788,7 @@ class SkillsPlugin(Plugin):
 
     def _list_active_skills(self, disabled_skills: set[str] | None = None, **kwargs) -> Dict[str, Any]:
         disabled_skills = disabled_skills or set()
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             entries = []
@@ -2769,7 +2812,7 @@ class SkillsPlugin(Plugin):
 
     def _get_skill_status(self, skill_name: str = "", disabled_skills: set[str] | None = None, **kwargs) -> Dict[str, Any]:
         disabled_skills = disabled_skills or set()
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         with self._state_lock:
             scope_state = self.active_skills.get(scope, {})
             if not skill_name:
@@ -2819,7 +2862,7 @@ class SkillsPlugin(Plugin):
                 "available_agents": [item["id"] for item in info.get("agents", [])],
             }
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         with self._state_lock:
             active_state = dict(self.active_skills.get(scope, {}).get(skill_id) or {})
             active_context = active_state.get("context") or {}
@@ -3020,7 +3063,7 @@ class SkillsPlugin(Plugin):
         context_update: Any = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -3069,7 +3112,7 @@ class SkillsPlugin(Plugin):
         )
 
     def _deactivate_skill(self, skill_name: str, **kwargs) -> Dict[str, Any]:
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -3103,7 +3146,7 @@ class SkillsPlugin(Plugin):
                 "error": "Skill script execution is restricted by SKILLS_SCRIPT_ADMIN_USER_IDS.",
             }
 
-        scope = compute_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"))
+        scope = compute_session_scope_key(kwargs.get("chat_id"), kwargs.get("user_id"), kwargs.get("session_id"))
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -3500,6 +3543,15 @@ class SkillsPlugin(Plugin):
                 os.replace(tmp_path, self.reflections_file)
             except Exception as exc:
                 logger.warning("Failed to save skill reflections: %s", exc)
+
+    async def on_session_before_delete(self, payload) -> None:
+        if not getattr(payload, "is_deletion", True):
+            return
+        chat_id = getattr(payload, "chat_id", None)
+        scope = compute_session_scope_key(chat_id if chat_id is not None else payload.user_id, None, payload.session_id)
+        with self._state_lock:
+            if self.active_skills.pop(scope, None) is not None:
+                self._save_state()
 
     def _load_state(self) -> None:
         if not self.state_file or not self.state_file.exists():

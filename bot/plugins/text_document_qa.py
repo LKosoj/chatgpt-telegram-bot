@@ -429,7 +429,7 @@ class TextDocumentQAPlugin(Plugin):
 
     async def handle_rag_prompt(self, prompt: str, update, context, helper=None, bot=None, **kwargs):
         chat_id = str(update.effective_chat.id)
-        if not self.is_rag_enabled(chat_id):
+        if not await asyncio.to_thread(self.is_rag_enabled, chat_id):
             return False
         return await self.execute(
             "ask_workspace",

@@ -74,6 +74,36 @@ def _summary_response(content: str = "compact summary"):
 
 
 @pytest.mark.asyncio
+async def test_repeated_summary_merges_previous_summary_and_bounds_result():
+    helper = _make_helper()
+    helper.config['summary_min_messages_between_runs'] = 0
+    helper.config['summary_deterministic_max_chars'] = 100
+    helper.conversations[1] = [
+        {"role": "system", "content": "instructions"},
+        {"role": "system", "content": "[prior_summary]: earlier facts"},
+        *[{"role": "user", "content": str(i)} for i in range(8)],
+    ]
+    helper._summarise_window = AsyncMock(return_value="x" * 200)
+
+    assert await helper._summarize_and_trim(1, chat_id=1, session_id=None, memory_user_id=1)
+    submitted = helper._summarise_window.await_args.args[0]
+    assert any("earlier facts" in m['content'] for m in submitted)
+    summaries = [m for m in helper.conversations[1] if m.get('content', '').startswith('[prior_summary]: ')]
+    assert len(summaries) == 1
+    assert len(summaries[0]['content'].removeprefix('[prior_summary]: ')) <= 100
+
+
+def test_request_budget_includes_tool_schemas():
+    helper = _make_helper()
+    helper._context_window = lambda model: 200
+    messages = [{"role": "user", "content": "hello"}]
+    assert helper.check_chat_request_budget(messages, [], "main-model", 10) == 10
+    assert 0 < helper.check_chat_request_budget(messages, [], "main-model", 500) < 500
+    with pytest.raises(ValueError, match="не помещаются"):
+        helper.check_chat_request_budget(messages, [{"description": "long " * 300}], "main-model", 10)
+
+
+@pytest.mark.asyncio
 async def test_summarise_window_calls_chat_response_wrapper():
     helper = _make_helper()
     calls = []

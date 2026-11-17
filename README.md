@@ -345,8 +345,8 @@ by the runtime. **Bold** rows are required.
 |---|---|---|---|
 | `MAX_SESSIONS` | `5` | int | Max named sessions per user. Older sessions are pruned inline when a new session is created. |
 | `BOT_LANGUAGE` | `en` | string | Bot UI language (`en`, `ru`, …). |
-| `AUTO_CHAT_MODES` | `false` | bool | Suggest a chat mode automatically based on the first user message. |
-| `SESSION_LOG_ENABLED` | `false` | bool | Write structured per-turn diagnostic events (turn/LLM/tool timings) to disk. Off by default. |
+| `AUTO_CHAT_MODES` | `false` | bool | Select a mode from the first user message when the user has not selected one. |
+| `SESSION_LOG_ENABLED` | `false` | bool | Write detailed per-turn diagnostics to disk, which can include prompts and tool data. Off by default. |
 | `SESSION_LOG_DIR` | `./log` | path | Base directory for session logs; one subdirectory per `user_id`, session events as JSONL plus `<session_id>.summary.json`. |
 | `SESSION_LOG_MAX_BYTES` | `10485760` | int | Rotate a session JSONL file before appending when it would exceed this size. `0` disables rotation. |
 | `SESSION_LOG_RETENTION_DAYS` | `30` | int | Delete session JSONL/summary files older than this many days. `0` disables cleanup. |
@@ -844,10 +844,11 @@ Tools:
 - `list_skills` — list available skills with their summaries.
 - `get_skill` — fetch a single skill's full `SKILL.md` content.
 - `find_installable_skills` — search skills.sh via `npx skills find`.
-- `install_skill` — install a confirmed package via `npx skills add`, copy it
-  into `SKILLS_DIR`, and refresh the local registry.
+- `install_skill` — ask the requesting user to approve the exact source in Telegram,
+  then install it into `SKILLS_DIR` and refresh the local registry.
+- `create_skill` — create a new local skill after the requesting user approves it in Telegram.
 - `get_skill_status` / `list_active_skills` — inspect which skills are
-  currently active for the calling chat scope.
+  currently active in the calling session.
 - `activate_skill` / `deactivate_skill` — mark a skill as in-context for the
   current session (used by the `skills_agent` chat mode).
 - `run_skill_script` — execute a script under `skills/<skill>/scripts/*.py`

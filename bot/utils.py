@@ -574,7 +574,7 @@ async def wrap_with_indicator(update: Update, context: CallbackContext, coroutin
                 except asyncio.TimeoutError:
                     pass
                 except Exception as e:
-                    logging.error("Error in wrap_with_indicator error=%s", log_exception_shape(e))
+                    logging.error("Error in wrap_with_indicator error=%s", type(e).__name__)
                     break
             
             return await task
@@ -651,13 +651,7 @@ async def error_handler(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles errors in the telegram-python-bot library.
     """
-    error = context.error
-    error_shape = (
-        log_exception_shape(error)
-        if isinstance(error, BaseException)
-        else log_value_shape(error, key="value")
-    )
-    logging.error("Exception while handling an update error=%s", error_shape)
+    logging.error("Exception while handling an update error=%s", type(context.error).__name__)
 
 async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False) -> bool:
     """
@@ -1058,6 +1052,12 @@ def compute_scope_key(chat_id=None, user_id=None) -> str:
     if user_id is not None:
         return f"user:{user_id}"
     return "global"
+
+
+def compute_session_scope_key(chat_id=None, user_id=None, session_id=None) -> str:
+    """Scope agent progress to a pinned session; retain legacy keys without one."""
+    scope = compute_scope_key(chat_id, user_id)
+    return f"{scope}:session:{session_id}" if session_id else scope
 
 
 def _artifact_scope_for_update(update: Update) -> str:

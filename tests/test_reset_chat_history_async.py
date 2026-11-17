@@ -95,6 +95,15 @@ async def test_reset_chat_history_parses_system_message_without_db_mode_lookup()
 
 
 @pytest.mark.asyncio
+async def test_reset_preserves_mode_only_when_preserving_its_prompt():
+    helper = _make_helper({"messages": [{"role": "system", "content": "manual", "mode_key": "skills_agent"}]})
+    await helper.reset_chat_history(42, session_id="existing")
+    assert helper.conversations[42][0]["mode_key"] == "skills_agent"
+    await helper.reset_chat_history(42, content="different", session_id="existing")
+    assert "mode_key" not in helper.conversations[42][0]
+
+
+@pytest.mark.asyncio
 async def test_reset_chat_history_treats_malformed_messages_as_no_system_message():
     helper = _make_helper({"messages": None})
     helper._dispatch_before_create_session_prune = AsyncMock()

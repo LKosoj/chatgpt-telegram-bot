@@ -44,6 +44,7 @@ class AIProviderResponse:
     finish_reason: str | None = None
     errors: tuple[AIProviderError, ...] = ()
     choices: tuple[AIProviderChoice, ...] = ()
+    offered_tool_names: frozenset[str] | None = None
 
 
 class ProviderError(Exception):

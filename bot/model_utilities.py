@@ -183,6 +183,9 @@ class ModelUtilities:
         decide whether to fall back to the head-preserve trim.
         """
         model_to_use = self._resolve_model(model, model_fallback_keys)
+        check_budget = getattr(self._helper, 'check_chat_request_budget', None)
+        if check_budget is not None:
+            max_tokens = check_budget(messages, None, model_to_use, max_tokens)
         response = await asyncio.wait_for(
             self._helper.chat_completion(
                 kind='summary',

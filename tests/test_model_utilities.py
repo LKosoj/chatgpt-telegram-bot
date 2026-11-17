@@ -92,6 +92,17 @@ async def test_summarize_window_uses_three_tier_fallback():
     assert helper.calls[0]["kind"] == "summary"
 
 
+@pytest.mark.asyncio
+async def test_summary_budget_error_prevents_request():
+    helper = FakeHelper({"model": "m"}, response=_response("unused"))
+    def reject(*args):
+        raise ValueError("too large")
+    helper.check_chat_request_budget = reject
+    with pytest.raises(ValueError, match="too large"):
+        await ModelUtilities(helper).summarize_window(messages=[], timeout_seconds=5)
+    assert not helper.calls
+
+
 # --- timeout / degradation ----------------------------------------------------
 
 @pytest.mark.asyncio

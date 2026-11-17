@@ -192,3 +192,39 @@ async def test_dispatch_observe_routes_to_agent_tools(tmp_path, agent_db):
     )
 
     assert plugin.get_plan_tasks(chat_id=10, user_id=42) == []
+
+@pytest.mark.asyncio
+async def test_session_plan_and_checkpoint_are_isolated_and_deleted(tmp_path, agent_db):
+    from bot.request_context import RequestContext
+    from bot.plugins.hooks import SessionBeforeDeletePayload
+
+    plugin, helper = _make_plugin(tmp_path, agent_db)
+    contexts = [RequestContext(chat_id=10, user_id=42, session_id=sid) for sid in ('a', 'b')]
+    for ctx in contexts:
+        result = await plugin.execute('manage_plan_tasks', helper, request_context=ctx,
+            action='add', definition_of_done=PLAN_CONTRACT,
+            tasks=[{'id': 'T1', 'content': ctx.session_id, 'status': 'in_progress'}])
+        assert result['success']
+        await plugin.execute('update_working_checkpoint', helper, request_context=ctx,
+            action='update', summary=ctx.session_id, next_step='Continue')
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42, session_id='a')[0]['content'] == 'a'
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42, session_id='b')[0]['content'] == 'b'
+    await plugin.on_session_before_delete(SessionBeforeDeletePayload(user_id=10, session_id='a', messages=()))
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42, session_id='a') == []
+    assert plugin.get_plan_tasks(chat_id=10, user_id=42, session_id='b')[0]['content'] == 'b'
+    checkpoint = await plugin.execute('update_working_checkpoint', helper, request_context=contexts[1], action='list')
+    assert checkpoint['working_checkpoint']['checkpoint']['summary'] == 'b'
+
+@pytest.mark.asyncio
+async def test_compaction_keeps_plan_and_delete_uses_chat_id(tmp_path, agent_db):
+    from bot.request_context import RequestContext
+    from bot.plugins.hooks import SessionBeforeDeletePayload
+    plugin, helper = _make_plugin(tmp_path, agent_db)
+    ctx = RequestContext(chat_id=-10, user_id=42, session_id='a')
+    await plugin.execute('manage_plan_tasks', helper, request_context=ctx,
+        action='add', definition_of_done=PLAN_CONTRACT,
+        tasks=[{'id': 'T1', 'content': 'Keep', 'status': 'in_progress'}])
+    await plugin.on_session_before_delete(SessionBeforeDeletePayload(user_id=42, chat_id=-10, session_id='a', messages=(), is_deletion=False))
+    assert plugin.get_plan_tasks(chat_id=-10, user_id=42, session_id='a')
+    await plugin.on_session_before_delete(SessionBeforeDeletePayload(user_id=42, chat_id=-10, session_id='a', messages=(), is_deletion=True))
+    assert not plugin.get_plan_tasks(chat_id=-10, user_id=42, session_id='a')

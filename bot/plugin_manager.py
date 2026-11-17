@@ -714,7 +714,7 @@ class PluginManager:
         specs; subagents do not currently support the Google function_declarations form.
         """
         blocked = set(blocked_function_names or ())
-        specs = self.get_functions_specs(helper, model_to_use, parent_allowed_plugins or ['All'])
+        specs = self.get_functions_specs(helper, model_to_use, [] if parent_allowed_plugins is None else parent_allowed_plugins)
         if isinstance(specs, dict):
             return [], set()
         filtered = []
