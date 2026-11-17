@@ -142,7 +142,9 @@ def test_skills_agent_mode_is_registered():
     assert "Если просили только найти, покажите результаты" in mode["prompt_start"]
     assert "каждого элемента installed[]" in mode["prompt_start"]
     assert "подтверждение конкретного набора" in mode["prompt_start"]
-    assert "независимые tool-вызовы отправляйте параллельным батчем" in mode["prompt_start"]
+    assert "Независимые чтения отправляйте отдельными вызовами в одном ответе модели" in mode["prompt_start"]
+    assert "два skills.get_skill_reference и один skills.get_skill_resource" in mode["prompt_start"]
+    assert "дождитесь этого результата и вызовите следующий инструмент отдельно" in mode["prompt_start"]
     assert "отдельное подтверждение до вызова не нужно" in mode["prompt_start"]
 
 

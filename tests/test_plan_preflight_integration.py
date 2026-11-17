@@ -13,8 +13,15 @@ def spec(name):
 
 
 @pytest.mark.asyncio
-async def test_discovery_then_execution_requires_plan_before_execution():
-    names = ['skills.list_skills', 'p.do', 'agent_tools.manage_plan_tasks']
+async def test_skill_reads_share_one_round_before_planned_execution():
+    reference = 'skills.get_skill_reference'
+    resource = 'skills.get_skill_resource'
+    names = [reference, resource, 'p.do', 'agent_tools.manage_plan_tasks']
+    read_calls = [
+        FakeToolCall(reference, json.dumps({'reference_path': 'plan.md'}), id='read-plan'),
+        FakeToolCall(reference, json.dumps({'reference_path': 'constraints.md'}), id='read-constraints'),
+        FakeToolCall(resource, json.dumps({'resource_path': 'example.json'}), id='read-example'),
+    ]
     planner = types.SimpleNamespace(tasks=[])
     planner.get_plan_tasks = lambda **kwargs: planner.tasks
     pm = DummyPluginManager({name: {'ok': True} for name in names},
@@ -29,7 +36,7 @@ async def test_discovery_then_execution_requires_plan_before_execution():
 
     pm.call_function = call_function
     client = DummyClient([
-        FakeResponse(tool_calls=[FakeToolCall('skills.list_skills', '{}')]),
+        FakeResponse(tool_calls=read_calls),
         FakeResponse(tool_calls=[FakeToolCall('p.do', '{}', id='rejected')]),
         FakeResponse(tool_calls=[FakeToolCall('agent_tools.manage_plan_tasks', '{}')]),
         FakeResponse(tool_calls=[FakeToolCall('p.do', '{}', id='allowed')]),
@@ -43,7 +50,14 @@ async def test_discovery_then_execution_requires_plan_before_execution():
         tools=pm.specs, tool_choice='auto',
     )
     await helper._handle_function_call(1, response, allowed_plugins=['All'], user_id=1)
-    assert [name for name, _ in pm.calls] == ['skills.list_skills', 'agent_tools.manage_plan_tasks', 'p.do']
+    called = [name for name, _ in pm.calls]
+    assert sorted(called[:3]) == sorted([reference, reference, resource])
+    assert called[3:] == ['agent_tools.manage_plan_tasks', 'p.do']
+    assert {
+        message['tool_call_id']
+        for message in client.create_kwargs[1]['messages']
+        if message['role'] == 'tool'
+    } == {'read-plan', 'read-constraints', 'read-example'}
     forced = client.create_kwargs[2]
     assert forced['tool_choice'] == {'type': 'function', 'function': {'name': 'agent_tools.manage_plan_tasks'}}
     rejection = [m for m in helper.conversations[1] if m.get('tool_call_id') == 'rejected']
