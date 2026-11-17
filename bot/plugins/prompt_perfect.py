@@ -48,7 +48,11 @@ class PromptPerfectPlugin(Plugin):
 
             return {
                 "optimized_prompt" : optimized_prompt,
-                "instruction": "Use optimized_prompt as the effective user request for your next assistant response. Do not call Prompt Perfect again for this same request.",
+                "instruction": (
+                    "If the user asked only to improve a prompt, return optimized_prompt to the user. "
+                    "Otherwise use optimized_prompt as the effective request for your next response. "
+                    "Do not call Prompt Perfect again for this request."
+                ),
                 "suppress_reentry_tools": [f"{self.get_function_prefix()}.optimize_prompt"],
                 "retry_plain_text_tool_intent": True,
             }

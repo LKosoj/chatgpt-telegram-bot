@@ -1869,6 +1869,9 @@ async def handle_function_call(
                 tools = []
                 tool_choice = "none"
 
+        if tool_choice == "none":
+            tools = None
+
         messages = await helper._apply_before_chat_request_mutators(
             chat_id=chat_id,
             user_id=user_id,

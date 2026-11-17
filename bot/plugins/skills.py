@@ -383,8 +383,8 @@ class SkillsPlugin(Plugin):
                 "name": "list_skills",
                 "description": (
                     "List local skills installed in SKILLS_DIR with their ids, names, and short descriptions. "
-                    "Call when picking a skill to activate or before searching for installable ones, to see "
-                    "what is already available."
+                    "Use the short catalog already provided when it is current. Call when the user asks "
+                    "for a list or an up-to-date list from disk is needed."
                 ),
                 "parameters": {
                     "type": "object",
@@ -571,6 +571,11 @@ class SkillsPlugin(Plugin):
                         "initial_context": {
                             "type": "string",
                             "description": "Task context as plain text or a JSON object string.",
+                        },
+                        "include_instructions": {
+                            "type": "boolean",
+                            "description": "Set to false only after get_skill returned this skill's instructions in the current context. Defaults to true.",
+                            "default": True,
                         },
                     },
                     "required": ["skill_name"],
@@ -871,9 +876,11 @@ class SkillsPlugin(Plugin):
             if disabled_error:
                 return disabled_error
             initial_context = call_kwargs.pop("initial_context", None)
+            include_instructions = self._bool_arg(call_kwargs.pop("include_instructions", None), default=True)
             return self._activate_skill(
                 skill_name,
                 initial_context,
+                include_instructions=include_instructions,
                 **call_kwargs,
             )
         if function_name == "get_skill_status":
@@ -1750,10 +1757,9 @@ class SkillsPlugin(Plugin):
             if install_all:
                 return self._install_all_skill_sources(source, source_kind, source_path, user_id=user_id)
 
-            preferred_name = requested_skill_name.rsplit("/", 1)[-1] if requested_skill_name else ""
             skill_source_path, inferred_name, source_error = self._find_skill_source_dir(
                 source_path,
-                preferred_name=preferred_name,
+                preferred_name=requested_skill_name,
             )
             if source_error or skill_source_path is None:
                 candidates = self._list_skill_source_candidates(source_path)
@@ -2208,11 +2214,15 @@ class SkillsPlugin(Plugin):
             return None, "", f"Failed to inspect skill source: {exc}"
 
         if preferred_name:
+            exact = [candidate for candidate in candidates
+                     if candidate.relative_to(source_path).as_posix() == preferred_name]
+            if len(exact) == 1:
+                return exact[0], exact[0].name, None
+            basename = preferred_name.rsplit("/", 1)[-1]
             matches = [
                 candidate
                 for candidate in candidates
-                if candidate.name == preferred_name
-                or candidate.relative_to(source_path).as_posix() == preferred_name
+                if candidate.name == basename
             ]
             if len(matches) == 1:
                 return matches[0], matches[0].name, None
@@ -2751,7 +2761,7 @@ class SkillsPlugin(Plugin):
                 return file_info
         return None
 
-    def _activate_skill(self, skill_name: str, initial_context: Any = None, **kwargs) -> Dict[str, Any]:
+    def _activate_skill(self, skill_name: str, initial_context: Any = None, include_instructions: bool = True, **kwargs) -> Dict[str, Any]:
         skill_id = self._resolve_skill_id(skill_name)
         if not skill_id:
             return {"success": False, "error": f"Skill '{skill_name}' not found"}
@@ -2770,7 +2780,7 @@ class SkillsPlugin(Plugin):
 
         info = self.available_skills[skill_id]
         self._audit("activate_skill", skill=skill_id, scope=scope, user_id=kwargs.get("user_id"))
-        return {
+        result: Dict[str, Any] = {
             "success": True,
             "skill": {
                 "id": skill_id,
@@ -2785,6 +2795,9 @@ class SkillsPlugin(Plugin):
             },
             "scope": scope,
         }
+        if not include_instructions:
+            del result["skill"]["body"]
+        return result
 
     def _list_active_skills(self, disabled_skills: set[str] | None = None, **kwargs) -> Dict[str, Any]:
         disabled_skills = disabled_skills or set()

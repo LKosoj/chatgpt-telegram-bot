@@ -160,6 +160,10 @@ def test_skills_plugin_registers_specs(tmp_path, monkeypatch):
         "skills_record_skill_reflection",
     }
     assert pm.to_canonical_function_name("skills_run_skill_agent") == "skills.run_skill_agent"
+    activate = next(spec["function"] for spec in specs if spec["function"]["name"] == "skills_activate_skill")
+    assert activate["parameters"]["properties"]["include_instructions"]["type"] == "boolean"
+    assert activate["parameters"]["properties"]["include_instructions"]["default"] is True
+    assert "include_instructions" not in activate["parameters"]["required"]
 
 
 def test_skill_scan_accepts_frontmatter_description_with_colon(tmp_path, monkeypatch):
@@ -470,6 +474,41 @@ def test_initialize_logs_available_skills(tmp_path, monkeypatch, caplog):
 
     assert "Available skills in" in caplog.text
     assert "demo" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_activation_can_omit_previously_read_instructions(tmp_path, monkeypatch):
+    plugin = _make_plugin(tmp_path, monkeypatch)
+    reference_dir = tmp_path / "skills" / "demo" / "references"
+    reference_dir.mkdir()
+    (reference_dir / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    skill_file = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_file.write_text(skill_file.read_text(encoding="utf-8") + "\nSee `references/guide.md`.\n", encoding="utf-8")
+    await plugin.execute("list_skills", None)
+
+    default = await plugin.execute("activate_skill", None, skill_name="demo", chat_id=10, user_id=42)
+    details = await plugin.execute("get_skill", None, skill_name="demo", chat_id=10, user_id=42)
+    explicit = await plugin.execute(
+        "activate_skill", None, skill_name="demo", include_instructions=True, chat_id=10, user_id=42,
+    )
+    compact = await plugin.execute(
+        "activate_skill", None, skill_name="demo", include_instructions=False,
+        initial_context='{"task": "inspect"}', chat_id=10, user_id=42,
+    )
+
+    assert default["skill"]["body"] == explicit["skill"]["body"] == details["skill"]["body"]
+    assert compact["skill"] == {key: value for key, value in default["skill"].items() if key != "body"}
+    assert compact["scope"] == default["scope"]
+    assert compact["skill"]["script_tool_calls"]
+    reference = await plugin.execute(
+        "get_skill_reference", None, skill_name="demo", reference_path="references/guide.md",
+        chat_id=10, user_id=42,
+    )
+    assert reference["content"] == "# Guide\n"
+    restored = SkillsPlugin()
+    restored.initialize(storage_root=str(tmp_path / "storage"))
+    status = await restored.execute("get_skill_status", None, skill_name="demo", chat_id=10, user_id=42)
+    assert status["state"]["context"] == {"task": "inspect"}
 
 
 @pytest.mark.asyncio
@@ -1497,6 +1536,26 @@ async def test_install_skill_lists_candidates_for_multi_skill_repo_without_insta
         {"skill_name": "one", "path": "one"},
         {"skill_name": "two", "path": "two"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_install_skill_selects_nested_candidate_with_duplicate_basename(tmp_path, monkeypatch):
+    repo = tmp_path / "source"
+    for branch in ("a", "b"):
+        skill = _write_skill(repo / branch)
+        (skill / "SKILL.md").write_text(f"---\nname: demo\n---\n# {branch}\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, monkeypatch)
+
+    listed = await _approved_skill_execute(plugin, "install_skill", package=str(repo), chat_id=10, user_id=999)
+    assert [item["skill_name"] for item in listed["available_skills"]] == ["a/demo", "b/demo"]
+    result = await _approved_skill_execute(
+        plugin, "install_skill", package=str(repo), skill_name="b/demo", chat_id=10, user_id=999,
+    )
+
+    assert result["success"] is True
+    assert result["skill"] == "b/demo"
+    assert (tmp_path / "skills/b/demo/SKILL.md").read_text(encoding="utf-8").endswith("# b\n")
+    assert not (tmp_path / "skills/a/demo").exists()
 
 
 def test_github_repo_info_parses_tree_url_with_subpath():

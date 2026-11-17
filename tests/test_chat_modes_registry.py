@@ -122,7 +122,7 @@ def test_skills_agent_mode_is_registered():
     assert "skills.find_installable_skills" in mode["prompt_start"]
     assert "skills.install_skill" in mode["prompt_start"]
     assert "terminal.terminal" in mode["prompt_start"]
-    assert "больше двух шагов" in mode["prompt_start"]
+    assert "Сервер требует план независимо от числа шагов" in mode["prompt_start"]
     assert "agent_tools.manage_plan_tasks" in mode["prompt_start"]
     assert "agent_tools.deliver_to_user" in mode["prompt_start"]
     assert "skills.publish_result" not in mode["prompt_start"]
@@ -136,6 +136,27 @@ def test_skills_agent_mode_is_registered():
     assert "Никогда не выводите сырые результаты tools" in mode["prompt_start"]
     assert "Не выдумывайте абсолютные пути" in mode["prompt_start"]
     assert "не повторяйте тот же вызов" in mode["prompt_start"]
+    assert "include_instructions=false" in mode["prompt_start"]
+    assert "Затем активируйте skill" in mode["prompt_start"]
+    assert "финальная доставка доступны без плана" in mode["prompt_start"]
+    assert "Если просили только найти, покажите результаты" in mode["prompt_start"]
+    assert "каждого элемента installed[]" in mode["prompt_start"]
+    assert "подтверждение конкретного набора" in mode["prompt_start"]
+    assert "независимые tool-вызовы отправляйте параллельным батчем" in mode["prompt_start"]
+    assert "отдельное подтверждение до вызова не нужно" in mode["prompt_start"]
+
+
+def test_text_improver_tool_list_and_assistant_prompt_optimization():
+    yaml_path = Path(__file__).resolve().parents[1] / "bot" / "chat_modes.yml"
+    registry = ChatModesRegistry(str(yaml_path))
+
+    assert registry.get_mode_by_key("text_improver")["tools"] == [
+        "web_research", "ddg_web_search", "website_content", "prompt_perfect", "text_document_qa"
+    ]
+    prompt = registry.get_mode_by_key("assistant")["prompt_start"]
+    assert "Если пользователь явно просит улучшить промпт" in prompt
+    assert "верните переписанный промпт пользователю" in prompt
+    assert "При кратких или нечетких запросах используйте" not in prompt
 
 
 def test_skills_agent_has_force_non_stream_first_turn_flag():

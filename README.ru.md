@@ -850,7 +850,8 @@ duration, текст ошибки и direct-result flag. Это операцио
 
 Инструменты:
 
-- `list_skills` — список доступных скилов с краткими описаниями.
+- `list_skills` — посмотреть доступные скиллы или обновить каталог с диска.
+  Для выбора скилла режим `skills_agent` уже получает краткий каталог.
 - `get_skill` — полное содержимое `SKILL.md` одного скила.
 - `find_installable_skills` — поиск installable skills через
   `npx skills find`.
@@ -861,6 +862,8 @@ duration, текст ошибки и direct-result flag. Это операцио
   активны в текущей сессии.
 - `activate_skill` / `deactivate_skill` — пометить скил как in-context
   для текущей сессии (используется в чат-режиме `skills_agent`).
+  При активации по умолчанию возвращаются инструкции. Если вы уже прочли их
+  через `get_skill`, передайте `include_instructions: false`, чтобы не получать их снова.
 - `run_skill_script` — выполнить скрипт `skills/<skill>/scripts/*.py`
   (гейтится через `SKILLS_ALLOW_SCRIPTS=true` и allow-list
   `SKILLS_SCRIPT_ADMIN_USER_IDS`).

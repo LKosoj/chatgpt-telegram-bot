@@ -841,7 +841,8 @@ with a `SKILL.md` file describing intent, optional scripts, and optional
 
 Tools:
 
-- `list_skills` — list available skills with their summaries.
+- `list_skills` — inspect the available skills or refresh the catalog from disk.
+  `skills_agent` already receives a short catalog for selecting a skill.
 - `get_skill` — fetch a single skill's full `SKILL.md` content.
 - `find_installable_skills` — search skills.sh via `npx skills find`.
 - `install_skill` — ask the requesting user to approve the exact source in Telegram,
@@ -851,6 +852,8 @@ Tools:
   currently active in the calling session.
 - `activate_skill` / `deactivate_skill` — mark a skill as in-context for the
   current session (used by the `skills_agent` chat mode).
+  Activation includes the instructions by default. After reading them through
+  `get_skill`, pass `include_instructions: false` to avoid receiving them again.
 - `run_skill_script` — execute a script under `skills/<skill>/scripts/*.py`
   (gated by `SKILLS_ALLOW_SCRIPTS=true` and the `SKILLS_SCRIPT_ADMIN_USER_IDS`
   allowlist).

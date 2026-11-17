@@ -442,7 +442,7 @@ class OpenAIHelper:
             # regardless of tool_choice. "No tools" always means tools=None.
             tools = None
             tool_choice = "none"
-        if tools is not None:
+        if tools is not None and tool_choice != "none":
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice

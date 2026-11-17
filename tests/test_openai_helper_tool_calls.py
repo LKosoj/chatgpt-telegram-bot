@@ -76,6 +76,7 @@ from bot.openai_tool_handler import (  # noqa: E402
 )
 from bot.i18n import reset_current_language, set_current_language  # noqa: E402
 from bot.plugins.agent_tools import AgentToolsPlugin  # noqa: E402
+from bot.plugins.prompt_perfect import PromptPerfectPlugin  # noqa: E402
 from bot.plugins.plugin import wrap_untrusted_tool_output  # noqa: E402
 from bot.request_context import RequestContext  # noqa: E402
 from bot.user_settings import (  # noqa: E402
@@ -3190,6 +3191,16 @@ async def test_chat_completion_normalizes_empty_tools_to_none():
     assert helper.client.create_kwargs[2]["tools"] == specs
     assert helper.client.create_kwargs[2]["tool_choice"] == "auto"
 
+    helper.client.responses.append(FakeResponse(content="done"))
+    await helper.chat_completion(
+        model="llmgateway/high",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=specs,
+        tool_choice="none",
+    )
+    assert "tools" not in helper.client.create_kwargs[3]
+    assert helper.client.create_kwargs[3]["tool_choice"] == "none"
+
 
 @pytest.mark.asyncio
 async def test_tool_reentry_uses_session_owner_for_group_model_lookup():
@@ -3253,7 +3264,8 @@ async def test_empty_response_retry_uses_pinned_session_max_tokens_percent():
 
 
 @pytest.mark.asyncio
-async def test_prompt_perfect_suppresses_itself_on_reentry():
+@pytest.mark.parametrize("final_text", ["write a detailed guide", "Here is the detailed guide."])
+async def test_prompt_perfect_suppresses_itself_on_reentry(final_text):
     tool_spec = {
         "type": "function",
         "function": {
@@ -3262,17 +3274,18 @@ async def test_prompt_perfect_suppresses_itself_on_reentry():
             "parameters": {"type": "object", "properties": {}},
         },
     }
-    pm = DummyPluginManager(
-        {
-            "prompt_perfect.optimize_prompt": {
-                "optimized_prompt": "write a detailed guide",
-                "instruction": "Use optimized_prompt as the request.",
-                "suppress_reentry_tools": ["prompt_perfect.optimize_prompt"],
-            }
-        },
-        specs=[tool_spec],
-    )
-    helper = _make_helper(pm, client=DummyClient([FakeResponse(content="final answer")]))
+    pm = DummyPluginManager({}, specs=[tool_spec])
+    plugin = PromptPerfectPlugin()
+
+    async def call_prompt_perfect(name, helper, arguments, request_context=None):
+        pm.calls.append((name, arguments))
+        return await plugin.execute("optimize_prompt", helper, **json.loads(arguments))
+
+    pm.call_function = call_prompt_perfect
+    helper = _make_helper(pm, client=DummyClient([
+        FakeResponse(content="write a detailed guide"),
+        FakeResponse(content=final_text),
+    ]))
     response = FakeResponse(tool_calls=[
         FakeToolCall("prompt_perfect.optimize_prompt", json.dumps({"original_prompt": "guide"})),
     ])
@@ -3281,12 +3294,18 @@ async def test_prompt_perfect_suppresses_itself_on_reentry():
         chat_id=1, response=response, stream=False, allowed_plugins=["All"], user_id=1
     )
 
-    assert out.choices[0].message.content == "final answer"
+    assert out.choices[0].message.content == final_text
     assert tools_used == ("prompt_perfect.optimize_prompt",)
+    assert helper.client.calls == 2
+    tool_message = next(message for message in helper.client.create_kwargs[1]["messages"] if message["role"] == "tool")
+    result = json.loads(tool_message["content"])
+    assert result["optimized_prompt"] == "write a detailed guide"
+    assert "return optimized_prompt to the user" in result["instruction"]
+    assert "use optimized_prompt as the effective request" in result["instruction"]
     # An empty tool list must never reach the API as tools=[]; chat_completion()
     # normalizes it away (kwargs simply omit the "tools" key).
-    assert "tools" not in helper.client.create_kwargs[0]
-    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert "tools" not in helper.client.create_kwargs[1]
+    assert helper.client.create_kwargs[1]["tool_choice"] == "none"
     assert len(pm.calls) == 1
 
 
@@ -4085,6 +4104,14 @@ async def test_generic_successful_tool_does_not_bypass_consecutive_call_limit():
         client=DummyClient([FakeResponse(content="done")]),
     )
     helper.config["functions_max_consecutive_calls"] = 1
+    budget_tools = []
+    original_check_budget = helper.check_chat_request_budget
+
+    def capture_budget(messages, tools, model, max_tokens):
+        budget_tools.append(tools)
+        return original_check_budget(messages, tools, model, max_tokens)
+
+    helper.check_chat_request_budget = capture_budget
     response = FakeResponse(tool_calls=[
         FakeToolCall("weather.get_weather", "{}", id="call-weather"),
     ])
@@ -4100,6 +4127,8 @@ async def test_generic_successful_tool_does_not_bypass_consecutive_call_limit():
     )
 
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert "tools" not in helper.client.create_kwargs[0]
+    assert budget_tools == [None]
     assert [name for name, _args in helper.plugin_manager.calls] == ["weather.get_weather"]
     assert tools_used == ("weather.get_weather",)
     assert out.choices[0].message.content == "done"
@@ -4143,7 +4172,7 @@ async def test_final_delivery_required_not_set_without_delivery_tool_allowed():
     # then narrow "tools" down to {agent_tools.deliver_to_user} — a tool that
     # does not exist in this mode's specs, collapsing "tools" to empty.
     assert helper.client.create_kwargs[0]["tool_choice"] == "none"
-    assert helper.client.create_kwargs[0]["tools"] == specs
+    assert "tools" not in helper.client.create_kwargs[0]
     assert tools_used == ("builder.build",)
     assert out.choices[0].message.content == "done"
 
@@ -4169,6 +4198,61 @@ def test_reentry_tool_choice_enforces_delivery_grace_round_limit():
         max_consecutive_calls=max_consecutive_calls,
         final_delivery_required=True,
     ) == "none"
+
+
+@pytest.mark.asyncio
+async def test_delivery_grace_boundary_omits_tools_from_request_and_budget():
+    specs = [
+        {"type": "function", "function": {"name": "weather.get_weather"}},
+        {"type": "function", "function": {"name": "agent_tools.deliver_to_user"}},
+    ]
+    helper = _make_helper(
+        DummyPluginManager({"weather.get_weather": {"success": True}}, specs=specs),
+        client=DummyClient([FakeResponse(content="done")]),
+    )
+    helper.config["functions_max_consecutive_calls"] = 1
+    budget_tools = []
+    original_check_budget = helper.check_chat_request_budget
+
+    def capture_budget(messages, tools, model, max_tokens):
+        budget_tools.append(tools)
+        return original_check_budget(messages, tools, model, max_tokens)
+
+    helper.check_chat_request_budget = capture_budget
+    await handle_function_call(
+        helper, chat_id=1,
+        response=FakeResponse(tool_calls=[FakeToolCall("weather.get_weather", "{}")]),
+        stream=False,
+        times=1 + openai_tool_handler_module.DELIVERY_GRACE_ROUNDS,
+        allowed_plugins=["All"], user_id=1, final_delivery_required=True,
+        delivery_repair_attempts=openai_tool_handler_module.DELIVERY_REPAIR_MAX_ATTEMPTS,
+    )
+
+    assert helper.client.create_kwargs[0]["tool_choice"] == "none"
+    assert "tools" not in helper.client.create_kwargs[0]
+    assert budget_tools == [None]
+
+
+@pytest.mark.asyncio
+async def test_subagent_final_round_omits_tools_from_actual_request():
+    specs = [{"type": "function", "function": {"name": "weather.get_weather"}}]
+    manager = DummyPluginManager({"weather.get_weather": {"success": True}}, specs=specs)
+    manager.get_subagent_function_specs = lambda *args, **kwargs: (specs, {"weather.get_weather"})
+    helper = _make_helper(manager, client=DummyClient([
+        FakeResponse(tool_calls=[FakeToolCall("weather.get_weather", "{}")]),
+        FakeResponse(content="done"),
+    ]))
+
+    result = await AgentToolsPlugin()._run_subagent_completion_loop(
+        helper, "llmgateway/high", [{"role": "user", "content": "weather"}],
+        {"chat_id": 1, "user_id": 1}, max_rounds=1, temperature=0.1,
+    )
+
+    assert result == "done"
+    assert helper.client.create_kwargs[0]["tool_choice"] == "auto"
+    assert helper.client.create_kwargs[0]["tools"]
+    assert helper.client.create_kwargs[1]["tool_choice"] == "none"
+    assert "tools" not in helper.client.create_kwargs[1]
 
 
 @pytest.mark.asyncio

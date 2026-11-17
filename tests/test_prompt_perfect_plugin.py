@@ -50,7 +50,8 @@ async def test_execute_uses_low_level_completion_without_model_response():
     assert "tool_choice" not in call_kwargs
     assert "make it better" in call_kwargs["messages"][1]["content"]
     assert result["optimized_prompt"] == "Rewrite this as a precise request."
-    assert "instruction" in result
+    assert "return optimized_prompt to the user" in result["instruction"]
+    assert "use optimized_prompt as the effective request" in result["instruction"]
     assert result["suppress_reentry_tools"] == ["prompt_perfect.optimize_prompt"]
     assert result["retry_plain_text_tool_intent"] is True
     assert "model_response" not in result
